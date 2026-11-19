@@ -53,12 +53,15 @@ const OUTLINE_PCT: u64 = 160;
 /// `code_read` vs reading the whole file the span is in: 32.7x on basemind, 25.9x on tokio.
 const READ_PCT: u64 = 2580;
 
-/// `git_blame` vs `git blame -L`: its weakest kind (a symbol's blame on tokio) measured 1.11x.
+/// `git_blame` vs `git blame -L`: its weakest kind (a symbol's blame on tokio) measured 1.11x in the
+/// committed gate run. ADR-0052's hunk rows measure 2.08x there; this rises once a gate run with them
+/// is committed, since the test below holds it to the committed figure.
 const BLAME_PCT: u64 = 110;
 
 /// Tools the gate measured below 1x against their baseline, or did not run: `code_symbols` (0.29x vs
-/// `git grep`), `code_refs`, `find_files`, `code_grep`, `git_log`, `git_diff` (1.00x for a file diff),
-/// `code_search` and `docs_search`. They keep their disclosed baseline and claim no saving.
+/// `git grep` in the committed run, 0.75x with ADR-0052's rows), `code_refs`, `find_files`,
+/// `code_grep`, `git_log`, `git_diff` (1.00x for a file diff), `code_search` and `docs_search`. They
+/// keep their disclosed baseline and claim no saving.
 const NO_SAVING_PCT: u64 = 100;
 
 /// The multiplier and disclosed baseline of each tool the gate measured.
@@ -216,8 +219,8 @@ mod tests {
         }
     }
 
-    /// The gate measured `code_symbols` at 0.29x-0.32x against `git grep`: a lookup costs more than
-    /// the grep it replaces, so it books nothing, whatever it returned.
+    /// The gate measures `code_symbols` below 1x against `git grep`: a lookup costs more than the grep
+    /// it replaces, so it books nothing, whatever it returned.
     #[test]
     fn tools_that_did_not_beat_their_baseline_claim_no_saving() {
         for (tool, baseline) in [
