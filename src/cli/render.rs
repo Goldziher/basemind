@@ -246,7 +246,7 @@ fn render_human_counting(tool_name: &str, value: &Value, out: &mut impl Write, c
                     // line, since a row's own text holds the `, ` a joined list would separate them by.
                     Value::Array(items) if !items.is_empty() && items.iter().all(Value::is_string) => {
                         writeln!(out, "{key}:")?;
-                        write_tree(v, 1, out, cut)?;
+                        write_tree(v, 1, out)?;
                     }
                     Value::Array(items) if !items.is_empty() => {
                         let joined: Vec<String> = items.iter().map(scalar_to_string).collect();
@@ -260,7 +260,7 @@ fn render_human_counting(tool_name: &str, value: &Value, out: &mut impl Write, c
                     }
                     Value::Object(entries) if !entries.is_empty() => {
                         writeln!(out, "{key}:")?;
-                        write_tree(v, 1, out, cut)?;
+                        write_tree(v, 1, out)?;
                     }
                     Value::String(s) if s.contains('\n') => {
                         writeln!(out, "{key}:")?;
@@ -337,13 +337,13 @@ fn ungrouped(value: &Value) -> Option<Value> {
 /// any other map as each key with its value indented under it (`code_grep` hits by file and symbol,
 /// `git_log` files by commit, importers by depth). The `""` key a grep row outside every symbol is
 /// grouped under is shown as `(outside any symbol)`.
-fn write_tree(value: &Value, depth: usize, out: &mut impl Write, cut: &mut Truncated) -> Result<()> {
+fn write_tree(value: &Value, depth: usize, out: &mut impl Write) -> Result<()> {
     let pad = "  ".repeat(depth);
     match value {
         Value::Array(items) => {
             for item in items.iter().take(MAX_HUMAN_ITEMS) {
                 match item {
-                    Value::Array(_) | Value::Object(_) => write_tree(item, depth, out, cut)?,
+                    Value::Array(_) | Value::Object(_) => write_tree(item, depth, out)?,
                     _ => writeln!(out, "{pad}{}", scalar_to_string(item).replace('\n', " "))?,
                 }
             }
@@ -363,7 +363,7 @@ fn write_tree(value: &Value, depth: usize, out: &mut impl Write, cut: &mut Trunc
                 match v {
                     Value::Array(_) | Value::Object(_) => {
                         writeln!(out, "{pad}{label}")?;
-                        write_tree(v, depth + 1, out, cut)?;
+                        write_tree(v, depth + 1, out)?;
                     }
                     _ => writeln!(out, "{pad}{label}: {}", scalar_to_string(v))?,
                 }
