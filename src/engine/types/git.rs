@@ -63,7 +63,7 @@ pub struct GitBlameParams {
     /// Revision to blame at (default HEAD).
     #[serde(default)]
     pub rev: Option<String>,
-    /// Default 100.
+    /// Merged hunks; default 100.
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.

@@ -468,7 +468,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Default 100.",
+          "description": "Merged hunks; default 100.",
           "type": "integer"
         },
         "cursor": {
