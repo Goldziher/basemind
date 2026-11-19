@@ -70,7 +70,7 @@ pub fn render(report: &Report, json: bool, out: &mut impl Write) -> Result<()> {
             row(
                 out,
                 session.host.as_str(),
-                &session.id,
+                &short(&session.id, ID_WIDTH),
                 &session.checkout,
                 ended,
                 &session.counts,
@@ -85,7 +85,7 @@ pub fn render(report: &Report, json: bool, out: &mut impl Write) -> Result<()> {
                 row(
                     out,
                     session.host.as_str(),
-                    &format!("{}/{}", subagent.parent, session.id),
+                    &pair(&subagent.parent, &session.id),
                     &session.checkout,
                     ended,
                     &session.counts,
@@ -119,8 +119,14 @@ pub fn render(report: &Report, json: bool, out: &mut impl Write) -> Result<()> {
         let repeated: Vec<_> = report
             .sessions
             .iter()
-            .chain(report.subagents.iter().map(|s| &s.session))
-            .flat_map(|s| s.repeated_reads.iter().map(move |r| (&s.id, r)))
+            .map(|s| (short(&s.id, ID_WIDTH), s))
+            .chain(
+                report
+                    .subagents
+                    .iter()
+                    .map(|s| (pair(&s.parent, &s.session.id), &s.session)),
+            )
+            .flat_map(|(label, s)| s.repeated_reads.iter().map(move |r| (label.clone(), r)))
             .collect();
         if !repeated.is_empty() {
             writeln!(out, "repeated reads:")?;
@@ -159,6 +165,25 @@ pub fn render(report: &Report, json: bool, out: &mut impl Write) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// The width of the id column.
+const ID_WIDTH: usize = 40;
+
+/// `id` cut to `width` characters, keeping its end (a Codex rollout's thread id) after a `~`.
+fn short(id: &str, width: usize) -> String {
+    let count = id.chars().count();
+    if count <= width {
+        return id.to_owned();
+    }
+    let tail: String = id.chars().skip(count - (width - 1)).collect();
+    format!("~{tail}")
+}
+
+/// A subagent's `parent/id` label, each half cut so the pair fits the id column.
+fn pair(parent: &str, id: &str) -> String {
+    let half = (ID_WIDTH - 1) / 2;
+    format!("{}/{}", short(parent, half), short(id, ID_WIDTH - 1 - half))
 }
 
 fn header(out: &mut impl Write, id: &str) -> Result<()> {
@@ -203,5 +228,16 @@ mod tests {
         assert!(parse_since("2026-13-01").is_err());
         assert!(parse_since("7d").is_err());
         assert!(parse_since("2026-1-01").is_err());
+    }
+
+    #[test]
+    fn long_ids_are_cut_to_the_column() {
+        let rollout = "rollout-2026-11-18T09-20-00-0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+        assert_eq!(short("s1", ID_WIDTH), "s1");
+        assert_eq!(short(rollout, 20), format!("~{}", &rollout[rollout.len() - 19..]));
+        let label = pair(rollout, rollout);
+        assert!(label.chars().count() <= ID_WIDTH, "{label}");
+        assert!(label.ends_with("0c1d2e3f4a5b"), "{label}");
+        assert_eq!(pair("s1", "agent-a1"), "s1/agent-a1");
     }
 }
