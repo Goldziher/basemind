@@ -870,7 +870,7 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
     const WHOLE_PAGE: u32 = 1_000_000;
     // A list (`code_symbols` results), or one grouped by file (`code_refs` hits:
     // `{"<path>": [row, ...]}`), or by file and enclosing symbol (`code_grep` hits:
-    // `{"<path>": {"<symbol>": [row, ...]}}`).
+    // `{"<path>": {"<symbol>": [row, ...]}}`), or by depth (`code_refs` importers' `by_depth`).
     fn rows_in(value: &Value) -> u64 {
         match value {
             Value::Array(rows) => rows.len() as u64,
@@ -960,7 +960,11 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                 .await
                 && let Some(body) = canary_body(&out)
             {
-                let hits = body.get("total").and_then(Value::as_u64).unwrap_or(0);
+                // `total` is written only beside a `next_cursor`; a whole page is counted by its rows.
+                let hits = body
+                    .get("total")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_else(|| count(&body, "hits"));
                 record.canaries.insert("grep_fn_spawn_hits".into(), json!(hits));
             }
             if let Ok(out) = svc
@@ -971,7 +975,10 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                 .await
                 && let Some(body) = canary_body(&out)
             {
-                let files = body.get("total").and_then(Value::as_u64).unwrap_or(0);
+                let files = body
+                    .get("total")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_else(|| count(&body, "by_depth"));
                 record.canaries.insert("runtime_importers_depth2".into(), json!(files));
             }
             #[cfg(feature = "code-search")]
@@ -1042,8 +1049,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
-                // A list row names the author but not the email, so the email side is git's: every
-                // commit whose author name or email holds the token, by full sha.
+                // `author` matches the name or the email and a row names only the author, so the
+                // check is git's: every commit whose author name or email holds the token, by full sha.
                 let token_lc = token.to_lowercase();
                 let by_token: Vec<String> = std::process::Command::new("git")
                     .arg("-C")
@@ -1058,7 +1065,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .filter_map(|line| line.split_whitespace().next().map(str::to_string))
                     .collect();
                 let consistent = commits.iter().all(|c| {
-                    let sha = c.get("sha").and_then(Value::as_str).unwrap_or("");
+                    // A row starts with its sha.
+                    let sha = c.as_str().and_then(|row| row.split_once(' ')).map_or("", |(sha, _)| sha);
                     !sha.is_empty() && by_token.iter().any(|full| full.starts_with(sha))
                 });
                 record
