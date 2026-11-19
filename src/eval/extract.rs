@@ -564,12 +564,12 @@ mod tests {
         let sized = extract_items(
             EvalMode::FindLarge,
             &Value::Null,
-            &json!({"files":{"big.rs":4000,"mid.rs":900}}),
+            &json!({"files":{"z.rs":4000,"a.rs":900}}),
         );
         assert_eq!(
             strs(&sized),
-            vec!["big.rs", "mid.rs"],
-            "`{{path: lines}}` keeps the answer order"
+            vec!["z.rs", "a.rs"],
+            "`{{path: lines}}` keeps the answer order, not the keys' order"
         );
 
         let around = extract_items(
