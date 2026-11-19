@@ -32,6 +32,7 @@ pub mod init_rules;
 pub mod init_settings;
 pub mod init_verb;
 pub mod interrupt;
+pub mod manual;
 pub mod memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod registry;

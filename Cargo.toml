@@ -5,6 +5,7 @@ include = [
   "/Cargo.lock",
   "/src/**",
   "/README.md",
+  "/docs/manual/*.md",
   "/LICENSE",
   "/ATTRIBUTIONS.md",
   "/build.rs",

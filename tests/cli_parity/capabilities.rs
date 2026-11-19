@@ -257,6 +257,10 @@ pub fn table() -> Vec<Row> {
         ),
         cli_only("man", "emits the CLI man page (roff)"),
         cli_only(
+            "manual",
+            "prints the offline manual compiled into the binary; reads no index",
+        ),
+        cli_only(
             "admin tokens",
             "CLI-only benchmark primitive: prints a bare integer, no JSON envelope (`benchmarks/run.sh`)",
         ),

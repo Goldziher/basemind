@@ -23,6 +23,7 @@ mod capabilities;
 mod cli_tree;
 mod exceptions;
 mod fixture;
+mod manual;
 mod mcp_surface;
 mod params;
 
