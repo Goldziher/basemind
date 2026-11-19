@@ -14,7 +14,7 @@ use crate::engine::refs::matching::Matching;
 use crate::engine::stale::flag_listed;
 use crate::engine::types::refs::{
     CodeRefsParams, CodeRefsResult, DependentsResponse, FindCallersParams, FindCallersResponse,
-    FindImplementationsParams, FindReferencesParams, GotoDefinitionParams,
+    FindImplementationsParams, FindReferencesParams, GotoDefinitionParams, ResolutionFilter,
 };
 use crate::engine::workspace::Workspace;
 
@@ -69,6 +69,17 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
              for relation `definition`",
         ));
     }
+    if relation != Relation::Callers && p.resolution.is_some() {
+        return Err(shape_error(
+            "`resolution` filters call sites and applies only to relation `callers`",
+        ));
+    }
+    let resolution = p
+        .resolution
+        .as_deref()
+        .map(ResolutionFilter::parse)
+        .transpose()
+        .map_err(|problem| EngineError::invalid_argument(format!("`code_refs`: {problem}")))?;
     match relation {
         Relation::Callers => match p.path {
             Some(path) => {
@@ -81,6 +92,7 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
                     limit: p.limit,
                     max_tokens: budget(p.max_tokens),
                     cursor: p.cursor,
+                    resolution,
                 };
                 run_callers(ws, callers).map(CodeRefsResult::Callers)
             }
@@ -90,12 +102,15 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
                 let cache = ws.cache.load_full();
                 run_find_references(
                     &*idx,
+                    IndexedFiles::of(ws),
+                    &cache,
                     FindReferencesParams {
                         name: p.name,
                         substring,
                         limit: p.limit,
                         max_tokens: budget(p.max_tokens),
                         cursor: p.cursor,
+                        resolution,
                     },
                     || ws.lifecycle_notice(),
                     |hits| flag_listed(ws, &cache, hits),

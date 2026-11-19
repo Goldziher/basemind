@@ -60,6 +60,7 @@ async fn code_refs_without_an_index_is_refused_with_the_fix() {
         limit: None,
         cursor: None,
         max_tokens: None,
+        resolution: None,
     };
     for params in [
         refs(None, None),

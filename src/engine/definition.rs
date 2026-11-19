@@ -2,7 +2,7 @@
 
 use crate::path::RelPath;
 
-/// `resolution` value when a cross-file edge was read from an index whose resolve pass is unsettled,
+/// `resolution_note` when a cross-file edge was read from an index whose resolve pass is unsettled,
 /// or that holds other content for one of the files than this session's file map.
 pub(crate) const SNAPSHOT_REFUSED: &str = "the index is updating for the files involved; retry in a moment";
 

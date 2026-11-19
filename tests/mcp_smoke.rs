@@ -438,6 +438,39 @@ async fn mcp_server_exercises_representative_tools() {
             .all(|h| h.get("path").and_then(Value::as_str) == Some("c.rs")),
         "every alpha() call site lives in c.rs in this fixture"
     );
+    // Rust has no resolution engine, and `alpha` is defined: every row is `name_only`, the default
+    // a page leaves unwritten, so nothing about resolution is written at all.
+    assert!(
+        hits.iter().all(|h| h.get("resolution").is_none())
+            && body.get("resolution_default").is_none()
+            && body.get("resolution_counts").is_none(),
+        "a row equal to the default leaves it out: {body}"
+    );
+    let other = decode_text(
+        &service
+            .call_tool(call_params("code_refs", json!({ "name": "other" })))
+            .await
+            .expect("code_refs(other)"),
+    );
+    assert_eq!(
+        other["resolution_default"], "external",
+        "`other` is called in c.rs and defined nowhere: {other}"
+    );
+    let filtered = decode_text(
+        &service
+            .call_tool(call_params(
+                "code_refs",
+                json!({ "name": "alpha", "resolution": "same_file,imported" }),
+            ))
+            .await
+            .expect("code_refs filtered"),
+    );
+    assert!(hit_rows(&filtered).is_empty(), "no alpha() site is proven: {filtered}");
+    assert_eq!(
+        filtered["resolution_counts"],
+        json!({ "name_only": 3 }),
+        "the counts say what the filter dropped: {filtered}"
+    );
 
     let page1 = decode_text(
         &service
@@ -2955,6 +2988,26 @@ async fn code_and_index_tools_reject_inexact_arguments() {
     assert!(
         message.contains("`relation` must be one of") && message.contains("`importers`") && message.contains("users"),
         "an unknown relation must list the accepted ones: {message}"
+    );
+    let message = refused(
+        &service,
+        "code_refs",
+        json!({ "name": "alpha", "resolution": "same_file,proven" }),
+    )
+    .await;
+    assert!(
+        message.contains("unknown resolution `proven`") && message.contains("scope_resolved"),
+        "an unknown resolution must name the value and list the accepted ones: {message}"
+    );
+    let message = refused(
+        &service,
+        "code_refs",
+        json!({ "name": "Drawable", "relation": "implementations", "resolution": "imported" }),
+    )
+    .await;
+    assert!(
+        message.contains("`resolution` filters call sites") && message.contains("accepted shapes:"),
+        "the filter applies to call sites only: {message}"
     );
 
     let message = refused(&service, "index_status", json!({ "mode": "status" })).await;

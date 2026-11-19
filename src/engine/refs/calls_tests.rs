@@ -74,12 +74,15 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
     let references = decode(
         &super::run_find_references(
             &local_index(&store),
+            crate::engine::files::IndexedFiles::contained(root),
+            &cache,
             FindReferencesParams {
                 substring: false,
                 name: "target".to_string(),
                 limit: Some(500),
                 max_tokens: None,
                 cursor: None,
+                resolution: None,
             },
             || None,
             |_| {},
@@ -107,6 +110,7 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                 limit: Some(500),
                 max_tokens: None,
                 cursor: None,
+                resolution: None,
             },
             || None,
         )
@@ -190,6 +194,7 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
                 limit: Some(500),
                 max_tokens: None,
                 cursor: None,
+                resolution: None,
             },
             || None,
         )
@@ -219,19 +224,27 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
         "the namespace-import callers resolution cannot see must still be reported: {body}"
     );
     assert!(
-        files
-            .values()
-            .flat_map(|hits| hits.as_array().into_iter().flatten())
-            .all(|h| h.get("resolved").is_some()),
-        "every hit is annotated so the agent can tell proven from unproven: {body}"
+        body.get("resolution_default").is_none(),
+        "the namespace-import sites bind to nothing resolution knows, so the default is `name_only`, \
+         which goes unwritten: {body}"
+    );
+    assert_eq!(
+        body.pointer("/hits/util.ts/0/resolution"),
+        Some(&serde_json::json!("same_file")),
+        "the proven self-call says so, since it is not the default: {body}"
+    );
+    assert_eq!(
+        body["resolution_counts"],
+        serde_json::json!({ "same_file": 1, "name_only": 2 }),
+        "{body}"
     );
 }
 
 /// Precision is preserved, but as an ANNOTATION rather than a silent filter: resolution proves
 /// only the callers that bind to *this* definition (never a same-named function in another
-/// file), yet the same-named site is still REPORTED — flagged `resolved: false` — instead of
-/// being dropped from the answer. Dropping is what made `find_callers` under-report; a caller
-/// that wants precision filters on the flag.
+/// file), yet the same-named site is still REPORTED — graded `elsewhere` — instead of being
+/// dropped from the answer. Dropping is what made `find_callers` under-report; a caller that wants
+/// precision filters on the grade.
 ///
 /// Also pins the offset-alignment finding: the L1 node `start_byte` differs from the resolver's
 /// `def_start` identifier byte, so the proven set can only be built by recovering the true
@@ -287,6 +300,7 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
                 limit: Some(100),
                 max_tokens: None,
                 cursor: None,
+                resolution: None,
             },
             || None,
         )
@@ -316,9 +330,14 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
                 .map(move |hit| (path.as_str(), hit))
         })
         .collect();
+    let default = body
+        .get("resolution_default")
+        .cloned()
+        .unwrap_or_else(|| "name_only".into());
+    let resolution = |hit: &serde_json::Value| hit.get("resolution").unwrap_or(&default).clone();
     let proven: Vec<&str> = hits
         .iter()
-        .filter(|(_, h)| h.get("resolved").and_then(serde_json::Value::as_bool) == Some(true))
+        .filter(|(_, h)| resolution(h) == "same_file")
         .map(|(path, _)| *path)
         .collect();
     assert_eq!(
@@ -328,13 +347,14 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
     );
     let unproven: Vec<&str> = hits
         .iter()
-        .filter(|(_, h)| h.get("resolved").and_then(serde_json::Value::as_bool) == Some(false))
+        .filter(|(_, h)| resolution(h) == "elsewhere")
         .map(|(path, _)| *path)
         .collect();
     assert_eq!(
         unproven,
         vec!["other.ts"],
-        "the same-name site is surfaced as unproven, so a precision-seeking caller can filter it"
+        "the same-name site binds to its own definition and says so, so a precision-seeking caller can \
+         filter it"
     );
 }
 
@@ -351,7 +371,8 @@ fn merging_aliased_hits_keeps_a_capped_scan_s_resume_point() {
         line: 1,
         column: 0,
         callee: "g".to_string(),
-        resolved: Some(true),
+        resolution: crate::engine::types::refs::Resolution::Imported,
+        elide_resolution: false,
         shared_line: false,
         stale: false,
     };
@@ -366,7 +387,7 @@ fn merging_aliased_hits_keeps_a_capped_scan_s_resume_point() {
         aliased: vec![(vec![3], hit()), (vec![9], hit())],
         ..ResolvedCallers::default()
     };
-    let merged = merge_resolved(page, Some(resolved), 10, None);
+    let merged = merge_resolved(page, Some(resolved), &crate::path::RelPath::from("def.rs"), 10, None);
     assert_eq!(
         merged.hit_keys,
         [vec![3]],
@@ -414,6 +435,7 @@ fn a_renamed_import_caller_is_listed_when_the_in_ram_map_lacks_its_file() {
                     limit: Some(100),
                     max_tokens: None,
                     cursor: None,
+                    resolution: None,
                 },
                 || None,
             )
@@ -445,16 +467,19 @@ fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
     std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("a.rs");
     std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); }\n").expect("b.rs");
     std::fs::write(root.join("c.rs"), b"fn gamma() { alpha(); }\n").expect("c.rs");
-    let (mut store, _) = scan_fixture(root);
+    let (mut store, cache) = scan_fixture(root);
     let page = |store: &Store, cursor: Option<super::Cursor>| {
         super::run_find_references(
             &local_index(store),
+            crate::engine::files::IndexedFiles::contained(root),
+            &cache,
             FindReferencesParams {
                 substring: false,
                 name: "alpha".to_string(),
                 limit: Some(1),
                 max_tokens: None,
                 cursor,
+                resolution: None,
             },
             || None,
             |_| {},

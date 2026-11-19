@@ -121,6 +121,14 @@ fn hit_rows(body: &Value) -> Vec<Value> {
             rows.as_array().expect("a file's hits").iter().map(move |row| {
                 let mut row = row.clone();
                 row["path"] = json!(path);
+                // A row leaves out a resolution that is the page's default, itself unwritten
+                // when it is `name_only`.
+                if row.get("resolution").is_none() {
+                    row["resolution"] = body
+                        .get("resolution_default")
+                        .cloned()
+                        .unwrap_or_else(|| json!("name_only"));
+                }
                 row
             })
         })
@@ -356,7 +364,7 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
         hits.iter()
             .any(|h| h.get("path").and_then(Value::as_str) == Some("app.py")
                 && h.get("line").and_then(Value::as_u64) == Some(26)
-                && h.get("resolved").and_then(Value::as_bool) == Some(true)),
+                && h["resolution"] == "imported"),
         "the real f() call site app.py:26 must be a resolved caller: {body}"
     );
     assert!(

@@ -41,6 +41,9 @@ pub struct CodeRefsParams {
     /// Token budget (default 6000). Not with `definition`.
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// `callers` only: keep rows of these resolutions, comma-separated.
+    #[serde(default)]
+    pub resolution: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -64,6 +67,10 @@ pub struct FindReferencesParams {
     /// because the underlying Fjall keys are content-addressed.
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// The `resolution` values a row must have to be listed; every row when `None`.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub resolution: Option<ResolutionFilter>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -93,6 +100,10 @@ pub struct FindCallersParams {
     /// because the underlying Fjall keys are content-addressed.
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// The `resolution` values a row must have to be listed; every row when `None`.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub resolution: Option<ResolutionFilter>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -137,11 +148,12 @@ pub(crate) struct ReferenceHit {
     /// The name called. Written only when it is not the name asked for (a `substring` match, or an
     /// alias the definition is called by); [`ReferenceHit::named`] clears it otherwise.
     pub callee: String,
-    /// With a pinned definition: `true` when scope / import resolution proved this site binds to
-    /// it, `false` when resolution checked the site and did not. Absent when nothing was checked:
-    /// no definition was pinned, resolution has no facts about the definition (`resolution` on the
-    /// response says why), or the site's file lies past the probe cap.
-    pub resolved: Option<bool>,
+    /// How the site was resolved ([`Resolution`]).
+    pub resolution: Resolution,
+    /// `resolution` is the page's `resolution_default`, so the row leaves it out. Set by
+    /// [`crate::engine::refs::resolution::finish_page`].
+    #[schemars(skip)]
+    pub elide_resolution: bool,
     /// Another call site of the same callee is on this line of this file, in the whole result and
     /// not only this page, so the line alone does not tell them apart and `column` is written. Set
     /// by [`crate::engine::refs::calls_scan::mark_shared_lines`].
@@ -189,8 +201,8 @@ impl crate::engine::by_path::Located for ReferenceHit {
         if !self.callee.is_empty() {
             map.serialize_entry("callee", &self.callee)?;
         }
-        if let Some(resolved) = self.resolved {
-            map.serialize_entry("resolved", &resolved)?;
+        if !self.elide_resolution {
+            map.serialize_entry("resolution", &self.resolution)?;
         }
         if self.stale {
             map.serialize_entry("stale", &true)?;
@@ -206,14 +218,101 @@ impl Serialize for ReferenceHit {
     }
 }
 
-/// The `resolution` of a `code_refs` name scan: hits are matched by name and nothing binds them to
-/// one definition.
-pub(crate) const NAME_ONLY: &str = "name only: pass `path` to check each hit against that file's definition";
+/// How a `code_refs` call site was resolved (ADR-0047 decision 6), computed at query time from the
+/// resolution facts already indexed. The order is the order `resolution_counts` lists them in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Resolution {
+    /// Binds to a definition in the same file.
+    SameFile,
+    /// Binds through an import to a definition in another file.
+    Imported,
+    /// Binds through scope resolution to a local binding that is not an indexed definition: a
+    /// variable, a parameter, or an import whose target is not indexed.
+    ScopeResolved,
+    /// Checked against the pinned definition; binds to another one.
+    Elsewhere,
+    /// No resolution facts for the site: matched by name alone.
+    NameOnly,
+    /// No resolution facts for the site, and the index defines no symbol of the name.
+    External,
+}
+
+impl Resolution {
+    /// Every value, in [`Resolution`] order.
+    pub(crate) const ALL: [Self; 6] = [
+        Self::SameFile,
+        Self::Imported,
+        Self::ScopeResolved,
+        Self::Elsewhere,
+        Self::NameOnly,
+        Self::External,
+    ];
+
+    /// The value as it is written.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::SameFile => "same_file",
+            Self::Imported => "imported",
+            Self::ScopeResolved => "scope_resolved",
+            Self::Elsewhere => "elsewhere",
+            Self::NameOnly => "name_only",
+            Self::External => "external",
+        }
+    }
+
+    fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+/// The `resolution` filter of `code_refs`: the values a row must have to be listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResolutionFilter(u8);
+
+impl ResolutionFilter {
+    /// Parse a comma-separated list of [`Resolution`] values; the error names the value refused and
+    /// the accepted ones.
+    pub(crate) fn parse(raw: &str) -> Result<Self, String> {
+        let mut bits = 0u8;
+        for value in raw.split(',').map(str::trim) {
+            let Some(resolution) = Resolution::ALL.into_iter().find(|r| r.as_str() == value) else {
+                let accepted: Vec<&str> = Resolution::ALL.iter().map(|r| r.as_str()).collect();
+                return Err(format!(
+                    "unknown resolution `{value}`; expected one or more of {}, comma-separated",
+                    accepted.join(", ")
+                ));
+            };
+            bits |= resolution.bit();
+        }
+        Ok(Self(bits))
+    }
+
+    /// Whether a row of `resolution` is listed.
+    pub(crate) fn admits(self, resolution: Resolution) -> bool {
+        self.0 & resolution.bit() != 0
+    }
+}
+
+/// Rows per [`Resolution`] value on a page, before the `resolution` filter.
+pub(crate) type ResolutionCounts = std::collections::BTreeMap<Resolution, u32>;
+
+/// Whether a page's `resolution_default` goes unwritten: there is none (no rows), or it is
+/// `name_only`, which a page without the field means. A page in a language with no resolution
+/// engine is all `name_only`, so it pays nothing for the grades.
+fn default_is_implied(default: &Option<Resolution>) -> bool {
+    matches!(default, None | Some(Resolution::NameOnly))
+}
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct FindReferencesResponse {
-    /// Always [`NAME_ONLY`]: no hit was checked against a definition.
-    pub resolution: &'static str,
+    /// The most common `resolution` on the page; a row leaves its own out when it is this one.
+    /// Unwritten when it is `name_only`.
+    #[serde(skip_serializing_if = "default_is_implied")]
+    pub resolution_default: Option<Resolution>,
+    /// Rows per `resolution` on the page, before the filter; absent when every row is the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_counts: Option<ResolutionCounts>,
     /// Matches across every page. A lower bound when `truncated`; an upper bound when a daemon that
     /// predates exact matching answered, whose substring hits are dropped page by page.
     pub total: u32,
@@ -244,11 +343,17 @@ pub(crate) struct FindReferencesResponse {
 pub(crate) struct FindCallersResponse {
     /// The definition the callers were pinned to.
     pub definition: DefinitionView,
-    /// Why no hit carries `resolved`: `unsupported for <language>`, `no resolution facts for this
-    /// file`, `no resolution facts for this definition` (the file has facts and none names it), or
-    /// that the index's resolve pass has not finished.
+    /// Why no hit was checked against the definition: `unsupported for <language>`, `no resolution
+    /// facts for this file`, `no resolution facts for this definition` (the file has facts and none
+    /// names it), or that the index's resolve pass has not finished.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolution: Option<String>,
+    pub resolution_note: Option<String>,
+    /// As on a name scan: the most common `resolution` on the page, unwritten when `name_only`.
+    #[serde(skip_serializing_if = "default_is_implied")]
+    pub resolution_default: Option<Resolution>,
+    /// As on a name scan: rows per `resolution` on the page, before the filter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_counts: Option<ResolutionCounts>,
     /// Hits proven to bind to `definition`. Absent, not 0, when resolution did not run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_total: Option<u32>,
@@ -309,7 +414,7 @@ pub(crate) struct GotoDefinitionResponse {
     /// Why there is no `definition`, when the file's language has no scope resolution:
     /// `unsupported for <language>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolution: Option<String>,
+    pub resolution_note: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -474,17 +579,18 @@ mod tests {
             line: 9,
             column: 2,
             callee: "f".to_string(),
-            resolved: Some(false),
+            resolution: Resolution::Elsewhere,
+            elide_resolution: false,
             shared_line: false,
             stale: false,
         };
         assert_eq!(
             serde_json::to_value(&call).unwrap(),
-            json!({ "line": 9, "callee": "f", "resolved": false })
+            json!({ "line": 9, "callee": "f", "resolution": "elsewhere" })
         );
         assert_eq!(
             serde_json::to_value(call.named("f")).unwrap(),
-            json!({ "line": 9, "resolved": false }),
+            json!({ "line": 9, "resolution": "elsewhere" }),
             "the callee asked for is not repeated"
         );
     }
@@ -508,10 +614,33 @@ mod tests {
             line: 0,
             column: 0,
             callee: "f".to_string(),
-            resolved: None,
+            resolution: Resolution::NameOnly,
+            elide_resolution: true,
             shared_line: false,
             stale: false,
         };
         assert_eq!(serde_json::to_value(&call).unwrap(), json!({ "callee": "f" }));
+    }
+
+    #[test]
+    fn the_resolution_filter_takes_a_comma_list_and_names_a_bad_value() {
+        let filter = ResolutionFilter::parse("same_file, imported").unwrap();
+        assert!(filter.admits(Resolution::SameFile) && filter.admits(Resolution::Imported));
+        assert!(!filter.admits(Resolution::NameOnly));
+        let error = ResolutionFilter::parse("same_file,proven").unwrap_err();
+        assert!(
+            error.contains("`proven`") && error.contains("scope_resolved"),
+            "{error}"
+        );
+        assert!(ResolutionFilter::parse("").is_err(), "an empty list admits nothing");
+    }
+
+    #[test]
+    fn resolution_counts_are_written_by_value_name() {
+        let counts = ResolutionCounts::from([(Resolution::NameOnly, 3), (Resolution::SameFile, 1)]);
+        assert_eq!(
+            serde_json::to_value(&counts).unwrap(),
+            json!({ "same_file": 1, "name_only": 3 })
+        );
     }
 }

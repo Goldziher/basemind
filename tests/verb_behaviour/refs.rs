@@ -216,7 +216,7 @@ async fn a_supported_language_without_facts_is_not_reported_unsupported() {
     .await;
     assert!(definition.get("definition").is_none(), "{definition}");
     assert_eq!(
-        definition["resolution"], "no resolution facts for this file",
+        definition["resolution_note"], "no resolution facts for this file",
         "{definition}"
     );
 }
@@ -231,7 +231,7 @@ async fn an_index_whose_resolve_pass_did_not_finish_says_so() {
 
     let finished = call(&client, "code_refs", callers.clone()).await;
     assert_eq!(
-        finished["resolution"], "no resolution facts for this file",
+        finished["resolution_note"], "no resolution facts for this file",
         "{finished}"
     );
 
@@ -247,7 +247,7 @@ async fn an_index_whose_resolve_pass_did_not_finish_says_so() {
     for arguments in [definition, callers] {
         let body = call(&client, "code_refs", arguments).await;
         assert_eq!(
-            body["resolution"],
+            body["resolution_note"],
             "resolution has not finished for this index; a running scan will complete it, otherwise run \
              `index_rescan`",
             "{body}"
@@ -261,7 +261,7 @@ async fn an_index_whose_resolve_pass_did_not_finish_says_so() {
     )
     .await;
     assert_eq!(
-        rust["resolution"], "unsupported for rust",
+        rust["resolution_note"], "unsupported for rust",
         "a language without an engine: {rust}"
     );
 }
@@ -298,12 +298,12 @@ async fn code_refs_importers_treat_a_hyphenated_package_as_another_package() {
     assert_eq!(dom["paths"], json!(["web/dom.tsx"]), "{dom}");
 }
 
-/// `resolved: false` says resolution looked at a call site and did not bind it to the pinned
-/// definition. When resolution has no facts about that definition it looked at nothing, and the hits
-/// stay unannotated.
+/// `elsewhere` says resolution looked at a call site and found it binds to another definition. When
+/// resolution has no facts about the pinned definition it looked at nothing, and the hits stay
+/// `name_only`.
 #[cfg(feature = "code-intel-js")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_refs_leaves_hits_unannotated_when_resolution_knows_nothing_of_the_definition() {
+async fn code_refs_grades_hits_name_only_when_resolution_knows_nothing_of_the_definition() {
     let (_dir, client) = started_with(&[
         (
             "util.ts",
@@ -315,15 +315,23 @@ async fn code_refs_leaves_hits_unannotated_when_resolution_knows_nothing_of_the_
 
     let proven = call(&client, "code_refs", json!({ "name": "target", "path": "util.ts" })).await;
     assert_eq!(proven["resolved_total"], 1, "resolution covers util.ts: {proven}");
-    assert_eq!(super::rows(&proven["hits"])[0]["resolved"], true, "{proven}");
+    assert_eq!(proven["resolution_default"], "same_file", "{proven}");
+    assert!(
+        super::rows(&proven["hits"])[0].get("resolution").is_none(),
+        "a row that is the default leaves it out: {proven}"
+    );
 
     let unknown = call(&client, "code_refs", json!({ "name": "lonely", "path": "util.ts" })).await;
     let hits = super::rows(&unknown["hits"]);
     assert_eq!(hits.len(), 1, "the name scan still reports other.ts: {unknown}");
     assert_eq!(hits[0]["path"], "other.ts", "{unknown}");
     assert!(
-        hits[0].get("resolved").is_none(),
-        "nothing was proven or disproven about this site: {unknown}"
+        unknown.get("resolution_default").is_none() && hits[0].get("resolution").is_none(),
+        "nothing was proven or disproven about this site: it is `name_only`, which goes unwritten: {unknown}"
+    );
+    assert_eq!(
+        unknown["resolution_note"], "no resolution facts for this definition",
+        "{unknown}"
     );
     assert!(
         unknown.get("resolved_total").is_none(),

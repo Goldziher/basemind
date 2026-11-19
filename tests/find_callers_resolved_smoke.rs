@@ -97,6 +97,14 @@ fn hit_rows(body: &Value) -> Vec<Value> {
             rows.as_array().expect("a file's hits").iter().map(move |row| {
                 let mut row = row.clone();
                 row["path"] = json!(path);
+                // A row leaves out a resolution that is the page's default, itself unwritten
+                // when it is `name_only`.
+                if row.get("resolution").is_none() {
+                    row["resolution"] = body
+                        .get("resolution_default")
+                        .cloned()
+                        .unwrap_or_else(|| json!("name_only"));
+                }
                 row
             })
         })
@@ -149,7 +157,7 @@ async fn find_callers_flags_scope_resolved_hits_without_dropping_same_named_ones
     let hits = hit_rows(&body);
     let proven: Vec<&str> = hits
         .iter()
-        .filter(|h| h.get("resolved").and_then(Value::as_bool) == Some(true))
+        .filter(|h| h["resolution"] == "same_file")
         .filter_map(|h| h.get("path").and_then(Value::as_str))
         .collect();
     assert_eq!(
@@ -159,13 +167,13 @@ async fn find_callers_flags_scope_resolved_hits_without_dropping_same_named_ones
     );
     let unproven: Vec<&str> = hits
         .iter()
-        .filter(|h| h.get("resolved").and_then(Value::as_bool) == Some(false))
+        .filter(|h| h["resolution"] == "elsewhere")
         .filter_map(|h| h.get("path").and_then(Value::as_str))
         .collect();
     assert_eq!(
         unproven,
         vec!["other.ts"],
-        "the same-name site is surfaced as unproven so a caller can filter it, not omitted: {body}"
+        "the same-name site binds to its own definition and says so, so a caller can filter it: {body}"
     );
 
     service.cancel().await.expect("shutdown");

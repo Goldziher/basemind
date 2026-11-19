@@ -88,7 +88,7 @@ pub(crate) struct CallScanPage {
     /// re-anchor `next_cursor` to the last KEPT hit, not the last scanned one.
     pub hit_keys: Vec<Vec<u8>>,
     /// Parallel to `hits`: each hit's call-site start byte. `find_callers` probes it against the
-    /// resolved call-site set to annotate `ReferenceHit::resolved` without re-deriving the offset.
+    /// resolved call-site set to set `ReferenceHit::resolution` without re-deriving the offset.
     pub hit_starts: Vec<u32>,
 }
 
@@ -299,7 +299,8 @@ pub(crate) fn scan_calls_examining(
                 line,
                 column,
                 callee,
-                resolved: None,
+                resolution: crate::engine::types::refs::Resolution::NameOnly,
+                elide_resolution: false,
                 shared_line: false,
                 stale: false,
             });

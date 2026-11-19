@@ -445,12 +445,12 @@ async fn code_refs_with_a_path_pins_the_definition_and_is_exact_too() {
 }
 
 /// Where a language has no scope / import resolution, a `resolved_total: 0` would read as "nothing
-/// binds to this definition". The response says resolution did not run, and tells a language with
+/// binds to this definition". The response grades every hit `name_only`, says resolution did not run, and tells a language with
 /// no resolution engine (rust) from a file of a supported one that bound nothing (the ruby fixture):
 /// the scan writes resolution facts only for a file that has some, so their absence alone does not
 /// say which.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_refs_says_why_no_hit_is_marked_resolved() {
+async fn code_refs_says_why_no_hit_was_checked() {
     let (_dir, client) = started().await;
 
     let rust = call(
@@ -459,10 +459,10 @@ async fn code_refs_says_why_no_hit_is_marked_resolved() {
         json!({ "name": "file_outline", "path": "src/outline.rs" }),
     )
     .await;
-    assert_eq!(rust["resolution"], "unsupported for rust", "{rust}");
+    assert_eq!(rust["resolution_note"], "unsupported for rust", "{rust}");
 
     let ruby = call(&client, "code_refs", json!({ "name": "helper", "path": "worker.rb" })).await;
-    assert_eq!(ruby["resolution"], "no resolution facts for this file", "{ruby}");
+    assert_eq!(ruby["resolution_note"], "no resolution facts for this file", "{ruby}");
 
     for body in [&rust, &ruby] {
         assert!(
@@ -470,7 +470,11 @@ async fn code_refs_says_why_no_hit_is_marked_resolved() {
             "a count that was never computed must not be reported as 0: {body}"
         );
         assert!(
-            rows(&body["hits"]).iter().all(|hit| hit.get("resolved").is_none()),
+            body.get("resolution_default").is_none() && body.get("resolution_counts").is_none(),
+            "every row is `name_only`, the default a page leaves unwritten: {body}"
+        );
+        assert!(
+            rows(&body["hits"]).iter().all(|hit| hit.get("resolution").is_none()),
             "{body}"
         );
     }
@@ -572,7 +576,7 @@ async fn code_refs_definition_takes_and_returns_one_based_positions() {
     assert_eq!(unresolved["column"], 9, "{unresolved}");
     assert!(unresolved.get("definition").is_none(), "{unresolved}");
     assert_eq!(
-        unresolved["resolution"], "unsupported for rust",
+        unresolved["resolution_note"], "unsupported for rust",
         "no binding is reported as resolution not having run, not as a silent miss: {unresolved}"
     );
 }
