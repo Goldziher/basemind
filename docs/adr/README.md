@@ -122,7 +122,7 @@ them.
 | [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Accepted (amended by ADR-0051) |
 | [0032](0032-layering-as-built.md) | Library crate layering as built — module table, schema validation, open edges | Accepted (amended by ADR-0039) |
 | [0033](0033-store-evidence-collection-and-recovery-rules.md) | Store rules after the sixth storage review — evidence, collection, recovery | Accepted |
-| [0034](0034-lean-locating-rows.md) | Lean rows for the locating tools | Accepted (amended by ADR-0052) |
+| [0034](0034-lean-locating-rows.md) | Lean rows for the locating tools | Accepted (amended by ADR-0052, ADR-0053) |
 | [0035](0035-unreleased-plugin-surface-marker.md) | A dated marker for plugin content ahead of its release | Accepted |
 | [0036](0036-group-index-as-built.md) | Group index as built — no rollout switch, the group lock, read-only opens | Accepted (amended by ADR-0041, ADR-0043) |
 | [0037](0037-retrieval-store-amendments.md) | Retrieval store amendments — liveness list, store version, group location, model identity | Accepted |
@@ -140,4 +140,5 @@ them.
 | [0049](0049-reading-outside-the-repository.md) | Reading outside the repository — session transcripts and dependency documentation | Proposed |
 | [0050](0050-one-engine-configuration-per-process.md) | One engine configuration per process, and no environment below the root layer | Proposed |
 | [0051](0051-value-gate-for-the-analysis-kinds-and-failed-baselines.md) | Value gate for the analysis kinds, failed baselines and the binary's identity | Proposed |
-| [0052](0052-rows-as-the-shell-prints-them.md) | Locating rows as the shell prints them | Proposed |
+| [0052](0052-rows-as-the-shell-prints-them.md) | Locating rows as the shell prints them | Proposed (amended by ADR-0053) |
+| [0053](0053-text-answers-encoded-per-tool.md) | Text answers encoded per tool, by measured tokens | Proposed |
