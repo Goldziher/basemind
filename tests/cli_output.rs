@@ -114,3 +114,59 @@ fn max_tokens_reaches_the_tool_and_flags_the_budget() {
         "a 1-token budget must trim and flag the list:\n{out}"
     );
 }
+
+/// Human output writes a row a line, under its file and symbol for `code grep` and with each
+/// commit's details once for `git blame`: a joined row list or a JSON blob would pass a substring
+/// check, so each answer is checked line by line. Shas vary per run and are masked as `<sha>`.
+#[test]
+fn human_output_writes_a_row_a_line() {
+    let dir = build_repo();
+    let root = dir.path();
+    let lines = |args: &[&str]| -> Vec<String> {
+        stdout(&run(root, args))
+            .lines()
+            .map(|line| {
+                line.split(' ')
+                    .map(|word| {
+                        let hex = word.len() == 12 && word.bytes().all(|b| b.is_ascii_hexdigit());
+                        if hex { "<sha>" } else { word }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    };
+
+    assert_eq!(
+        lines(&["code", "symbols", "beta"]),
+        ["results:", "  b.rs:1: pub fn beta()"],
+    );
+    assert_eq!(
+        lines(&["code", "grep", "let _"]),
+        ["hits:", "  a.rs", "    alpha", "      3:     let _ = s;"],
+    );
+    assert_eq!(
+        lines(&["git", "log"]),
+        [
+            "commits:",
+            "  <sha> init",
+            "files:",
+            "  <sha>",
+            "    a.rs  added",
+            "    b.rs  added",
+            "    c.rs  added",
+        ],
+    );
+    let blame = lines(&["git", "blame", "a.rs"]);
+    assert_eq!(blame[..3], ["hunks:", "  1-4 <sha>", "commits:"], "{blame:?}");
+    assert_eq!(
+        blame[3].split_whitespace().collect::<Vec<_>>(),
+        ["author", "time", "summary"],
+        "{blame:?}"
+    );
+    assert!(
+        blame[4].starts_with("  <sha>  t  ") && blame[4].ends_with("  init"),
+        "{blame:?}"
+    );
+    assert_eq!(blame.len(), 5, "{blame:?}");
+}

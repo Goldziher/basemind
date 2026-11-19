@@ -242,17 +242,26 @@ fn render_human_counting(tool_name: &str, value: &Value, out: &mut impl Write, c
                     continue;
                 }
                 match v {
-                    Value::Array(items) if !items.is_empty() && matches!(key.as_str(), "files" | "paths") => {
+                    // A row is a string (`"<path>:<line>: <signature>"`, `"<sha> <summary>"`): one per
+                    // line, since a row's own text holds the `, ` a joined list would separate them by.
+                    Value::Array(items) if !items.is_empty() && items.iter().all(Value::is_string) => {
                         writeln!(out, "{key}:")?;
-                        for item in items {
-                            writeln!(out, "  {}", scalar_to_string(item))?;
-                        }
+                        write_tree(v, 1, out, cut)?;
                     }
                     Value::Array(items) if !items.is_empty() => {
                         let joined: Vec<String> = items.iter().map(scalar_to_string).collect();
                         writeln!(out, "{key}: {}", joined.join(", "))?;
                     }
                     Value::Array(_) => writeln!(out, "{key}: (empty)")?,
+                    // `git_blame` `commits`: each sha's author, time and summary.
+                    Value::Object(entries) if key == "commits" && is_record_map(entries) => {
+                        writeln!(out, "{key}:")?;
+                        render_records(entries, out, cut)?;
+                    }
+                    Value::Object(entries) if !entries.is_empty() => {
+                        writeln!(out, "{key}:")?;
+                        write_tree(v, 1, out, cut)?;
+                    }
                     Value::String(s) if s.contains('\n') => {
                         writeln!(out, "{key}:")?;
                         write_raw(out, s)?;
@@ -323,6 +332,84 @@ fn ungrouped(value: &Value) -> Option<Value> {
     Some(Value::Object(out))
 }
 
+/// Write a nested answer one entry per line, indented two spaces a level: a list of rows one row a
+/// line; a map of scalars as aligned `key  value` lines (`find_files --min-lines`, a commit's files);
+/// any other map as each key with its value indented under it (`code_grep` hits by file and symbol,
+/// `git_log` files by commit, importers by depth). The `""` key a grep row outside every symbol is
+/// grouped under is shown as `(outside any symbol)`.
+fn write_tree(value: &Value, depth: usize, out: &mut impl Write, cut: &mut Truncated) -> Result<()> {
+    let pad = "  ".repeat(depth);
+    match value {
+        Value::Array(items) => {
+            for item in items.iter().take(MAX_HUMAN_ITEMS) {
+                match item {
+                    Value::Array(_) | Value::Object(_) => write_tree(item, depth, out, cut)?,
+                    _ => writeln!(out, "{pad}{}", scalar_to_string(item).replace('\n', " "))?,
+                }
+            }
+            if items.len() > MAX_HUMAN_ITEMS {
+                writeln!(out, "{pad}… and {} more", items.len() - MAX_HUMAN_ITEMS)?;
+            }
+        }
+        Value::Object(map) if map.values().all(|v| !v.is_array() && !v.is_object()) => {
+            let width = map.keys().map(|k| k.chars().count()).max().unwrap_or(0);
+            for (key, v) in map {
+                writeln!(out, "{pad}{key:<width$}  {}", scalar_to_string(v))?;
+            }
+        }
+        Value::Object(map) => {
+            for (key, v) in map {
+                let label = if key.is_empty() { "(outside any symbol)" } else { key };
+                match v {
+                    Value::Array(_) | Value::Object(_) => {
+                        writeln!(out, "{pad}{label}")?;
+                        write_tree(v, depth + 1, out, cut)?;
+                    }
+                    _ => writeln!(out, "{pad}{label}: {}", scalar_to_string(v))?,
+                }
+            }
+        }
+        other => writeln!(out, "{pad}{}", scalar_to_string(other))?,
+    }
+    Ok(())
+}
+
+/// A map of records as a table, the map key first.
+fn render_records(map: &serde_json::Map<String, Value>, out: &mut impl Write, cut: &mut Truncated) -> Result<()> {
+    let rows: Vec<Value> = map
+        .iter()
+        .map(|(key, record)| {
+            let mut row = serde_json::Map::new();
+            row.insert(String::new(), Value::String(key.clone()));
+            row.extend(
+                record
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            );
+            Value::Object(row)
+        })
+        .collect();
+    render_table("", &rows, out, cut)
+}
+
+/// A non-empty map whose values are objects of scalars all with the same fields: rows of a table.
+fn is_record_map(map: &serde_json::Map<String, Value>) -> bool {
+    let mut records = map.values().map(Value::as_object);
+    let Some(Some(first)) = records.next() else {
+        return false;
+    };
+    let scalars = |record: &serde_json::Map<String, Value>| record.values().all(|v| !v.is_array() && !v.is_object());
+    !first.is_empty()
+        && scalars(first)
+        && records.all(|record| {
+            record.is_some_and(|record| {
+                scalars(record) && record.len() == first.len() && record.keys().all(|k| first.contains_key(k))
+            })
+        })
+}
+
 /// Write `text` verbatim, ensuring it ends with exactly one newline.
 fn write_raw(out: &mut impl Write, text: &str) -> Result<()> {
     out.write_all(text.as_bytes())?;
@@ -342,7 +429,7 @@ fn render_grep_truncation(tool_name: &str, map: &serde_json::Map<String, Value>,
     if tool_name != "code_grep" {
         return Ok(());
     }
-    let shown = map.get("hits").and_then(Value::as_array).map_or(0, Vec::len);
+    let shown = map.get("hits").map_or(0, grep_matches);
     let total = map.get("total").and_then(Value::as_u64).unwrap_or(0);
     if map.get("truncated").and_then(Value::as_bool) == Some(true) {
         writeln!(
@@ -358,6 +445,25 @@ fn render_grep_truncation(tool_name: &str, map: &serde_json::Map<String, Value>,
         )?;
     }
     Ok(())
+}
+
+/// The matches a `code_grep` `hits` map lists: a row `"<line>: <text>"` is one, `"<line>:<col>,<col>:
+/// <text>"` one per column, a context row `"<line>- <text>"` none.
+fn grep_matches(hits: &Value) -> u64 {
+    match hits {
+        Value::Object(groups) => groups.values().map(grep_matches).sum(),
+        Value::Array(rows) => rows.iter().map(grep_matches).sum(),
+        Value::String(row) => {
+            let head = row.split_once(' ').map_or(row.as_str(), |(head, _)| head);
+            match head.strip_suffix(':') {
+                Some(position) => position
+                    .split_once(':')
+                    .map_or(1, |(_, columns)| columns.split(',').count() as u64),
+                None => 0,
+            }
+        }
+        _ => 0,
+    }
 }
 
 /// Render an array of objects as an aligned table. Columns are the union of keys
@@ -403,14 +509,14 @@ fn render_table(tool_name: &str, items: &[Value], out: &mut impl Write, cut: &mu
         .enumerate()
         .map(|(i, c)| format!("{:<width$}", c, width = widths[i]))
         .collect();
-    writeln!(out, "  {}", header.join("  "))?;
+    writeln!(out, "  {}", header.join("  ").trim_end())?;
     for row in &rows {
         let cells: Vec<String> = row
             .iter()
             .enumerate()
             .map(|(i, c)| format!("{:<width$}", c, width = widths[i]))
             .collect();
-        writeln!(out, "  {}", cells.join("  "))?;
+        writeln!(out, "  {}", cells.join("  ").trim_end())?;
     }
     if items.len() > display {
         writeln!(out, "  … and {} more", items.len() - display)?;
@@ -422,7 +528,7 @@ fn render_table(tool_name: &str, items: &[Value], out: &mut impl Write, cut: &mu
 /// when it handled the items, `None` to fall through to the generic table.
 fn render_special(tool_name: &str, items: &[Value], out: &mut impl Write, cut: &mut Truncated) -> Result<Option<()>> {
     match tool_name {
-        "code_outline" | "code_symbols" => {
+        "code_outline" => {
             for item in items.iter().take(MAX_HUMAN_ITEMS) {
                 let Some(obj) = item.as_object() else {
                     return Ok(None);
@@ -520,11 +626,11 @@ mod tests {
         let out = render_grep(&json!({
             "total": 101,
             "next_cursor": "b3BhcXVl",
-            "hits": {"a.rs": [{"line": 1, "text": "OptimizationStatus"}]},
+            "hits": {"a.rs": {"run": ["1: OptimizationStatus", "2- context", "3:5,9: a, OptimizationStatus"]}},
         }));
         assert!(
-            out.contains("MORE MATCHES — showing 1 of 101"),
-            "must name the withheld count: {out}"
+            out.contains("MORE MATCHES — showing 3 of 101"),
+            "must count the matches listed, not the files or context rows: {out}"
         );
         assert!(
             out.contains("a.rs") && out.contains("OptimizationStatus"),
@@ -537,7 +643,7 @@ mod tests {
             "truncated": true,
             "truncated_reason": "byte_budget",
             "next_cursor": "b3BhcXVl",
-            "hits": {"a.rs": [{"line": 1, "text": "OptimizationStatus"}]},
+            "hits": {"a.rs": {"": ["1: OptimizationStatus"]}},
         }));
         assert!(unread.contains("TRUNCATED"), "unread files must be shouted: {unread}");
     }
@@ -545,8 +651,7 @@ mod tests {
     #[test]
     fn a_complete_grep_result_carries_no_warning() {
         let out = render_grep(&json!({
-            "total": 1,
-            "hits": {"a.rs": [{"line": 1, "text": "OptimizationStatus"}]},
+            "hits": {"a.rs": {"": ["1: OptimizationStatus"]}},
         }));
         assert!(
             !out.contains("TRUNCATED") && !out.contains("MORE MATCHES"),
@@ -619,14 +724,14 @@ mod tests {
 
     #[test]
     fn toon_responses_render_end_to_end() {
-        let data = json!({"total": 1, "results": [{"path": "a.rs", "name": "alpha"}], "elapsed_us": 9});
+        let data = json!({"total": 1, "symbols": [{"line": 1, "name": "alpha"}], "elapsed_us": 9});
         let mut result = rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(
             crate::mcp::toon::encode(&data),
         )]);
         result.structured_content = Some(data);
-        let (out, err) = emit_capture("code_symbols", &result, false);
+        let (out, err) = emit_capture("code_outline", &result, false);
         assert!(
-            out.contains("results[1]{name,path}:"),
+            out.contains("symbols[1]{line,name}:"),
             "human mode renders the TOON table: {out}"
         );
         assert!(
@@ -634,9 +739,9 @@ mod tests {
             "timing is lifted out of the payload: {out}"
         );
         assert!(err.contains("query"), "{err}");
-        let (json_out, _) = emit_capture("code_symbols", &result, true);
+        let (json_out, _) = emit_capture("code_outline", &result, true);
         let parsed: serde_json::Value = serde_json::from_str(&json_out).expect("--json stays JSON with toon");
-        assert_eq!(parsed["results"][0]["name"], "alpha");
+        assert_eq!(parsed["symbols"][0]["name"], "alpha");
         assert_eq!(parsed["startup_us"], 1_500);
     }
 
@@ -654,6 +759,88 @@ mod tests {
             rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(r#"{"total": 2}"#.to_string())]);
         let (out, _) = emit_capture("find_files", &result, false);
         assert!(out.contains("total: 2"), "{out}");
+    }
+
+    fn render_as(tool: &str, value: &serde_json::Value) -> String {
+        let mut buf: Vec<u8> = Vec::new();
+        render_human(tool, value, &mut buf).expect("render");
+        String::from_utf8(buf).expect("utf8")
+    }
+
+    #[test]
+    fn symbol_rows_print_one_per_line() {
+        let out = render_as(
+            "code_symbols",
+            &json!({"results": ["src/a.rs:3: fn alpha(a: u8, b: u8)", "src/b.rs:9: struct Alpha"]}),
+        );
+        assert_eq!(
+            out, "results:\n  src/a.rs:3: fn alpha(a: u8, b: u8)\n  src/b.rs:9: struct Alpha\n",
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn grep_hits_print_under_their_file_and_symbol() {
+        let out = render_grep(&json!({
+            "hits": {
+                "src/a.rs": {"alpha": ["3: let x = 1;", "4- y"], "": ["9: x"]},
+                "src/b.rs": {"beta": ["1:2,7: x, x"]},
+            },
+        }));
+        assert_eq!(
+            out,
+            "hits:\n  src/a.rs\n    alpha\n      3: let x = 1;\n      4- y\n    (outside any symbol)\n      9: x\n  \
+             src/b.rs\n    beta\n      1:2,7: x, x\n",
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_recent_log_prints_a_commit_a_line_and_its_files_under_its_sha() {
+        let out = render_as(
+            "git_log",
+            &json!({
+                "commits": ["c48e32cbf7dd add gamma, delta", "0c2fe19c38a2 tune alpha"],
+                "files": {"c48e32cbf7dd": {"src/gamma.rs": "added"}, "0c2fe19c38a2": {"src/lib.rs": "modified"}},
+            }),
+        );
+        assert_eq!(
+            out,
+            "commits:\n  c48e32cbf7dd add gamma, delta\n  0c2fe19c38a2 tune alpha\nfiles:\n  c48e32cbf7dd\n    \
+             src/gamma.rs  added\n  0c2fe19c38a2\n    src/lib.rs  modified\n",
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn blame_prints_a_hunk_a_line_and_its_commits_as_a_table() {
+        let out = render_as(
+            "git_blame",
+            &json!({
+                "hunks": ["1-3 aaaaaaaaaaaa", "4 bbbbbbbbbbbb old.rs"],
+                "commits": {
+                    "aaaaaaaaaaaa": {"author": "ann", "time": 1, "summary": "add it"},
+                    "bbbbbbbbbbbb": {"author": "bob", "time": 2, "summary": "move it"},
+                },
+            }),
+        );
+        assert_eq!(
+            out,
+            "hunks:\n  1-3 aaaaaaaaaaaa\n  4 bbbbbbbbbbbb old.rs\ncommits:\n                author  time  summary\n  \
+             aaaaaaaaaaaa  ann     1     add it\n  bbbbbbbbbbbb  bob     2     move it\n",
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_path_to_count_map_prints_aligned_and_importers_print_by_depth() {
+        let out = render_as("find_files", &json!({"files": {"src/big.rs": 4000, "a.rs": 900}}));
+        assert_eq!(out, "files:\n  src/big.rs  4000\n  a.rs        900\n", "{out}");
+        let out = render_as(
+            "code_refs",
+            &json!({"by_depth": {"1": ["b.rs", "c.rs"]}, "deeper": true}),
+        );
+        assert_eq!(out, "by_depth:\n  1\n    b.rs\n    c.rs\ndeeper: true\n", "{out}");
     }
 
     #[test]
