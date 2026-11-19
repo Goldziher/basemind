@@ -1,5 +1,5 @@
-//! `basemind sessions` over synthetic transcripts (issue #128, ADR-0049): the counts per host, the
-//! containment of the transcript roots, and that no transcript text reaches the output.
+//! `basemind sessions` over synthetic transcripts (issue #128, ADR-0049): the counts per host,
+//! sessions started in a subdirectory, the containment of the transcript roots, and that no transcript text reaches the output.
 //!
 //! The fixtures under `tests/fixtures/sessions/` imitate the Claude Code and Codex record shapes;
 //! `{{REPO}}`, `{{WORKTREE}}` and `{{OTHER}}` are replaced with the temporary checkouts. Every
@@ -97,12 +97,34 @@ fn setup() -> Env {
         "claude/other-repo.jsonl",
         &claude.join(slug(&other)).join("s5.jsonl"),
     );
+    // A session started in a subdirectory of the checkout has a project directory of its own.
+    place(
+        &env,
+        &other,
+        "claude/subdir.jsonl",
+        &claude.join(slug(&env.repo.join("crates/core"))).join("s7.jsonl"),
+    );
+    // A sibling whose slug extends this checkout's is opened, then dropped by its cwd.
+    let sibling = base.join("repo-sibling");
+    place(
+        &env,
+        &sibling,
+        "claude/other-repo.jsonl",
+        &claude.join(slug(&sibling)).join("s10.jsonl"),
+    );
 
     let codex = env.home.join(".codex/sessions/2026/11/18");
     place(&env, &other, "codex/main.jsonl", &codex.join("rollout-a.jsonl"));
     place(&env, &other, "codex/other-repo.jsonl", &codex.join("rollout-b.jsonl"));
     place(&env, &other, "codex/pre-envelope.jsonl", &codex.join("rollout-c.jsonl"));
     place(&env, &other, "codex/unsupported.jsonl", &codex.join("rollout-d.jsonl"));
+    // A cwd that names the checkout lexically but resolves elsewhere.
+    place(
+        &env,
+        &env.repo.join("..").join("other"),
+        "codex/other-repo.jsonl",
+        &codex.join("rollout-h.jsonl"),
+    );
 
     // Escapes: a transcript symlinked to a file outside the root, and a day directory symlinked out.
     place(&env, &other, "claude/main.jsonl", &outside.join("escaped.jsonl"));
@@ -134,6 +156,7 @@ fn counts_each_host_and_keeps_to_this_repository() {
             (Host::Claude, "s2", "wt-feature"),
             (Host::Codex, "rollout-a", "main"),
             (Host::Claude, "s1", "main"),
+            (Host::Claude, "s7", "main"),
         ]
     );
 
@@ -204,7 +227,12 @@ fn counts_each_host_and_keeps_to_this_repository() {
     );
     assert_eq!(codex.format_version.as_deref(), Some("0.58.0"));
 
-    assert_eq!(report.aggregate.sessions, 3);
+    assert_eq!(
+        report.sessions[3].counts.search_tool, 1,
+        "the session started in crates/core"
+    );
+
+    assert_eq!(report.aggregate.sessions, 4);
     assert_eq!(report.aggregate.counts.basemind, 3);
 }
 
@@ -231,17 +259,18 @@ fn unknown_formats_are_reported_not_skipped() {
 fn other_repositories_and_escapes_are_not_counted() {
     let env = setup();
     let report = report(&env, None);
-    // The Claude transcript of another directory inside this repository's project directory, and the
-    // Codex rollout of another directory. The other repository's own Claude project directory is not
-    // walked, so it adds nothing.
-    assert_eq!(report.other_directories, 2);
+    // The Claude transcript of another directory inside this repository's project directory, the
+    // sibling `repo-sibling` whose project directory shares the slug prefix, the Codex rollout of
+    // another directory, and the one whose cwd climbs out with `..`. The other repository's own
+    // Claude project directory is not walked, so it adds nothing.
+    assert_eq!(report.other_directories, 4);
     #[cfg(unix)]
     {
         assert_eq!(
             report.refused, 2,
             "the symlinked transcript and the symlinked day directory"
         );
-        assert_eq!(report.sessions.len(), 3, "neither escape became a session");
+        assert_eq!(report.sessions.len(), 4, "neither escape became a session");
     }
 }
 
@@ -253,7 +282,7 @@ fn a_missing_root_is_reported_and_since_filters_by_day() {
     let states: Vec<(Host, &str)> = report.roots.iter().map(|r| (r.host, r.state.as_str())).collect();
     assert_eq!(states, vec![(Host::Claude, "present"), (Host::Codex, "missing")]);
     let ids: Vec<&str> = report.sessions.iter().map(|s| s.id.as_str()).collect();
-    assert_eq!(ids, vec!["s1"], "the worktree session ended on 2026-11-17");
+    assert_eq!(ids, vec!["s1", "s7"], "the worktree session ended on 2026-11-17");
 }
 
 #[test]
@@ -266,7 +295,7 @@ fn a_repository_configuration_cannot_move_the_roots() {
     .expect("write config");
     let report = report(&env, None);
     assert!(report.roots.iter().all(|r| r.state == "present"));
-    assert_eq!(report.sessions.len(), 3);
+    assert_eq!(report.sessions.len(), 4);
 }
 
 #[cfg(unix)]
@@ -299,7 +328,7 @@ fn the_command_prints_counts_and_never_transcript_text() {
     };
 
     let json: serde_json::Value = serde_json::from_str(&run(true)).expect("JSON report");
-    assert_eq!(json["aggregate"]["sessions"], 3);
+    assert_eq!(json["aggregate"]["sessions"], 4);
     assert_eq!(json["sessions"][2]["counts"]["edits_without_read"], 1);
     assert_eq!(json["sessions"][2]["repeated_reads"][0]["path"], "src/main.rs");
     assert_eq!(json["unsupported"].as_array().map(Vec::len), Some(2));

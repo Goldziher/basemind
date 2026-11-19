@@ -1,5 +1,6 @@
 //! Claude Code transcripts: `~/.claude/projects/<slug>/<session>.jsonl`, where `<slug>` is the
-//! session's working directory with every character outside `[A-Za-z0-9]` replaced by `-`.
+//! session's working directory with every character outside `[A-Za-z0-9]` replaced by `-`. A session
+//! started in a subdirectory of a checkout has its own slug, which extends the checkout's with `-`.
 //!
 //! Each line is a JSON record. The ones read here carry `cwd`, `version` and `timestamp`; an
 //! `assistant` record's `message` holds `tool_use` blocks (`id`, `name`, `input`) and `usage`
@@ -89,8 +90,17 @@ impl TranscriptParser for Claude {
                 }
             }
         }
-        for slug in &slugs {
-            if let Some(dir) = contain::child_dir(root, slug, found) {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return;
+        };
+        let mut projects: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| slugs.iter().any(|slug| in_checkout(name, slug)))
+            .collect();
+        projects.sort();
+        for project in &projects {
+            if let Some(dir) = contain::child_dir(root, project, found) {
                 contain::walk(root, &dir, 0, found);
             }
         }
@@ -167,6 +177,14 @@ impl TranscriptParser for Claude {
             },
         }
     }
+}
+
+/// Whether project directory `name` may hold sessions of the checkout whose slug is `slug`: the
+/// checkout itself or a directory below it. The slug is lossy (`a-b` and `a/b` share one), so a
+/// sibling such as `repo-old` passes too; its transcripts are dropped by their recorded `cwd`.
+fn in_checkout(name: &str, slug: &str) -> bool {
+    name.strip_prefix(slug)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
 }
 
 fn record_message(session: &mut Parsed, message: Message, tokens: &mut AHashMap<String, (u64, Vec<Family>)>) {
@@ -251,6 +269,15 @@ mod tests {
             slug(Path::new("/Users/a/.worktrees/basemind/feat-x")),
             "-Users-a--worktrees-basemind-feat-x"
         );
+    }
+
+    #[test]
+    fn a_project_directory_matches_its_checkout_and_the_directories_below() {
+        let checkout = slug(Path::new("/w/repo"));
+        assert!(in_checkout("-w-repo", &checkout));
+        assert!(in_checkout("-w-repo-crates-core", &checkout));
+        assert!(!in_checkout("-w-repository", &checkout));
+        assert!(!in_checkout("-w", &checkout));
     }
 
     #[test]

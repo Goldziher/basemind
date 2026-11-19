@@ -3,7 +3,7 @@
 //!
 //! Each host has a [`TranscriptParser`]: [`claude::Claude`] reads `~/.claude/projects/<slug>/*.jsonl`
 //! and [`codex::Codex`] reads `~/.codex/sessions/**/*.jsonl`. A transcript counts only when its
-//! recorded working directory is this repository's main checkout or one of its worktrees. The
+//! recorded working directory is inside this repository's main checkout or one of its worktrees. The
 //! roots are fixed and derived from the home directory alone ([`SessionRoots`]); [`contain`] holds
 //! the walk, which follows no symlink and only reads.
 //!
@@ -130,13 +130,24 @@ impl Scope {
         &self.checkouts
     }
 
-    /// The checkout whose directory is exactly `cwd`.
+    /// The checkout `cwd` is in: the checkout directory itself or any directory below it, the
+    /// deepest checkout when one is nested in another. A `cwd` with a `..` component is matched only
+    /// by what it resolves to.
     pub fn matching(&self, cwd: &str) -> Option<&Checkout> {
         let cwd = Path::new(cwd);
+        let lexical = !cwd.components().any(|c| c == std::path::Component::ParentDir);
         let canonical = cwd.canonicalize().ok();
-        self.checkouts.iter().find(|c| {
-            c.path == cwd || c.alias.as_deref() == Some(cwd) || canonical.as_deref() == Some(c.path.as_path())
-        })
+        self.checkouts
+            .iter()
+            .filter(|c| {
+                let under = |base: &Path| lexical && cwd.starts_with(base);
+                under(&c.path)
+                    || c.alias.as_deref().is_some_and(under)
+                    || canonical
+                        .as_deref()
+                        .is_some_and(|resolved| resolved.starts_with(&c.path))
+            })
+            .max_by_key(|c| c.path.components().count())
     }
 
     /// A tally whose paths are made relative to `checkout` first, then to every other checkout.
@@ -345,5 +356,36 @@ fn widen(started: &mut Option<String>, ended: &mut Option<String>, timestamp: &s
     }
     if ended.as_deref().is_none_or(|e| timestamp > e) {
         *ended = Some(timestamp.to_owned());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cwd_matches_the_deepest_checkout_it_is_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let main = base.join("repo");
+        let nested = main.join(".claude/worktrees/w");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        let scope = Scope::new([(main.clone(), "main".to_owned()), (nested.clone(), "w".to_owned())]);
+        let label = |cwd: &Path| scope.matching(&cwd.to_string_lossy()).map(|c| c.label.clone());
+        assert_eq!(label(&main).as_deref(), Some("main"));
+        assert_eq!(
+            label(&main.join("crates/core")).as_deref(),
+            Some("main"),
+            "need not exist"
+        );
+        assert_eq!(label(&nested.join("src")).as_deref(), Some("w"));
+        assert_eq!(
+            label(&base.join("repo-old")),
+            None,
+            "a path prefix is not a directory prefix"
+        );
+        assert_eq!(label(&main.join("../other")), None, "`..` is resolved first");
+        assert_eq!(label(Path::new("repo/src")), None, "a relative cwd is in no checkout");
     }
 }

@@ -59,7 +59,9 @@ basemind already contains reads that reach outside the tree:
 - Hosts: Claude Code and Codex, behind a `TranscriptParser` trait in a new `src/sessions/`
   (`mod.rs`, `claude.rs`, `codex.rs`). Others are follow-up work.
 - A transcript is read only when its recorded `cwd` is this repository's root or one of its
-  worktrees.
+  worktrees, or a directory below one of them (resolved first when it holds `..`). Claude Code files
+  such a session under a project directory whose slug extends the checkout's, so those are walked
+  too; a sibling the lossy slug also matches is dropped by its `cwd`.
 - **Counts only.** The output is per-session and aggregate counts plus repository-relative paths.
   It never echoes message text, tool input or output, or a command line, and writes nothing but
   stdout: no cache, no telemetry, no file.
