@@ -114,7 +114,7 @@ them.
 | [0028](0028-content-keyed-group-index.md) | One content-keyed index per repository group | Accepted (amended by ADR-0036, ADR-0041) |
 | [0029](0029-document-retrieval-pipeline-and-store.md) | Document retrieval pipeline and retrieval store | Accepted (amended by ADR-0037) |
 | [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Accepted (amended by ADR-0033, ADR-0038, ADR-0045) |
-| [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Accepted |
+| [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Accepted (amended by ADR-0051) |
 | [0032](0032-layering-as-built.md) | Library crate layering as built — module table, schema validation, open edges | Accepted (amended by ADR-0039) |
 | [0033](0033-store-evidence-collection-and-recovery-rules.md) | Store rules after the sixth storage review — evidence, collection, recovery | Accepted |
 | [0034](0034-lean-locating-rows.md) | Lean rows for the locating tools | Accepted |
@@ -134,3 +134,4 @@ them.
 | [0048](0048-http-routes-and-client-calls.md) | HTTP routes as symbols, client calls as call rows, linked by path | Proposed |
 | [0049](0049-reading-outside-the-repository.md) | Reading outside the repository — session transcripts and dependency documentation | Proposed |
 | [0050](0050-one-engine-configuration-per-process.md) | One engine configuration per process, and no environment below the root layer | Proposed |
+| [0051](0051-value-gate-for-the-analysis-kinds-and-failed-baselines.md) | Value gate for the analysis kinds, failed baselines and the binary's identity | Proposed |
