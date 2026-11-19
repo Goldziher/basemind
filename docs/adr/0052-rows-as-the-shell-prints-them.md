@@ -48,14 +48,17 @@ prints it; facts a row shares with its neighbours are written once.
    byte continue a word), or a symbol without one, is written `"<path>:<line>: <kind> <name>"`,
    followed by `; <signature>` when there is one. A file edited since the scan is listed in a
    top-level `stale`.
+
 2. **`code_grep`.** `hits` is `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, grouped by the
    innermost enclosing symbol (`""` outside every symbol). Matches on one line are one row,
    `"<line>:<column>,<column>: <text>"`; a clipped line writes its match's column the same way. With
    `context`, the lines around a match are rows `"<line>- <text>"`, each written once. A file
    edited since the scan is listed in `stale`, and its rows carry no symbol (`""`). The token budget
    charges each symbol key once per file, as it charges each file key.
+
 3. **`find_files`.** With `min_lines`, `files` is `{"<path>": <lines>}`; the byte size is left out
    (`index_status` keeps it for the largest files).
+
 4. **`git_log` lists.** A commit is `"<sha> <summary>"`, the sha still 12 hex digits. Author and
    time are left out: `git_log {rev}` shows them with the whole message. Two lists differ:
    - A search by `author` writes `"<sha> <author>: <summary>"`: `author` matches a substring of the
@@ -69,6 +72,7 @@ prints it; facts a row shares with its neighbours are written once.
    `files: {"<sha>": {"<path>": "<change>"}}`, what changed being the point of both; the map is
    left out when empty. `hash_mode` (an echo) is dropped, `kind` is written only when set and
    `commits_inspected` only beside a `next_cursor`.
+
 5. **`git_blame`.** `hunks` is `["<line>[-<end_line>] <sha>[ <source_path>]", ...]`, adjacent lines
    of one commit (and one source path) merged into one hunk as they are read, so `limit` and the
    token budget count merged hunks and a cursor resumes past the last line of the last one.
@@ -78,13 +82,16 @@ prints it; facts a row shares with its neighbours are written once.
    sha; the full sha is `git_log {rev}`'s, one call away as before. `path`, `name`, `suspect_sha`,
    `kind`, `short_sha` and `source_line` are dropped; `elapsed_us` stays, as on every tool whose
    answer replaces reading content.
+
 6. **`code_refs` importers by path.** `in_cycle` is the number of listed importers that share an
    import cycle with the file; `code_refs {relation: "cycles", path}` lists that cycle. A walk cut
    at `depth` is not `truncated`, which changes ADR-0047 §5 ("cut as `truncated_reason` `depth` or
    `scan_cap`"): `truncated` is left for the node cap. Since `depth` defaults to 1, a caller may not
    have chosen it, so `deeper: true` says importers lie past it.
+
 7. **`total` only beside `next_cursor`** on `code_symbols`, `code_grep`, `find_files` and
    `code_refs` importers: a page without a cursor lists every match, so the count repeats the rows.
+
 8. **The CLI.** `--json` prints these shapes. Human output prints a string row per line and a nested
    map as an indented tree (grep hits under file and symbol, a log's files under their sha,
    importers under their depth), the blame `commits` map as a table, and counts the matches a grep

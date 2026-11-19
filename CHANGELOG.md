@@ -156,9 +156,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value-gate corpora the median answer of each changed kind fell by 13% to 58% (basemind / tokio):
   `dependents` 21 / 31 to 17 / 27 tokens, `symbols` 91 / 155 to 46 / 94, `grep` 56 / 83 to 44 / 58,
   `git_path` 566 / 265 to 286 / 138, `git_symbol` 73 / 72 to 32 / 30, `blame_symbol` 162 / 175 to
-  81 / 84, `find_large` 162 / 156 to 93 / 87, with recall unchanged; `callers`, `references`, `implementations` and `cycles` did not
-  change. `find` stays at 0.67x on basemind, just under the locating floor (ADR-0052). The mapping from every
-  removed field is in [docs/UPGRADING.md](docs/UPGRADING.md#lean-rows).
+  81 / 84, `find_large` 162 / 156 to 93 / 87, with recall unchanged; `callers`, `references`,
+  `implementations` and `cycles` did not change. `find` stays at 0.67x on basemind, just under the
+  locating floor (ADR-0052). The mapping from every removed field is in
+  [docs/UPGRADING.md](docs/UPGRADING.md#lean-rows).
+
 - **BREAKING:** every `code_refs` call site carries a `resolution` (#125, ADR-0047): `same_file`,
   `imported`, `scope_resolved`, `elsewhere`, `name_only` or `external`, in place of the `resolved`
   flag. A row leaves out the page's `resolution_default`; `resolution_counts` gives the rows per
