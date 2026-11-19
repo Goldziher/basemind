@@ -8,6 +8,7 @@ use anyhow::{Result, anyhow};
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 
+use crate::engine::Workspace;
 use crate::mcp::BasemindServer;
 use crate::mcp::params::parse_args;
 use crate::mcp::savings::estimate_from_text;
@@ -25,12 +26,9 @@ pub const MAX_PAGES: u32 = 50;
 
 /// Why every task of `mode` is skipped: the engine op or tool argument it drives has not landed
 /// (ADR-0047). A skipped task is reported, never run, scored or failed; the change that lands the op
-/// removes its arm here.
-pub fn unavailable(mode: EvalMode) -> Option<&'static str> {
-    match mode {
-        EvalMode::Explain => Some("not implemented: the `code explain` engine op (#120)"),
-        _ => None,
-    }
+/// removes its arm here. Every kind's op has landed.
+pub fn unavailable(_mode: EvalMode) -> Option<&'static str> {
+    None
 }
 
 /// Call the tool behind `mode` with `args`, which are that tool's own arguments. Returns the raw
@@ -56,7 +54,10 @@ async fn call(server: &BasemindServer, mode: EvalMode, args: Value) -> Result<St
         | EvalMode::Cycles => server.code_refs_call(parse_args(args).map_err(bad_args)?).await,
         EvalMode::Grep | EvalMode::GrepChanged => server.code_grep_call(parse_args(args).map_err(bad_args)?).await,
         EvalMode::Find | EvalMode::FindLarge => server.find_files_call(parse_args(args).map_err(bad_args)?).await,
-        EvalMode::Explain => return Err(anyhow!("`code explain` has no engine op to call")),
+        EvalMode::Explain => {
+            let p = serde_json::from_value(args).map_err(|e| bad_args(e.to_string()))?;
+            server.cli_op(p, Workspace::code_explain).await
+        }
     }
     .map_err(|e| anyhow!("{}: {e}", mode.tool_key()))?;
 
@@ -281,14 +282,9 @@ mod tests {
     use super::*;
     use crate::eval::task::parse_tasks;
 
-    const ANALYSIS: [EvalMode; 1] = [EvalMode::Explain];
-
     #[test]
-    fn skips_exactly_the_kinds_whose_op_has_not_landed() {
-        for mode in ANALYSIS {
-            let reason = unavailable(mode).unwrap_or_else(|| panic!("{mode:?} has an op"));
-            assert!(reason.starts_with("not implemented"), "{reason}");
-        }
+    fn skips_no_kind_now_that_every_op_has_landed() {
+        assert!(unavailable(EvalMode::Explain).is_none());
         assert!(unavailable(EvalMode::Grep).is_none());
         assert!(unavailable(EvalMode::Impact).is_none());
         assert!(unavailable(EvalMode::Cycles).is_none());

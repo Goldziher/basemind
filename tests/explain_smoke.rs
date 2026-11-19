@@ -154,3 +154,41 @@ fn a_malformed_request_exits_with_a_usage_error() {
     let bad_section = basemind(root, &["code", "explain", "src/a.rs", "--sections", "callers"]);
     assert_eq!(bad_section.status.code(), Some(2));
 }
+
+/// The `explain` eval kind runs the op and scores its definition, call sites and callees: a right
+/// gold scores 1, a wrong one 0, and neither task is skipped.
+#[test]
+fn the_explain_eval_kind_scores_the_briefing() {
+    let dir = crate_with_callers();
+    let root = dir.path();
+    let tasks = root.join("tasks.jsonl");
+    std::fs::write(
+        &tasks,
+        concat!(
+            r#"{"id":"right","mode":"explain","args":{"target":"ay"},"#,
+            r#""gold":["src/a.rs:3","src/b.rs:3","src/c.rs:2","->bee"]}"#,
+            "\n",
+            r#"{"id":"wrong","mode":"explain","args":{"target":"ay"},"gold":["src/z.rs:1"]}"#,
+            "\n",
+        ),
+    )
+    .expect("write tasks");
+    let output = basemind(root, &["admin", "eval", "--tasks", tasks.to_str().expect("utf-8")]);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let rows: Vec<Value> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|error| panic!("`{line}`: {error}")))
+        .collect();
+    let row = |id: &str| {
+        rows.iter()
+            .find(|row| row["id"] == id)
+            .unwrap_or_else(|| panic!("no {id}"))
+    };
+    for id in ["right", "wrong"] {
+        assert_eq!(row(id)["ok"], true, "{}", row(id));
+        assert!(row(id).get("skipped").is_none_or(Value::is_null), "{}", row(id));
+    }
+    let score = |id: &str, key: &str| row(id)["score"][key].as_f64().unwrap_or(-1.0);
+    assert_eq!((score("right", "precision"), score("right", "recall")), (1.0, 1.0));
+    assert_eq!(score("wrong", "recall"), 0.0);
+}
