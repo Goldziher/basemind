@@ -3212,3 +3212,62 @@ async fn every_advertised_tool_has_a_replay_decision() {
     }
     server.cancel().await.expect("shut down");
 }
+
+/// #127: `find_files` with `min_lines` lists the code files at least that long, largest first, each
+/// with its line and byte count, and refuses a threshold of 0; `index_status` counts the files too
+/// long to read whole and names the largest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn large_files_are_listed_by_size_and_counted_on_status() {
+    let dir = build_repo();
+    let root = dir.path();
+    let big: String = (0..2100).map(|i| format!("pub fn f{i}() {{}}\n")).collect();
+    let mid: String = (0..300).map(|i| format!("pub fn g{i}() {{}}\n")).collect();
+    std::fs::write(root.join("big.rs"), &big).unwrap();
+    std::fs::write(root.join("mid.rs"), &mid).unwrap();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+
+    let body = decode_text(
+        &service
+            .call_tool(call_params("find_files", json!({ "min_lines": 300 })))
+            .await
+            .expect("find_files min_lines"),
+    );
+    assert_eq!(
+        body["files"],
+        json!([
+            { "path": "big.rs", "lines": 2100, "bytes": big.len() },
+            { "path": "mid.rs", "lines": 300, "bytes": mid.len() },
+        ]),
+        "{body}"
+    );
+    assert_eq!(body["total"], 2, "{body}");
+
+    let body = decode_text(
+        &service
+            .call_tool(call_params("index_status", json!({})))
+            .await
+            .expect("index_status"),
+    );
+    assert_eq!(
+        body["large_files"],
+        json!({
+            "threshold_lines": 2000,
+            "count": 1,
+            "largest": [{ "path": "big.rs", "lines": 2100, "bytes": big.len() }],
+        }),
+        "{body}"
+    );
+
+    let message = refused(&service, "find_files", json!({ "min_lines": 0 })).await;
+    assert_eq!(
+        message,
+        "`find_files`: `min_lines` must be at least 1; omit it to list files of any size."
+    );
+    let message = refused(&service, "find_files", json!({ "min_lines": "many" })).await;
+    assert!(
+        message.contains("`min_lines`"),
+        "a wrongly typed `min_lines` must be named: {message}"
+    );
+    service.cancel().await.expect("shut down");
+}

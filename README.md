@@ -48,7 +48,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 | **Git intelligence** | Ask what changed recently, which commits touched a file, which commit mentions a phrase (full-text over messages and authors at full branch depth), when a symbol's body changed, who last touched a line or a function, and how a file differs between revisions or from the working tree, as text hunks or as symbols added and removed. | `git_log` · `git_blame` · `git_diff` |
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included in the published binaries, no extra setup; a source build needs the `documents-ocr` Cargo feature). | `memory_save` · `memory_search` · `docs_search` |
 | **Agent comms** | Threads opened by a post with a subject, open to the repository or invitation-only (`to`); a per-actor inbox whose reads mark messages read (`peek` does not); membership by principal, `as` for subagents; waits in the daemon (`wait_secs`). | `agent_post` · `agent_inbox` · `agent_threads` |
-| **Index** | Check index health and repo identity, and refresh the index after edits. Telemetry and cache maintenance are CLI commands (`basemind admin telemetry`, `basemind cache stats\|gc\|clear`). | `index_status` · `index_rescan` |
+| **Index** | Check index health and repo identity (including `large_files`: how many code files reach 2,000 lines, and the largest), and refresh the index after edits. Telemetry and cache maintenance are CLI commands (`basemind admin telemetry`, `basemind cache stats\|gc\|clear`). | `index_status` · `index_rescan` |
 
 <!-- markdownlint-enable MD013 -->
 
