@@ -258,7 +258,7 @@ exception, below.
 | `grep_changed` | `git diff --name-only REV \| xargs git grep -n -F PATTERN` |
 | `find_large` | `git ls-files \| xargs awk ...` printing `<lines> <path>` (the `wc -l` listing with an unterminated last line counted) `\| sort -rn \| awk '$1>=N'` |
 | `read_around` | `rg -n -C5 -F -e PATTERN -g '*.EXT'`, its literal output (`grep_context`) |
-| `explain` | the file's definition lines, `git grep -n -w NAME`, and `sed -n` over the body (tokens only) |
+| `explain` | one command per section the tool answers: the file's definition lines, `git grep -n -w NAME` (callers), `sed -n` from the first attribute or doc comment to the body's end (doc, body, callees), the `impact` depth-1 `git grep -l -E` `use` lines for the definition's file (importers), `git log -n 5 -s --format='%h %an %aI %s' -L '/fn NAME[(<]/,/^INDENT}/:PATH'` (history); tokens only |
 
 `read_around` runs `rg` itself: the baseline is the literal output of the command an agent runs for "the lines
 around each hit", not a format built for the comparison. rg merges overlapping and adjacent context windows and

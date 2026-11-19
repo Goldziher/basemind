@@ -312,8 +312,23 @@ class AnalysisGenerators(unittest.TestCase):
             t["gold"],
             ["src/widget.rs:7", "src/widget.rs:14", "src/widget.rs:18", "->helper_fn", "->spin_wheel"],
         )
-        self.assertEqual(len(t["baseline"]["grep"]), 3)
+        # widget.rs sits in no crate root's module tree, so no importers grep: outline, callers,
+        # body, history.
+        _outline, _callers, body, history = t["baseline"]["grep"]
+        self.assertEqual(body, "sed -n '7,11p' 'src/widget.rs'")
+        self.assertEqual(
+            history, "git log -n 5 -s --format='%h %an %aI %s' -L '/fn make_widget_unique[(<]/,/^}/:src/widget.rs'"
+        )
+        rows = self.baseline_output({"baseline": {"grep": history}}).splitlines()
+        self.assertEqual(len(rows), 1, "one commit changed the body")
+        self.assertRegex(rows[0], r"^[0-9a-f]{7,} t \d{4}-\d\d-\d\dT\S+ fixture$")
         self.assertIn("make_widget_unique", self.baseline_output(t))
+
+        helper = next(t for t in tasks if t["args"]["target"] == "helper_fn")
+        cmds = helper["baseline"]["grep"]
+        self.assertEqual(len(cmds), 5, "outline, callers, body, importers, history")
+        importers = self.baseline_output({"baseline": {"grep": cmds[3]}}).split()
+        self.assertEqual(importers, ["src/c/extra.rs"], "the one runtime `use` of a::inner")
 
 
 if __name__ == "__main__":

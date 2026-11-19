@@ -7,7 +7,8 @@
 //! Output (stdout): one JSON object per line, `t` naming the record:
 //!
 //! - `def`: a definition. `line` is the first token after the item's attributes and doc comments,
-//!   `name_line` the line of its name, `end` the line of its last token. `kind` is one of `fn`,
+//!   `name_line` the line of its name, `end` the line of its last token, `start` the line of its
+//!   first token, attributes and doc comments included (`line` without any). `kind` is one of `fn`,
 //!   `method` (a fn in an impl or trait with a body), `method_decl` (a trait fn without a body),
 //!   `struct`, `enum`, `union`, `trait`, `type`, `assoc_type_decl`, `const`, `assoc_const_decl`,
 //!   `static`, `mod`, `macro` (`macro_rules!`), `impl` (named after the implementing type),
@@ -150,6 +151,12 @@ impl Extractor<'_> {
     fn def(&mut self, node: &impl ToTokens, name: &str, name_span: Span, kind: &str) {
         let tokens = without_attrs(node);
         let first = tokens.first().map_or(line(name_span), |t| line(t.span()));
+        let start = node
+            .to_token_stream()
+            .into_iter()
+            .next()
+            .map_or(first, |t| line(t.span()))
+            .min(first);
         // A module or impl body is the whole file again; nothing compares those across revisions.
         let body = if matches!(kind, "mod" | "impl") {
             String::new()
@@ -167,6 +174,7 @@ impl Extractor<'_> {
                 ("line", V::N(first)),
                 ("name_line", V::N(line(name_span))),
                 ("end", V::N(last_line(&tokens).max(first))),
+                ("start", V::N(start)),
                 ("body", V::S(&body)),
             ],
         );
@@ -529,7 +537,15 @@ mod tests {
         let defs = lines(&out, "def");
         assert_eq!(defs.len(), 1);
         assert!(defs[0].contains("\"name\":\"spin\""), "{out}");
-        assert!(defs[0].contains("\"line\":3,\"name_line\":3,\"end\":3"), "{out}");
+        assert!(
+            defs[0].contains("\"line\":3,\"name_line\":3,\"end\":3,\"start\":1"),
+            "{out}"
+        );
+        let bare = extract("a.rs", "\nfn bare() {}\n");
+        assert!(
+            lines(&bare, "def")[0].contains("\"line\":2,\"name_line\":2,\"end\":2,\"start\":2"),
+            "{bare}"
+        );
     }
 
     #[test]
