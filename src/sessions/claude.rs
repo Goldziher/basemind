@@ -35,10 +35,12 @@ const SUBAGENT_DEPTH: usize = 2;
 
 pub struct Claude;
 
-/// The project directory name Claude Code derives from a working directory.
+/// The project directory name Claude Code derives from a working directory. A canonical Windows
+/// path's verbatim `\\?\` prefix is not part of the directory Claude Code saw.
 pub fn slug(path: &Path) -> String {
-    path.to_string_lossy()
-        .chars()
+    let text = path.to_string_lossy();
+    let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+    text.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
 }
@@ -370,6 +372,7 @@ mod tests {
             slug(Path::new("/Users/a/.worktrees/basemind/feat-x")),
             "-Users-a--worktrees-basemind-feat-x"
         );
+        assert_eq!(slug(Path::new(r"\\?\C:\Users\a\repo")), "C--Users-a-repo");
     }
 
     #[test]

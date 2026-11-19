@@ -2,10 +2,10 @@
 //! search history behind "edit without a prior read" and "write before any search", and output
 //! tokens by what the turn did. Only counts and repository-relative paths are kept.
 
-use std::path::{Component, Path, PathBuf};
-
 use ahash::{AHashMap, AHashSet};
 use serde::Serialize;
+
+use super::lexical::{self, Lexical};
 
 /// A file read this many times or more in one session is a repeated read.
 pub const REPEATED_READ_THRESHOLD: u32 = 4;
@@ -164,9 +164,9 @@ enum PathKey {
 
 /// Accumulates one session.
 pub struct Tally {
-    checkouts: Vec<PathBuf>,
+    checkouts: Vec<Lexical>,
     /// The session's working directory below its checkout.
-    offset: PathBuf,
+    offset: Vec<String>,
     counts: Counts,
     reads: AHashMap<PathKey, u32>,
     known: AHashSet<PathKey>,
@@ -178,7 +178,7 @@ pub struct Tally {
 impl Tally {
     /// `checkouts` are the directories a path is made relative to: the session's own first.
     /// `offset` is the working directory below it, which a relative path is taken from.
-    pub fn new(checkouts: Vec<PathBuf>, offset: PathBuf) -> Self {
+    pub fn new(checkouts: Vec<Lexical>, offset: Vec<String>) -> Self {
         Self {
             checkouts,
             offset,
@@ -192,7 +192,7 @@ impl Tally {
     }
 
     /// The working directory moved to `offset` below the session's checkout.
-    pub fn set_offset(&mut self, offset: PathBuf) {
+    pub fn set_offset(&mut self, offset: Vec<String>) {
         self.offset = offset;
     }
 
@@ -284,11 +284,7 @@ impl Tally {
     }
 
     fn key(&mut self, raw: &str, from_root: bool) -> PathKey {
-        let offset = if from_root {
-            Path::new("")
-        } else {
-            self.offset.as_path()
-        };
+        let offset: &[String] = if from_root { &[] } else { &self.offset };
         let key = repo_key(&self.checkouts, offset, raw);
         if let PathKey::Outside(path) = &key {
             self.outside.insert(path.clone());
@@ -305,48 +301,24 @@ pub struct RepeatedRead {
 }
 
 /// Key `raw` against the checkouts: an absolute path under one becomes relative to it, a relative
-/// path is taken from `offset` below the session's checkout. `..` is resolved lexically; a path that
-/// climbs above its checkout, or is under none, is outside.
-fn repo_key(checkouts: &[PathBuf], offset: &Path, raw: &str) -> PathKey {
-    let path = Path::new(raw);
+/// path is taken from `offset` below the session's checkout. Paths are read as text in either
+/// platform's shape ([`lexical`]); `..` is resolved lexically, and a path that climbs above its
+/// checkout, or is under none, is outside.
+fn repo_key(checkouts: &[Lexical], offset: &[String], raw: &str) -> PathKey {
+    let path = Lexical::parse(raw);
     if path.is_absolute() {
-        for checkout in checkouts {
-            if let Ok(rel) = path.strip_prefix(checkout)
-                && let Some(clean) = resolve(Path::new(""), rel)
-            {
-                return PathKey::Repo(clean);
-            }
-        }
-        return PathKey::Outside(raw.to_owned());
+        return checkouts.iter().find_map(|checkout| path.strip(checkout)).map_or_else(
+            || PathKey::Outside(path.display()),
+            |rest| PathKey::Repo(lexical::join(&rest)),
+        );
     }
-    match resolve(offset, path) {
-        Some(clean) => PathKey::Repo(clean),
+    match lexical::resolve(offset, path.parts()) {
+        Some(parts) => PathKey::Repo(lexical::join(&parts)),
         None => {
-            let base = checkouts.first().map(|c| c.join(offset)).unwrap_or_default();
-            PathKey::Outside(base.join(path).to_string_lossy().into_owned())
+            let base = checkouts.first().map(Lexical::display).unwrap_or_default();
+            PathKey::Outside(format!("{base}/{}/{}", offset.join("/"), path.display()))
         }
     }
-}
-
-/// `path` taken from the directory `base`, both below one checkout, as a forward-slash path from the
-/// checkout (`.` for the checkout itself); `None` when it climbs above the checkout.
-fn resolve(base: &Path, path: &Path) -> Option<String> {
-    let mut parts: Vec<&str> = Vec::new();
-    for component in base.components().chain(path.components()) {
-        match component {
-            Component::Normal(part) => parts.push(part.to_str()?),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                parts.pop()?;
-            }
-            Component::RootDir | Component::Prefix(_) => return None,
-        }
-    }
-    Some(if parts.is_empty() {
-        ".".to_owned()
-    } else {
-        parts.join("/")
-    })
 }
 
 #[cfg(test)]
@@ -354,10 +326,7 @@ mod tests {
     use super::*;
 
     fn tally() -> Tally {
-        Tally::new(
-            vec![PathBuf::from("/repo"), PathBuf::from("/wt/feature")],
-            PathBuf::new(),
-        )
+        Tally::new(vec![Lexical::parse("/repo"), Lexical::parse("/wt/feature")], Vec::new())
     }
 
     fn read(path: &str) -> Call {
@@ -444,7 +413,7 @@ mod tests {
 
     #[test]
     fn a_relative_path_is_taken_from_the_working_directory() {
-        let mut t = Tally::new(vec![PathBuf::from("/repo")], PathBuf::from("crates/core"));
+        let mut t = Tally::new(vec![Lexical::parse("/repo")], vec!["crates".into(), "core".into()]);
         for path in [
             "src/lib.rs",
             "./src/lib.rs",
@@ -471,5 +440,32 @@ mod tests {
             }]
         );
         assert_eq!((counts.edits_without_read, counts.outside_paths), (0, 1));
+    }
+
+    #[test]
+    fn windows_paths_key_like_unix_ones() {
+        let mut t = Tally::new(
+            vec![Lexical::parse(r"\\?\C:\Users\a\repo")],
+            vec!["crates".into(), "core".into()],
+        );
+        for path in [
+            r"C:\Users\a\repo\crates\core\src\lib.rs",
+            "c:/Users/a/repo/crates/core/src/lib.rs",
+            r"src\lib.rs",
+            r"..\core\src\lib.rs",
+        ] {
+            t.call(None, read(path));
+        }
+        t.call(None, edit(r"..\..\src\main.rs"));
+        t.call(None, read(r"D:\elsewhere\x.rs"));
+        let (counts, repeated) = t.finish();
+        assert_eq!(
+            repeated,
+            vec![RepeatedRead {
+                path: "crates/core/src/lib.rs".into(),
+                reads: 4
+            }]
+        );
+        assert_eq!((counts.edits_without_read, counts.outside_paths), (1, 1));
     }
 }

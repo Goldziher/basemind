@@ -18,6 +18,7 @@ pub mod claude;
 pub mod code_mode;
 pub mod codex;
 pub mod contain;
+pub mod lexical;
 pub mod shell;
 pub mod tally;
 
@@ -29,6 +30,7 @@ use ahash::{AHashMap, AHashSet};
 use serde::{Deserialize, Serialize};
 
 use contain::{Found, RootState};
+use lexical::Lexical;
 use tally::{Counts, RepeatedRead, Tally};
 
 /// The host a transcript came from.
@@ -81,6 +83,8 @@ pub struct Checkout {
     pub alias: Option<PathBuf>,
     /// `main` for the main checkout, else the worktree's directory name.
     pub label: String,
+    /// `path` and `alias`, as transcript paths are compared with them.
+    lexical: Vec<Lexical>,
 }
 
 /// The checkouts of this repository: the main one and every linked worktree.
@@ -97,10 +101,15 @@ impl Scope {
             .map(|(path, label)| {
                 let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
                 let alias = (canonical != path).then_some(path);
+                let lexical = std::iter::once(&canonical)
+                    .chain(alias.as_ref())
+                    .map(|p| Lexical::parse(&p.to_string_lossy()))
+                    .collect();
                 Checkout {
                     path: canonical,
                     alias,
                     label,
+                    lexical,
                 }
             })
             .collect();
@@ -142,28 +151,23 @@ impl Scope {
         self.locate(cwd).map(|located| located.checkout)
     }
 
-    /// [`Scope::matching`], with where `cwd` is inside that checkout.
+    /// [`Scope::matching`], with where `cwd` is inside that checkout. `cwd` is compared as text in
+    /// either platform's shape ([`lexical`]), and by what it resolves to on this filesystem.
     pub fn locate(&self, cwd: &str) -> Option<Located<'_>> {
-        let cwd = Path::new(cwd);
-        let lexical = !cwd.components().any(|c| c == std::path::Component::ParentDir);
-        let canonical = cwd.canonicalize().ok();
+        let named = Lexical::parse(cwd);
+        if !named.is_absolute() {
+            return None;
+        }
+        let climbs = cwd.split(['/', '\\']).any(|part| part == "..");
+        let resolved = Path::new(cwd)
+            .canonicalize()
+            .ok()
+            .map(|path| Lexical::parse(&path.to_string_lossy()));
         self.checkouts
             .iter()
             .filter_map(|c| {
-                let under = |base: &Path| {
-                    lexical
-                        .then(|| cwd.strip_prefix(base).ok())
-                        .flatten()
-                        .map(Path::to_path_buf)
-                };
-                let offset = under(&c.path)
-                    .or_else(|| c.alias.as_deref().and_then(under))
-                    .or_else(|| {
-                        canonical
-                            .as_deref()
-                            .and_then(|resolved| resolved.strip_prefix(&c.path).ok())
-                            .map(Path::to_path_buf)
-                    })?;
+                let lexically = c.lexical.iter().filter(|_| !climbs).find_map(|base| named.strip(base));
+                let offset = lexically.or_else(|| resolved.as_ref().and_then(|r| r.strip(c.lexical.first()?)))?;
                 Some(Located { checkout: c, offset })
             })
             .max_by_key(|located| located.checkout.path.components().count())
@@ -174,8 +178,7 @@ impl Scope {
     pub fn tally_for(&self, located: &Located<'_>) -> Tally {
         let mut paths = Vec::new();
         for c in std::iter::once(located.checkout).chain(self.checkouts.iter()) {
-            paths.push(c.path.clone());
-            paths.extend(c.alias.clone());
+            paths.extend(c.lexical.iter().cloned());
         }
         Tally::new(paths, located.offset.clone())
     }
@@ -184,8 +187,8 @@ impl Scope {
 /// A working directory inside a checkout.
 pub struct Located<'a> {
     pub checkout: &'a Checkout,
-    /// The directory below the checkout, empty for the checkout itself.
-    pub offset: PathBuf,
+    /// The directories below the checkout, empty for the checkout itself.
+    pub offset: Vec<String>,
 }
 
 /// What a parser made of one transcript.
@@ -664,6 +667,19 @@ mod tests {
         );
         assert_eq!(label(&main.join("../other")), None, "`..` is resolved first");
         assert_eq!(label(Path::new("repo/src")), None, "a relative cwd is in no checkout");
+    }
+
+    #[test]
+    fn a_windows_cwd_matches_its_checkout_on_any_platform() {
+        let scope = Scope::new([(PathBuf::from(r"\\?\C:\Users\a\repo"), "main".to_owned())]);
+        let offset = |cwd: &str| scope.locate(cwd).map(|l| l.offset);
+        assert_eq!(
+            offset(r"C:\Users\a\repo\crates\core"),
+            Some(vec!["crates".into(), "core".into()])
+        );
+        assert_eq!(offset("c:/users/a/repo"), Some(Vec::new()));
+        assert_eq!(offset(r"C:\Users\a\repo-old"), None);
+        assert_eq!(offset(r"repo\src"), None);
     }
 
     #[test]
