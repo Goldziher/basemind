@@ -29,7 +29,7 @@ pub struct FindFilesToolParams {
     /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Only code files of at least this many lines, largest first.
+    /// Only code files of at least this many lines, largest first; `files` maps path to lines.
     #[serde(default)]
     pub min_lines: Option<u32>,
     /// Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.

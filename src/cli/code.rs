@@ -249,7 +249,7 @@ pub enum CodeCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
-        /// Only code files of at least this many lines, largest first, with their line and byte counts.
+        /// Only code files of at least this many lines, largest first, with their line counts.
         #[arg(long)]
         min_lines: Option<u32>,
         /// Only files changed since this revision (`HEAD`: the uncommitted changes) or in `A..B`;

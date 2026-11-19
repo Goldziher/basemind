@@ -81,8 +81,8 @@ impl BasemindServer {
         description = "Use to read the source of one function or type, or an exact line span, \
         instead of the whole file. Pass `symbol` (plus `line` when several share the name), or a \
         `line`..`end_line` span. A body over 128 KiB is cut, at a line end if it can, and flagged \
-        `truncated`: read on from `end_line` + 1. `stale`: the file changed since indexing; the \
-        symbol was found by parsing it now. \
+        `truncated`: read on from `end_line` + 1. `stale`: the file changed since indexing and was \
+        parsed as it is now. \
         Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
         annotations(
             read_only_hint = true,
@@ -149,7 +149,7 @@ impl BasemindServer {
     #[tool(
         title = "Find call sites, implementations and importers",
         description = "Use for what calls, implements or imports X, or which definition a use binds to \
-        (`relation`). Callers are call sites, not type uses or `use` lines (`code_grep`). `match` \
+        (`relation`). Callers are call sites, not type uses or `use` lines. `match` \
         `exact`: the name or a path ending in it; `substring`: any name holding it. `hits` maps files \
         to rows: `line`, `callee` if not `name`, `stale` if edited since. `path` pins the definition \
         there. Row `resolution` (omitted if `resolution_default`, else name_only): \

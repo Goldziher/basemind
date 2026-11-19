@@ -104,7 +104,7 @@
   {
     "name": "code_read",
     "title": "Read a symbol or line span",
-    "description": "Use to read the source of one function or type, or an exact line span, instead of the whole file. Pass `symbol` (plus `line` when several share the name), or a `line`..`end_line` span. A body over 128 KiB is cut, at a line end if it can, and flagged `truncated`: read on from `end_line` + 1. `stale`: the file changed since indexing; the symbol was found by parsing it now. Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
+    "description": "Use to read the source of one function or type, or an exact line span, instead of the whole file. Pass `symbol` (plus `line` when several share the name), or a `line`..`end_line` span. A body over 128 KiB is cut, at a line end if it can, and flagged `truncated`: read on from `end_line` + 1. `stale`: the file changed since indexing and was parsed as it is now. Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
     "inputSchema": {
       "properties": {
         "path": {
@@ -151,7 +151,7 @@
   {
     "name": "code_refs",
     "title": "Find call sites, implementations and importers",
-    "description": "Use for what calls, implements or imports X, or which definition a use binds to (`relation`). Callers are call sites, not type uses or `use` lines (`code_grep`). `match` `exact`: the name or a path ending in it; `substring`: any name holding it. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` if edited since. `path` pins the definition there. Row `resolution` (omitted if `resolution_default`, else name_only): same_file, imported, scope_resolved (local binding), elsewhere (binds another), name_only (unchecked: `resolution_note`), external (not indexed), path_match (HTTP call to route `name` like `GET /a/{id}`, or a pinned handler's routes and calls; literal URLs; `ambiguous`: routes tie; `definition` of a call: its route). `importers`+`path`, no `name`: its importers `by_depth`. `cycles`: import cycles (`path`: its own). Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
+    "description": "Use for what calls, implements or imports X, or which definition a use binds to (`relation`). Callers are call sites, not type uses or `use` lines. `match` `exact`: the name or a path ending in it; `substring`: any name holding it. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` if edited since. `path` pins the definition there. Row `resolution` (omitted if `resolution_default`, else name_only): same_file, imported, scope_resolved (local binding), elsewhere (binds another), name_only (unchecked: `resolution_note`), external (not indexed), path_match (HTTP call to route `name` like `GET /a/{id}`, or a pinned handler's routes and calls; literal URLs; `ambiguous`: routes tie; `definition` of a call: its route). `importers`+`path`, no `name`: its importers `by_depth`. `cycles`: import cycles (`path`: its own). Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -184,7 +184,7 @@
           "type": "integer"
         },
         "depth": {
-          "description": "`importers`+`path`: hops (default 1, max 5).",
+          "description": "`importers`+`path`: hops (default 1, max 5); `deeper`: more beyond.",
           "type": "integer"
         },
         "match": {
@@ -422,7 +422,7 @@
           "type": "integer"
         },
         "min_lines": {
-          "description": "Only code files of at least this many lines, largest first.",
+          "description": "Only code files of at least this many lines, largest first; `files` maps path to lines.",
           "type": "integer"
         },
         "changed": {
@@ -444,7 +444,7 @@
   {
     "name": "git_blame",
     "title": "Blame",
-    "description": "Use instead of `git blame` for \"who last changed this\": per-line authorship of a file, of a 1-based `line`..`end_line` span, or of one `symbol`, located in the file as it is at `rev`. `hunks`: `\"<line>[-<end>] <sha>\"`; `commits`: each sha's author, time, summary. Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
+    "description": "Use instead of `git blame` for \"who last changed this\": per-line authorship of a file, a 1-based `line`..`end_line` span, or one `symbol` (at `rev`). `hunks`: `\"<line>[-<end>] <sha>[ <old path>]\"` (the rest of the row, when moved); `commits`: each sha's author, time, summary. Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
     "inputSchema": {
       "properties": {
         "path": {
@@ -499,7 +499,7 @@
   {
     "name": "git_diff",
     "title": "Diff and status",
-    "description": "Use instead of `git status`/`git diff`. No arguments returns the working-tree status (staged, modified, untracked; 200 paths per list, a `path` ending in `/` narrows it to that directory); a file `path` alone diffs its working tree against HEAD; `from`/`to` pick revisions; `structural` lists the symbols added and removed, and counts the `common` ones, instead of text hunks. A diff over 200 hunks or 128 KiB is cut and flagged `truncated`. Example: {\"path\":\"src/store.rs\",\"from\":\"HEAD~1\",\"to\":\"HEAD\"}",
+    "description": "Use instead of `git status`/`git diff`. No arguments returns the working-tree status (staged, modified, untracked; 200 paths per list); a file `path` alone diffs its working tree against HEAD, or `from`/`to`; `structural` lists the symbols added and removed, and counts the `common` ones, instead of text hunks. A diff over 200 hunks or 128 KiB is cut (`truncated`). Example: {\"path\":\"src/store.rs\",\"from\":\"HEAD~1\",\"to\":\"HEAD\"}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -535,13 +535,13 @@
   {
     "name": "git_log",
     "title": "Commit history",
-    "description": "Use instead of `git log`/`git show` for \"what changed recently\", \"what touched this file\", \"which commit mentions X\" or \"when did this function change\". No arguments lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. A row is `\"<sha> <summary>\"`; `rev` shows one commit whole, with author and time. A symbol's or a directory's history is read one window of commits per page: follow `next_cursor`, even from an empty page (`truncated_reason` `window`). Example: {\"path\":\"src/store.rs\",\"limit\":5}",
+    "description": "Use instead of `git log`/`git show` for \"what changed recently\", \"what touched this file\", \"which commit mentions X\" or \"what changed this function\". `{}` lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. A row is `\"<sha> <summary>\"`, `[introduced]`/`[removed]` after a symbol's sha; recent and directory lists add `files`: sha to path to change. `rev` shows one commit whole, with author and time. A symbol's or directory's history pages by commit window: follow `next_cursor`, even from an empty page (`window`). Example: {\"path\":\"src/store.rs\",\"limit\":5}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "path": {
-          "description": "Only commits touching this file; a trailing `/` means a directory (200 commits inspected per\npage; follow `next_cursor`). Not with `query` or `author`.",
+          "description": "Only commits touching this file, or a directory (trailing `/`; 200 commits a page). Not with\n`query` or `author`.",
           "type": "string"
         },
         "query": {
@@ -549,11 +549,11 @@
           "type": "string"
         },
         "author": {
-          "description": "Words the author name or email must all contain. Combines with `query` only.",
+          "description": "Words the author name or email must all contain; rows then name the author. Combines with\n`query` only.",
           "type": "string"
         },
         "symbol": {
-          "description": "History of this symbol's body, one window of commits per page; needs `path`, combines\nwith nothing else but `line`.",
+          "description": "Commits that changed this symbol's body; needs `path`, combines with nothing else but `line`.",
           "type": "string"
         },
         "line": {

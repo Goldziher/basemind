@@ -13,18 +13,18 @@ use crate::path::RelPath;
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GitLogParams {
-    /// Only commits touching this file; a trailing `/` means a directory (200 commits inspected per
-    /// page; follow `next_cursor`). Not with `query` or `author`.
+    /// Only commits touching this file, or a directory (trailing `/`; 200 commits a page). Not with
+    /// `query` or `author`.
     #[serde(default)]
     pub path: Option<RelPath>,
     /// Words the commit message must all contain. Combines with `author` only.
     #[serde(default)]
     pub query: Option<String>,
-    /// Words the author name or email must all contain. Combines with `query` only.
+    /// Words the author name or email must all contain; rows then name the author. Combines with
+    /// `query` only.
     #[serde(default)]
     pub author: Option<String>,
-    /// History of this symbol's body, one window of commits per page; needs `path`, combines
-    /// with nothing else but `line`.
+    /// Commits that changed this symbol's body; needs `path`, combines with nothing else but `line`.
     #[serde(default)]
     pub symbol: Option<String>,
     /// With `symbol`: 1-based line inside the definition meant, when several share the name.

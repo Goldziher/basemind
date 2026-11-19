@@ -31,7 +31,7 @@ pub struct CodeRefsParams {
     /// `definition` only: 1-based column (default: where `name` occurs on the line).
     #[serde(default)]
     pub column: Option<u32>,
-    /// `importers`+`path`: hops (default 1, max 5).
+    /// `importers`+`path`: hops (default 1, max 5); `deeper`: more beyond.
     #[serde(default)]
     pub depth: Option<u32>,
     /// Name matching (default `exact`). Not with `importers` or `definition`.
