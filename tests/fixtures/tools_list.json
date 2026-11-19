@@ -2,7 +2,7 @@
   {
     "name": "code_grep",
     "title": "Search code and text files",
-    "description": "Use instead of `rg`/`grep` to find exact text (a string, identifier or comment) in indexed code and text files (markdown, config, data; not PDFs). `pattern` is literal unless `regex` is true. `hits` maps each file to its hits: `line`, `text` and the `symbol` it sits in; a hit in a file edited since indexing has `stale` and no symbol. `skipped_files` counts unsearchable files; `total` counts hits from `cursor` on. A `path` or `language` no indexed file has is an error. Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
+    "description": "Use instead of `rg`/`grep` to find exact text (a string, identifier or comment) in indexed code and text files (markdown, config, data; not PDFs). `pattern` is literal unless `regex` is true. `hits`: file, then enclosing symbol (`\"\"`: none), to rows `\"<line>: <text>\"` (`\"<line>:<col>,<col>: ...\"`: matches sharing a line; `\"<line>- ...\"`: context). `stale`: files edited since indexing. `skipped_files` counts unsearchable files; `total` (with `next_cursor`) counts hits from `cursor` on. A `path` or `language` no indexed file has is an error. Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
     "inputSchema": {
       "properties": {
         "pattern": {
@@ -282,7 +282,7 @@
   {
     "name": "code_symbols",
     "title": "Find a definition",
-    "description": "Use for \"where is X defined\" when you know (part of) the name: finds functions, types, constants and other symbols by name across the repository; a row is `path`, `line`, `kind`, `name`, `signature`. Ranked: the exact name first, then prefix, then substring, then (with `fuzzy`) fuzzy matches; `stale`: file edited since the scan, `line` is current. Definitions only: for any text use `code_grep`. Example: {\"name\":\"parse_config\",\"kind\":\"function\"}",
+    "description": "Use for \"where is X defined\" when you know (part of) the name: finds functions, types, constants and other symbols by name across the repository; a row is `\"<path>:<line>: <signature>\"`. Ranked: the exact name first, then prefix, then substring, then (with `fuzzy`) fuzzy matches; `stale`: files edited since the scan (lines current). Definitions only: for any text use `code_grep`. Example: {\"name\":\"parse_config\",\"kind\":\"function\"}",
     "inputSchema": {
       "properties": {
         "name": {
@@ -444,7 +444,7 @@
   {
     "name": "git_blame",
     "title": "Blame",
-    "description": "Use instead of `git blame` for \"who last changed this\": per-line authorship of a file, of a 1-based `line`..`end_line` span, or of one `symbol`, located in the file as it is at `rev`. Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
+    "description": "Use instead of `git blame` for \"who last changed this\": per-line authorship of a file, of a 1-based `line`..`end_line` span, or of one `symbol`, located in the file as it is at `rev`. `hunks`: `\"<line>[-<end>] <sha>\"`; `commits`: each sha's author, time, summary. Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
     "inputSchema": {
       "properties": {
         "path": {
@@ -535,7 +535,7 @@
   {
     "name": "git_log",
     "title": "Commit history",
-    "description": "Use instead of `git log`/`git show` for \"what changed recently\", \"what touched this file\", \"which commit mentions X\" or \"when did this function change\". No arguments lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. A row is a 12-digit `sha`, `summary`, `author` and time; `rev` shows one commit in full. A symbol's or a directory's history is read one window of commits per page: follow `next_cursor`, even from an empty page (`truncated_reason` `window`). Example: {\"path\":\"src/store.rs\",\"limit\":5}",
+    "description": "Use instead of `git log`/`git show` for \"what changed recently\", \"what touched this file\", \"which commit mentions X\" or \"when did this function change\". No arguments lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. A row is `\"<sha> <summary>\"`; `rev` shows one commit whole, with author and time. A symbol's or a directory's history is read one window of commits per page: follow `next_cursor`, even from an empty page (`truncated_reason` `window`). Example: {\"path\":\"src/store.rs\",\"limit\":5}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,

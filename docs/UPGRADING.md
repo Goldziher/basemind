@@ -262,17 +262,20 @@ lowered), `body_truncated` (`git_log` search: one commit's message was shortened
 
 The tools that locate (`code_symbols`, `code_grep`, `code_refs`, `find_files`, `git_log`,
 `git_diff`) answer with what the shell would print and what they add to it, and nothing that
-repeats per row or echoes the call. None of them carries `elapsed_us`; the CLI times the call when
-the response has none. The CLI's `--json` output has the same shapes.
+repeats per row or echoes the call (ADR-0034, ADR-0051). None of them carries `elapsed_us`
+(`git_blame` keeps it); the CLI times the call when the response has none. A list gives `total` only
+beside `next_cursor`. The CLI's `--json` output has the same shapes.
 
 | Tool | Removed or changed | Now |
 | --- | --- | --- |
-| `code_symbols` | a row's `column` and `match` | a row is `path`, `line`, `kind`, `name`, `signature`; the rank order says how the name matched |
-| `code_grep` | `pattern`, `regex`, `total_files_matched`; a hit's `path`, and its `column` unless its file has another match on its line or its `text` is clipped; `symbol.kind` | `total` (was `total_matches`); `hits` is `{"<path>": [hit, ...]}`; `symbol` is the enclosing symbol's name |
+| `code_symbols` | a row's `column` and `match`; a row's `path`, `line`, `kind`, `name` and `signature` fields; `total` without `next_cursor` | a row is the string `"<path>:<line>: <signature>"`, as `git grep -n` prints it, in rank order; a signature lacking the name, or none, is written `"<path>:<line>: <kind> <name>[; <signature>]"`; `stale` lists files edited since the scan |
+| `code_grep` | `pattern`, `regex`, `total_files_matched`; a hit's `path`, `column` and `symbol.kind`; `context_before` / `context_after` | `hits` is `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, grouped by innermost enclosing symbol (`""` outside every symbol); matches on one line are a row `"<line>:<col>,<col>: <text>"` (a clipped line writes its column `"<line>:<col>: ..."`); `context: true` adds rows `"<line>- <text>"`, each written once; `stale` lists edited files, their rows under `""`; `total` (was `total_matches`) only beside `next_cursor`; `ranges` mode unchanged |
 | `code_refs` | `name` and `match` echoes; a hit's `path`, and its `column` unless another call of the same callee is on its line; `callee` equal to `name`; `trait_name` equal to `name` | `hits` is `{"<path>": [hit, ...]}`; `importers` drops its `module` echo |
-| `find_files` | `returned`; a file's `language`, `size_bytes`, `score` | `files` is a list of paths; files git tracks that are not indexed (images, fonts) are listed too |
-| `git_log` lists | `short_sha`; `path` and `pattern` echoes; a search hit's `body`, `author_email`, `body_truncated`, `body_bytes` | `sha` is the first 12 hex digits; `files` is `{"<path>": "<change>"}`; `rev` keeps the full `sha`, `body` and `author_email` |
-| `git_log {path, symbol}` | `path` and `name` echoes; an entry's `short_sha` | an entry's `sha` is the first 12 hex digits |
+| `find_files` | `returned`; a file's `language`, `size_bytes`, `score`; `total` without `next_cursor` | `files` is a list of paths (with `min_lines`, `{"<path>": <lines>}`); files git tracks that are not indexed (images, fonts) are listed too |
+| `git_log` lists | `short_sha`; `path` and `pattern` echoes; a search hit's `body`, `author_email`, `body_truncated`, `body_bytes`; a commit's `author` and `author_time_unix` | each commit is a string `"<sha12> <summary>"`; a directory history puts its files in a top-level `files: {"<sha>": {"<path>": "<change>"}}`; `rev` still shows the whole commit with `author`, `author_email`, time, `body` and `files` |
+| `git_log {path, symbol}` | `path` and `name` echoes; an entry's `short_sha`; `hash_mode`; `kind` when unset; `commits_inspected` without `next_cursor` | `history` rows are `"<sha> <summary>"`, with `[introduced]` or `[removed]` after the sha for those changes; `kind` only when set |
+| `git_blame` | `path`, `suspect_sha`, `name`, `kind`; a hunk's `commit_sha`, `short_sha`, `source_line` and per-hunk `author`, `time`, `summary` | `hunks` is `["<line>[-<end_line>] <sha12>[ <source_path>]", ...]`, adjacent hunks of one commit (and source path) merged; `commits` maps each sha to `{author, time, summary}` once (`time` is unix seconds); a symbol blame keeps `line` / `end_line`; `elapsed_us` kept |
+| `code_refs` importers | `in_cycle` as a per-file flag; `truncated` on a walk stopped at `depth`; `total` without `next_cursor` | with `path`, `in_cycle` counts the listed importers sharing an import cycle with the file (`relation: "cycles"` with `path` lists it); only `scan_cap` truncates; by name (`paths`), `total` only beside `next_cursor` |
 | `git_diff {path}` | a hunk's `kind`; `present_at_from` / `present_at_to` when true | `present_at_from: false` (added) or `present_at_to: false` (deleted) only |
 | `git_diff {}` | empty status lists | a list is present only when it holds a path |
 

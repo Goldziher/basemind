@@ -134,3 +134,4 @@ them.
 | [0048](0048-http-routes-and-client-calls.md) | HTTP routes as symbols, client calls as call rows, linked by path | Proposed |
 | [0049](0049-reading-outside-the-repository.md) | Reading outside the repository — session transcripts and dependency documentation | Proposed |
 | [0050](0050-one-engine-configuration-per-process.md) | One engine configuration per process, and no environment below the root layer | Proposed |
+| [0051](0051-rows-as-the-shell-prints-them.md) | Locating rows as the shell prints them | Proposed |

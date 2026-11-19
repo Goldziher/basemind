@@ -98,18 +98,20 @@ code_outline {"path":"src/mcp/tools.rs"}
 - `code_grep`: `pattern` is literal text unless `"regex":true`, and a regex anchors `^` / `$` at
   every line. `path` is a substring of the repo-relative path, never a glob; a `path` or `language`
   that no indexed code file has is an error (it names `docs_search` when only documents match).
-  `skipped_files` counts files that could not be searched. `hits` lists each file once, as
-  `{"<path>": [hit, ...]}`; a hit is `line` (and `column` when the file has another match on that
-  line or `text` is clipped), `text` (the matching line; one over 400 bytes is cut to a window around the match, `…`
-  marking each cut side) and `symbol` (the name of the innermost enclosing symbol; absent, with
-  `stale: true`, for a file edited since it was indexed); `"context":true` adds `context_before` /
-  `context_after`. It never caps files, so `total` is exact.
+  `skipped_files` counts files that could not be searched. `hits` is
+  `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, grouped by the innermost enclosing symbol
+  (`""` outside every symbol); matches sharing a line are one row `"<line>:<col>,<col>: <text>"`, and
+  a clipped line (over 400 bytes, cut to a window around the match) writes its column
+  `"<line>:<col>: ..."`. `"context":true` adds rows `"<line>- <text>"`, each written once. `stale`
+  lists files edited since they were indexed (their rows sit under `""`). `total` appears only
+  beside `next_cursor`.
 - `find_files` lists each file by its path alone: the code map, the documents, and every other
   file git tracks (images, fonts, data). A query no path holds as typed may be a typo: a file it
   names up to one swapped, missing, extra or wrong character comes first.
 - `code_symbols` ranks the exact name first, then prefix, then substring; `"fuzzy":true` adds fuzzy
-  subsequence matches last. A row is `path`, `line`, `kind`, `name` and `signature`; `total`
-  counts the whole corpus.
+  subsequence matches last. A row is `"<path>:<line>: <signature>"`, in rank order; a signature
+  lacking the name, or none, is written `"<path>:<line>: <kind> <name>[; <signature>]"`. `stale` lists files
+  edited since the scan; `total` appears only beside `next_cursor`.
 - `code_refs {"name":"bar"}` matches the identifier exactly: `Foo::bar()` and `bar()` are calls to
   `bar`, `bar_baz()` is not. `"match":"substring"` widens it. `hits` lists each file once, as
   `{"<path>": [hit, ...]}`; a call site is its `line` (and `column` when another call of the same
@@ -118,7 +120,9 @@ code_outline {"path":"src/mcp/tools.rs"}
   `path` that is not indexed, or defines no such symbol, is an error; so is a name several
   definitions in the file share, which lists each with its lines until you add `line`.
   `relation:"importers"` matches whole segments of recorded imports (`os` finds `import os.path`,
-  not `import posixpath`) and takes no `match`.
+  not `import posixpath`) and takes no `match`. With `path`, `in_cycle` counts the listed importers
+  that share an import cycle with the file, and only `scan_cap` truncates (a walk stopped at `depth`
+  does not). `total` appears only beside `next_cursor`.
 - `code_search` returns pointers (path, `line` / `end_line`, symbol), not bodies; read a hit with
   `code_read`. `lane` picks `hybrid` (default), `semantic` or `keyword`. The response lists
   `lanes_ran` (`vector`, `keyword`, `exact`) and `lanes_unavailable` (`lane`, `reason`), so a hybrid

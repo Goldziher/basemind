@@ -75,11 +75,11 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
   they answer with an error result saying so.
 - History queries are indexed: commits touching a path resolve in tens of microseconds vs a live
   walk. The index auto-builds on first use and is a fraction of the size of `.git`.
-- A `git_log` list row is `sha` (its first 12 hex digits, which every tool taking a revision
-  resolves), `summary`, `author` and `author_time_unix`; a recent or directory list adds `files`,
-  each changed path with how (`{"src/a.rs":"modified"}`), where a merge lists only what it changed
-  against every parent. `rev` shows one commit with its full `sha`, message `body` and
-  `author_email`.
+- A `git_log` list commit is the string `"<sha12> <summary>"` (the sha's first 12 hex digits, which
+  every tool taking a revision resolves), with no author or time. A directory list puts the files in
+  a top-level `files: {"<sha>": {"<path>": "<change>"}}`, where a merge lists only what it changed
+  against every parent. `rev` shows one commit with its full `sha`, `author`, `author_email`, time,
+  message `body` and `files`.
 - `git_log` with no arguments is a recency window; use `query` or `author` to find a commit
   arbitrarily far back. `symbol` needs `path`. `limit` defaults to 20 and caps at 100, and
   `limit: 0` is refused. A `path` that no commit reachable from HEAD touches and that is not on
@@ -102,8 +102,9 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
   `rev` blames at a revision other than HEAD. A `symbol` is located in the file as it is at `rev`,
   not in the working tree, so its lines (and a `line` passed to pick one of several) are that
   revision's; a symbol that exists only uncommitted is "no symbol ... at HEAD". `limit` defaults to 100 hunks and the list is trimmed
-  to `max_tokens` (default 6000), then sets `budgeted`. A hunk is `commit_sha`, `short_sha`, `line`, `end_line`, `source_line`, `author`,
-  `author_time_unix` and `summary`; a symbol blame also carries the symbol's `line` / `end_line`.
+  to `max_tokens` (default 6000), then sets `budgeted`. `hunks` is `["<line>[-<end_line>] <sha12>[ <source_path>]", ...]`, adjacent hunks of one commit
+  merged; `commits` maps each sha to `{author, time, summary}` once (`time` is unix seconds). A
+  symbol blame also carries the symbol's `line` / `end_line`.
 - `git_diff`: `path` alone is that file's working-tree diff against HEAD; `from` defaults to HEAD
   and `to` to the working tree. The response has `from`, `to` (a sha, or `"working tree"`) and
   `hunks`, plus `present_at_from: false` for a file added since `from` or `present_at_to: false`

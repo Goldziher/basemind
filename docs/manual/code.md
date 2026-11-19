@@ -61,7 +61,7 @@ symbol or span you need. Paths are repository-relative with forward slashes.
   coverage, and a language without an import resolver is reported as not analysed, never as having
   no importers or no cycles. Type-only imports and Rust `mod` declarations are left out.
 - `find_files` covers code, documents and every other file git tracks; a query with one typo still
-  finds its file. `min_lines` lists code files of at least that many lines, largest first.
+  finds its file. `min_lines` lists code files of at least that many lines, largest first, as `{"<path>": <lines>}`.
 - `changed` on `code_grep`, `code_symbols`, `code_refs` (call sites) and `find_files` keeps only
   the files changed since a revision, diffed against the working tree (`""` means `HEAD`: the
   uncommitted changes), or between `A..B`. Append `+importers` to add the files importing them.
