@@ -273,3 +273,91 @@ fn crate_roots_cover_binaries_tests_and_a_missing_manifest() {
     let (resolved, _) = resolve(&[("loose/x.rs", "use crate::y::Z;\n")], "loose/x.rs");
     assert_eq!(resolved, [("crate::y::Z".to_string(), ModuleTarget::Unresolved)]);
 }
+
+#[test]
+fn a_lib_or_main_file_that_is_no_crate_root_is_a_module() {
+    let (resolved, _) = resolve(
+        &[
+            ("Cargo.toml", MANIFEST),
+            ("src/lib.rs", "mod foo;\n"),
+            ("src/foo.rs", "mod main;\n"),
+            ("src/foo/main.rs", "mod helper;\nuse self::helper::X;\n"),
+            ("src/foo/main/helper.rs", ""),
+            ("src/foo/helper.rs", ""),
+        ],
+        "src/foo/main.rs",
+    );
+    assert_eq!(
+        resolved,
+        [
+            ("mod helper".to_string(), files(&["src/foo/main/helper.rs"])),
+            ("self::helper::X".to_string(), files(&["src/foo/main/helper.rs"])),
+        ]
+    );
+
+    let (resolved, _) = resolve(
+        &[
+            ("Cargo.toml", MANIFEST),
+            ("examples/demo/main.rs", "mod lib;\n"),
+            (
+                "examples/demo/lib.rs",
+                "mod inner;\nuse self::inner::Y;\nuse super::Z;\n",
+            ),
+            ("examples/demo/lib/inner.rs", ""),
+            ("examples/demo/inner.rs", ""),
+        ],
+        "examples/demo/lib.rs",
+    );
+    assert_eq!(
+        resolved,
+        [
+            ("mod inner".to_string(), files(&["examples/demo/lib/inner.rs"])),
+            ("self::inner::Y".to_string(), files(&["examples/demo/lib/inner.rs"])),
+            ("super::Z".to_string(), files(&["examples/demo/main.rs"])),
+        ]
+    );
+
+    // Without a `Cargo.toml` there is no layout, so the name is all there is to go on.
+    let (resolved, _) = resolve(&[("loose/main.rs", "mod a;\n"), ("loose/a.rs", "")], "loose/main.rs");
+    assert_eq!(resolved, [("mod a".to_string(), files(&["loose/a.rs"]))]);
+}
+
+#[test]
+fn cargo_toml_targets_are_crate_roots() {
+    let manifest = "[package]\nname = \"demo\"\n\n[lib]\npath = \"core/lib.rs\"\n\n\
+                    [[bin]]\nname = \"gen\"\npath = \"tools/gen/main.rs\"\n\n\
+                    [[bin]]\nname = \"tool\"\npath = \"src/tool/main.rs\"\n";
+    let repo = [
+        ("Cargo.toml", manifest),
+        ("core/lib.rs", "mod a;\nmod b;\n"),
+        ("core/a.rs", "use crate::b::B;\nuse crate::Root;\n"),
+        ("core/b.rs", ""),
+        ("tools/gen/main.rs", "mod opts;\nuse crate::opts::O;\n"),
+        ("tools/gen/opts.rs", "use crate::Run;\n"),
+        ("src/lib.rs", ""),
+        ("src/tool/main.rs", "mod args;\n"),
+        ("src/tool/args.rs", "use crate::Root;\n"),
+    ];
+    let (resolved, _) = resolve(&repo, "core/a.rs");
+    assert_eq!(
+        resolved,
+        [
+            ("crate::b::B".to_string(), files(&["core/b.rs"])),
+            ("crate::Root".to_string(), files(&["core/lib.rs"])),
+        ]
+    );
+    let (resolved, _) = resolve(&repo, "tools/gen/main.rs");
+    assert_eq!(
+        resolved,
+        [
+            ("mod opts".to_string(), files(&["tools/gen/opts.rs"])),
+            ("crate::opts::O".to_string(), files(&["tools/gen/opts.rs"])),
+        ]
+    );
+    let (resolved, _) = resolve(&repo, "tools/gen/opts.rs");
+    assert_eq!(resolved, [("crate::Run".to_string(), files(&["tools/gen/main.rs"]))]);
+    let (resolved, _) = resolve(&repo, "src/tool/main.rs");
+    assert_eq!(resolved, [("mod args".to_string(), files(&["src/tool/args.rs"]))]);
+    let (resolved, _) = resolve(&repo, "src/tool/args.rs");
+    assert_eq!(resolved, [("crate::Root".to_string(), files(&["src/tool/main.rs"]))]);
+}
