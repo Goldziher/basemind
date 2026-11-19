@@ -153,7 +153,8 @@ impl BasemindServer {
         if edited since the scan. `path` pins the definition there. Row `resolution` (omitted if \
         `resolution_default`, else name_only): same_file, imported, scope_resolved (local binding), elsewhere \
         (binds another definition), name_only (unchecked; see `resolution_note`), external (not \
-        defined in the index). \
+        defined in the index). `importers`+`path`, no `name`: its importers `by_depth`. `cycles`: \
+        import cycles (`path`: its own). \
         Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
         annotations(
             read_only_hint = true,

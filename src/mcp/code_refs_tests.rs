@@ -51,11 +51,12 @@ async fn code_refs_without_an_index_is_refused_with_the_fix() {
         "test".into(),
     );
     let refs = |relation: Option<&str>, path: Option<&str>| crate::mcp::params::CodeRefsParams {
-        name: "alpha".to_string(),
+        name: Some("alpha".to_string()),
         relation: relation.map(str::to_string),
         path: path.map(crate::path::RelPath::from),
         line: None,
         column: None,
+        depth: None,
         match_mode: None,
         limit: None,
         cursor: None,

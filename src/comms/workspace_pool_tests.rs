@@ -563,11 +563,12 @@ async fn a_hosted_read_answers_from_the_index_while_a_scan_holds_the_writer() {
         None,
     );
     let refs = crate::mcp::params::CodeRefsParams {
-        name: "alpha".to_string(),
+        name: Some("alpha".to_string()),
         relation: None,
         path: None,
         line: None,
         column: None,
+        depth: None,
         match_mode: None,
         limit: None,
         cursor: None,

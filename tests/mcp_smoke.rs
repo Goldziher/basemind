@@ -3271,3 +3271,91 @@ async fn large_files_are_listed_by_size_and_counted_on_status() {
     );
     service.cancel().await.expect("shut down");
 }
+
+/// `code_refs` over the import graph (#121, #135): `importers` with a `path` and `cycles` take no
+/// `name`, every other relation still needs one, and each argument that has no meaning in a shape
+/// is refused naming the shapes that have one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_refs_graph_relations_answer_and_refuse_their_shapes() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    for (args, fields) in [
+        (
+            json!({ "relation": "importers", "path": "a.rs", "depth": 2 }),
+            ["total", "by_depth"],
+        ),
+        (json!({ "relation": "cycles" }), ["total", "cycles"]),
+        (json!({ "relation": "cycles", "path": "cyc1.rs" }), ["total", "cycles"]),
+    ] {
+        let result = service
+            .call_tool(call_params("code_refs", args.clone()))
+            .await
+            .expect("code_refs over the graph");
+        assert_ne!(result.is_error, Some(true), "{args}: {result:?}");
+        let body = decode_text(&result);
+        for field in fields {
+            assert!(body.get(field).is_some(), "{args} must answer `{field}`: {body}");
+        }
+    }
+
+    let refusals = [
+        (json!({}), "relation `callers` needs `name`"),
+        (
+            json!({ "relation": "implementations" }),
+            "relation `implementations` needs `name`",
+        ),
+        (
+            json!({ "name": "alpha", "depth": 2 }),
+            "`depth` applies only to relation `importers` with `path`",
+        ),
+        (
+            json!({ "name": "alpha", "relation": "importers", "depth": 2 }),
+            "`depth` applies only to relation `importers` with `path`",
+        ),
+        (
+            json!({ "name": "alpha", "relation": "importers", "path": "a.rs" }),
+            "not both",
+        ),
+        (
+            json!({ "relation": "importers", "path": "a.rs", "line": 1 }),
+            "`line` needs `path`",
+        ),
+        (
+            json!({ "name": "alpha", "relation": "cycles" }),
+            "relation `cycles` takes no `name` or `match`",
+        ),
+    ];
+    for (args, expected) in refusals {
+        let message = refused(&service, "code_refs", args.clone()).await;
+        assert!(
+            message.contains(expected) && message.contains("{path, relation:\"importers\", depth?}"),
+            "{args} must be refused with `{expected}` and the accepted shapes: {message}"
+        );
+    }
+    for depth in [0, 6] {
+        let message = refused(
+            &service,
+            "code_refs",
+            json!({ "relation": "importers", "path": "a.rs", "depth": depth }),
+        )
+        .await;
+        assert!(message.contains("`depth` is 1 to 5"), "depth {depth}: {message}");
+    }
+    let message = refused(
+        &service,
+        "code_refs",
+        json!({ "relation": "importers", "path": "missing.rs" }),
+    )
+    .await;
+    assert!(
+        message.contains("missing.rs"),
+        "an unindexed file must be named: {message}"
+    );
+    service.cancel().await.expect("shut down");
+}

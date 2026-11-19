@@ -83,7 +83,7 @@ const REQUIRED: [(&str, &[&str]); 15] = [
     ("code_read", &["path"]),
     ("code_grep", &["pattern"]),
     ("code_search", &["query"]),
-    ("code_refs", &["name"]),
+    ("code_refs", &[]),
     ("find_files", &[]),
     ("docs_search", &["query"]),
     ("git_log", &[]),
