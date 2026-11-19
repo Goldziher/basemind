@@ -211,7 +211,8 @@ BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)" \
   own output on the pinned commit.
 - `run_gate.sh` refuses to start unless `BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR` are set to existing, empty
   directories outside the default cache, refuses a binary without the `tokenizer` feature, refuses to run `read_around`
-  tasks without `rg` on PATH (its version goes into `run.tsv`), scans each repository,
+  tasks without `rg` on PATH (its version goes into `run.tsv`), refuses a binary whose `code cycles --json`
+  `coverage` has no Rust resolver row (no `code-intel`) for a task file with `impact` / `cycles` tasks, scans each repository,
   runs `basemind admin eval --tasks ... --min-recall 0.8`, and stops any daemon it could have started on exit.
 - `gate.py RESULTS_DIR` turns the per-corpus reports into `gate.md` / `gate.json`.
 

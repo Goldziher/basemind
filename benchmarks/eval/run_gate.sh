@@ -81,15 +81,19 @@ while IFS=$'\t' read -r name _ commit _; do
   "${bin}" --root "${repo}" -q scan >/dev/null
   t1="$(date +%s)"
   # Without a Rust import resolver (`code-intel`) the graph is empty and every `impact` / `cycles`
-  # task scores 0 as if the tool were wrong; refuse instead of reporting that as a verdict.
+  # task scores 0 as if the tool were wrong; refuse instead of reporting that as a verdict. The
+  # probe reads the structured `coverage` of `code cycles`: Rust must have a resolver row and must
+  # not be listed under `without_resolver`.
   if grep -q -E '"mode": *"(impact|cycles)"' "${tasks}"; then
-    coverage="$("${bin}" --root "${repo}" code refs --relation cycles --json 2>/dev/null || true)"
-    case "${coverage}" in
-    *"this build"*)
-      echo "refusing to run: ${bin} resolves no ${name} imports (build it with --features tokenizer,code-intel)" >&2
+    if ! "${bin}" --root "${repo}" code cycles --json 2>/dev/null | python3 -c '
+import json, sys
+cov = json.load(sys.stdin)["coverage"]
+rust = any(row["language"] == "rust" for row in cov["languages"])
+sys.exit(0 if rust and "rust" not in cov.get("without_resolver", []) else 1)
+'; then
+      echo "refusing to run: ${bin} resolves no ${name} Rust imports (build it with --features tokenizer,code-intel)" >&2
       exit 2
-      ;;
-    esac
+    fi
   fi
   "${bin}" --root "${repo}" admin eval --tasks "${tasks}" --min-recall 0.8 \
     --out "${results}/${name}.ndjson" --report "${results}/${name}.report.json" \
