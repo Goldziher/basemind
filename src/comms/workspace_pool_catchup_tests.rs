@@ -49,7 +49,11 @@ async fn a_rebuilt_read_stack_catches_up_on_a_file_added_while_it_was_shed() {
     .expect("write gamma");
     let rebuilt = hosted_stack(&pool, workspace.path()).await;
     let found = symbols(&rebuilt, "gamma_added_while_shed").await;
-    assert_eq!(found["total"], 1, "{found}");
+    assert_eq!(
+        found["results"],
+        serde_json::json!(["gamma.rs:1: pub fn gamma_added_while_shed() -> u32"]),
+        "{found}"
+    );
 }
 
 /// A workspace the daemon dropped altogether (the idle sweep, or a daemon exit) reopens over its
@@ -71,11 +75,16 @@ async fn a_reopened_workspace_catches_up_on_a_file_added_while_it_was_closed() {
     )
     .expect("write gamma");
     let reopened = hosted_stack(&pool, workspace.path()).await;
-    assert_eq!(symbols(&reopened, "gamma_added_while_closed").await["total"], 1);
+    // A page without a cursor lists every match and writes no `total`: the rows are the count.
     assert_eq!(
-        symbols(&reopened, "beta").await["total"],
-        0,
-        "the deleted file is pruned"
+        symbols(&reopened, "gamma_added_while_closed").await["results"],
+        serde_json::json!(["gamma.rs:1: pub fn gamma_added_while_closed() -> u32"])
+    );
+    let beta = symbols(&reopened, "beta").await;
+    assert_eq!(
+        beta["results"],
+        serde_json::json!([]),
+        "the deleted file is pruned: {beta}"
     );
 }
 
