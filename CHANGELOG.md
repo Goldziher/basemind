@@ -648,6 +648,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   column too. Affected Rust, JavaScript, TypeScript, TSX, Python, Go and Java, plus HTTP client calls.
   Method calls now also start at the byte a resolver records the use at, so they can be graded by
   resolution. `EXTRACT_EPOCH` is 5: the next scan re-extracts every file once.
+- A Rust trait impl whose self type is not a path or generic type (`impl Kill for &mut T`,
+  `impl ToSocketAddrs for (Ipv4Addr, u16)`, `impl FromStreamPriv<()> for ()`, a slice, array, pointer
+  or `str`) is an implementation: `code_refs` with `relation: "implementations"` lists it, its
+  `impl_type` the type as written on one line. They were missing. `EXTRACT_EPOCH` is 6.
 - The watcher no longer discards the OS's "events were dropped" signal (FSEvents `MustScanSubDirs`,
   inotify queue overflow). A signal naming a subdirectory rescans that subtree; one naming the root,
   or none, runs the whole-tree stat-and-hash pass of `index_rescan {}`; a burst of signals is one
