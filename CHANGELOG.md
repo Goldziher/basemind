@@ -165,7 +165,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`basemind code grep --context N`). The N lines before and after each hit are rows
   `"<line>- <text>"`; where windows overlap each line is written once, as `rg -C N` prints it, and a
   window stops at the file's last line. The token budget charges each context row once. `context:
-  true` is refused naming the field; pass `1`.
+  true` is refused naming the field; pass `1`. The `read_around` eval kind is now this one call
+  (`context: 5`) instead of `code_grep {ranges}` and a `code_read` per file, and counts against
+  `code_grep`: its median answer fell from 385 / 270 to 366 / 249 tokens (basemind / tokio), 1.26x /
+  1.35x to 1.31x / 1.52x against `rg -C5`.
 
 - `admin eval`'s value gate holds a locating kind to a median ratio of exactly 2/3, ADR-0031's "at
   most one and a half times the shell's", where it used 0.67 and failed an answer at exactly 1.5x

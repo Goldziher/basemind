@@ -43,8 +43,8 @@ tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `read` to `code_
 `implementations` / `dependents` to `code_refs`, `grep` to `code_grep`, `find` to `find_files`, `git_search` /
 `git_path` / `git_symbol` to `git_log`, `blame` / `blame_symbol` to `git_blame`, `diff` / `diff_structural` to
 `git_diff`, `docs` to `docs_search`. The analysis kinds map to the tool whose argument they exercise: `impact` and
-`cycles` to `code_refs`, `grep_changed` to `code_grep`, `find_large` to `find_files`, `read_around` to `code_read`
-(after a `code_grep` with `ranges`), and `explain` to the CLI-only `code explain`.
+`cycles` to `code_refs`, `grep_changed` to `code_grep`, `find_large` to `find_files`, `read_around` to `code_grep`
+(one call with `context: 5`), and `explain` to the CLI-only `code explain`.
 
 | generator | mode(s) | gold |
 |---|---|---|
@@ -294,6 +294,11 @@ exception, below.
 | `find_large` | `git ls-files \| xargs awk ...` printing `<lines> <path>` (the `wc -l` listing with an unterminated last line counted) `\| sort -rn \| awk '$1>=N'` |
 | `read_around` | `rg -n -C5 -F -e PATTERN -g '*.EXT'`, its literal output (`grep_context`) |
 | `explain` | one command per section the tool answers: the file's definition lines, `git grep -n -w NAME` (callers), `sed -n` from the first attribute or doc comment to the body's end (doc, body, callees), the `impact` depth-1 `git grep -l -E` `use` lines for the definition's file (importers), `git log -n 5 -s --format='%h %an %aI %s' -L '/fn NAME[(<]/,/^INDENT}/:PATH'` (history); scored with the `explain` reader (recall reported, not gated: a reducing kind) |
+
+The `read_around` tool arm is one `code_grep {pattern, context: 5, language}` call, paged like any set-scored kind:
+every match and context row is a line shown, scored against the same gold as rg's rows. Until the third 0.34 gate run it
+was two steps, `code_grep {ranges: true}` and then a `code_read` of each file's ranges, and counted against
+`code_read`.
 
 `read_around` runs `rg` itself: the baseline is the literal output of the command an agent runs for "the lines
 around each hit", not a format built for the comparison. rg merges overlapping and adjacent context windows and

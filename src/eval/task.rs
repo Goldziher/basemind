@@ -80,7 +80,7 @@ impl EvalMode {
             Self::Impact | Self::Cycles => "code_refs",
             Self::GrepChanged => "code_grep",
             Self::FindLarge => "find_files",
-            Self::ReadAround => "code_read",
+            Self::ReadAround => "code_grep",
             Self::Explain => "code_explain",
         }
     }
@@ -292,7 +292,7 @@ mod tests {
             ("cycles", EvalMode::Cycles, "code_refs"),
             ("grep_changed", EvalMode::GrepChanged, "code_grep"),
             ("find_large", EvalMode::FindLarge, "find_files"),
-            ("read_around", EvalMode::ReadAround, "code_read"),
+            ("read_around", EvalMode::ReadAround, "code_grep"),
             ("explain", EvalMode::Explain, "code_explain"),
         ];
         for (name, mode, tool) in kinds {

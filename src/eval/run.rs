@@ -15,7 +15,7 @@ use crate::mcp::savings::estimate_from_text;
 use crate::mcp::tokens::count_tokens;
 
 use super::baseline::run_baseline;
-use super::extract::{annotation_accuracy, extract_items, grep_annotations, grep_ranges};
+use super::extract::{annotation_accuracy, extract_items, grep_annotations};
 use super::report::{SavingsOutcome, TaskResult};
 use super::score::{Item, score};
 use super::task::{EvalMode, Scoring, Task};
@@ -25,8 +25,8 @@ use super::task::{EvalMode, Scoring, Task};
 pub const MAX_PAGES: u32 = 50;
 
 /// Call the tool behind `mode` with `args`, which are that tool's own arguments. Returns the raw
-/// response text, or a tool/argument error message. `read_around` names its second call, the
-/// `code_read` of the ranges; its first is a `grep` call.
+/// response text, or a tool/argument error message. `read_around` is one `code_grep` with
+/// `context`, the lines around each hit written as rows.
 async fn call(server: &BasemindServer, mode: EvalMode, args: Value) -> Result<String> {
     let bad_args = |message: String| anyhow!("invalid args for mode `{}`: {message}", mode.as_str());
     let result: CallToolResult = match mode {
@@ -38,14 +38,16 @@ async fn call(server: &BasemindServer, mode: EvalMode, args: Value) -> Result<St
         EvalMode::Docs => server.docs_search_call(parse_args(args).map_err(bad_args)?).await,
         EvalMode::Symbols => server.code_symbols_call(parse_args(args).map_err(bad_args)?).await,
         EvalMode::Outline => server.code_outline_call(parse_args(args).map_err(bad_args)?).await,
-        EvalMode::Read | EvalMode::ReadAround => server.code_read_call(parse_args(args).map_err(bad_args)?).await,
+        EvalMode::Read => server.code_read_call(parse_args(args).map_err(bad_args)?).await,
         EvalMode::References
         | EvalMode::Callers
         | EvalMode::Dependents
         | EvalMode::Implementations
         | EvalMode::Impact
         | EvalMode::Cycles => server.code_refs_call(parse_args(args).map_err(bad_args)?).await,
-        EvalMode::Grep | EvalMode::GrepChanged => server.code_grep_call(parse_args(args).map_err(bad_args)?).await,
+        EvalMode::Grep | EvalMode::GrepChanged | EvalMode::ReadAround => {
+            server.code_grep_call(parse_args(args).map_err(bad_args)?).await
+        }
         EvalMode::Find | EvalMode::FindLarge => server.find_files_call(parse_args(args).map_err(bad_args)?).await,
         EvalMode::Explain => {
             let p = serde_json::from_value(args).map_err(|e| bad_args(e.to_string()))?;
@@ -102,9 +104,6 @@ fn task_args(task: &Task) -> Value {
 /// Call the tool, following `next_cursor` for set-scored tasks (a ranked task reads one page: the
 /// agent wants the top hits, not all of them).
 async fn answer(server: &BasemindServer, task: &Task) -> Result<Answer> {
-    if task.mode == EvalMode::ReadAround {
-        return answer_read_around(server, task).await;
-    }
     let mut args = task_args(task);
     let follow = task.scoring == Scoring::Set;
     let mut out = Answer::default();
@@ -127,47 +126,6 @@ async fn answer(server: &BasemindServer, task: &Task) -> Result<Answer> {
                 break;
             }
             None => break,
-        }
-    }
-    Ok(out)
-}
-
-/// `read_around`: every page of `code_grep` with the task's arguments (`ranges: true`), then one
-/// `code_read` per file with that file's ranges, read on through `next_ranges` when the size cap
-/// cut it. Every call is charged; the items are the lines read.
-async fn answer_read_around(server: &BasemindServer, task: &Task) -> Result<Answer> {
-    let mut args = task_args(task);
-    let mut out = Answer::default();
-    let mut reads = Vec::new();
-    loop {
-        let text = call(server, EvalMode::Grep, args.clone()).await?;
-        let body = out.page(&text);
-        reads.extend(grep_ranges(&body));
-        match body.get("next_cursor").and_then(Value::as_str) {
-            Some(cursor) if out.pages < MAX_PAGES => {
-                if let Some(obj) = args.as_object_mut() {
-                    obj.insert("cursor".into(), Value::String(cursor.to_string()));
-                }
-            }
-            Some(_) => {
-                out.cut = true;
-                break;
-            }
-            None => break,
-        }
-    }
-    for (path, ranges) in reads {
-        let mut ranges = Some(ranges);
-        while let Some(spans) = ranges.take() {
-            let read = serde_json::json!({ "path": path, "ranges": spans });
-            let text = call(server, EvalMode::ReadAround, read.clone()).await?;
-            let body = out.page(&text);
-            out.items.extend(extract_items(EvalMode::ReadAround, &read, &body));
-            ranges = body.get("next_ranges").and_then(Value::as_str).map(str::to_string);
-            if ranges.is_some() && out.pages >= MAX_PAGES {
-                out.cut = true;
-                break;
-            }
         }
     }
     Ok(out)
@@ -312,8 +270,8 @@ mod tests {
     }
 
     #[test]
-    fn scores_read_around_per_line_read() {
-        let body = json!({"path":"f.rs","spans":[{"line":1,"end_line":4},{"line":10,"end_line":11}]});
+    fn scores_read_around_per_line_shown() {
+        let body = json!({"hits":{"f.rs":{"main":["1- a","2: b","3- c","4- d"],"":["10- e","11: f"]}}});
         let gold = ["f.rs:1", "f.rs:2", "f.rs:3", "f.rs:4", "f.rs:5", "f.rs:10", "f.rs:11"];
         let (p, r) = scored(EvalMode::ReadAround, &Value::Null, &body, &gold);
         assert_eq!((p, r), (1.0, 6.0 / 7.0));

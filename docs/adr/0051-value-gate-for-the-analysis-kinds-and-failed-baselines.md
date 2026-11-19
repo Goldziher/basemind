@@ -46,7 +46,8 @@ ADR-0031 stands except where this record adds to it.
 
 3. **Each kind counts against the tool it drives** (`EvalMode::tool_key`): `impact` and `cycles`
    against `code_refs`, `grep_changed` against `code_grep`, `find_large` against `find_files`,
-   `read_around` against `code_read`, and `explain` against `code explain` (CLI-only, ADR-0047).
+   `read_around` against `code_grep` (one call with `context: 5`, ADR-0052 §2), and `explain`
+   against `code explain` (CLI-only, ADR-0047).
    `gate.py` refuses a gated kind that it lists under no tool, or under a tool other than the one the
    report names.
 

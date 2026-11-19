@@ -25,8 +25,8 @@ from pathlib import Path
 TOOLS = {
     "code_symbols": ["symbols"],
     "code_outline": ["outline"],
-    "code_read": ["read", "read_around"],
-    "code_grep": ["grep", "grep_changed"],
+    "code_read": ["read"],
+    "code_grep": ["grep", "grep_changed", "read_around"],
     "code_search": [],
     "code_refs": ["references", "callers", "implementations", "dependents", "impact", "cycles"],
     "find_files": ["find", "find_large"],

@@ -168,6 +168,13 @@ fn kinds(f: &Fixture) -> Vec<(&'static str, &'static str, Value, Vec<String>, Va
             json!({"grep": format!("git diff {c1} -- a.rs"), "items": "diff_symbols"}),
         ),
         (
+            "around",
+            "read_around",
+            json!({"pattern": "alpha();", "path": "c.rs", "context": 1}),
+            s(&["c.rs:1", "c.rs:2", "c.rs:3", "c.rs:4"]),
+            json!({"grep": "git grep -n -C1 -F -e 'alpha();' -- c.rs", "items": "grep_context"}),
+        ),
+        (
             "paged",
             "references",
             json!({"name": "alpha", "limit": 1}),
@@ -197,7 +204,19 @@ fn every_kind_and_its_baseline_score_full_recall_on_hand_worked_gold() {
     );
 
     let rep: Value = serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
-    for mode in ["implementations", "read", "git_path", "git_symbol", "blame", "diff"] {
+    assert_eq!(
+        rep["gate"]["read_around"]["tool"], "code_grep",
+        "read_around is one `code_grep` call with `context`"
+    );
+    for mode in [
+        "implementations",
+        "read",
+        "git_path",
+        "git_symbol",
+        "blame",
+        "diff",
+        "read_around",
+    ] {
         let gate = &rep["gate"][mode];
         assert_eq!(gate["tasks"], 1, "{mode}: {gate}");
         assert_eq!(gate["credited"], 1, "{mode}: {gate}");

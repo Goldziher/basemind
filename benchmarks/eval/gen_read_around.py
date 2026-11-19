@@ -1,9 +1,9 @@
 """Gold for `read_around`: a literal pattern -> every line within the context of each match.
 
-The tool answer is two steps (#129): `code_grep {pattern, ranges: true, language}` returns, per file,
-the hits merged into line ranges, and `code_read {path, ranges: "a-b,c-d"}` reads them. The gold
-ranges are built the way `src/engine/ranges.rs` builds them: each hit line `l` widens to
-`[l - 5, l + 5]`, clipped to the file, and overlapping or adjacent ranges merge. The gold is every
+The tool answer is one call, `code_grep {pattern, context: 5, language}`: each hit's line and the 5
+lines on either side, a line two windows share written once. The gold ranges are built the same way
+(and the way `src/engine/ranges.rs` merges read ranges): each hit line `l` widens to `[l - 5, l + 5]`,
+clipped to the file, and overlapping or adjacent ranges merge. The gold is every
 `path:line` of every range. A pattern is a word (case-sensitive substring) in 1 to `--max-files`
 files with at most `--max-hits` hits, the size of a look-around an agent does by hand.
 
@@ -134,7 +134,7 @@ def main() -> None:
             {
                 "id": f"read_around-{len(tasks):04d}",
                 "mode": "read_around",
-                "args": {"pattern": w, "ranges": True, "language": LANGUAGES[a.ext]},
+                "args": {"pattern": w, "context": CONTEXT, "language": LANGUAGES[a.ext]},
                 "gold": gold,
                 "scoring": "set",
                 "meta": {"files": len(hits), "hits": sum(len(h) for h in hits.values())},

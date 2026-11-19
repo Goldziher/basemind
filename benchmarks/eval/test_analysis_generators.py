@@ -283,7 +283,7 @@ class AnalysisGenerators(unittest.TestCase):
         self.assertEqual(merged_ranges([20, 40], 60), [(15, 25), (35, 45)])
         tasks = self.gen("gen_read_around.py", "--n", "500")
         spin = next(t for t in tasks if t["args"]["pattern"] == "spin_wheel")
-        self.assertEqual(spin["args"]["ranges"], True)
+        self.assertEqual(spin["args"], {"pattern": "spin_wheel", "context": 5, "language": "rust"})
         self.assertEqual(spin["gold"], [f"src/widget.rs:{n}" for n in range(1, 14)])
         self.assertEqual(spin["baseline"], {"grep": "rg -n -C5 -F -e 'spin_wheel' -g '*.rs'", "items": "grep_context"})
 

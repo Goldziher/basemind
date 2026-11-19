@@ -64,7 +64,7 @@ class GateSummary(unittest.TestCase):
             "cycles": "code_refs",
             "grep_changed": "code_grep",
             "find_large": "find_files",
-            "read_around": "code_read",
+            "read_around": "code_grep",
             "explain": "code_explain",
         }
         for kind, tool in owners.items():
@@ -85,8 +85,8 @@ class GateSummary(unittest.TestCase):
             self.write(d, "a", {"symbols": True, "brand_new_kind": False})
             with self.assertRaisesRegex(ValueError, "brand_new_kind"):
                 gate.verdicts(gate.load(d))
-            self.write(d, "a", {"read_around": True}, tool={"read_around": "code_grep"})
-            with self.assertRaisesRegex(ValueError, "counts against `code_grep`"):
+            self.write(d, "a", {"read_around": True}, tool={"read_around": "code_read"})
+            with self.assertRaisesRegex(ValueError, "counts against `code_read`"):
                 gate.verdicts(gate.load(d))
 
     def test_the_report_names_the_binary_commit_and_features(self) -> None:
