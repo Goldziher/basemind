@@ -220,11 +220,11 @@ fn text(value: Option<&Value>) -> Option<String> {
     value.and_then(Value::as_str).map(str::to_owned)
 }
 
-/// The session a subagent rollout belongs to. A rollout is a subagent's when its `source` is
+/// The thread that spawned a subagent rollout. A rollout is a subagent's when its `source` is
 /// `{"subagent": ...}`, its `thread_source` is `subagent`, or it names a `parent_thread_id`; a fork
-/// or a reverted thread is none of these and stays a session. Its session is the root thread
-/// (`session_id`, when it is not the rollout's own `id`), else the direct parent, from
-/// `parent_thread_id` or `source.subagent.thread_spawn.parent_thread_id`.
+/// or a reverted thread is none of these and stays a session. Its parent is the direct one
+/// (`parent_thread_id` or `source.subagent.thread_spawn.parent_thread_id`), which may be a fork or
+/// another subagent, else the root thread (`session_id`, when it is not the rollout's own `id`).
 fn parent(meta: &Payload) -> Option<String> {
     let subagent = meta.source.as_ref().is_some_and(|s| s.get("subagent").is_some())
         || meta.thread_source.as_ref().and_then(Value::as_str) == Some("subagent")
@@ -233,9 +233,7 @@ fn parent(meta: &Payload) -> Option<String> {
         return None;
     }
     let own = text(meta.id.as_ref());
-    text(meta.session_id.as_ref())
-        .filter(|root| Some(root) != own.as_ref())
-        .or_else(|| text(meta.parent_thread_id.as_ref()))
+    text(meta.parent_thread_id.as_ref())
         .or_else(|| {
             text(
                 meta.source
@@ -243,6 +241,7 @@ fn parent(meta: &Payload) -> Option<String> {
                     .and_then(|s| s.pointer("/subagent/thread_spawn/parent_thread_id")),
             )
         })
+        .or_else(|| text(meta.session_id.as_ref()).filter(|root| Some(root) != own.as_ref()))
 }
 
 fn unattributed(reason: &str) -> Outcome {
@@ -524,7 +523,7 @@ mod tests {
             "session_id": "root", "id": "child", "parent_thread_id": "mid",
             "source": {"subagent": {"thread_spawn": {"parent_thread_id": "mid", "depth": 2}}}
         }));
-        assert_eq!(parent(&spawned).as_deref(), Some("root"));
+        assert_eq!(parent(&spawned).as_deref(), Some("mid"), "the direct parent");
         let review = meta(serde_json::json!({"id": "child", "source": {"subagent": "review"}}));
         assert_eq!(parent(&review), None, "no thread named");
         let older = meta(serde_json::json!({
@@ -532,6 +531,10 @@ mod tests {
             "source": {"subagent": {"thread_spawn": {"parent_thread_id": "mid", "depth": 1}}}
         }));
         assert_eq!(parent(&older).as_deref(), Some("mid"));
+        let rooted = meta(serde_json::json!({
+            "session_id": "root", "id": "child", "source": {"subagent": "review"}
+        }));
+        assert_eq!(parent(&rooted).as_deref(), Some("root"), "no direct parent named");
         let fork = meta(serde_json::json!({"session_id": "root", "id": "fork", "source": "cli"}));
         assert_eq!(parent(&fork), None, "a fork is a session of its own");
         let root = meta(serde_json::json!({"session_id": "root", "id": "root", "source": "cli"}));

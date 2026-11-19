@@ -424,8 +424,9 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
             }
         }
     }
-    // The thread id of each reported session, by host, for attributing subagents.
+    // The thread id of each reported session and subagent, by host, for attributing subagents.
     let mut threads: Vec<(Host, String)> = Vec::new();
+    let mut subagent_threads: Vec<Option<String>> = Vec::new();
     for entry in merge_threads(entries) {
         let Entry {
             host,
@@ -452,19 +453,23 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
             repeated_reads,
             subagents: None,
         };
-        match filed_under.or(parsed.parent) {
-            Some(parent) => report.subagents.push(SubagentReport {
-                parent,
-                attributed: false,
-                session,
-            }),
+        // A transcript naming itself as its parent is a session with sidechain records in it.
+        match filed_under.or(parsed.parent.filter(|parent| *parent != id)) {
+            Some(parent) => {
+                subagent_threads.push(parsed.thread);
+                report.subagents.push(SubagentReport {
+                    parent,
+                    attributed: false,
+                    session,
+                });
+            }
             None => {
                 threads.push((host, parsed.thread.unwrap_or(id)));
                 report.sessions.push(session);
             }
         }
     }
-    attribute(&mut report, &threads);
+    attribute(&mut report, &threads, &subagent_threads);
     report
         .sessions
         .sort_by(|a, b| a.started.cmp(&b.started).then_with(|| a.id.cmp(&b.id)));
@@ -509,15 +514,46 @@ fn merge_threads(entries: Vec<Entry>) -> Vec<Entry> {
     merged
 }
 
-/// Attribute each subagent to the reported session of its host whose thread id it names, and add
-/// its counts to that session's `subagents`. `threads[i]` is the thread id of `report.sessions[i]`.
-fn attribute(report: &mut Report, threads: &[(Host, String)]) {
-    for subagent in &mut report.subagents {
-        let host = subagent.session.host;
-        let Some(index) = threads
-            .iter()
-            .position(|(h, thread)| *h == host && *thread == subagent.parent)
-        else {
+/// Attribute each subagent to the reported session of its host it descends from: the one whose
+/// thread id it names, or, when it names another subagent (a subagent spawned by a subagent), the
+/// one that subagent descends from. Its counts are added to that session's `subagents`.
+/// `threads[i]` is the thread id of `report.sessions[i]`, `subagent_threads[i]` that of
+/// `report.subagents[i]`.
+fn attribute(report: &mut Report, threads: &[(Host, String)], subagent_threads: &[Option<String>]) {
+    enum Node {
+        Session(usize),
+        Subagent(usize),
+    }
+    let mut nodes: AHashMap<(Host, &str), Node> = AHashMap::new();
+    for (index, (host, thread)) in threads.iter().enumerate() {
+        nodes.entry((*host, thread.as_str())).or_insert(Node::Session(index));
+    }
+    for (index, (subagent, thread)) in report.subagents.iter().zip(subagent_threads).enumerate() {
+        if let Some(thread) = thread {
+            nodes
+                .entry((subagent.session.host, thread.as_str()))
+                .or_insert(Node::Subagent(index));
+        }
+    }
+    let targets: Vec<Option<usize>> = report
+        .subagents
+        .iter()
+        .map(|subagent| {
+            let host = subagent.session.host;
+            let mut name = subagent.parent.as_str();
+            // Each step moves to another subagent, so a cycle ends after one pass over them all.
+            for _ in 0..=report.subagents.len() {
+                match nodes.get(&(host, name)) {
+                    Some(Node::Session(index)) => return Some(*index),
+                    Some(Node::Subagent(index)) => name = report.subagents[*index].parent.as_str(),
+                    None => return None,
+                }
+            }
+            None
+        })
+        .collect();
+    for (subagent, target) in report.subagents.iter_mut().zip(targets) {
+        let Some(index) = target else {
             continue;
         };
         let parent = &mut report.sessions[index];

@@ -3,7 +3,9 @@
 //! started in a subdirectory of a checkout has its own slug, which extends the checkout's with `-`.
 //! A subagent's transcript is filed under its session: `<slug>/<session>/subagents/agent-<id>.jsonl`,
 //! or one directory deeper for a workflow run (`subagents/workflows/<run>/agent-<id>.jsonl`). Its
-//! records have the same shape, with `isSidechain` set and `sessionId` naming the parent.
+//! records have the same shape, with `isSidechain` set and `sessionId` naming the parent. Older
+//! versions wrote it beside the sessions (`<slug>/agent-<id>.jsonl`); a transcript whose first
+//! record with a `sessionId` is a sidechain is that session's subagent wherever it is filed.
 //!
 //! Each line is a JSON record. The ones read here carry `cwd`, `version` and `timestamp`; an
 //! `assistant` record's `message` holds `tool_use` blocks (`id`, `name`, `input`) and `usage`
@@ -42,7 +44,10 @@ pub fn slug(path: &Path) -> String {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Record {
+    session_id: Option<String>,
+    is_sidechain: Option<bool>,
     cwd: Option<String>,
     version: Option<String>,
     timestamp: Option<String>,
@@ -126,6 +131,7 @@ impl TranscriptParser for Claude {
         let mut json_seen = false;
         let mut tokens: AHashMap<String, (u64, Vec<Family>)> = AHashMap::new();
         let mut checkout_path: Option<std::path::PathBuf> = None;
+        let mut sidechain_of: Option<Option<String>> = None;
         let mut line = String::new();
         loop {
             line.clear();
@@ -140,6 +146,11 @@ impl TranscriptParser for Claude {
                 continue;
             };
             json_seen = true;
+            if sidechain_of.is_none()
+                && let Some(session_id) = &record.session_id
+            {
+                sidechain_of = Some(record.is_sidechain.unwrap_or(false).then(|| session_id.clone()));
+            }
             if let Some(cwd) = &record.cwd {
                 if let Some(session) = parsed.as_mut() {
                     // Every record carries the directory the session is in now (after a `cd`).
@@ -190,6 +201,7 @@ impl TranscriptParser for Claude {
                 attributed: true,
             },
             Some(mut session) => {
+                session.parent = sidechain_of.flatten();
                 for (id, (output, families)) in tokens {
                     if seen.first_response(&id) {
                         session.tally.tokens(output, &families);

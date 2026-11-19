@@ -516,6 +516,72 @@ fn a_resumed_claude_session_counts_only_its_new_calls() {
 }
 
 #[test]
+fn a_subagent_is_attributed_through_its_direct_parent() {
+    let env = setup();
+    let day = env.home.join(".codex/sessions/2026/11/20");
+    place(&env, &env.repo, "codex/fork.jsonl", &day.join("rollout-fork.jsonl"));
+    place(
+        &env,
+        &env.repo,
+        "codex/fork-subagent.jsonl",
+        &day.join("rollout-fsub.jsonl"),
+    );
+    place(
+        &env,
+        &env.repo,
+        "codex/nested-subagent.jsonl",
+        &day.join("rollout-nested.jsonl"),
+    );
+    let report = report(&env, None);
+    let parents: Vec<(&str, &str, bool)> = report
+        .subagents
+        .iter()
+        .filter(|s| s.session.host == Host::Codex)
+        .map(|s| (s.session.id.as_str(), s.parent.as_str(), s.attributed))
+        .collect();
+    assert_eq!(
+        parents,
+        vec![
+            ("rollout-g", "rollout-f", true),
+            ("rollout-nested", "rollout-f", true),
+            ("rollout-fsub", "rollout-fork", true),
+        ],
+        "the fork's subagent names the root session too, but was spawned by the fork; the nested \
+         subagent's parent is the subagent rollout-g"
+    );
+    let transcripts = |id: &str| session(&report, id).subagents.as_ref().map(|t| t.transcripts);
+    assert_eq!(
+        (transcripts("rollout-f"), transcripts("rollout-fork")),
+        (Some(2), Some(1))
+    );
+}
+
+#[test]
+fn a_sidechain_transcript_beside_the_sessions_is_a_subagent() {
+    let env = setup();
+    let project = env.home.join(".claude/projects").join(slug(&env.repo));
+    place(
+        &env,
+        &env.repo,
+        "claude/subagent.jsonl",
+        &project.join("agent-a3.jsonl"),
+    );
+    let report = report(&env, None);
+    let ids: Vec<&str> = report.sessions.iter().map(|s| s.id.as_str()).collect();
+    assert!(!ids.contains(&"agent-a3"), "{ids:?}");
+    let a3 = report
+        .subagents
+        .iter()
+        .find(|s| s.session.id == "agent-a3")
+        .expect("the Claude Code 2.0 sidechain transcript");
+    assert_eq!((a3.parent.as_str(), a3.attributed), ("s1", true));
+    assert_eq!(
+        session(&report, "s1").subagents.as_ref().map(|t| t.transcripts),
+        Some(3)
+    );
+}
+
+#[test]
 fn unknown_formats_are_reported_not_skipped() {
     let env = setup();
     let report = report(&env, None);
