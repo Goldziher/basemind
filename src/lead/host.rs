@@ -457,10 +457,11 @@ impl HeldLocks {
 }
 
 /// The worktree lock files this process has open, by path, with whether each is locked
-/// exclusively. A file is open at most once per process: where `flock` is emulated with `fcntl`
-/// locks (Linux NFS), closing any descriptor of a file releases every lock the process holds on
-/// it, so a second descriptor, closed by a refused claim or a finished session, would release a
-/// lock another session of this process still relies on. Taken after a host's own locks.
+/// exclusively. The locks are `fcntl` record locks, which belong to the process: two claims of one
+/// process never conflict in the kernel, so this table is what refuses them, and closing any
+/// descriptor of a file releases every lock the process holds on it, so a file is open at most
+/// once per process: a second descriptor, closed by a refused claim or a finished session, would
+/// release a lock another session of this process still relies on. Taken after a host's own locks.
 static OPEN_LOCKS: Mutex<Vec<(PathBuf, bool, Weak<File>)>> = Mutex::new(Vec::new());
 
 /// The lock files one worktree claim holds. They are closed under [`OPEN_LOCKS`], so no claim
@@ -480,9 +481,13 @@ impl Drop for WorktreeLocks {
 /// around it, whatever worktrees root each lead has. The files are named by a hash of the
 /// canonical path and are never deleted: deleting a lock file races with a lead opening it. The
 /// locks go with the returned files.
+///
+/// Not `flock`: a `flock` lock belongs to the open file description, which every child this
+/// process forks shares until it execs, so a lock released while any thread is spawning a process
+/// (a launch of this lead, a `git`, another lead in the same process) outlives its release and
+/// refuses the next claim of a worktree that is free. A record lock is never inherited by a fork.
 fn lock_worktree(locks: &Path, dir: &Path) -> Result<WorktreeLocks, String> {
     use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
-    use std::os::unix::io::AsRawFd as _;
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -495,8 +500,7 @@ fn lock_worktree(locks: &Path, dir: &Path) -> Result<WorktreeLocks, String> {
     let mut ancestors: Vec<&Path> = dir.ancestors().skip(1).collect();
     ancestors.reverse();
     for (path, exclusive) in ancestors.into_iter().map(|a| (a, false)).chain([(dir, true)]) {
-        let name = blake3::hash(path.as_os_str().as_encoded_bytes()).to_hex();
-        let lock_path = locks.join(format!("{name}.lock"));
+        let lock_path = lock_file(locks, path);
         let known = open
             .iter()
             .find(|(known, _, _)| *known == lock_path)
@@ -512,14 +516,13 @@ fn lock_worktree(locks: &Path, dir: &Path) -> Result<WorktreeLocks, String> {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
+            .read(true)
             .write(true)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(&lock_path)
             .map_err(|_| "working_dir_lock_failed".to_owned())?;
-        let operation = if exclusive { libc::LOCK_EX } else { libc::LOCK_SH };
-        // SAFETY: flock on a descriptor this function owns; it does not block (LOCK_NB).
-        if unsafe { libc::flock(file.as_raw_fd(), operation | libc::LOCK_NB) } != 0 {
+        if !try_record_lock(&file, exclusive) {
             return Err("working_dir_in_use".to_owned());
         }
         let file = Arc::new(file);
@@ -528,6 +531,25 @@ fn lock_worktree(locks: &Path, dir: &Path) -> Result<WorktreeLocks, String> {
     }
     drop(open);
     Ok(WorktreeLocks(held))
+}
+
+/// The lock file in `locks` for the canonical directory `dir`.
+fn lock_file(locks: &Path, dir: &Path) -> PathBuf {
+    let name = blake3::hash(dir.as_os_str().as_encoded_bytes()).to_hex();
+    locks.join(format!("{name}.lock"))
+}
+
+/// Lock the whole of `file` with a process-associated `fcntl` record lock, shared or exclusive,
+/// without blocking. False when another process holds a conflicting lock.
+fn try_record_lock(file: &File, exclusive: bool) -> bool {
+    use std::os::unix::io::AsRawFd as _;
+    // SAFETY: `flock` is plain integers, for which all zeroes is valid: start 0, length 0 (the
+    // whole file).
+    let mut range: libc::flock = unsafe { std::mem::zeroed() };
+    range.l_type = (if exclusive { libc::F_WRLCK } else { libc::F_RDLCK }) as libc::c_short;
+    range.l_whence = libc::SEEK_SET as libc::c_short;
+    // SAFETY: F_SETLK on a descriptor the caller owns, reading the `flock` above; it does not block.
+    unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &raw const range) == 0 }
 }
 
 /// Logs what the operator must see outside the audit log, and lets go of a finished session's

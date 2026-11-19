@@ -94,17 +94,30 @@ impl GoModules {
     }
 }
 
-/// The module path of a `go.mod`'s `module` directive.
+/// The module path of a `go.mod`'s `module` directive, written as a line (`module example.com/x`) or,
+/// as the go.mod grammar also allows, a block whose `(` ends its line and whose one line is the path
+/// (`module (` newline `example.com/x` newline `)`). The one-line block `module ( example.com/x )`,
+/// which `go` itself refuses, is read the same way.
 fn module_directive(text: &str) -> Option<String> {
-    text.lines().find_map(|line| {
-        let line = line.split("//").next()?.trim();
-        let path = line.strip_prefix("module")?;
-        if !path.starts_with([' ', '\t']) {
-            return None;
-        }
+    let mut lines = text.lines().map(|line| line.split("//").next().unwrap_or("").trim());
+    while let Some(line) = lines.next() {
+        let Some(rest) = line.strip_prefix("module") else {
+            continue;
+        };
+        let path = if let Some(block) = rest.trim_start().strip_prefix('(') {
+            match block.trim() {
+                "" => lines.find(|line| !line.is_empty())?,
+                inline => inline.strip_suffix(')').unwrap_or(inline).trim(),
+            }
+        } else if rest.starts_with([' ', '\t']) {
+            rest
+        } else {
+            continue;
+        };
         let path = path.trim().trim_matches(['"', '`']);
-        (!path.is_empty()).then(|| path.to_string())
-    })
+        return (!path.is_empty() && path != ")").then(|| path.to_string());
+    }
+    None
 }
 
 /// The sorted non-test `.go` file names of a directory.
@@ -177,6 +190,45 @@ mod tests {
         );
         assert_eq!(module_directive("go 1.22\n"), None);
         assert_eq!(module_directive("modules x\n"), None);
+    }
+
+    #[test]
+    fn module_directive_reads_a_block_module_directive() {
+        assert_eq!(
+            module_directive("// header\nmodule (\n\t// the path\n\n\t\"example.com/app\" // trailing\n)\n\ngo 1.22\n")
+                .as_deref(),
+            Some("example.com/app")
+        );
+        assert_eq!(
+            module_directive("module(\nexample.com/app\n)\n").as_deref(),
+            Some("example.com/app")
+        );
+        assert_eq!(
+            module_directive("module ( example.com/app )\n").as_deref(),
+            Some("example.com/app")
+        );
+        assert_eq!(module_directive("module (\n)\n"), None);
+        assert_eq!(module_directive("module ()\n"), None);
+    }
+
+    #[test]
+    fn a_block_module_directive_resolves_in_module_imports() {
+        let (resolved, _) = resolve(
+            &[
+                ("go.mod", "module (\n\texample.com/app\n)\n\ngo 1.22\n"),
+                ("store/a.go", ""),
+                ("cmd/main.go", ""),
+            ],
+            "cmd/main.go",
+            "import \"example.com/app/store\"",
+        );
+        assert_eq!(
+            resolved,
+            [(
+                "example.com/app/store".to_string(),
+                ModuleTarget::Files(vec!["store/a.go".to_string()])
+            )]
+        );
     }
 
     fn resolve(files: &[(&str, &str)], importer: &str, raw: &str) -> (Vec<(String, ModuleTarget)>, ProbeSet) {
