@@ -71,7 +71,12 @@ fn splice_body(text: &str) -> String {
     let body = text
         .strip_prefix("# ")
         .and_then(|rest| rest.split_once('\n'))
-        .map_or(text, |(_, rest)| rest.strip_prefix('\n').unwrap_or(rest));
+        // A Windows checkout may hold the page with CRLF line endings.
+        .map_or(text, |(_, rest)| {
+            rest.strip_prefix("\r\n")
+                .or_else(|| rest.strip_prefix('\n'))
+                .unwrap_or(rest)
+        });
     let mut out = String::with_capacity(body.len() + 16);
     let mut fenced = false;
     for line in body.lines() {
@@ -147,5 +152,10 @@ mod tests {
             splice_body("# Title\n\nText\n```sh\n# comment\n```\n## Head\n"),
             "Text\n```sh\n# comment\n```\n### Head\n"
         );
+    }
+
+    #[test]
+    fn splice_body_reads_crlf_pages() {
+        assert_eq!(splice_body("# Title\r\n\r\nText\r\n## Head\r\n"), "Text\n### Head\n");
     }
 }
