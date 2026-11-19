@@ -32,8 +32,10 @@ use super::task::EvalMode;
 pub const GATE_MIN_CREDITED: f64 = 0.7;
 /// Least median baseline/tool token ratio of a reducing kind (ADR-0031 rule 2).
 pub const REDUCING_MIN_RATIO: f64 = 1.5;
-/// Least median baseline/tool token ratio of a locating kind (ADR-0031 rule 3).
-pub const LOCATING_MIN_RATIO: f64 = 0.67;
+/// Least median baseline/tool token ratio of a locating kind (ADR-0031 rule 3: the tool's answer
+/// costs at most one and a half times the shell's), exactly 2/3. A ratio that is 2/3 on paper
+/// (`8 / 12`) is the same correctly rounded double, and [`EPS`] absorbs any other rounding.
+pub const LOCATING_MIN_RATIO: f64 = 2.0 / 3.0;
 /// Most a locating kind's mean recall may fall below the baseline's (ADR-0031 rule 3).
 pub const LOCATING_MAX_RECALL_DEFICIT: f64 = 0.02;
 /// Least share of `code_grep` hits whose enclosing symbol is right (ADR-0031 rule 4).
@@ -210,7 +212,10 @@ impl Checks {
 
     fn ratio(&mut self, credited: usize, median: Option<f64>, min: f64) {
         match median {
-            Some(m) if m < min - EPS => self.failed.push(format!("median {m:.2}x < {min}x")),
+            Some(m) if m < min - EPS => {
+                let (m, min) = distinct(m, min);
+                self.failed.push(format!("median {m}x < {min}x"));
+            }
             None if credited > 0 => self
                 .undecided
                 .push("no credited task has a baseline answer to compare".to_string()),
@@ -253,6 +258,13 @@ impl Checks {
     }
 }
 
+/// `value` and `threshold` printed with the fewest digits (at least 2) that tell them apart, so a
+/// failed check never reads as one that cannot fail (`0.67x < 0.67x` for 0.6662 against 2/3).
+fn distinct(value: f64, threshold: f64) -> (String, String) {
+    let shown = |digits: usize| (format!("{value:.digits$}"), format!("{threshold:.digits$}"));
+    (2..=17).map(shown).find(|(v, t)| v != t).unwrap_or_else(|| shown(17))
+}
+
 fn opt(v: Option<f64>, digits: usize) -> String {
     v.map_or_else(|| "-".into(), |x| format!("{x:.digits$}"))
 }
@@ -263,7 +275,7 @@ pub fn gate_markdown(r: &Report) -> String {
     let _ = writeln!(
         s,
         "\n## Value gate (ADR-0031: credited >= {GATE_MIN_CREDITED} for every job; reducing median >= \
-         {REDUCING_MIN_RATIO}x; locating median >= {LOCATING_MIN_RATIO}x and recall >= baseline - \
+         {REDUCING_MIN_RATIO}x; locating median >= {LOCATING_MIN_RATIO:.4}x (2/3) and recall >= baseline - \
          {LOCATING_MAX_RECALL_DEFICIT}; grep symbol accuracy >= {GREP_MIN_SYMBOL_ACCURACY})\n"
     );
     let _ = writeln!(

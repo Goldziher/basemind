@@ -148,16 +148,20 @@ pub struct BuildInfo {
     pub version: String,
     /// Hash of the executable's bytes (`version::build_id`).
     pub build_id: String,
-    /// The Cargo features that change what the eval measures, as compiled in.
+    /// The Cargo features that change what the eval measures, as compiled in and named as the
+    /// build passed them: `code-intel` when both its parts are on, not `code-intel-js` and
+    /// `code-intel-stack`, so the list matches `--features tokenizer,code-intel`.
     pub features: Vec<String>,
 }
 
 impl BuildInfo {
     pub fn current() -> Self {
+        let umbrella = cfg!(all(feature = "code-intel-js", feature = "code-intel-stack"));
         let compiled = [
             ("tokenizer", cfg!(feature = "tokenizer")),
-            ("code-intel-js", cfg!(feature = "code-intel-js")),
-            ("code-intel-stack", cfg!(feature = "code-intel-stack")),
+            ("code-intel", umbrella),
+            ("code-intel-js", cfg!(feature = "code-intel-js") && !umbrella),
+            ("code-intel-stack", cfg!(feature = "code-intel-stack") && !umbrella),
             ("intelligence", cfg!(feature = "intelligence")),
             ("documents", cfg!(feature = "documents")),
             ("code-search", cfg!(feature = "code-search")),

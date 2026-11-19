@@ -197,7 +197,7 @@ job picks the rule a kind must meet on each corpus, counted with o200k:
 
 | job | kinds | rule |
 |---|---|---|
-| locating: the answer is a list of places | `symbols`, `grep`, `references`, `callers`, `implementations`, `dependents`, `find`, `git_search`, `git_path`, `git_symbol`, `diff`; `impact`, `grep_changed`, `find_large` | credited >= 0.70, median ratio >= 0.67, and mean recall no more than 0.02 below the baseline's |
+| locating: the answer is a list of places | `symbols`, `grep`, `references`, `callers`, `implementations`, `dependents`, `find`, `git_search`, `git_path`, `git_symbol`, `diff`; `impact`, `grep_changed`, `find_large` | credited >= 0.70, median ratio >= 2/3 (the answer costs at most 1.5x the shell's), and mean recall no more than 0.02 below the baseline's |
 | reducing: the answer replaces reading content | `outline`, `read`, `blame`, `blame_symbol`, `diff_structural`, `docs`, `semantic` (no task kind yet); `read_around`, `explain` | credited >= 0.70 and median ratio >= 1.5 |
 | correctness: no shell command answers it | `cycles` | credited >= 0.70 |
 
@@ -207,7 +207,10 @@ which classifies them as the second 0.34 gate run did. Counting rules:
 
 - **Credited**: tool recall >= 0.8 on a non-empty gold, over every task of the kind, errors included.
 - **Ratio**: baseline tokens / tool tokens, nearest-rank median over the credited tasks whose baseline answered. A
-  baseline failure (it exited above 1 or printed nothing) is left out: an empty shell answer is not a cheap one.
+  baseline failure (it exited above 1 or printed nothing) is left out: an empty shell answer is not a cheap one. The
+  locating floor is exactly 2/3, ADR-0031's "at most one and a half times the shell's": 12 tokens against 8 passes
+  (until the third 0.34 gate run it was 0.67, which failed exactly 1.5x). A failed ratio is printed with the digits
+  that tell it from its floor (`median 0.666x < 0.667x`).
 - **Recall parity**: the tool's and the baseline's mean recall over the tasks whose baseline is scored (it names
   `items`), a failed baseline scoring 0. A locating kind whose baselines name no `items` has no verdict.
 - **No verdict** (`n/a`): tokens not counted as o200k, no tasks, a credited set whose baselines all failed, or a check
@@ -243,7 +246,7 @@ BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)" \
   runs `basemind admin eval --tasks ... --min-recall 0.8`, and stops any daemon it could have started on exit.
 - `gate.py RESULTS_DIR` turns the per-corpus reports into `gate.md` / `gate.json`.
 - The binary: each report's `build` holds the Cargo version, `build_id` (a hash of the executable) and the features
-  compiled in, and `run.tsv` adds `source_commit`, the commit of the checkout `run_gate.sh` runs from (`-dirty` with
+  compiled in (`code-intel` when both its parts are, so a `tokenizer,code-intel` build reads as such), and `run.tsv` adds `source_commit`, the commit of the checkout `run_gate.sh` runs from (`-dirty` with
   uncommitted tracked changes). Run it from the checkout the binary was built from: the version string is not bumped
   on main, so it does not identify the build. `gate.md` prints all of them.
 

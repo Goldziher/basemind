@@ -102,7 +102,7 @@ fn reducing_passes_at_credited_0_7_and_median_1_5_and_fails_just_below_either() 
 
     let g = run(EvalMode::Read, &seven_of_ten([149, 149, 149, 149, 200, 200, 200]));
     assert_eq!(g.pass, Some(false));
-    assert!(g.reason.contains("median 1.49x < 1.5x"), "{}", g.reason);
+    assert!(g.reason.contains("median 1.49x < 1.50x"), "{}", g.reason);
 
     let mut low = seven_of_ten([1000; 7]);
     low[6] = scored(100, 1000, 0.0, 1.0);
@@ -126,6 +126,37 @@ fn locating_passes_at_median_0_67_and_fails_at_0_66_where_reducing_fails_both() 
     let g = run(EvalMode::Symbols, &seven_of_ten([66, 66, 66, 66, 90, 90, 90]));
     assert_eq!(g.pass, Some(false));
     assert!(g.reason.contains("median 0.66x < 0.67x"), "{}", g.reason);
+}
+
+#[test]
+fn locating_passes_at_exactly_one_and_a_half_times_the_shells_cost_and_fails_just_over() {
+    // ADR-0031 rule 3: "at most one and a half times the shell's". 12 tokens against 8 and 15
+    // against 10 are exactly 1.5x, the median `find` sat on in the third 0.34 gate run.
+    for (tool, shell) in [(12, 8), (15, 10), (150, 100)] {
+        let v: Vec<TaskResult> = (0..10).map(|_| scored(tool, shell, 1.0, 1.0)).collect();
+        let g = run(EvalMode::Find, &v);
+        assert_eq!(g.pass, Some(true), "{tool} vs {shell}: {}", g.reason);
+    }
+
+    let over: Vec<TaskResult> = (0..10).map(|_| scored(1501, 1000, 1.0, 1.0)).collect();
+    let g = run(EvalMode::Find, &over);
+    assert_eq!(g.pass, Some(false), "1501 tokens against 1000 is over 1.5x");
+    assert!(g.reason.contains("median 0.666x < 0.667x"), "{}", g.reason);
+
+    let barely: Vec<TaskResult> = (0..10).map(|_| scored(150_001, 100_000, 1.0, 1.0)).collect();
+    let g = run(EvalMode::Find, &barely);
+    assert_eq!(g.pass, Some(false));
+    let (shown, floor) = g
+        .reason
+        .strip_prefix("median ")
+        .and_then(|r| r.split_once("x < "))
+        .expect("a median reason");
+    assert_ne!(
+        shown,
+        floor.trim_end_matches('x'),
+        "a failure never prints equal numbers: {}",
+        g.reason
+    );
 }
 
 #[test]

@@ -161,6 +161,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   locating floor (ADR-0052). The mapping from every removed field is in
   [docs/UPGRADING.md](docs/UPGRADING.md#lean-rows).
 
+- `admin eval`'s value gate holds a locating kind to a median ratio of exactly 2/3, ADR-0031's "at
+  most one and a half times the shell's", where it used 0.67 and failed an answer at exactly 1.5x
+  (basemind `find`, 12 tokens against 8, read `median 0.67x < 0.67x`). A failed ratio is printed with
+  the digits that tell it from its floor, and the report's `build.features` names `code-intel` for a
+  build with both its parts.
+
 - **BREAKING:** every `code_refs` call site carries a `resolution` (#125, ADR-0047): `same_file`,
   `imported`, `scope_resolved`, `elsewhere`, `name_only` or `external`, in place of the `resolved`
   flag. A row leaves out the page's `resolution_default`; `resolution_counts` gives the rows per

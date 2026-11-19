@@ -340,5 +340,22 @@ fn a_failed_baseline_scores_recall_0_and_a_tool_error_still_runs_its_baseline() 
     assert!((mean - 1.0 / 3.0).abs() < 1e-9, "two of three baselines failed: {refs}");
     assert_eq!(rep["gate"]["explain"]["job"], "reducing");
     assert!(rep["build"]["build_id"].is_string(), "{}", rep["build"]);
-    assert!(rep["build"]["features"].is_array(), "{}", rep["build"]);
+    let features: Vec<&str> = rep["build"]["features"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{}", rep["build"]))
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    let code_intel = cfg!(all(feature = "code-intel-js", feature = "code-intel-stack"));
+    assert_eq!(
+        features.contains(&"code-intel"),
+        code_intel,
+        "a `code-intel` build names the feature it was built with: {features:?}"
+    );
+    if code_intel {
+        assert!(
+            !features.iter().any(|f| f.starts_with("code-intel-")),
+            "the umbrella stands for its parts: {features:?}"
+        );
+    }
 }
