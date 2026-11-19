@@ -155,23 +155,23 @@ async fn git_blame_answers_byte_for_byte() {
     let cases = [
         (
             json!({ "path": "src/lib.rs" }),
-            r#"{"path":"src/lib.rs","suspect_sha":"c48e32cbf7dde9e9c1a4ee2a1decb1560000d2d6","hunks":[{"commit_sha":"3f38556b6d45ba5d791d423ebd10c305c5cc37e3","short_sha":"3f38556","line":1,"end_line":1,"source_line":1,"author":"t","author_time_unix":1704067200,"summary":"init"},{"commit_sha":"0c2fe19c38a28e34c3b8c415828fb9f16d695dad","short_sha":"0c2fe19","line":2,"end_line":2,"source_line":2,"author":"t","author_time_unix":1704153600,"summary":"tune alpha"},{"commit_sha":"3f38556b6d45ba5d791d423ebd10c305c5cc37e3","short_sha":"3f38556","line":3,"end_line":7,"source_line":3,"author":"t","author_time_unix":1704067200,"summary":"init"}],"elapsed_us":0}"#,
+            r#"{"hunks":["1 3f38556b6d45","2 0c2fe19c38a2","3-7 3f38556b6d45"],"commits":{"3f38556b6d45":{"author":"t","time":1704067200,"summary":"init"},"0c2fe19c38a2":{"author":"t","time":1704153600,"summary":"tune alpha"}},"elapsed_us":0}"#,
         ),
         (
             json!({ "path": "src/lib.rs", "line": 2, "end_line": 6 }),
-            r#"{"path":"src/lib.rs","suspect_sha":"c48e32cbf7dde9e9c1a4ee2a1decb1560000d2d6","hunks":[{"commit_sha":"0c2fe19c38a28e34c3b8c415828fb9f16d695dad","short_sha":"0c2fe19","line":2,"end_line":2,"source_line":2,"author":"t","author_time_unix":1704153600,"summary":"tune alpha"},{"commit_sha":"3f38556b6d45ba5d791d423ebd10c305c5cc37e3","short_sha":"3f38556","line":3,"end_line":6,"source_line":3,"author":"t","author_time_unix":1704067200,"summary":"init"}],"elapsed_us":0}"#,
+            r#"{"hunks":["2 0c2fe19c38a2","3-6 3f38556b6d45"],"commits":{"0c2fe19c38a2":{"author":"t","time":1704153600,"summary":"tune alpha"},"3f38556b6d45":{"author":"t","time":1704067200,"summary":"init"}},"elapsed_us":0}"#,
         ),
         (
             json!({ "path": "src/lib.rs", "symbol": "alpha" }),
-            r#"{"path":"src/lib.rs","suspect_sha":"c48e32cbf7dde9e9c1a4ee2a1decb1560000d2d6","name":"alpha","kind":"function","line":1,"end_line":3,"hunks":[{"commit_sha":"3f38556b6d45ba5d791d423ebd10c305c5cc37e3","short_sha":"3f38556","line":1,"end_line":1,"source_line":1,"author":"t","author_time_unix":1704067200,"summary":"init"},{"commit_sha":"0c2fe19c38a28e34c3b8c415828fb9f16d695dad","short_sha":"0c2fe19","line":2,"end_line":2,"source_line":2,"author":"t","author_time_unix":1704153600,"summary":"tune alpha"},{"commit_sha":"3f38556b6d45ba5d791d423ebd10c305c5cc37e3","short_sha":"3f38556","line":3,"end_line":3,"source_line":3,"author":"t","author_time_unix":1704067200,"summary":"init"}],"elapsed_us":0}"#,
+            r#"{"line":1,"end_line":3,"hunks":["1 3f38556b6d45","2 0c2fe19c38a2","3 3f38556b6d45"],"commits":{"3f38556b6d45":{"author":"t","time":1704067200,"summary":"init"},"0c2fe19c38a2":{"author":"t","time":1704153600,"summary":"tune alpha"}},"elapsed_us":0}"#,
         ),
         (
             json!({ "path": "src/lib.rs", "symbol": "beta", "rev": "HEAD~2" }),
-            r#"{"path":"src/lib.rs","suspect_sha":"3f38556b6d45ba5d791d423ebd10c305c5cc37e3","name":"beta","kind":"function","line":5,"end_line":7,"hunks":[{"commit_sha":"3f38556b6d45ba5d791d423ebd10c305c5cc37e3","short_sha":"3f38556","line":5,"end_line":7,"source_line":5,"author":"t","author_time_unix":1704067200,"summary":"init"}],"elapsed_us":0}"#,
+            r#"{"line":5,"end_line":7,"hunks":["5-7 3f38556b6d45"],"commits":{"3f38556b6d45":{"author":"t","time":1704067200,"summary":"init"}},"elapsed_us":0}"#,
         ),
         (
             json!({ "path": "src/lib.rs", "limit": 1 }),
-            r#"{"path":"src/lib.rs","suspect_sha":"c48e32cbf7dde9e9c1a4ee2a1decb1560000d2d6","hunks":[{"commit_sha":"3f38556b6d45ba5d791d423ebd10c305c5cc37e3","short_sha":"3f38556","line":1,"end_line":1,"source_line":1,"author":"t","author_time_unix":1704067200,"summary":"init"}],"next_cursor":"55dbd757.kgHOxI4yyw","elapsed_us":0}"#,
+            r#"{"hunks":["1 3f38556b6d45"],"commits":{"3f38556b6d45":{"author":"t","time":1704067200,"summary":"init"}},"next_cursor":"55dbd757.kgHOxI4yyw","elapsed_us":0}"#,
         ),
     ];
     let mut rows = Vec::new();

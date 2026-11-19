@@ -302,7 +302,8 @@ async fn a_filter_that_selects_no_file_is_refused_with_what_would_match() {
     );
     let tracked_directory = call(&client, "git_log", json!({ "path": "src/" })).await;
     assert_eq!(
-        tracked_directory["commits"][0]["summary"], "init",
+        super::commit_summaries(&tracked_directory["commits"])[0],
+        "init",
         "{tracked_directory}"
     );
     std::fs::create_dir(dir.path().join("empty_dir")).unwrap();

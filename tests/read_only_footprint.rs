@@ -173,7 +173,7 @@ fn every_read_only_command_answers_with_no_daemon() {
         (&["code", "refs", "alpha"], "b.rs"),
         (&["code", "find", "b.rs"], "b.rs"),
         (&["git", "log"], "init"),
-        (&["git", "blame", "a.rs"], "\"suspect_sha\""),
+        (&["git", "blame", "a.rs"], "\"hunks\""),
         (&["git", "diff"], "b.rs"),
     ];
     for (args, expected) in answers {

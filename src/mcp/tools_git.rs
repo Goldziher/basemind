@@ -42,7 +42,8 @@ impl BasemindServer {
         title = "Blame",
         description = "Use instead of `git blame` for \"who last changed this\": per-line authorship \
         of a file, of a 1-based `line`..`end_line` span, or of one `symbol`, located in the file \
-        as it is at `rev`. \
+        as it is at `rev`. `hunks`: `\"<line>[-<end>] <sha>\"`; `commits`: each sha's author, \
+        time, summary. \
         Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
         annotations(
             read_only_hint = true,

@@ -1464,15 +1464,38 @@ async fn spawn_paging_server() -> (TempDir, rmcp::service::RunningService<rmcp::
     (dir, service)
 }
 
-fn commit_shas(body: &Value) -> Vec<String> {
-    body.get("commits")
-        .and_then(Value::as_array)
+/// The shas of a list of `"<sha> <summary>"` rows.
+fn row_shas(rows: Option<&Value>) -> Vec<String> {
+    rows.and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
-                .filter_map(|c| c.get("sha").and_then(Value::as_str).map(str::to_string))
+                .filter_map(|row| row.as_str()?.split_once(' ').map(|(sha, _)| sha.to_string()))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn commit_shas(body: &Value) -> Vec<String> {
+    row_shas(body.get("commits"))
+}
+
+/// The first line of each blame hunk row, `"<line>[-<end_line>] <sha>"`.
+fn blame_starts(hunks: &[Value]) -> Vec<u64> {
+    hunks
+        .iter()
+        .filter_map(|row| row.as_str()?.split([' ', '-']).next()?.parse().ok())
+        .collect()
+}
+
+/// `git rev-parse HEAD` of `repo`.
+fn head_sha(repo: &Path) -> String {
+    let out = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo)
+        .output()
+        .expect("git in PATH");
+    assert!(out.status.success(), "git rev-parse HEAD failed");
+    String::from_utf8(out.stdout).expect("utf8").trim().to_string()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1680,10 +1703,7 @@ async fn git_blame_paginates_by_start_line() {
         .and_then(Value::as_array)
         .expect("git_blame page1 hunks");
     assert_eq!(p1_hunks.len(), 1, "git_blame limit=1 → 1 hunk: {page1}");
-    let p1_start: Vec<u64> = p1_hunks
-        .iter()
-        .filter_map(|h| h.get("line").and_then(Value::as_u64))
-        .collect();
+    let p1_start = blame_starts(p1_hunks);
     let cursor1 = page1
         .get("next_cursor")
         .and_then(Value::as_str)
@@ -1703,10 +1723,7 @@ async fn git_blame_paginates_by_start_line() {
         .and_then(Value::as_array)
         .expect("git_blame page2 hunks");
     assert!(!p2_hunks.is_empty(), "git_blame page2 must have ≥ 1 hunk: {page2}");
-    let p2_start: Vec<u64> = p2_hunks
-        .iter()
-        .filter_map(|h| h.get("line").and_then(Value::as_u64))
-        .collect();
+    let p2_start = blame_starts(p2_hunks);
     assert_eq!(
         p1_start.len(),
         p1_hunks.len(),
@@ -1722,7 +1739,7 @@ async fn git_blame_paginates_by_start_line() {
         "git_blame pages must not overlap by line: {p1_start:?} vs {p2_start:?}"
     );
 
-    let suspect = page1.get("suspect_sha").and_then(Value::as_str).expect("suspect_sha");
+    let suspect = head_sha(dir.path());
     let revision = u32::from_str_radix(&suspect[..8], 16).expect("hex sha");
     let past_the_end = rebound(&cursor1, &basemind::testing::encode_in_memory_cursor(9_999, revision));
     let page_empty = decode_text(
@@ -1776,10 +1793,8 @@ async fn git_blame_symbol_paginates_by_start_line() {
         .and_then(Value::as_array)
         .expect("git_blame symbol page1 hunks");
     assert_eq!(p1_hunks.len(), 1, "git_blame symbol limit=1 → 1 hunk: {page1}");
-    let p1_start = p1_hunks
-        .iter()
-        .filter_map(|h| h.get("line").and_then(Value::as_u64))
-        .next()
+    let p1_start = *blame_starts(p1_hunks)
+        .first()
         .expect("git_blame symbol page1 start_line");
     assert!(
         p1_start >= 1,

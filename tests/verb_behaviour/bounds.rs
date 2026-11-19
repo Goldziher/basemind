@@ -201,7 +201,7 @@ async fn git_log_of_a_directory_pages_past_its_window() {
         git(root, &["commit", "-qm", &format!("churn {round}")]);
     }
     let exact = call(&client, "git_log", json!({ "path": "lib/" })).await;
-    assert_eq!(exact["commits"][0]["summary"], "init", "{exact}");
+    assert_eq!(commit_summaries(&exact["commits"])[0], "init", "{exact}");
     assert!(
         exact.get("truncated").is_none() && exact.get("next_cursor").is_none(),
         "200 commits fill the window exactly and nothing lies beyond it: {exact}"
@@ -229,7 +229,7 @@ async fn git_log_of_a_directory_pages_past_its_window() {
         json!({ "path": "lib/", "cursor": windowed["next_cursor"] }),
     )
     .await;
-    assert_eq!(older["commits"][0]["summary"], "init", "{older}");
+    assert_eq!(commit_summaries(&older["commits"])[0], "init", "{older}");
     assert_eq!(older["window_inspected"], 1, "{older}");
     assert!(
         older.get("truncated").is_none() && older.get("next_cursor").is_none(),

@@ -6,7 +6,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::{Client, call, call_err, fixture_with, scan, serve, started, started_with};
+use super::{
+    Client, blame_hunks, call, call_err, commit_summaries, fixture_with, history_change, scan, serve, started,
+    started_with,
+};
 
 /// Commit everything as `name <email>`.
 fn commit_as(root: &Path, name: &str, email: &str, message: &str) {
@@ -439,8 +442,11 @@ async fn git_blame_of_a_symbol_uses_its_span_at_the_blamed_revision() {
         (Some(7), Some(9)),
         "HEAD does not have the uncommitted padding: {at_head}"
     );
-    assert_eq!(at_head["hunks"][0]["line"], 7, "{at_head}");
-    assert_eq!(at_head["hunks"][0]["summary"], "init", "{at_head}");
+    assert_eq!(
+        blame_hunks(&at_head),
+        [("7-9".to_string(), "init".to_string())],
+        "{at_head}"
+    );
 
     super::git(root, &["commit", "-qam", "pad"]);
     let padded = call(
@@ -513,5 +519,5 @@ async fn git_blame_of_a_symbol_does_not_parse_a_blob_over_the_scan_limit() {
         "{refused}"
     );
     let span = call(&client, "git_blame", json!({ "path": "src/big.rs", "line": 1 })).await;
-    assert_eq!(span["hunks"][0]["summary"], "init", "{span}");
+    assert_eq!(blame_hunks(&span)[0].1, "init", "{span}");
 }

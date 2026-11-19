@@ -17,9 +17,9 @@ use crate::engine::pick::pick_symbol;
 use crate::engine::timing::elapsed_us;
 use crate::engine::types::code::{kind_to_str, parse_kind};
 use crate::engine::types::git::{
-    BlameFileParams, BlameResponse, BlameSymbolParams, BlameSymbolResponse, DiffFileParams, DiffFileResponse,
-    DiffOutlineParams, DiffOutlineResponse, DiffSymbolView, HunkView, SymbolHistoryEntry, SymbolHistoryParams,
-    SymbolHistoryResponse,
+    BlameFileParams, BlameHunks, BlameResponse, BlameSymbolParams, BlameSymbolResponse, DiffFileParams,
+    DiffFileResponse, DiffOutlineParams, DiffOutlineResponse, DiffSymbolView, HunkView, SymbolHistoryEntry,
+    SymbolHistoryParams, SymbolHistoryResponse,
 };
 use crate::engine::workspace::Workspace;
 use crate::git::CommitInfo;
@@ -296,7 +296,7 @@ pub(super) fn run_blame(ws: &Workspace, params: BlameFileParams) -> Result<Blame
     let result = match ws.git_cache.blame(repo, &suspect_sha, &params.path, range) {
         Ok(r) => r,
         Err(e) => {
-            if let Some(too_large) = blame_too_large_response(&params.path, &suspect_sha, &e, started) {
+            if let Some(too_large) = blame_too_large_response(&e, started) {
                 return Ok(too_large);
             }
             // A whole-file blame of a path the revision lacks fails inside gix; say so as the span
@@ -323,9 +323,7 @@ pub(super) fn run_blame(ws: &Workspace, params: BlameFileParams) -> Result<Blame
     // A shallow history is the one cut a blame reports: the walk stops at the graft.
     let truncated_reason = (result.truncated_reason.is_some() || repo.is_shallow()).then_some("shallow_clone");
     Ok(BlameResponse {
-        path: result.path.clone(),
-        suspect_sha: result.suspect_sha.clone(),
-        hunks: page.hunks,
+        hunks: BlameHunks(page.hunks),
         budgeted: page.budgeted,
         truncated: truncated_reason.is_some(),
         truncated_reason,
@@ -395,9 +393,7 @@ pub(super) fn run_blame_symbol(ws: &Workspace, params: BlameSymbolParams) -> Res
     {
         Ok(r) => r,
         Err(e) => {
-            if let Some(too_large) =
-                blame_symbol_too_large_response(&params.path, &suspect_sha, sym, line_start, line_end, &e, started)
-            {
+            if let Some(too_large) = blame_symbol_too_large_response(line_start, line_end, &e, started) {
                 return Ok(too_large);
             }
             return Err(EngineError::internal(format!("blame: {e}")));
@@ -413,13 +409,9 @@ pub(super) fn run_blame_symbol(ws: &Workspace, params: BlameSymbolParams) -> Res
     // A shallow history is the one cut a blame reports: the walk stops at the graft.
     let truncated_reason = (result.truncated_reason.is_some() || repo.is_shallow()).then_some("shallow_clone");
     Ok(BlameSymbolResponse {
-        path: result.path.clone(),
-        suspect_sha: result.suspect_sha.clone(),
-        name: sym.name.clone(),
-        kind: kind_to_str(sym.kind).to_string(),
         line_start,
         line_end,
-        hunks: page.hunks,
+        hunks: BlameHunks(page.hunks),
         budgeted: page.budgeted,
         truncated: truncated_reason.is_some(),
         truncated_reason,

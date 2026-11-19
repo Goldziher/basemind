@@ -250,6 +250,118 @@ fn rows(grouped: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// A `code_grep` answer's matches as objects (`path`, `symbol` unless outside every symbol, `line`,
+/// `text`, and `column` when the row names columns), one per match: a row naming several columns
+/// is one match per column. Context rows (`"<line>- <text>"`) are left out.
+fn grep_hits(body: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    let files = body["hits"]
+        .as_object()
+        .unwrap_or_else(|| panic!("hits are grouped by file: {body}"));
+    for (path, groups) in files {
+        let groups = groups
+            .as_object()
+            .unwrap_or_else(|| panic!("a file's hits by symbol: {body}"));
+        for (symbol, rows) in groups {
+            for row in rows.as_array().expect("rows") {
+                let row = row.as_str().expect("a row is a string");
+                let digits = row.bytes().take_while(u8::is_ascii_digit).count();
+                if row.as_bytes().get(digits) != Some(&b':') {
+                    continue;
+                }
+                let line: u64 = row[..digits].parse().expect("a line");
+                let (columns, text) = match row[digits + 1..].split_once(": ") {
+                    Some((columns, text))
+                        if !columns.is_empty() && columns.bytes().all(|b| b.is_ascii_digit() || b == b',') =>
+                    {
+                        (columns.split(',').map(|c| c.parse::<u64>().unwrap()).collect(), text)
+                    }
+                    _ => (
+                        Vec::new(),
+                        row[digits + 1..].strip_prefix(' ').unwrap_or(&row[digits + 1..]),
+                    ),
+                };
+                let mut hit = json!({ "path": path, "line": line, "text": text });
+                if !symbol.is_empty() {
+                    hit["symbol"] = json!(symbol);
+                }
+                if columns.is_empty() {
+                    out.push(hit);
+                    continue;
+                }
+                for column in columns {
+                    let mut hit = hit.clone();
+                    hit["column"] = json!(column);
+                    out.push(hit);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A `code_symbols` answer's rows (`"<path>:<line>: <signature>"`), best first.
+fn symbol_rows(body: &Value) -> Vec<String> {
+    body["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .map(|row| row.as_str().expect("a row is a string").to_string())
+        .collect()
+}
+
+/// The summaries of a `git_log` list, each commit being a `"<sha> <summary>"` row.
+fn commit_summaries(rows: &Value) -> Vec<String> {
+    rows.as_array()
+        .expect("a list of commit rows")
+        .iter()
+        .map(|row| {
+            row.as_str()
+                .expect("a row is a string")
+                .split_once(' ')
+                .expect("`<sha> <summary>`")
+                .1
+                .to_string()
+        })
+        .collect()
+}
+
+/// A symbol history row as `(change, summary)`: `"<sha> [introduced] <summary>"` or
+/// `"<sha> [removed] <summary>"` is that change, a plain `"<sha> <summary>"` is `modified`.
+fn history_change(row: &Value) -> (String, String) {
+    let rest = row
+        .as_str()
+        .expect("a row is a string")
+        .split_once(' ')
+        .expect("`<sha> ...`")
+        .1;
+    for change in ["introduced", "removed"] {
+        if let Some(summary) = rest.strip_prefix(&format!("[{change}] ")) {
+            return (change.to_string(), summary.to_string());
+        }
+    }
+    ("modified".to_string(), rest.to_string())
+}
+
+/// A blame answer's hunks as `(lines, summary)`: `lines` is the row's `"<line>[-<end_line>]"`, and
+/// the summary is the one `commits` holds for the row's sha.
+fn blame_hunks(body: &Value) -> Vec<(String, String)> {
+    body["hunks"]
+        .as_array()
+        .unwrap_or_else(|| panic!("hunks: {body}"))
+        .iter()
+        .map(|row| {
+            let mut parts = row.as_str().expect("a row is a string").split(' ');
+            let lines = parts.next().expect("lines");
+            let sha = parts.next().expect("sha");
+            let summary = body["commits"][sha]["summary"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no commit {sha} in {body}"));
+            (lines.to_string(), summary.to_string())
+        })
+        .collect()
+}
+
 fn names(rows: &Value) -> Vec<String> {
     rows.as_array()
         .expect("array")
@@ -522,11 +634,13 @@ async fn outline_read_and_blame_agree_on_a_symbols_lines() {
         (symbol["line"].clone(), symbol["end_line"].clone()),
         "{blame}"
     );
-    let hunk = &blame["hunks"][0];
     assert_eq!(
-        (hunk["line"].as_u64(), hunk["end_line"].as_u64()),
-        (Some(7), Some(9)),
-        "{hunk}"
+        blame_hunks(&blame)
+            .iter()
+            .map(|(lines, _)| lines.as_str())
+            .collect::<Vec<_>>(),
+        ["7-9"],
+        "{blame}"
     );
 
     let span = call(

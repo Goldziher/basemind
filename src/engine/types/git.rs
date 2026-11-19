@@ -467,30 +467,97 @@ pub(crate) struct DiffOutlineResponse {
     pub note: Option<String>,
 }
 
-#[derive(Debug, Serialize, schemars::JsonSchema)]
+/// One blame hunk: a run of lines one commit last changed. Written as a row of
+/// [`BlameHunks`], its commit's author, time and summary once per page under `commits`.
+#[derive(Debug, Clone)]
 pub(crate) struct BlameHunkView {
     pub commit_sha: String,
-    pub short_sha: String,
     /// 1-based first line of the hunk in the blamed file.
-    #[serde(rename = "line")]
     pub start_line: u32,
     /// 1-based last line of the hunk, inclusive.
     pub end_line: u32,
-    /// 1-based line the hunk starts at in the commit that introduced it.
-    #[serde(rename = "source_line")]
-    pub source_start_line: u32,
     pub author: String,
     pub author_time_unix: i64,
     pub summary: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The file the lines came from in that commit, when it is not the blamed path.
     pub source_path: Option<RelPath>,
+}
+
+impl BlameHunkView {
+    /// The commit's sha as a row names it: [`BLAME_SHA_ABBREV`] hex digits, as in a `git_log` list.
+    pub(crate) fn sha(&self) -> &str {
+        &self.commit_sha[..self.commit_sha.len().min(BLAME_SHA_ABBREV)]
+    }
+
+    /// `"<line>[-<end_line>] <sha>[ <source_path>]"`.
+    pub(crate) fn row(&self) -> String {
+        let mut row = self.start_line.to_string();
+        if self.end_line != self.start_line {
+            row.push_str(&format!("-{}", self.end_line));
+        }
+        row.push(' ');
+        row.push_str(self.sha());
+        if let Some(source) = &self.source_path {
+            row.push(' ');
+            row.push_str(&source.to_str_lossy());
+        }
+        row
+    }
+}
+
+/// Hex digits of a commit sha in a blame row; the same twelve as a `git_log` list.
+const BLAME_SHA_ABBREV: usize = 12;
+
+/// A page of blame hunks, written as two keys of the response: `hunks`, one
+/// `"<line>[-<end_line>] <sha>[ <source_path>]"` row per hunk, and `commits`, each sha's `author`,
+/// `time` (unix seconds) and `summary` once.
+#[derive(Debug, Default)]
+pub(crate) struct BlameHunks(pub Vec<BlameHunkView>);
+
+impl Serialize for BlameHunks {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        #[derive(Serialize)]
+        struct Commit<'a> {
+            author: &'a str,
+            time: i64,
+            summary: &'a str,
+        }
+        struct Commits<'a>(&'a [BlameHunkView]);
+        impl Serialize for Commits<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let mut seen: Vec<&str> = Vec::new();
+                let mut map = serializer.serialize_map(None)?;
+                for hunk in self.0 {
+                    if seen.contains(&hunk.sha()) {
+                        continue;
+                    }
+                    seen.push(hunk.sha());
+                    let commit = Commit {
+                        author: &hunk.author,
+                        time: hunk.author_time_unix,
+                        summary: &hunk.summary,
+                    };
+                    map.serialize_entry(hunk.sha(), &commit)?;
+                }
+                map.end()
+            }
+        }
+        let rows: Vec<String> = self.0.iter().map(BlameHunkView::row).collect();
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("hunks", &rows)?;
+        map.serialize_entry("commits", &Commits(&self.0))?;
+        map.end()
+    }
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct BlameResponse {
-    pub path: RelPath,
-    pub suspect_sha: String,
-    pub hunks: Vec<BlameHunkView>,
+    /// `hunks` and `commits` ([`BlameHunks`]).
+    #[serde(flatten)]
+    #[schemars(skip)]
+    pub hunks: BlameHunks,
     /// True when the token budget dropped trailing hunks; `next_cursor` resumes at the first one.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
@@ -513,17 +580,16 @@ pub(crate) struct BlameResponse {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct BlameSymbolResponse {
-    pub path: RelPath,
-    pub suspect_sha: String,
-    pub name: String,
-    pub kind: String,
     /// 1-based first line of the symbol, as `code_outline` reports it.
     #[serde(rename = "line")]
     pub line_start: u32,
     /// 1-based last line of the symbol, inclusive.
     #[serde(rename = "end_line")]
     pub line_end: u32,
-    pub hunks: Vec<BlameHunkView>,
+    /// `hunks` and `commits` ([`BlameHunks`]).
+    #[serde(flatten)]
+    #[schemars(skip)]
+    pub hunks: BlameHunks,
     /// True when the token budget dropped trailing hunks; `next_cursor` resumes at the first one.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,

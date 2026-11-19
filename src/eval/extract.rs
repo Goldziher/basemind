@@ -3,23 +3,23 @@
 //!
 //! | mode | item |
 //! |---|---|
-//! | symbols | `path:line` of each definition (1-based) |
+//! | symbols | `path:line` of each definition (1-based; `"<path>:<line>: <signature>"` rows) |
 //! | outline | `args.path:line` of each symbol in the file |
 //! | references, callers | `path:line` of each call site (listed under its file) |
-//! | grep | `path:line` of each match (listed under its file) |
+//! | grep | `path:line` of each match (`"<line>: <text>"` rows under their file and enclosing symbol) |
 //! | find, dependents | `path` |
 //! | docs | `path` of each hit chunk |
-//! | git_search, git_path | the commit `sha` (abbreviated; the scorer matches it as a prefix) |
+//! | git_search, git_path | the commit sha, the first word of `"<sha> <summary>"` (abbreviated; the scorer matches it as a prefix) |
 //! | git_symbol | the `sha` of each history entry (abbreviated, likewise) |
 //! | implementations | `path:line` of each impl (listed under its file) |
 //! | read | `path:line` for every line of the returned span |
-//! | blame, blame_symbol | `sha:line` for every line of each hunk |
+//! | blame, blame_symbol | `sha:line` for every line of each `"<line>[-<end_line>] <sha>"` hunk |
 //! | diff | `+path:line` per added line, `-path:line` per removed line |
 //! | diff_structural | `+name` per added symbol, `-name` per removed one |
 //! | impact | `path` of each importer (`by_depth`: `{"<depth>": [path, ...]}`) |
 //! | cycles | `path` of each file of each cycle (`cycles[].files`) |
 //! | grep_changed | `path:line` of each match (listed under its file) |
-//! | find_large | `path` of each file (`files`, as strings or `{path, lines}` rows) |
+//! | find_large | `path` of each file (`files`: `{"<path>": lines}`, or strings or `{path, lines}` rows) |
 //! | read_around | `path:line` for every line of every span (`spans[]`, else the top-level span) |
 //! | explain | `definition` `path:line`, each caller `path:line`, `->name` per callee |
 //!
@@ -424,6 +424,12 @@ mod tests {
             &json!({"hunks":[{"commit_sha":"c1","line":2,"end_line":3},{"commit_sha":"c2","line":9}]}),
         );
         assert_eq!(strs(&blame), vec!["c1:2", "c1:3", "c2:9"]);
+        let rows = extract_items(
+            EvalMode::BlameSymbol,
+            &Value::Null,
+            &json!({"hunks":["2-3 c1c1c1c1c1c1","9 c2c2c2c2c2c2 old/name.rs"],"commits":{}}),
+        );
+        assert_eq!(strs(&rows), vec!["c1c1c1c1c1c1:2", "c1c1c1c1c1c1:3", "c2c2c2c2c2c2:9"]);
         let diff = extract_items(
             EvalMode::Diff,
             &Value::Null,

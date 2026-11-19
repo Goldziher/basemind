@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use crate::engine::error::EngineError;
 use crate::engine::timing::elapsed_us;
-use crate::engine::types::code::kind_to_str;
-use crate::engine::types::git::{BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView};
+use crate::engine::types::git::{
+    BlameHunkView, BlameHunks, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView,
+};
 use crate::engine::workspace::Workspace;
 use crate::lang::LangId;
 
@@ -203,15 +204,33 @@ fn has_block_comments(lang: LangId) -> bool {
 pub(super) fn blame_hunk_view(h: &crate::git::BlameHunk) -> BlameHunkView {
     BlameHunkView {
         commit_sha: h.commit_sha.clone(),
-        short_sha: h.short_sha.clone(),
         start_line: h.start_line,
         end_line: h.start_line + h.len.saturating_sub(1),
-        source_start_line: h.source_start_line,
         author: h.author.clone(),
         author_time_unix: h.author_time_unix,
         summary: h.summary.clone(),
         source_path: h.source_path.clone(),
     }
+}
+
+/// `hunks` with each run of adjacent hunks from one commit (and one source path) merged into one:
+/// git splits a commit's lines where they came from different places in it, which a reader of
+/// "who changed these lines" does not need.
+pub(super) fn merge_adjacent_hunks(hunks: Vec<BlameHunkView>) -> Vec<BlameHunkView> {
+    let mut merged: Vec<BlameHunkView> = Vec::with_capacity(hunks.len());
+    for hunk in hunks {
+        match merged.last_mut() {
+            Some(last)
+                if last.commit_sha == hunk.commit_sha
+                    && last.source_path == hunk.source_path
+                    && last.end_line + 1 == hunk.start_line =>
+            {
+                last.end_line = hunk.end_line;
+            }
+            _ => merged.push(hunk),
+        }
+    }
+    merged
 }
 
 /// One page of blame hunks.
@@ -249,13 +268,22 @@ where
         }
         out.push(blame_hunk_view(h));
     }
-    let budget = crate::engine::budget::apply_budget(out, max_tokens);
+    // A hunk costs its row, plus its commit's author and summary the first time the page names it.
+    let mut named: ahash::AHashSet<String> = ahash::AHashSet::new();
+    let budget = crate::engine::budget::keep_prefix(out, max_tokens, |hunk| {
+        let commit = if named.insert(hunk.commit_sha.clone()) {
+            hunk.author.len() + hunk.summary.len() + 48
+        } else {
+            0
+        };
+        crate::engine::tokens::bytes_to_tokens((hunk.row().len() + 3 + commit) as u64)
+    });
     let next_cursor = (has_more || budget.budgeted)
         .then(|| budget.items.last().map(|hunk| hunk.start_line))
         .flatten()
         .map(|last_line| crate::engine::cursor::Cursor::encode_in_memory(u64::from(last_line), snapshot));
     BlamePage {
-        hunks: budget.items,
+        hunks: merge_adjacent_hunks(budget.items),
         next_cursor,
         budgeted: budget.budgeted,
     }
@@ -281,8 +309,6 @@ pub(super) fn blame_resume_after(
 /// with `truncated_reason="too_large"` so the caller can ship it as a normal MCP success
 /// instead of a server-side error. Returns `None` for any other error.
 pub(super) fn blame_too_large_response(
-    path: &crate::path::RelPath,
-    suspect_sha: &str,
     err: &crate::git_cache::CacheError,
     started: std::time::Instant,
 ) -> Option<BlameResponse> {
@@ -291,9 +317,7 @@ pub(super) fn blame_too_large_response(
         crate::git_cache::CacheError::Git(crate::git::GitError::BlameTooLarge { .. })
     ) {
         Some(BlameResponse {
-            path: path.clone(),
-            suspect_sha: suspect_sha.to_string(),
-            hunks: Vec::new(),
+            hunks: BlameHunks::default(),
             budgeted: false,
             truncated: true,
             truncated_reason: Some("too_large"),
@@ -305,11 +329,8 @@ pub(super) fn blame_too_large_response(
     }
 }
 
-/// Same logic for `blame_symbol`, which carries symbol identity in its response shape.
+/// Same logic for `blame_symbol`, which carries the symbol's line span in its response shape.
 pub(super) fn blame_symbol_too_large_response(
-    path: &crate::path::RelPath,
-    suspect_sha: &str,
-    sym: &crate::extract::Symbol,
     line_start: u32,
     line_end: u32,
     err: &crate::git_cache::CacheError,
@@ -320,13 +341,9 @@ pub(super) fn blame_symbol_too_large_response(
         crate::git_cache::CacheError::Git(crate::git::GitError::BlameTooLarge { .. })
     ) {
         Some(BlameSymbolResponse {
-            path: path.clone(),
-            suspect_sha: suspect_sha.to_string(),
-            name: sym.name.clone(),
-            kind: kind_to_str(sym.kind).to_string(),
             line_start,
             line_end,
-            hunks: Vec::new(),
+            hunks: BlameHunks::default(),
             budgeted: false,
             truncated: true,
             truncated_reason: Some("too_large"),
@@ -351,6 +368,37 @@ mod tests {
     use crate::lang::LangId;
     const RUST: LangId = "rust";
     const PYTHON: LangId = "python";
+
+    fn hunk(sha: &str, start_line: u32, end_line: u32, source: Option<&str>) -> super::BlameHunkView {
+        super::BlameHunkView {
+            commit_sha: sha.repeat(40 / sha.len()),
+            start_line,
+            end_line,
+            author: "a".into(),
+            author_time_unix: 1,
+            summary: "s".into(),
+            source_path: source.map(Into::into),
+        }
+    }
+
+    /// Adjacent lines of one commit are one hunk; a gap, another commit or another source path
+    /// starts a new one. Each commit's author, time and summary are written once.
+    #[test]
+    fn adjacent_hunks_of_one_commit_merge_and_commits_are_written_once() {
+        let merged = super::merge_adjacent_hunks(vec![
+            hunk("a", 1, 1, None),
+            hunk("a", 2, 3, None),
+            hunk("b", 4, 4, None),
+            hunk("a", 5, 5, None),
+            hunk("a", 6, 6, Some("old.rs")),
+            hunk("a", 8, 8, Some("old.rs")),
+        ]);
+        let written = serde_json::to_string(&super::BlameHunks(merged)).unwrap();
+        assert_eq!(
+            written,
+            r#"{"hunks":["1-3 aaaaaaaaaaaa","4 bbbbbbbbbbbb","5 aaaaaaaaaaaa","6 aaaaaaaaaaaa old.rs","8 aaaaaaaaaaaa old.rs"],"commits":{"aaaaaaaaaaaa":{"author":"a","time":1,"summary":"s"},"bbbbbbbbbbbb":{"author":"a","time":1,"summary":"s"}}}"#
+        );
+    }
 
     #[test]
     fn rust_whitespace_only_changes_normalize_equal() {
