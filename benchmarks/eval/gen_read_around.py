@@ -7,9 +7,11 @@ ranges are built the way `src/engine/ranges.rs` builds them: each hit line `l` w
 `path:line` of every range. A pattern is a word (case-sensitive substring) in 1 to `--max-files`
 files with at most `--max-hits` hits, the size of a look-around an agent does by hand.
 
-Baseline (the plan's): `git grep -n -F` for the pattern, then one `sed -n` per file printing the
-same ranges. It is a reducing kind (gated at 1.5x), charged for tokens only: by construction the
-baseline prints exactly the gold lines.
+Baseline: what an agent without `ranges` does. `git grep -n -F` for the pattern, then one read of
++/-5 lines per hit, as a file read with an offset and a limit returns it: `path:line:text` per line
+(an `awk` over the window, which stops at the end of the file). Windows are not merged, so lines two
+nearby hits share are read twice. It is a reducing kind (gated at 1.5x), scored as `grep_lines`:
+the windows cover exactly the gold lines, so the baseline's recall is 1 by construction.
 """
 
 from __future__ import annotations
@@ -35,6 +37,13 @@ def merged_ranges(hits: list[int], last: int, context: int = CONTEXT) -> list[tu
         else:
             out.append((start, end))
     return out
+
+
+def window_read(path: str, line: int, context: int = CONTEXT) -> str:
+    """One read of `context` lines either side of `line`, each printed as `path:line:text`."""
+    start, end = max(1, line - context), line + context
+    prog = f'NR>{end}{{exit}} NR>={start}{{print FILENAME ":" NR ":" $0}}'
+    return f"awk {c.shell_quote(prog)} {c.shell_quote(path)}"
 
 
 def main() -> None:
@@ -73,8 +82,7 @@ def main() -> None:
             last = len(rows) - 1 if rows and rows[-1] == "" else len(rows)
             ranges = merged_ranges(h, last)
             gold.extend(f"{f}:{n}" for start, end in ranges for n in range(start, end + 1))
-            sed = " ".join(f"-e '{start},{end}p'" for start, end in ranges)
-            reads.append(f"sed -n {sed} {c.shell_quote(f)}")
+            reads.extend(window_read(f, line) for line in h)
         grep = "git grep -n -F -e " + c.shell_quote(w) + f" -- '*.{a.ext}'"
         tasks.append(
             {
@@ -84,7 +92,7 @@ def main() -> None:
                 "gold": gold,
                 "scoring": "set",
                 "meta": {"files": len(hits), "hits": sum(len(h) for h in hits.values())},
-                "baseline": {"grep": [grep, *reads]},
+                "baseline": {"grep": [grep, *reads], "items": "grep_lines"},
             }
         )
     c.emit(tasks, a.out)

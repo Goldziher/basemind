@@ -59,7 +59,7 @@ tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `read` to `code_
 | `gen_graph.py` | `impact`, `cycles` | file-level import edges from `mod` / `use` (Rust, `rust_gold`) or `import` (Python, `ast`), see `_edges.py`: importers within a depth, files of each import cycle |
 | `gen_changed.py` | `grep_changed` | the lines of the files changed since `HEAD~k` that hold a literal |
 | `gen_large.py` | `find_large` | files with at least N lines, counted as the scanner counts them (a final unterminated line counts) |
-| `gen_read_around.py` | `read_around` | every line within 5 of a literal's hits, merged into ranges |
+| `gen_read_around.py` | `read_around` | every line within 5 of a literal's hits, merged into ranges; the baseline reads +/-5 lines per hit |
 | `gen_explain.py` | `explain` | a Rust fn's definition, call sites and `->callee` names, from `rust_gold` |
 
 The last five cover the 0.34 analysis kinds (ADR-0047). Until the engine op or argument each one drives lands,
@@ -252,7 +252,7 @@ of `rg -n`) and `git ls-files | grep` stand in for them; ADR-0022 names a target
 | `cycles` | every import line of the language, `git grep -n` (tokens only) |
 | `grep_changed` | `git diff --name-only REV \| xargs git grep -n -F PATTERN` |
 | `find_large` | `git ls-files \| xargs awk ...` printing `<lines> <path>` (the `wc -l` listing with an unterminated last line counted) `\| sort -rn \| awk '$1>=N'` |
-| `read_around` | `git grep -n -F`, then `sed -n` over the same ranges per file (tokens only) |
+| `read_around` | `git grep -n -F`, then one read of +/-5 lines per hit printed as `path:line:text` (unmerged, so overlapping windows are read twice) |
 | `explain` | the file's definition lines, `git grep -n -w NAME`, and `sed -n` over the body (tokens only) |
 
 ### What the gold cannot cover

@@ -213,8 +213,19 @@ class AnalysisGenerators(unittest.TestCase):
         spin = next(t for t in tasks if t["args"]["pattern"] == "spin_wheel")
         self.assertEqual(spin["args"]["ranges"], True)
         self.assertEqual(spin["gold"], [f"src/widget.rs:{n}" for n in range(1, 14)])
-        printed = "".join(self.baseline_output({"baseline": {"grep": spin["baseline"]["grep"][1:]}}))
-        self.assertEqual(printed.count("\n"), len(spin["gold"]))
+        # The agent without `ranges` reads +/-5 lines around each hit (lines 4 and 8), one read per
+        # hit, so the overlap 3..9 is read twice; each line comes back as `path:line:text`.
+        self.assertEqual(spin["baseline"]["items"], "grep_lines")
+        self.assertEqual(len(spin["baseline"]["grep"]), 3, "the grep, then one read per hit")
+        reads = self.baseline_output({"baseline": {"grep": spin["baseline"]["grep"][1:]}}).splitlines()
+        self.assertEqual(len(reads), 9 + 11)
+        self.assertEqual(reads[0], "src/widget.rs:1:pub struct Wheel;")
+        printed = self.baseline_output(spin).splitlines()
+        self.assertEqual(
+            sorted({":".join(r.split(":")[:2]) for r in printed}, key=lambda g: int(g.split(":")[1])),
+            spin["gold"],
+            "the baseline reads exactly the gold lines",
+        )
 
     def test_explain_gold_is_definition_call_sites_and_callees(self) -> None:
         tasks = self.gen("gen_explain.py", "--n", "50")
