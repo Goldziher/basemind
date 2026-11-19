@@ -95,6 +95,9 @@ pub(crate) struct Target {
     /// manifest names none or the named file is not indexed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<RelPath>,
+    /// The function the target calls by name in `path`: a Python script's `pkg.cli:run` names `run`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
 }
 
 /// Dependencies one manifest declares, by tier.
@@ -392,6 +395,7 @@ fn cargo_targets(table: &toml::Table, package: Option<&str>, dir: &str, files: &
         kind,
         name: name.map(str::to_owned),
         path,
+        symbol: None,
     };
     let lib = table.get("lib");
     let lib_path = str_at(lib, "path").unwrap_or("src/lib.rs");
@@ -504,10 +508,18 @@ fn npm(path: &str, dir: &str, text: &str, files: &FileSet<'_>) -> Result<Manifes
     let file_target = |kind, name: Option<String>, rel: &str| Target {
         kind,
         name,
-        path: files.indexed(dir, rel),
+        path: files.indexed(dir, rel).or_else(|| build_source(dir, rel, files)),
+        symbol: None,
     };
     if let Some(main) = json.get("main").and_then(serde_json::Value::as_str) {
         m.targets.push(file_target(TargetKind::Main, None, main));
+    }
+    // The source entry bundlers and type checkers read; each names the package's own code.
+    for key in ["source", "module", "types", "typings"] {
+        if let Some(entry) = json.get(key).and_then(serde_json::Value::as_str) {
+            m.targets
+                .push(file_target(TargetKind::Main, Some(key.to_owned()), entry));
+        }
     }
     match json.get("bin") {
         Some(serde_json::Value::String(bin)) => m.targets.push(file_target(TargetKind::Bin, m.name.clone(), bin)),
@@ -535,17 +547,63 @@ fn npm(path: &str, dir: &str, text: &str, files: &FileSet<'_>) -> Result<Manifes
             .and_then(|scripts| scripts.get(&script))
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
-        // The first word of the command that names an indexed file: `node install.js`.
-        let path = command
-            .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|'))
-            .find_map(|word| files.indexed(dir, word));
-        m.targets.push(Target {
-            kind: TargetKind::Script,
-            name: Some(script),
-            path,
-        });
+        // Every word of the command that names an indexed script file: `node gen.js && node build.js`.
+        let mut paths: Vec<RelPath> = command
+            .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')'))
+            .filter(|word| is_script_file(word))
+            .filter_map(|word| files.indexed(dir, word))
+            .collect();
+        paths.dedup();
+        if paths.is_empty() {
+            m.targets.push(Target {
+                kind: TargetKind::Script,
+                name: Some(script),
+                path: None,
+                symbol: None,
+            });
+            continue;
+        }
+        for path in paths {
+            m.targets.push(Target {
+                kind: TargetKind::Script,
+                name: Some(script.clone()),
+                path: Some(path),
+                symbol: None,
+            });
+        }
     }
     Ok(m)
+}
+
+/// Extensions of a file a `package.json` script runs.
+const SCRIPT_EXTENSIONS: &[&str] = &["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx", "py", "sh"];
+
+/// Whether a word of a script command names a file it runs (`install.js`), not an argument
+/// (`README.md`) or a tool (`tsc`).
+fn is_script_file(word: &str) -> bool {
+    word.rsplit_once('.')
+        .is_some_and(|(stem, ext)| !stem.is_empty() && SCRIPT_EXTENSIONS.contains(&ext))
+}
+
+/// Directories a package builds its output into.
+const BUILD_DIRS: &[&str] = &["dist", "lib", "build", "out", "esm", "cjs"];
+
+/// The indexed source file a build output `rel` of the package at `dir` is compiled from:
+/// `./dist/index.js` (or `.mjs`, `.cjs`, `.d.ts`) maps to `src/index.ts` (or `.tsx`, `.js`, …).
+fn build_source(dir: &str, rel: &str, files: &FileSet<'_>) -> Option<RelPath> {
+    let rel = rel.trim_start_matches("./");
+    let (first, rest) = rel.split_once('/')?;
+    if !BUILD_DIRS.contains(&first) {
+        return None;
+    }
+    let stem = [".d.ts", ".d.mts", ".d.cts", ".js", ".mjs", ".cjs", ".jsx"]
+        .iter()
+        .find_map(|ext| rest.strip_suffix(ext))?;
+    ["src/", ""].iter().find_map(|base| {
+        ["ts", "tsx", "mts", "js", "jsx", "mjs"]
+            .iter()
+            .find_map(|ext| files.indexed(dir, &format!("{base}{stem}.{ext}")))
+    })
 }
 
 /// The relative file paths among an `exports` value's leaves (conditions and subpaths at any depth).
@@ -630,15 +688,34 @@ fn python(path: &str, dir: &str, text: &str, files: &FileSet<'_>) -> Result<Mani
         project.and_then(|p| p.get("gui-scripts")),
         poetry.and_then(|p| p.get("scripts")),
     ];
-    for scripts in script_tables.into_iter().flatten().filter_map(toml::Value::as_table) {
+    // `[project.entry-points.<group>]` and Poetry `plugins`: modules a plugin host loads by name.
+    let plugin_groups = [
+        project.and_then(|p| p.get("entry-points")),
+        poetry.and_then(|p| p.get("plugins")),
+    ];
+    let plugin_tables = plugin_groups
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_table)
+        .flat_map(|groups| groups.values().filter_map(toml::Value::as_table));
+    for scripts in script_tables
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_table)
+        .chain(plugin_tables)
+    {
         for (name, spec) in scripts {
-            let module = spec
+            let spec = spec
                 .as_str()
                 .or_else(|| spec.get("reference").and_then(toml::Value::as_str));
             m.targets.push(Target {
                 kind: TargetKind::Script,
                 name: Some(name.clone()),
-                path: module.and_then(|spec| python_module_file(dir, spec, files)),
+                path: spec.and_then(|spec| python_module_file(dir, spec, files)),
+                symbol: spec
+                    .and_then(|spec| spec.split_once(':'))
+                    .map(|(_, func)| func.trim().split('.').next().unwrap_or_default().to_owned())
+                    .filter(|func| !func.is_empty()),
             });
         }
     }
@@ -648,6 +725,7 @@ fn python(path: &str, dir: &str, text: &str, files: &FileSet<'_>) -> Result<Mani
                 kind: TargetKind::Main,
                 name: None,
                 path: Some(RelPath::from(file)),
+                symbol: None,
             });
         }
     }
@@ -750,6 +828,7 @@ fn go_bins(dirs: Vec<&str>) -> Vec<Target> {
             kind: TargetKind::Bin,
             name: Some(d.rsplit('/').next().unwrap_or(d).to_owned()).filter(|n| !n.is_empty()),
             path: Some(RelPath::from(if d.is_empty() { "." } else { d })),
+            symbol: None,
         })
         .collect()
 }
@@ -839,6 +918,7 @@ fn maven(path: &str, text: &str) -> Manifest {
             kind: TargetKind::Main,
             name: Some(main.to_owned()),
             path: None,
+            symbol: None,
         });
     }
     m
@@ -883,6 +963,7 @@ fn gradle(path: &str, dir: &str, text: &str, cx: &Context<'_, '_>) -> Manifest {
             kind: TargetKind::Main,
             name: Some(main[1].to_owned()),
             path: None,
+            symbol: None,
         });
     }
     let settings = ["settings.gradle", "settings.gradle.kts"]
