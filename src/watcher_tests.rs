@@ -5,11 +5,10 @@ use std::time::Duration;
 /// Block until the watcher is demonstrably live, then drain what arming produced.
 ///
 /// Registering a filesystem watch is asynchronous, so a test that just sleeps before its
-/// trigger races the registration whenever the machine is busy. That race is invisible in the
-/// negative tests below — an unarmed watcher reports nothing, which is exactly what they
-/// assert, so they pass without having tested anything. This writes `probe.rs` under `root`
-/// until the callback answers (proving the watch is live) and then drains pending batches, so
-/// a following assertion measures the filter rather than the startup window.
+/// trigger races the registration whenever the machine is busy: an unarmed watcher reports
+/// nothing, so a negative assertion passes without having tested anything. This writes
+/// `probe.rs` under `root` until the callback answers (proving the watch is live) and then drains
+/// pending batches, so a following assertion measures the filter rather than the startup window.
 fn arm_watcher(root: &Path, path_rx: &mpsc::Receiver<Vec<PathBuf>>) {
     let probe = root.join("probe.rs");
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -28,16 +27,138 @@ fn arm_watcher(root: &Path, path_rx: &mpsc::Receiver<Vec<PathBuf>>) {
     while path_rx.recv_timeout(Duration::from_millis(300)).is_ok() {}
 }
 
-/// Every path the watcher emits within `window`. FSEvents can deliver the arming probe's events
-/// after the drain above, so a negative test asserts on the paths it wrote, not on silence.
-fn emitted_within(path_rx: &mpsc::Receiver<Vec<PathBuf>>, window: Duration) -> Vec<PathBuf> {
-    let deadline = std::time::Instant::now() + window;
-    let mut emitted = Vec::new();
-    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
-        match path_rx.recv_timeout(left) {
-            Ok(paths) => emitted.extend(paths),
-            Err(_) => break,
+/// The event handlers of [`Scripted`] watchers, by the first path each was asked to watch.
+static SCRIPTED: Mutex<Vec<(PathBuf, Box<dyn notify::EventHandler>)>> = Mutex::new(Vec::new());
+static SCRIPTED_WATCHED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// A notify backend whose events the test injects through a [`Feed`]. It stands in for FSEvents
+/// and inotify where a test asserts what the watcher makes of an event: their delivery goes through
+/// the OS (on macOS through `fseventsd`, one daemon for every process), which a loaded machine keeps
+/// behind by tens of seconds, so a deadline on it fails without a defect.
+struct Scripted(Option<Box<dyn notify::EventHandler>>);
+
+impl notify::Watcher for Scripted {
+    fn new<F: notify::EventHandler>(event_handler: F, _config: notify::Config) -> notify::Result<Self> {
+        Ok(Self(Some(Box::new(event_handler))))
+    }
+
+    fn watch(&mut self, path: &Path, _recursive_mode: RecursiveMode) -> notify::Result<()> {
+        if let Some(handler) = self.0.take() {
+            SCRIPTED.lock().expect("scripted").push((path.to_path_buf(), handler));
+            SCRIPTED_WATCHED.notify_all();
         }
+        Ok(())
+    }
+
+    fn unwatch(&mut self, _path: &Path) -> notify::Result<()> {
+        Ok(())
+    }
+
+    fn kind() -> notify::WatcherKind {
+        notify::WatcherKind::NullWatcher
+    }
+}
+
+/// The raw events of a [`Scripted`] watcher: what the backend would hand the debouncer.
+struct Feed(Box<dyn notify::EventHandler>);
+
+impl Feed {
+    /// The feed of the scripted watcher on `root`, once the watcher has started watching it.
+    fn of(root: &Path) -> Self {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut scripted = SCRIPTED.lock().expect("scripted");
+        loop {
+            if let Some(at) = scripted.iter().position(|(path, _)| path == root) {
+                return Self(scripted.swap_remove(at).1);
+            }
+            let left = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .expect("the watcher never watched its root");
+            scripted = SCRIPTED_WATCHED.wait_timeout(scripted, left).expect("scripted").0;
+        }
+    }
+
+    fn send(&mut self, event: notify::Event) {
+        self.0.handle_event(Ok(event));
+    }
+
+    fn event(&mut self, kind: EventKind, path: &Path) {
+        self.send(notify::Event::new(kind).add_path(path.to_path_buf()));
+    }
+
+    /// A rename of `from` to `to` (already done on disk) as each backend reports it: FSEvents as an
+    /// unpaired rename on each path, inotify as a `From` / `To` pair sharing a cookie.
+    fn rename(&mut self, from: &Path, to: &Path, inotify: bool) {
+        use notify::event::{ModifyKind::Name, RenameMode};
+        if inotify {
+            let named = |mode, path: &Path| {
+                notify::Event::new(EventKind::Modify(Name(mode)))
+                    .add_path(path.to_path_buf())
+                    .set_tracker(1)
+            };
+            self.send(named(RenameMode::From, from));
+            self.send(named(RenameMode::To, to));
+            self.send(named(RenameMode::Both, from).add_path(to.to_path_buf()));
+        } else {
+            self.event(EventKind::Modify(Name(RenameMode::Any)), from);
+            self.event(EventKind::Modify(Name(RenameMode::Any)), to);
+        }
+    }
+}
+
+/// [`watch_paths`] over a [`Scripted`] backend on its own thread.
+struct ScriptedWatch {
+    feed: Feed,
+    /// Each batch the watcher emitted.
+    paths: mpsc::Receiver<Vec<PathBuf>>,
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    thread: std::thread::JoinHandle<Result<(), WatchError>>,
+}
+
+impl ScriptedWatch {
+    fn start(root: &Path, debounce_ms: u64) -> Self {
+        let mut config = crate::config::default_for_root(root);
+        config.watch.debounce_ms = debounce_ms;
+        let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (path_tx, paths) = mpsc::channel::<Vec<PathBuf>>();
+        let root_for_thread = root.to_path_buf();
+        let thread = std::thread::spawn(move || {
+            watch_with::<Scripted>(
+                &root_for_thread,
+                &config,
+                || None,
+                shutdown_rx,
+                |paths, kind| {
+                    assert!(matches!(kind, BatchKind::Incremental { .. }));
+                    let _ = path_tx.send(paths);
+                },
+            )
+        });
+        Self {
+            feed: Feed::of(root),
+            paths,
+            shutdown,
+            thread,
+        }
+    }
+
+    fn stop(self) {
+        let _ = self.shutdown.send(());
+        self.thread.join().expect("join watcher").expect("watcher succeeds");
+    }
+}
+
+/// Every path emitted up to and including the batch that carries `sentinel`. The debouncer emits a
+/// path's event no later than any event fed after it, so this holds whatever the events fed before
+/// `sentinel` produced.
+fn emitted_through(path_rx: &mpsc::Receiver<Vec<PathBuf>>, sentinel: &Path) -> Vec<PathBuf> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut emitted = Vec::new();
+    while !emitted.iter().any(|path| path == sentinel) {
+        let left = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .expect("the sentinel never surfaced");
+        emitted.extend(path_rx.recv_timeout(left).expect("the sentinel never surfaced"));
     }
     emitted
 }
@@ -178,39 +299,44 @@ fn config_reloader_yields_a_config_only_after_the_file_changes() {
 fn shutdown_interrupts_sustained_event_batches() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+    let pulse = root.join("pulse.rs");
+    std::fs::write(&pulse, b"fn pulse() {}\n").expect("write pulse");
     let mut config = crate::config::default_for_root(&root);
     config.watch.debounce_ms = 1;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let (batch_tx, batch_rx) = mpsc::channel::<usize>();
     let (done_tx, done_rx) = mpsc::channel::<()>();
-    let pulse = root.join("pulse.rs");
+    let feed: Arc<Mutex<Option<Feed>>> = Arc::default();
+    let feed_for_thread = Arc::clone(&feed);
     let pulse_for_thread = pulse.clone();
     let root_for_thread = root.clone();
     let handle = std::thread::spawn(move || {
         let mut generation = 0usize;
-        let result = watch_paths(&root_for_thread, &config, shutdown_rx, |_paths, _kind| {
-            generation += 1;
-            let _ = batch_tx.send(generation);
-            let _ = std::fs::write(&pulse_for_thread, format!("fn pulse_{generation}() {{}}\n"));
-        });
+        let result = watch_with::<Scripted>(
+            &root_for_thread,
+            &config,
+            || None,
+            shutdown_rx,
+            |_paths, _kind| {
+                generation += 1;
+                let _ = batch_tx.send(generation);
+                // Every batch produces the next: the event stream never goes quiet.
+                if let Some(feed) = feed_for_thread.lock().expect("feed").as_mut() {
+                    feed.event(MODIFY, &pulse_for_thread);
+                }
+            },
+        );
         let _ = done_tx.send(());
         result
     });
+    let mut first = Feed::of(&root);
+    first.event(MODIFY, &pulse);
+    *feed.lock().expect("feed") = Some(first);
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while batch_rx.recv_timeout(Duration::from_millis(100)).is_err() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "watcher never entered the event loop"
-        );
-        std::fs::write(&pulse, b"fn pulse_0() {}\n").expect("write initial pulse");
-    }
-    for _ in 0..3 {
-        // 2s per batch flakes under a fully loaded build host (fs delivery can lag debounce by
-        // seconds); 10s still bounds the test tightly enough to fail on a dead watcher. ~keep
+    for _ in 0..4 {
         batch_rx
-            .recv_timeout(Duration::from_secs(10))
+            .recv_timeout(Duration::from_secs(30))
             .expect("sustained batch arrives");
     }
 
@@ -224,53 +350,25 @@ fn shutdown_interrupts_sustained_event_batches() {
 /// A rename must still surface the new path. Under `NoCache` the debouncer no longer stitches
 /// FileId-based rename events, so a rename degrades to remove-old + create-new — we assert the
 /// create half reaches the callback so the renamed file gets (re)indexed. Guards the cache swap
-/// in `watch_paths` (issue #43).
+/// in `watch_paths` (issue #43). Both backends' shapes of a rename go through the debouncer.
 #[test]
 fn should_emit_new_path_when_file_is_renamed() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path().canonicalize().expect("canonicalize tempdir");
-    let mut config = crate::config::default_for_root(&root);
-    config.watch.debounce_ms = 50;
+    for inotify in [false, true] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        let original = root.join("before.rs");
+        std::fs::write(&original, b"fn main() {}\n").expect("seed file");
+        let mut watch = ScriptedWatch::start(&root, 50);
 
-    let original = root.join("before.rs");
-    std::fs::write(&original, b"fn main() {}\n").expect("seed file");
+        let renamed = root.join("after.rs");
+        std::fs::rename(&original, &renamed).expect("rename file");
+        watch.feed.rename(&original, &renamed, inotify);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let (path_tx, path_rx) = mpsc::channel::<Vec<PathBuf>>();
+        let emitted = emitted_through(&watch.paths, &renamed);
+        assert!(emitted.contains(&renamed), "inotify {inotify}: {emitted:?}");
 
-    let root_for_thread = root.clone();
-    let handle = std::thread::spawn(move || {
-        watch_paths(&root_for_thread, &config, shutdown_rx, |paths, kind| {
-            assert!(matches!(kind, BatchKind::Incremental { .. }));
-            let _ = path_tx.send(paths);
-        })
-    });
-
-    // A rename is one-shot — once `before.rs` is gone the trigger cannot be retried — so
-    // unlike the sibling modify test this cannot re-fire inside the polling loop. It must
-    // know the watch is live BEFORE renaming. ~keep
-    arm_watcher(&root, &path_rx);
-
-    let renamed = root.join("after.rs");
-    std::fs::rename(&original, &renamed).expect("rename file");
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let saw_new_path = loop {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "watcher never reported after.rs within 30s"
-        );
-        match path_rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(paths) if paths.iter().any(|p| p.ends_with("after.rs")) => break true,
-            Ok(_) => continue,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watcher thread died"),
-        }
-    };
-    assert!(saw_new_path, "expected after.rs to surface post-rename");
-
-    let _ = shutdown_tx.send(());
-    let _ = handle.join();
+        watch.stop();
+    }
 }
 
 /// Changes inside `.basemind/` must never surface — the watcher would
@@ -280,24 +378,20 @@ fn should_ignore_changes_under_basemind_dir() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().canonicalize().expect("canonicalize tempdir");
     std::fs::create_dir_all(root.join(crate::config::BASEMIND_DIR)).expect("mkdir .basemind");
-    let mut config = crate::config::default_for_root(&root);
-    config.watch.debounce_ms = 50;
+    let mut watch = ScriptedWatch::start(&root, 50);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let (path_tx, path_rx) = mpsc::channel::<Vec<PathBuf>>();
+    let noise = root.join(crate::config::BASEMIND_DIR).join("noise.txt");
+    std::fs::write(&noise, b"ignored\n").expect("write basemind file");
+    watch
+        .feed
+        .event(EventKind::Create(notify::event::CreateKind::File), &noise);
+    let sentinel = root.join("sentinel.rs");
+    std::fs::write(&sentinel, b"fn s() {}\n").expect("write sentinel");
+    watch
+        .feed
+        .event(EventKind::Create(notify::event::CreateKind::File), &sentinel);
 
-    let root_for_thread = root.clone();
-    let handle = std::thread::spawn(move || {
-        watch_paths(&root_for_thread, &config, shutdown_rx, |paths, _kind| {
-            let _ = path_tx.send(paths);
-        })
-    });
-
-    arm_watcher(&root, &path_rx);
-    std::fs::write(root.join(crate::config::BASEMIND_DIR).join("noise.txt"), b"ignored\n")
-        .expect("write basemind file");
-
-    let emitted = emitted_within(&path_rx, Duration::from_millis(800));
+    let emitted = emitted_through(&watch.paths, &sentinel);
     assert!(
         !emitted
             .iter()
@@ -305,8 +399,7 @@ fn should_ignore_changes_under_basemind_dir() {
         "a path under .basemind/ was emitted: {emitted:?}"
     );
 
-    let _ = shutdown_tx.send(());
-    let _ = handle.join();
+    watch.stop();
 }
 
 /// Writes under a *nested* child-repo `.basemind/` and under a gitignored path must not wake a
@@ -320,30 +413,23 @@ fn should_ignore_nested_basemind_and_gitignored_paths() {
     std::fs::create_dir_all(root.join("child").join(crate::config::BASEMIND_DIR)).expect("mkdir child/.basemind");
     std::fs::write(root.join(".gitignore"), b"build/\n").expect("write .gitignore");
     std::fs::create_dir_all(root.join("build")).expect("mkdir build");
-    let mut config = crate::config::default_for_root(&root);
-    config.watch.debounce_ms = 50;
+    let mut watch = ScriptedWatch::start(&root, 50);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let (path_tx, path_rx) = mpsc::channel::<Vec<PathBuf>>();
+    let created = EventKind::Create(notify::event::CreateKind::File);
+    let nested = root
+        .join("child")
+        .join(crate::config::BASEMIND_DIR)
+        .join("index.msgpack");
+    std::fs::write(&nested, b"\x00").expect("write nested basemind file");
+    watch.feed.event(created, &nested);
+    let ignored = root.join("build").join("out.o");
+    std::fs::write(&ignored, b"\x00").expect("write gitignored file");
+    watch.feed.event(created, &ignored);
+    let sentinel = root.join("sentinel.rs");
+    std::fs::write(&sentinel, b"fn s() {}\n").expect("write sentinel");
+    watch.feed.event(created, &sentinel);
 
-    let root_for_thread = root.clone();
-    let handle = std::thread::spawn(move || {
-        watch_paths(&root_for_thread, &config, shutdown_rx, |paths, _kind| {
-            let _ = path_tx.send(paths);
-        })
-    });
-
-    arm_watcher(&root, &path_rx);
-    std::fs::write(
-        root.join("child")
-            .join(crate::config::BASEMIND_DIR)
-            .join("index.msgpack"),
-        b"\x00",
-    )
-    .expect("write nested basemind file");
-    std::fs::write(root.join("build").join("out.o"), b"\x00").expect("write gitignored file");
-
-    let emitted = emitted_within(&path_rx, Duration::from_millis(800));
+    let emitted = emitted_through(&watch.paths, &sentinel);
     assert!(
         !emitted
             .iter()
@@ -351,8 +437,7 @@ fn should_ignore_nested_basemind_and_gitignored_paths() {
         "nested-.basemind / gitignored churn was emitted: {emitted:?}"
     );
 
-    let _ = shutdown_tx.send(());
-    let _ = handle.join();
+    watch.stop();
 }
 
 /// A rescan can outlast the event stream that triggered it, and everything that happened during
@@ -371,48 +456,40 @@ fn should_deliver_events_produced_while_the_consumer_is_busy() {
 
     let root_for_thread = root.clone();
     let handle = std::thread::spawn(move || {
-        watch_paths(&root_for_thread, &config, shutdown_rx, |paths, _kind| {
-            let _ = busy_tx.send(());
-            // Stands in for the synchronous rescan the real consumers run inside this callback.
-            std::thread::sleep(Duration::from_millis(600));
-            let _ = path_tx.send(paths);
-        })
+        watch_with::<Scripted>(
+            &root_for_thread,
+            &config,
+            || None,
+            shutdown_rx,
+            |paths, _kind| {
+                let _ = busy_tx.send(());
+                // Stands in for the synchronous rescan the real consumers run inside this callback.
+                std::thread::sleep(Duration::from_millis(600));
+                let _ = path_tx.send(paths);
+            },
+        )
     });
+    let mut feed = Feed::of(&root);
+    let created = EventKind::Create(notify::event::CreateKind::File);
 
-    // Arm the watch by retrying a write until the consumer reports it is busy — the sleeping
-    // callback makes the shared `arm_watcher` drain window meaningless here.
     let arm = root.join("arm.rs");
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        assert!(std::time::Instant::now() < deadline, "watcher never armed within 30s");
-        std::fs::write(&arm, b"fn arm() {}\n").expect("write arm file");
-        match busy_rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(()) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watcher thread died"),
-        }
-    }
+    std::fs::write(&arm, b"fn arm() {}\n").expect("write arm file");
+    feed.event(created, &arm);
+    busy_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the consumer never took the first batch");
 
     // The consumer is inside the callback right now; this event has nowhere to go but the queue
     // or the pending set.
-    std::fs::write(root.join("late.rs"), b"fn late() {}\n").expect("write late file");
+    let late = root.join("late.rs");
+    std::fs::write(&late, b"fn late() {}\n").expect("write late file");
+    feed.event(created, &late);
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    loop {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "an event produced during a busy rescan was never delivered"
-        );
-        match path_rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(paths) if paths.iter().any(|p| p.ends_with("late.rs")) => break,
-            Ok(_) => continue,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watcher thread died"),
-        }
-    }
+    let emitted = emitted_through(&path_rx, &late);
+    assert!(emitted.contains(&late), "{emitted:?}");
 
     let _ = shutdown_tx.send(());
-    let _ = handle.join();
+    handle.join().expect("join watcher").expect("watcher succeeds");
 }
 
 const MODIFY: EventKind = EventKind::Modify(notify::event::ModifyKind::Any);
@@ -574,43 +651,31 @@ fn should_not_fail_startup_on_unreadable_directory() {
 /// old and the new directory must reach the callback so the scan can prune one and index the other.
 #[test]
 fn should_emit_both_directories_when_a_directory_is_renamed() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let root = tmp.path().canonicalize().expect("canonicalize tempdir");
-    let mut config = crate::config::default_for_root(&root);
-    config.watch.debounce_ms = 50;
-    std::fs::create_dir_all(root.join("old/deep")).expect("mkdir");
-    std::fs::write(root.join("old/x.rs"), b"fn x() {}\n").expect("seed");
-    std::fs::write(root.join("old/deep/y.rs"), b"fn y() {}\n").expect("seed");
+    for inotify in [false, true] {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        std::fs::create_dir_all(root.join("old/deep")).expect("mkdir");
+        std::fs::write(root.join("old/x.rs"), b"fn x() {}\n").expect("seed");
+        std::fs::write(root.join("old/deep/y.rs"), b"fn y() {}\n").expect("seed");
+        let mut watch = ScriptedWatch::start(&root, 50);
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let (path_tx, path_rx) = mpsc::channel::<Vec<PathBuf>>();
-    let root_for_thread = root.clone();
-    let handle = std::thread::spawn(move || {
-        watch_paths(&root_for_thread, &config, shutdown_rx, |paths, _| {
-            let _ = path_tx.send(paths);
-        })
-    });
-    arm_watcher(&root, &path_rx);
+        let (old, new) = (root.join("old"), root.join("new"));
+        std::fs::rename(&old, &new).expect("rename dir");
+        watch.feed.rename(&old, &new, inotify);
+        let sentinel = root.join("sentinel.rs");
+        std::fs::write(&sentinel, b"fn s() {}\n").expect("write sentinel");
+        watch
+            .feed
+            .event(EventKind::Create(notify::event::CreateKind::File), &sentinel);
 
-    std::fs::rename(root.join("old"), root.join("new")).expect("rename dir");
-
-    let (old, new) = (root.join("old"), root.join("new"));
-    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while !(seen.contains(&old) && seen.contains(&new)) {
+        let emitted = emitted_through(&watch.paths, &sentinel);
         assert!(
-            std::time::Instant::now() < deadline,
-            "watcher never reported both directories within 30s: {seen:?}"
+            emitted.contains(&old) && emitted.contains(&new),
+            "inotify {inotify}: {emitted:?}"
         );
-        match path_rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(paths) => seen.extend(paths),
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watcher thread died"),
-        }
-    }
 
-    let _ = shutdown_tx.send(());
-    let _ = handle.join();
+        watch.stop();
+    }
 }
 
 /// Records what [`DirWatches`] arms and releases, standing in for the inotify debouncer.
