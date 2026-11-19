@@ -210,18 +210,9 @@ async fn two_leads_never_launch_into_the_same_or_nested_worktrees() {
         .supervisor
         .wait(SessionId::from_raw(session), std::time::Duration::from_secs(10));
     assert!(matches!(state, Some(SessionState::Finished(_))), "{state:?}");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let again = launch(&second, "one").await;
-        if again["isError"] == false {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the worktree stayed locked: {again}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    // The observer lets go of the locks before the session is marked finished.
+    let again = launch(&second, "one").await;
+    assert_eq!(again["isError"], false, "the worktree stayed locked: {again}");
 }
 
 /// Two leads whose worktrees roots nest: the outer lead may not launch into a directory that
@@ -260,8 +251,8 @@ async fn leads_with_nested_worktrees_roots_never_launch_around_each_others_workt
 }
 
 /// Each lock file is open once in this process, however many sessions hold it, and a refused
-/// claim closes none that a session holds: where `flock` is emulated with `fcntl` locks, closing
-/// any descriptor of a file releases the process's lock on it.
+/// claim closes none that a session holds: closing any descriptor of a file releases the
+/// process's `fcntl` lock on it.
 #[test]
 fn a_lock_file_is_open_once_per_process_and_a_refused_claim_keeps_the_others() {
     let fixture = Fixture::new();
@@ -295,6 +286,119 @@ fn a_lock_file_is_open_once_per_process_and_a_refused_claim_keeps_the_others() {
     }
     drop(a);
     assert!(lock_worktree(&locks, &fixture.worktrees.join("one/a")).is_ok());
+}
+
+/// A child this process forked, blocked until [`Forked::release`]. Between fork and exec (a
+/// `pre_exec` hook, or a slow `exec`) every launch is such a child.
+struct Forked {
+    pid: libc::pid_t,
+    release: std::os::fd::OwnedFd,
+}
+
+impl Forked {
+    /// Fork. The child first locks `lock` exclusively when given, and the call returns whether it
+    /// got the lock. The child runs only async-signal-safe calls: this process has other threads.
+    fn new(lock: Option<&std::ffi::CStr>) -> (Self, bool) {
+        use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+        let pipe = || {
+            let mut fds = [0; 2];
+            // SAFETY: pipe fills the two descriptors, which are then owned here.
+            assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+            // SAFETY: fresh descriptors nothing else owns.
+            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+        };
+        let (release_r, release_w) = pipe();
+        let (report_r, report_w) = pipe();
+        // SAFETY: plain integers; all zeroes is the whole file.
+        let mut range: libc::flock = unsafe { std::mem::zeroed() };
+        range.l_type = libc::F_WRLCK as libc::c_short;
+        range.l_whence = libc::SEEK_SET as libc::c_short;
+        // SAFETY: the child calls only open, fcntl, write, read and _exit.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let mut got = 0u8;
+            if let Some(path) = lock {
+                // SAFETY: async-signal-safe calls on a path and a struct prepared before the fork.
+                unsafe {
+                    let fd = libc::open(path.as_ptr(), libc::O_RDWR);
+                    if fd >= 0 && libc::fcntl(fd, libc::F_SETLK, &raw const range) == 0 {
+                        got = 1;
+                    }
+                }
+            }
+            // SAFETY: async-signal-safe calls on descriptors inherited from the parent.
+            unsafe {
+                libc::write(report_w.as_raw_fd(), (&raw const got).cast(), 1);
+                let mut byte = 0u8;
+                libc::read(release_r.as_raw_fd(), (&raw mut byte).cast(), 1);
+                libc::_exit(0);
+            }
+        }
+        drop((release_r, report_w));
+        let mut got = 0u8;
+        // SAFETY: reads one byte into a local from a descriptor owned here.
+        assert_eq!(unsafe { libc::read(report_r.as_raw_fd(), (&raw mut got).cast(), 1) }, 1);
+        (
+            Self {
+                pid,
+                release: release_w,
+            },
+            got == 1,
+        )
+    }
+
+    fn release(self) {
+        use std::os::fd::AsRawFd as _;
+        let byte = 0u8;
+        // SAFETY: writes one byte from a local, then reaps the child this value owns.
+        unsafe {
+            libc::write(self.release.as_raw_fd(), (&raw const byte).cast(), 1);
+            let mut status = 0;
+            assert_eq!(libc::waitpid(self.pid, &raw mut status, 0), self.pid);
+        }
+    }
+}
+
+/// A worktree lock let go while a child this process forked has not exec'd yet is free: the child
+/// holds a copy of every descriptor, so a lock that belonged to the descriptor (`flock`) would
+/// outlive its release and refuse the next claim of a free worktree.
+#[test]
+fn a_released_worktree_lock_is_free_while_a_forked_child_runs() {
+    let fixture = Fixture::new();
+    let locks = fixture.base.join("locks-fork");
+    let dir = fixture.worktrees.join("one");
+    let held = lock_worktree(&locks, &dir).unwrap();
+    let (child, _) = Forked::new(None);
+    drop(held);
+    let again = lock_worktree(&locks, &dir);
+    child.release();
+    assert!(again.is_ok(), "{:?}", again.err());
+}
+
+/// The locks exclude another process: a worktree another process holds, or one inside it, is
+/// refused until that process lets go.
+#[test]
+fn a_worktree_another_process_holds_is_refused_until_it_lets_go() {
+    let fixture = Fixture::new();
+    let locks = fixture.base.join("locks-other");
+    std::fs::create_dir_all(fixture.worktrees.join("one/sub")).unwrap();
+    let dir = fixture.worktrees.join("one");
+    // Created by a claim, so the child has a file to lock.
+    drop(lock_worktree(&locks, &dir).unwrap());
+    let path = std::ffi::CString::new(lock_file(&locks, &dir).into_os_string().into_encoded_bytes()).unwrap();
+    let (child, locked) = Forked::new(Some(&path));
+    assert!(locked, "the child could not lock the worktree");
+    let refused = [dir.clone(), dir.join("sub")].map(|dir| lock_worktree(&locks, &dir).err());
+    child.release();
+    assert_eq!(
+        refused,
+        [
+            Some("working_dir_in_use".to_owned()),
+            Some("working_dir_in_use".to_owned())
+        ]
+    );
+    assert!(lock_worktree(&locks, &dir).is_ok());
 }
 
 /// Review 3 N1: an old audit log of an ended lead is deleted when a lead starts; a recent one, and

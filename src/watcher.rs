@@ -166,6 +166,19 @@ pub fn watch_paths(
 pub fn watch_paths_reloading(
     root: &Path,
     config: &Config,
+    reload: impl FnMut() -> Option<Arc<Config>>,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+    on_change: impl FnMut(Vec<PathBuf>, BatchKind),
+) -> Result<(), WatchError> {
+    watch_with::<RecommendedWatcher>(root, config, reload, shutdown, on_change)
+}
+
+/// [`watch_paths_reloading`] over the notify backend `W`: the platform's in production, one whose
+/// events a test injects otherwise, since the platform's delivery latency is unbounded (FSEvents
+/// goes through `fseventsd`, which a busy machine keeps behind by tens of seconds).
+fn watch_with<W: notify::Watcher>(
+    root: &Path,
+    config: &Config,
     mut reload: impl FnMut() -> Option<Arc<Config>>,
     shutdown: tokio::sync::oneshot::Receiver<()>,
     mut on_change: impl FnMut(Vec<PathBuf>, BatchKind),
@@ -183,7 +196,7 @@ pub fn watch_paths_reloading(
     // ~keep and re-derive state from disk, so the FileId rename stitching NoCache drops is unused; a
     // ~keep rename just degrades to remove-old + create-new, which scan_paths already handles. Linux
     // ~keep already defaults to NoCache.
-    let mut debouncer = new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
+    let mut debouncer = new_debouncer_opt::<_, W, NoCache>(
         debounce,
         None,
         move |res| dispatch_debounced(&tx, &pending_producer, res),
@@ -458,7 +471,7 @@ trait DirRegistry {
 }
 
 #[cfg(target_os = "linux")]
-impl DirRegistry for notify_debouncer_full::Debouncer<RecommendedWatcher, NoCache> {
+impl<W: notify::Watcher> DirRegistry for notify_debouncer_full::Debouncer<W, NoCache> {
     fn watch_dir(&mut self, dir: &Path) -> Result<(), notify::Error> {
         self.watch(dir, RecursiveMode::NonRecursive)
     }
