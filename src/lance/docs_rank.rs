@@ -339,10 +339,17 @@ fn lexical_lane(
         });
     }
     match project(predicate, allowed, |k| store.lexical(query, predicate, k, true)) {
-        Ok((fuzzy_hits, fuzzy_capped)) => Ok(Lane {
+        // The fuzzy query matches unstemmed terms, so it can find fewer chunks than the exact one
+        // (`reconciled` is indexed as `reconcil`, two edits away); it only ever widens the answer.
+        Ok((fuzzy_hits, fuzzy_capped)) if fuzzy_hits.len() > hits.len() => Ok(Lane {
             hits: fuzzy_hits,
             fuzzy: true,
             capped: fuzzy_capped,
+        }),
+        Ok(_) => Ok(Lane {
+            hits,
+            fuzzy: false,
+            capped,
         }),
         Err(error) => {
             tracing::debug!(%error, "docs_search: the fuzzy lexical rerun failed; keeping the exact hits");
