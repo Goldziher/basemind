@@ -9,14 +9,16 @@ Kinds (task `mode`):
            strongly connected component of two or more files. Set scoring.
 
 `--ext rs` reads Rust through `rust_gold`, `--ext py` Python through `ast`; the edge rules and what
-they miss are in `_edges.py`. In Rust a child module's `use super::...` and its parent's `mod`
-declaration form a cycle, so most of a crate is one component: that is the answer the graph gives.
+they miss are in `_edges.py`. Rust gold counts runtime imports only, as the graph answers by
+default (ADR-0047 decision 4): a `mod x;` declaration is no edge, and a path through the package's
+own name or a workspace crate is internal.
 
 Baselines (ADR-0031 rule 5, the shell an agent would run):
 
-  impact   one `git grep -l` per file whose importers the agent needs: the target's module path
-           (`crate::a::b`) and its `mod b;` declaration, or for Python the module's last name in an
-           import line. Depth 2 adds one grep per depth-1 importer of the gold. Scored as paths.
+  impact   one `git grep -l` per file whose importers the agent needs: the `use` lines naming the
+           module's name as a path segment (for a crate root, every `use` through the crate), or for
+           Python the module's last name in an import line. Depth 2 adds one grep per depth-1
+           importer of the gold. Scored as paths.
   cycles   every import line of the language (`git grep -n`), which the agent reads to find cycles.
            Tokens only: no reader turns import lines into cycles.
 """
@@ -34,23 +36,32 @@ IMPORT_LINES = {
     "py": "^[[:space:]]*(from|import)[[:space:]]",
 }
 NOT_IDENT = "([^A-Za-z0-9_]|$)"
+USE_LINE = "^[[:space:]]*(pub(\\([^)]*\\))?[[:space:]]+)?use[[:space:]]"
 
 
-def module_paths(tables: dict[str, dict[tuple[str, ...], str]]) -> dict[str, list[list[str]]]:
-    """Rust: every module path of each file, over every crate root reaching it."""
-    out: dict[str, list[list[str]]] = {}
-    for table in tables.values():
+def module_paths(
+    tables: dict[str, dict[tuple[str, ...], str]], libs: dict[str, str]
+) -> dict[str, list[tuple[list[str], str | None]]]:
+    """Rust: every module path of each file, over every crate root reaching it, with the name of
+    the library that root is (None for a binary, test, example or bench)."""
+    out: dict[str, list[tuple[list[str], str | None]]] = {}
+    for root, table in tables.items():
         for modpath, path in sorted(table.items()):
-            out.setdefault(path, []).append(list(modpath))
+            out.setdefault(path, []).append((list(modpath), libs.get(root)))
     return out
 
 
-def rust_importer_grep(modpaths: list[list[str]]) -> str:
+def rust_importer_grep(modpaths: list[tuple[list[str], str | None]]) -> str:
+    """`use` lines naming the module as a path segment (`crate::a::b`, `super::b`, `b::X` in its
+    parent, `name::a::b` from another crate); for a crate root, `use` lines through the crate."""
     alts = []
-    for mp in modpaths:
-        alts.append("crate::" + "::".join(mp) + (NOT_IDENT if mp else ""))
+    for mp, lib in modpaths:
         if mp:
-            alts.append(f"(^|[^A-Za-z0-9_])mod[[:space:]]+{mp[-1]}[[:space:]]*;")
+            alts.append(f"{USE_LINE}.*(^|[^A-Za-z0-9_]){mp[-1]}{NOT_IDENT}")
+        else:
+            alts.append(f"{USE_LINE}.*crate::")
+            if lib:
+                alts.append(f"{USE_LINE}.*(^|[^A-Za-z0-9_:]){lib}::")
     pattern = "|".join(sorted(set(alts)))
     return "git grep -l -E " + c.shell_quote(pattern) + " -- '*.rs'"
 
@@ -79,8 +90,9 @@ def main() -> None:
         import _rust as r
 
         recs = r.records(repo.blobs(files))
-        edges, tables = e.rust_graph(repo.all_files(), recs)
-        modpaths = module_paths(tables)
+        manifests = e.cargo_manifests(repo)
+        edges, tables = e.rust_graph(repo.all_files(), recs, manifests)
+        modpaths = module_paths(tables, e.lib_names(manifests))
 
         def importer_grep(path: str) -> str | None:
             return rust_importer_grep(modpaths[path]) if path in modpaths else None

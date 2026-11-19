@@ -5,7 +5,10 @@
 #   BASEMIND_DATA_HOME=$(mktemp -d) BASEMIND_COMMS_DIR=$(mktemp -d) \
 #     benchmarks/eval/run_gate.sh BASEMIND_BIN CORPUS_DIR [RESULTS_DIR]
 #
-# BASEMIND_BIN must be built with the `tokenizer` feature (o200k counts; ADR-0022 rejects bytes/4).
+# BASEMIND_BIN must be built with the `tokenizer` feature (o200k counts; ADR-0022 rejects bytes/4) and
+# `code-intel` (the Rust import resolver the `impact` and `cycles` kinds need). The `read_around`
+# baseline is what `rg` prints, so `rg` must be on PATH (it is not pinned by the mise toolchain);
+# its version goes into `run.tsv`.
 # Both cache directories must be set, exist and be empty: a run against the default cache could
 # take over a live daemon and index. RESULTS_DIR defaults to `benchmarks/eval/results`.
 set -euo pipefail
@@ -49,12 +52,25 @@ if ! printf 'hello world' | "${bin}" admin tokens --stdin >/dev/null 2>&1; then
   exit 2
 fi
 
+# The `read_around` baseline runs `rg`; without it every such baseline fails instead of measuring.
+rg_version="none"
+while IFS=$'\t' read -r name _; do
+  case "${name}" in '' | '#'*) continue ;; esac
+  if grep -q -E '"mode": *"read_around"' "${here}/tasks/${name}.jsonl"; then
+    if ! command -v rg >/dev/null 2>&1; then
+      echo "refusing to run: tasks/${name}.jsonl has read_around tasks, whose baseline is rg output; install rg" >&2
+      exit 2
+    fi
+    rg_version="$(rg --version | head -n 1)"
+  fi
+done <"${here}/corpus.tsv"
+
 "${here}/fetch_corpus.sh" "${corpus}"
 corpus="$(cd "${corpus}" && pwd -P)"
 mkdir -p "${results}"
 version="$("${bin}" --version)"
 run_log="${results}/run.tsv"
-printf 'corpus\tcommit\ttasks\tscan_s\teval_s\tload_before\tload_after\tbinary\n' >"${run_log}"
+printf 'corpus\tcommit\ttasks\tscan_s\teval_s\tload_before\tload_after\tbinary\trg\n' >"${run_log}"
 
 while IFS=$'\t' read -r name _ commit _; do
   case "${name}" in '' | '#'*) continue ;; esac
@@ -64,6 +80,21 @@ while IFS=$'\t' read -r name _ commit _; do
   t0="$(date +%s)"
   "${bin}" --root "${repo}" -q scan >/dev/null
   t1="$(date +%s)"
+  # Without a Rust import resolver (`code-intel`) the graph is empty and every `impact` / `cycles`
+  # task scores 0 as if the tool were wrong; refuse instead of reporting that as a verdict. The
+  # probe reads the structured `coverage` of `code cycles`: Rust must have a resolver row and must
+  # not be listed under `without_resolver`.
+  if grep -q -E '"mode": *"(impact|cycles)"' "${tasks}"; then
+    if ! "${bin}" --root "${repo}" code cycles --json 2>/dev/null | python3 -c '
+import json, sys
+cov = json.load(sys.stdin)["coverage"]
+rust = any(row["language"] == "rust" for row in cov["languages"])
+sys.exit(0 if rust and "rust" not in cov.get("without_resolver", []) else 1)
+'; then
+      echo "refusing to run: ${bin} resolves no ${name} Rust imports (build it with --features tokenizer,code-intel)" >&2
+      exit 2
+    fi
+  fi
   "${bin}" --root "${repo}" admin eval --tasks "${tasks}" --min-recall 0.8 \
     --out "${results}/${name}.ndjson" --report "${results}/${name}.report.json" \
     --markdown "${results}/${name}.md" 2>"${results}/${name}.stderr"
@@ -78,8 +109,8 @@ for f in map(Path, files):
     f.write_text(f.read_text().replace(corpus.rstrip("/") + "/", "$CORPUS/").replace(here + "/", "benchmarks/eval/"))
 PY
   load_after="$(uptime | sed 's/.*load averages*: *//')"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${name}" "${commit}" "$(grep -vc '^#' "${tasks}")" \
-    "$((t1 - t0))" "$((t2 - t1))" "${load_before}" "${load_after}" "${version}" >>"${run_log}"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${name}" "${commit}" "$(grep -vc '^#' "${tasks}")" \
+    "$((t1 - t0))" "$((t2 - t1))" "${load_before}" "${load_after}" "${version}" "${rg_version}" >>"${run_log}"
   echo "${name}: scan $((t1 - t0))s, eval $((t2 - t1))s (load ${load_before} -> ${load_after})"
 done <"${here}/corpus.tsv"
 

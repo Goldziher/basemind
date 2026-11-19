@@ -56,15 +56,14 @@ tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `read` to `code_
 | `gen_find.py` | `find` | the source path of a basename / typo / consonant-skeleton query (ranked) |
 | `gen_git_search.py` | `git_search` | shas of all commits whose message tokens contain the query's rare subject tokens (ranked) |
 | `gen_docs.py` | `docs` | the markdown file holding a sentence that names backticked code (ranked) |
-| `gen_graph.py` | `impact`, `cycles` | file-level import edges from `mod` / `use` (Rust, `rust_gold`) or `import` (Python, `ast`), see `_edges.py`: importers within a depth, files of each import cycle |
+| `gen_graph.py` | `impact`, `cycles` | file-level runtime import edges from `use` resolved through each package's `Cargo.toml` (Rust, `rust_gold`; `mod` declarations are not edges, ADR-0047 decision 4) or `import` (Python, `ast`), see `_edges.py`: importers within a depth, files of each import cycle |
 | `gen_changed.py` | `grep_changed` | the lines of the files changed since `HEAD~k` that hold a literal |
 | `gen_large.py` | `find_large` | files with at least N lines, counted as the scanner counts them (a final unterminated line counts) |
-| `gen_read_around.py` | `read_around` | every line within 5 of a literal's hits, merged into ranges |
+| `gen_read_around.py` | `read_around` | every line within 5 of a literal's hits, merged into ranges; the baseline is what `rg -n -C5` prints |
 | `gen_explain.py` | `explain` | a Rust fn's definition, call sites and `->callee` names, from `rust_gold` |
 
-The last five cover the 0.34 analysis kinds (ADR-0047). Until the engine op or argument each one drives lands,
-`basemind admin eval` skips its tasks: they are reported under "Skipped" with the missing op, and kept out of every
-aggregate and of the gate.
+The last five cover the 0.34 analysis kinds (ADR-0047). Their engine ops have landed, so `basemind admin eval` runs,
+scores and gates their tasks like every other kind.
 
 Each generator's docstring states the exact basemind semantics its gold encodes, measured against
 the real tools (for example: `references` counts call sites only and reports the line where the
@@ -101,9 +100,11 @@ One JSON object per line (blank lines and `#` lines are skipped; ids are unique)
 - `baseline` (optional): what an agent would do without basemind. `grep` is one shell command or a list, run with `sh -c`
   in the workspace root (exit 0 or 1 are fine; anything else fails the baseline); `read` lists files read whole.
   `items` names how the output is read as items, so the baseline is scored against the same gold: `grep_lines`
-  (`path:line:` prefixes), `paths`, `shas` (first token of each line, abbreviations resolved with `git rev-parse`),
-  `blame` (`git blame` default output), `diff` (a unified diff's added/removed lines), `diff_symbols` (definition names
-  on added/removed lines), `read` (every line of the files read). Without `items` the baseline is charged for tokens only.
+  (`path:line:` prefixes), `grep_context` (`rg -n -C` / `grep -n -C` output: `path:N:` match and `path-N-` context
+  rows, split at the earliest separator whose prefix is a file), `paths`, `shas` (first token of each line,
+  abbreviations resolved with `git rev-parse`), `blame` (`git blame` default output), `diff` (a unified diff's
+  added/removed lines), `diff_symbols` (definition names on added/removed lines), `read` (every line of the files read).
+  Without `items` the baseline is charged for tokens only.
 - `annotations` (`grep`, optional): `path:line` -> the definition that line sits in; scored as the share of returned
   gold hits whose attached `symbol` has that name (`annotation_accuracy`, not part of the gate).
 - Unknown fields (for example `meta`) are ignored.
@@ -190,7 +191,8 @@ the credited tasks is at least 1.5, counted with o200k; a tool passes when every
 ### Reproduce
 
 ```sh
-cargo build --release --features tokenizer --bin basemind     # o200k counts; bytes/4 gives no verdict
+# tokenizer: o200k counts (bytes/4 gives no verdict); code-intel: the Rust import resolver (impact, cycles)
+cargo build --release --features tokenizer,code-intel --bin basemind
 corpus=/path/outside/the/repo/eval-corpus
 benchmarks/eval/fetch_corpus.sh "$corpus"                     # clone, check out and verify every pin
 benchmarks/eval/gen_tasks.sh "$corpus" /tmp/tasks && diff -r /tmp/tasks benchmarks/eval/tasks   # optional: the
@@ -207,7 +209,9 @@ BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)" \
   a pin moves. Gold never comes from basemind: Rust structure from `rust_gold` (syn), git, grep and find gold from git's
   own output on the pinned commit.
 - `run_gate.sh` refuses to start unless `BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR` are set to existing, empty
-  directories outside the default cache, refuses a binary without the `tokenizer` feature, scans each repository,
+  directories outside the default cache, refuses a binary without the `tokenizer` feature, refuses to run `read_around`
+  tasks without `rg` on PATH (its version goes into `run.tsv`), refuses a binary whose `code cycles --json`
+  `coverage` has no Rust resolver row (no `code-intel`) for a task file with `impact` / `cycles` tasks, scans each repository,
   runs `basemind admin eval --tasks ... --min-recall 0.8`, and stops any daemon it could have started on exit.
 - `gate.py RESULTS_DIR` turns the per-corpus reports into `gate.md` / `gate.json`.
 
@@ -232,7 +236,8 @@ tokio (credited 0.68); `git_blame` fails `blame_symbol` on tokio (1.11x); `git_d
 
 The baseline is the cheapest shell command a competent agent would run to get the same items, scored against the same
 gold. `fd` is not installed and `rg` is not pinned by the repository's mise toolchain, so `git grep -n` (the output shape
-of `rg -n`) and `git ls-files | grep` stand in for them; ADR-0022 names a targeted `git grep` too.
+of `rg -n`) and `git ls-files | grep` stand in for them; ADR-0022 names a targeted `git grep` too. `read_around` is the
+exception, below.
 
 | kind | baseline |
 |---|---|
@@ -248,12 +253,20 @@ of `rg -n`) and `git ls-files | grep` stand in for them; ADR-0022 names a target
 | `git_symbol` | `git log -s -L '/fn NAME[(<]/,/^INDENT}/:PATH'` |
 | `blame`, `blame_symbol` | `git blame -L A,B` / `git blame -L '/fn NAME[(<]/,/^INDENT}/'` |
 | `diff`, `diff_structural` | `git diff FROM TO -- PATH` / `git diff FROM -- PATH` |
-| `impact` | `git grep -l -E` for the target's `crate::a::b` path and its `mod b;` line, once more per depth-1 importer at depth 2 |
+| `impact` | `git grep -l -E` for `use` lines naming the target module as a path segment (for a crate root, every `use` through the crate), once more per depth-1 importer at depth 2 |
 | `cycles` | every import line of the language, `git grep -n` (tokens only) |
 | `grep_changed` | `git diff --name-only REV \| xargs git grep -n -F PATTERN` |
 | `find_large` | `git ls-files \| xargs awk ...` printing `<lines> <path>` (the `wc -l` listing with an unterminated last line counted) `\| sort -rn \| awk '$1>=N'` |
-| `read_around` | `git grep -n -F`, then `sed -n` over the same ranges per file (tokens only) |
-| `explain` | the file's definition lines, `git grep -n -w NAME`, and `sed -n` over the body (tokens only) |
+| `read_around` | `rg -n -C5 -F -e PATTERN -g '*.EXT'`, its literal output (`grep_context`) |
+| `explain` | one command per section the tool answers: the file's definition lines, `git grep -n -w NAME` (callers), `sed -n` from the first attribute or doc comment to the body's end (doc, body, callees), the `impact` depth-1 `git grep -l -E` `use` lines for the definition's file (importers), `git log -n 5 -s --format='%h %an %aI %s' -L '/fn NAME[(<]/,/^INDENT}/:PATH'` (history); tokens only |
+
+`read_around` runs `rg` itself: the baseline is the literal output of the command an agent runs for "the lines
+around each hit", not a format built for the comparison. rg merges overlapping and adjacent context windows and
+prints the path on every row (`path:N:text` for a match, `path-N-text` for context, `--` between groups) because
+that is what it prints without a tty, as the harness runs it. `-g '*.EXT'` keeps the gold's file set; rg skips
+hidden and ignored files `git grep` would search, which counts against the baseline's recall. Because rg is not
+pinned by the mise toolchain, `run_gate.sh` refuses to run this kind without it and records `rg --version` in
+`run.tsv`.
 
 ### What the gold cannot cover
 
@@ -264,9 +277,12 @@ of `rg -n`) and `git ls-files | grep` stand in for them; ADR-0022 names a target
 - Gold is Rust-only for the code kinds: hits in other languages cost the tool precision, never recall.
 - `git_path` and `git_symbol` do not follow renames; `git_symbol` skips merges and compares by name within one file.
 - `find` gold is every tracked file, including assets (`.png`, `.svg`) `find_files` does not index.
-- Import edges (`impact`, `cycles`) come from `use` and `mod` only: a path in an expression (`crate::a::f()`), a
-  sibling workspace crate and a `[lib] path` override are not edges; `#[cfg]` is ignored. In Rust a child's
-  `use super::` and its parent's `mod` declaration form a cycle, so most of a crate is one component.
+- Import edges (`impact`, `cycles`) are runtime `use` paths only, as the graph answers by default (ADR-0047
+  decision 4): a `mod` declaration builds the module tree but is no edge, and a path in an expression
+  (`crate::a::f()`) is none either; `#[cfg]` is ignored, so every variant of a `mod` declared under several
+  conditions is walked. A path through the package's own name (from its tests,
+  binaries, examples) or a path, `workspace = true` or `[patch]`ed path dependency resolves inside the repository;
+  the standard library and registry dependencies are external.
 - `docs_search` and `code_search` are not run: both need an embedding model download, and this harness only uses the
   network to clone the corpus. `code_read` spans are judged against the definition's first non-attribute line to its
   last line.
