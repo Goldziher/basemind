@@ -105,6 +105,25 @@ class PublicSkillsTests(unittest.TestCase):
         (target / ".ai-rulez-public-skills.json").write_text('{"files": {"../outside": "hash"}}')
         assert_error(lambda: self.module.synchronize(self.root, check=False), "Unsafe manifest path")
 
+    def test_should_splice_manual_pages_into_sources_and_detect_drift(self) -> None:
+        """A skill's manual section is the page, untitled with headings one deeper, and nothing else."""
+        manual = self.root / "docs/manual"
+        manual.mkdir(parents=True)
+        (manual / "topic.md").write_text("# Topic\n\nBody\n## Part\n```sh\n# kept\n```\n")
+        sources = self.root / "plugin/.ai-rulez/skills/example"
+        sources.mkdir(parents=True)
+        skill = sources / "SKILL.md"
+        skill.write_text("---\nname: example\n---\n<!-- manual:topic -->\nstale\n<!-- /manual:topic -->\n")
+        assert_error(lambda: self.module.splice_sources(self.root, check=True), "Manual section differs")
+        assert self.module.splice_sources(self.root, check=False) == 1
+        expected = "<!-- manual:topic -->\nBody\n### Part\n```sh\n# kept\n```\n<!-- /manual:topic -->"
+        assert expected in skill.read_text()
+        assert self.module.splice_sources(self.root, check=True) == 1
+        (self.source / "SKILL.md").write_text(skill.read_text().replace("Body", "Edited"))
+        assert_error(lambda: self.module.synchronize(self.root, check=False), "Manual section differs")
+        skill.write_text("---\nname: example\n---\n<!-- manual:missing -->\n<!-- /manual:missing -->\n")
+        assert_error(lambda: self.module.splice_sources(self.root, check=False), "Unknown manual topic")
+
 
 if __name__ == "__main__":
     unittest.main()

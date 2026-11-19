@@ -201,3 +201,66 @@ fn codex_mcp_should_launch_the_pinned_release_from_workspace() {
         "the first release-backed launch needs enough time to install the binary",
     );
 }
+
+/// Every skill file under `dir`, skipping build output and other checkouts.
+fn skill_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("read dir") {
+        let path = entry.expect("entry").path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if path.is_dir() && !matches!(name.as_ref(), ".git" | "target" | "node_modules" | ".worktrees") {
+            skill_files(&path, out);
+        } else if name == "SKILL.md" {
+            out.push(path);
+        }
+    }
+}
+
+/// The manual pages are the single source of the skills' manual sections (issue #133):
+/// `scripts/sync_public_skills.py --manual` splices `docs/manual/<topic>.md` between
+/// `<!-- manual:<topic> -->` markers in the ai-rulez sources, and generation copies them into every
+/// skill tree. A copy edited by hand, or left behind by a page edit without a regeneration, differs
+/// from `basemind::cli::manual::spliced` and fails here.
+#[test]
+fn every_skill_manual_section_matches_its_manual_page() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut skills = Vec::new();
+    skill_files(&root, &mut skills);
+    let mut failures = Vec::new();
+    let mut sections = 0;
+    for skill in &skills {
+        let text = std::fs::read_to_string(skill).expect("read skill");
+        let relative = skill.strip_prefix(&root).unwrap_or(skill).display().to_string();
+        let mut rest = text.as_str();
+        while let Some(start) = rest.find("<!-- manual:") {
+            let after = &rest[start + "<!-- manual:".len()..];
+            let Some((topic, body)) = after.split_once(" -->\n") else {
+                failures.push(format!("{relative}: malformed manual marker"));
+                break;
+            };
+            let close = format!("<!-- /manual:{topic} -->");
+            let Some(end) = body.find(&close) else {
+                failures.push(format!("{relative}: `{topic}` section is not closed"));
+                break;
+            };
+            sections += 1;
+            match basemind::cli::manual::spliced(topic) {
+                None => failures.push(format!("{relative}: no manual page `{topic}`")),
+                Some(page) if page != body[..end] => failures.push(format!(
+                    "{relative}: `{topic}` differs from docs/manual/{topic}.md; run `mise run plugin:generate`"
+                )),
+                Some(_) => {}
+            }
+            rest = &body[end + close.len()..];
+        }
+    }
+    assert!(
+        sections >= 33,
+        "found {sections} manual sections in {} skill files; the splice markers went missing",
+        skills.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "skill manual sections drifted:\n  {}",
+        failures.join("\n  ")
+    );
+}

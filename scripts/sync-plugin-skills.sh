@@ -11,6 +11,8 @@ cd "$REPO_ROOT"
 # referenced by the shipped agent-comms rule, but was absent from every plugin bundle that rule
 # ships into, so the agent was told to consult a skill its host did not have. ~keep
 AI_RULEZ="${AI_RULEZ:-ai-rulez}"
+# docs/manual is the source of the skills' manual sections; splice before generating. ~keep
+python3 scripts/sync_public_skills.py --manual
 "$AI_RULEZ" generate --plugin --no-local --strict-config
 python3 scripts/sync_public_skills.py
 python3 scripts/sync_legacy_plugin_exports.py

@@ -110,41 +110,87 @@ code_outline {"path":"src/mcp/tools.rs"}
 - `code_symbols` ranks the exact name first, then prefix, then substring; `"fuzzy":true` adds fuzzy
   subsequence matches last. A row is `path`, `line`, `kind`, `name` and `signature`; `total`
   counts the whole corpus.
-- `code_refs {"name":"bar"}` matches the identifier exactly, with no scope resolution: `Foo::bar()`
-  and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it. `hits` lists
-  each file once, as `{"<path>": [hit, ...]}`; a call site is its `line` (and `column` when another
-  call of the same callee is on that line), plus `callee` when that is not `name` (a qualified call, a
-  substring match), and an implementation is its `line` and `impl_type`. Add `path` for one specific
-  definition: the response carries that `definition` (`path`, `name`, `kind`, `line`, `column`) and
-  either `resolved_total` with `resolved` on the hits it checked (`true`: proven to bind to the
-  definition; `false`: checked and not proven; absent: not checked), or a `resolution` note with no
-  flags: `unsupported for <language>`, `no resolution facts for this file` when the language is
-  supported but the file bound nothing, or `no resolution facts for this definition`. A pinned file
-  edited since it was indexed is an error naming `index_rescan`. A `path` that is not indexed, or
-  that defines no such symbol, is an error; so is a name several definitions in the file share,
-  which lists each with its lines until you add `line`. `relation:"importers"` matches whole
-  segments of recorded imports (`os` finds `import os.path`, not `import posixpath`) and takes no
-  `match`. `relation:"definition"` needs `path` and `line` and returns the reference's `path`,
-  `line`, `column` plus the `definition` it binds to (or a `resolution` note), all 1-based.
+- `code_refs {"name":"bar"}` matches the identifier exactly: `Foo::bar()` and `bar()` are calls to
+  `bar`, `bar_baz()` is not. `"match":"substring"` widens it. `hits` lists each file once, as
+  `{"<path>": [hit, ...]}`; a call site is its `line` (and `column` when another call of the same
+  callee is on that line), plus `callee` when that is not `name`, and an implementation is its
+  `line` and `impl_type`. Each call site is graded by `resolution` (see Resolution below). A
+  `path` that is not indexed, or defines no such symbol, is an error; so is a name several
+  definitions in the file share, which lists each with its lines until you add `line`.
+  `relation:"importers"` matches whole segments of recorded imports (`os` finds `import os.path`,
+  not `import posixpath`) and takes no `match`.
 - `code_search` returns pointers (path, `line` / `end_line`, symbol), not bodies; read a hit with
   `code_read`. `lane` picks `hybrid` (default), `semantic` or `keyword`. The response lists
   `lanes_ran` (`vector`, `keyword`, `exact`) and `lanes_unavailable` (`lane`, `reason`), so a hybrid
   search that ran without embeddings says so. It needs the `code-search` Cargo feature.
-- Every list takes `limit` and `cursor` and returns `next_cursor`. Defaults: `code_symbols` /
-  `code_grep` / `code_refs` 100, `find_files` 200, `code_outline` 500 symbols, `code_search` 10.
-  A list is trimmed to a default budget of 6000 tokens and then sets `budgeted`: raise `max_tokens`
-  or follow `next_cursor`. A page that ended at `limit` sets nothing else: `next_cursor` is the
-  signal that there is more. `truncated` + `truncated_reason` mark a cut you did not ask for, such
-  as `scan_cap` on `code_refs` / `code_symbols` (the scan stopped early, `total` is a lower bound,
-  `next_cursor` resumes it) or `byte_budget` on `code_grep` (files left unread).
-- A cursor continues only the call that returned it, with the same arguments apart from `limit`
-  and `max_tokens`. Passed to another query, or used after a rescan, the call is an error: repeat
-  it without `cursor`.
-- A `notice` (`empty_index`, `warming_up`, `building_index`, `rescanning`) means results may be
-  incomplete or a moment stale.
 - Needs an index in the machine-global cache (Linux `~/.local/share/basemind/`, macOS
   `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`). Run `basemind scan`
   first (see the `basemind-scan` skill).
+
+## Resolution
+
+<!-- manual:resolution -->
+`code_refs` finds call sites by name, then grades each one by what it is known to bind to. The
+grade refines a result set; it never shrinks it. A call without `resolution` lists every call site
+whose callee is the name, graded, so `total` stays a sound count of candidates.
+
+Each call site carries `resolution`, one of:
+
+| Value | Meaning |
+|---|---|
+| `same_file` | Binds to a definition in the same file. |
+| `imported` | Binds through an import to a definition in another file. |
+| `scope_resolved` | Binds to a local binding that is not an indexed definition: a variable, a parameter, or an import whose target is not indexed. |
+| `elsewhere` | Checked against the definition pinned with `path`, and binds to another one. |
+| `name_only` | No resolution facts for the site: matched by name alone. |
+| `external` | No resolution facts, and the index defines no symbol of the name. |
+
+A page names its most common grade once as `resolution_default`, and a row leaves its own out when
+it is that one; a page with no `resolution_default` is all `name_only`. `resolution_counts` gives
+the rows per grade, before any filter.
+
+- **Callers of one definition.** Add `path` (and `line` when several definitions in the file share
+  the name): the answer carries that `definition`, and `resolved_total` counts the hits proven to
+  bind to it. When resolution could not run, `resolved_total` is absent and `resolution_note` says
+  why: `unsupported for <language>`, `no resolution facts for this file`, or
+  `no resolution facts for this definition`.
+- **Precision on request.** `resolution` filters rows by grade, comma-separated:
+  `{"name":"open","resolution":"same_file,imported"}` (CLI: `--resolution same_file,imported`).
+- **Why the default keeps unresolved rows.** Resolution cannot see through a module-object import
+  (`from pkg import mod`, then `mod.f()`) or an unresolvable path alias. Dropping those rows would
+  lose real callers and report the rest as complete. Filter when you want precision; trust `total`
+  when you need completeness.
+- **Coverage.** JavaScript and TypeScript (oxc), Python and Java (stack-graphs rules) resolve
+  across files through imports; every other language gets tree-sitter scope binding.
+- **From a reference to its definition.** `relation: "definition"` returns the definition the
+  reference at `path` / `line` binds to, or a `resolution_note` when there is none.
+<!-- /manual:resolution -->
+
+## Paging and budgets
+
+<!-- manual:paging -->
+Every list takes `limit` and `cursor` and returns `next_cursor` while more remains. Pass
+`next_cursor` back as `cursor` (CLI: `--cursor`) with the same arguments; only `limit` and
+`max_tokens` may change between pages.
+
+- **Defaults.** `code_symbols`, `code_grep` and `code_refs` list 100 rows, `find_files` 200,
+  `code_outline` 500 symbols, `code_search` and `docs_search` 10 hits, `git_log` 20 commits (at
+  most 100), `git_blame` 100 hunks. `limit: 0` is refused.
+- **Token budget.** A list is trimmed to `max_tokens` (default 6000) and then sets `budgeted`:
+  raise `max_tokens` or follow `next_cursor`.
+- **Three words for a cut.** A page that ended at `limit` returns `next_cursor` and nothing else.
+  `budgeted` means the token budget trimmed it. `truncated` with `truncated_reason` marks a cut you
+  did not ask for, with `omitted` counting what was left out where it is known: `scan_cap` (the
+  scan stopped early, `total` is a lower bound, `next_cursor` resumes it), `byte_budget`,
+  `hunk_cap`, `byte_cap`, `path_cap`, `window`, `live_walk` or `shallow_clone`.
+- **Cursors are bound to their query.** A cursor continues only the call that returned it. Passed
+  to another query, or used after a rescan or a HEAD move, the call is an error: repeat it without
+  `cursor`. No tool answers a stale cursor with an empty page.
+- **Notices.** An empty or partial answer carrying a `notice` (`empty_index`, `warming_up`,
+  `building_index`, `rescanning`) means "retry shortly", not "no matches".
+- **CLI output.** Human output prints bodies and diffs in full and cuts only table cells, with a
+  note on stderr. `--json` prints the response the MCP tool returns.
+<!-- /manual:paging -->
 
 For git history, blame and diffs see `basemind-git-history`; for document search see
 `basemind-documents`; for agent coordination see `basemind-comms`.
