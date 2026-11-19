@@ -7,14 +7,17 @@
 //! `session_id` (the root thread), `parent_thread_id` and `subagent_history_start_ordinal`; a
 //! rollout without it (the format before the envelope) names no working directory and is reported
 //! as unsupported and unattributed. Records of a subagent's rollout before its start ordinal are the
-//! parent's history it inherited, and are skipped. Then: `response_item` payloads `function_call`
+//! parent's history it inherited, and are skipped; a rollout in Legacy history mode writes no
+//! `ordinal`, so there the prefix is the lines before the start ordinal by position. A fork, a
+//! revert and a subagent with forked context copy earlier records with their `call_id`, which
+//! [`super::Seen`] counts once. Then: `response_item` payloads `function_call`
 //! (`name`, `namespace` (`mcp__<server>` for an MCP tool; absent or `functions` for a built-in),
 //! `arguments` as a JSON string, `call_id`), `custom_tool_call` (`name`, `namespace`, `input`,
 //! `call_id`; the code-mode `exec` script is read by [`super::code_mode`]), `local_shell_call`
 //! (`action.command`), `tool_search_call`, and the `*_output` of a call (`call_id`, `output`, a
 //! string or content items whose header carries the exit status); and `event_msg` payloads
-//! `token_count` (`info.last_token_usage.output_tokens`). Messages, reasoning and command output
-//! are never kept.
+//! `token_count` (the rise of `info.total_token_usage.output_tokens`, else
+//! `info.last_token_usage.output_tokens`). Messages, reasoning and command output are never kept.
 
 use std::io::BufRead;
 use std::path::Path;
@@ -26,7 +29,7 @@ use super::code_mode::{self, Arg};
 use super::contain::{self, Found};
 use super::shell;
 use super::tally::{Call, Family};
-use super::{Outcome, Parsed, Scope, TranscriptParser, basemind_tool, major, widen};
+use super::{Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_tool, major, widen};
 
 /// The `cli_version` majors whose record shape this parser was written against.
 pub const SUPPORTED_MAJORS: &[u64] = &[0];
@@ -84,7 +87,7 @@ impl TranscriptParser for Codex {
         contain::walk(root, root, DEPTH, found);
     }
 
-    fn parse(&self, reader: &mut dyn BufRead, scope: &Scope) -> Outcome {
+    fn parse(&self, reader: &mut dyn BufRead, scope: &Scope, seen: &mut Seen) -> Outcome {
         let mut line = String::new();
         let mut first: Option<Envelope> = None;
         while first.is_none() {
@@ -131,19 +134,33 @@ impl TranscriptParser for Codex {
         if let Some(timestamp) = &first.timestamp {
             widen(&mut session.started, &mut session.ended, timestamp);
         }
-        let mut turn: Vec<Family> = Vec::new();
+        let mut state = State {
+            turn: Vec::new(),
+            seen,
+            copied: false,
+            output_total: 0,
+        };
+        // The position of a line after `session_meta` (ordinal 0): a Legacy-mode rollout writes no
+        // ordinals, and its inherited prefix is then the lines before the start ordinal.
+        let mut position: u64 = 0;
         loop {
             line.clear();
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
-                Ok(_) => {}
+                Ok(_) if line.trim().is_empty() => continue,
+                Ok(_) => position += 1,
             }
             let Ok(envelope) = serde_json::from_str::<Envelope>(&line) else {
                 continue;
             };
-            if let (Some(start), Some(ordinal)) = (own_start, envelope.ordinal)
-                && ordinal < start
-            {
+            if own_start.is_some_and(|start| envelope.ordinal.unwrap_or(position) < start) {
+                // The parent's history: not this subagent's, but its token totals are the baseline.
+                if let Some(payload) = &envelope.payload
+                    && envelope.kind.as_deref() == Some("event_msg")
+                    && payload.kind.as_deref() == Some("token_count")
+                {
+                    state.output_delta(payload.info.as_ref());
+                }
                 continue;
             }
             if let Some(timestamp) = &envelope.timestamp {
@@ -157,10 +174,45 @@ impl TranscriptParser for Codex {
                 {
                     session.tally.set_offset(moved.offset);
                 }
-                record(&mut session, envelope.kind.as_deref(), payload, &mut turn);
+                record(&mut session, envelope.kind.as_deref(), payload, &mut state);
             }
         }
         Outcome::Session(Box::new(session))
+    }
+}
+
+/// What reading one rollout carries from record to record.
+struct State<'a> {
+    /// The families of the calls since the last token count.
+    turn: Vec<Family>,
+    seen: &'a mut Seen,
+    /// The last call was copied from an earlier rollout (a fork or a revert), so the token counts
+    /// that follow it are copied too.
+    copied: bool,
+    /// The last cumulative output-token total.
+    output_total: u64,
+}
+
+impl State<'_> {
+    /// The output tokens a `token_count` adds: the rise of the cumulative
+    /// `total_token_usage.output_tokens` (the whole total when it fell: a new count), so a
+    /// re-emitted count adds nothing; `last_token_usage.output_tokens` when there is no total.
+    fn output_delta(&mut self, info: Option<&Value>) -> Option<u64> {
+        let info = info?;
+        let total = info.pointer("/total_token_usage/output_tokens").and_then(Value::as_u64);
+        let last = info.pointer("/last_token_usage/output_tokens").and_then(Value::as_u64);
+        match total {
+            Some(total) => {
+                let delta = total.checked_sub(self.output_total).unwrap_or(total);
+                self.output_total = total;
+                Some(delta)
+            }
+            None => {
+                let last = last?;
+                self.output_total = self.output_total.saturating_add(last);
+                Some(last)
+            }
+        }
     }
 }
 
@@ -207,9 +259,22 @@ fn attributed(reason: String) -> Outcome {
     }
 }
 
-fn record(session: &mut Parsed, kind: Option<&str>, payload: Payload, turn: &mut Vec<Family>) {
+fn record(session: &mut Parsed, kind: Option<&str>, payload: Payload, state: &mut State<'_>) {
     let name = payload.name.as_deref().unwrap_or_default();
     let namespace = own_namespace(payload.namespace.as_deref());
+    let is_call = matches!(
+        (kind, payload.kind.as_deref()),
+        (
+            Some("response_item"),
+            Some("function_call" | "custom_tool_call" | "tool_search_call" | "local_shell_call")
+        )
+    );
+    if is_call {
+        state.copied = payload.call_id.as_deref().is_some_and(|id| !state.seen.first_call(id));
+        if state.copied {
+            return;
+        }
+    }
     let calls = match (kind, payload.kind.as_deref()) {
         (Some("response_item"), Some("function_call")) => {
             let arguments = payload.arguments.as_ref().and_then(Value::as_str).unwrap_or_default();
@@ -228,7 +293,7 @@ fn record(session: &mut Parsed, kind: Option<&str>, payload: Payload, turn: &mut
                 } else {
                     // The script's result is one output for all of them, so no call carries the id.
                     for call in nested {
-                        turn.push(call.family);
+                        state.turn.push(call.family);
                         session.tally.call(None, call);
                     }
                     return;
@@ -250,27 +315,26 @@ fn record(session: &mut Parsed, kind: Option<&str>, payload: Payload, turn: &mut
             vec![shell::classify(&script(&argv))]
         }
         (Some("response_item"), Some("function_call_output" | "custom_tool_call_output")) => {
-            if let Some(id) = &payload.call_id {
+            if let Some(id) = &payload.call_id
+                && state.seen.first_result(id)
+            {
                 session.tally.result(id, payload.output.as_ref().is_some_and(failed));
             }
             return;
         }
         (Some("event_msg"), Some("token_count")) => {
-            let output = payload
-                .info
-                .as_ref()
-                .and_then(|info| info.pointer("/last_token_usage/output_tokens"))
-                .and_then(Value::as_u64);
-            if let Some(output) = output {
-                session.tally.tokens(output, turn);
-                turn.clear();
+            if let Some(output) = state.output_delta(payload.info.as_ref()) {
+                if !state.copied {
+                    session.tally.tokens(output, &state.turn);
+                }
+                state.turn.clear();
             }
             return;
         }
         _ => return,
     };
     for call in calls {
-        turn.push(call.family);
+        state.turn.push(call.family);
         session.tally.call(payload.call_id.as_deref(), call);
     }
 }

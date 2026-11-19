@@ -23,14 +23,16 @@ pub mod tally;
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
+use ahash::{AHashMap, AHashSet};
 use serde::Serialize;
 
 use contain::{Found, RootState};
 use tally::{Counts, RepeatedRead, Tally};
 
 /// The host a transcript came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Host {
     Claude,
@@ -215,6 +217,38 @@ pub struct Parsed {
     pub tally: Tally,
 }
 
+/// What one host's transcripts have already counted, by the ids the host gives them. A fork, a
+/// resumed or reverted conversation and a subagent spawned with its parent's context copy earlier
+/// records with their ids, so a record whose id was seen in an earlier transcript is not counted
+/// again. Transcripts are read oldest first ([`TranscriptParser::written`]).
+#[derive(Debug, Default)]
+pub struct Seen {
+    calls: AHashSet<String>,
+    results: AHashSet<String>,
+    responses: AHashSet<String>,
+}
+
+impl Seen {
+    /// Whether the tool call `id` is counted for the first time.
+    pub fn first_call(&mut self, id: &str) -> bool {
+        first(&mut self.calls, id)
+    }
+
+    /// Whether the result of the tool call `id` is counted for the first time.
+    pub fn first_result(&mut self, id: &str) -> bool {
+        first(&mut self.results, id)
+    }
+
+    /// Whether the model response `id` is counted for the first time.
+    pub fn first_response(&mut self, id: &str) -> bool {
+        first(&mut self.responses, id)
+    }
+}
+
+fn first(set: &mut AHashSet<String>, id: &str) -> bool {
+    !set.contains(id) && set.insert(id.to_owned())
+}
+
 /// One host's transcript format.
 pub trait TranscriptParser {
     fn host(&self) -> Host;
@@ -222,8 +256,15 @@ pub trait TranscriptParser {
     /// The candidate transcripts under the canonical `root` for `scope`.
     fn transcripts(&self, root: &Path, scope: &Scope, found: &mut Found);
 
-    /// Parse one transcript, stopping as soon as it is known to belong elsewhere.
-    fn parse(&self, reader: &mut dyn BufRead, scope: &Scope) -> Outcome;
+    /// When `path` was written, for a host whose file names do not sort by time; transcripts are
+    /// read in `(written, path)` order.
+    fn written(&self, _path: &Path) -> Option<SystemTime> {
+        None
+    }
+
+    /// Parse one transcript, stopping as soon as it is known to belong elsewhere. A record whose id
+    /// is already in `seen` is not counted.
+    fn parse(&self, reader: &mut dyn BufRead, scope: &Scope, seen: &mut Seen) -> Outcome;
 }
 
 /// One session in the report.
@@ -305,13 +346,21 @@ pub struct Report {
     pub unreadable: u64,
 }
 
+/// A transcript of this repository, parsed, before the report.
+struct Entry {
+    host: Host,
+    id: String,
+    /// The session the host filed it under (a Claude Code subagent).
+    filed_under: Option<String>,
+    parsed: Parsed,
+}
+
 /// Collect the report for `scope` from `roots`. `since` (`YYYY-MM-DD`) keeps the sessions and
 /// subagents active on or after that day; one with no timestamp is kept.
 pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Report {
     let parsers: [&dyn TranscriptParser; 2] = [&claude::Claude, &codex::Codex];
     let mut report = Report::default();
-    // The thread id of each reported session, by host, for attributing subagents.
-    let mut threads: Vec<(Host, String)> = Vec::new();
+    let mut entries: Vec<Entry> = Vec::new();
     for parser in parsers {
         let host = parser.host();
         let root = match contain::open_root(roots.root(host)) {
@@ -338,14 +387,16 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
         let mut found = Found::default();
         parser.transcripts(&root, scope, &mut found);
         report.refused += found.refused;
-        let mut transcripts: Vec<(PathBuf, Option<String>)> = found
+        let mut transcripts: Vec<(Option<SystemTime>, PathBuf, Option<String>)> = found
             .files
             .into_iter()
             .map(|file| (file, None))
             .chain(found.subagents.into_iter().map(|(file, parent)| (file, Some(parent))))
+            .map(|(file, parent)| (parser.written(&file), file, parent))
             .collect();
         transcripts.sort();
-        for (file, filed_under) in transcripts {
+        let mut seen = Seen::default();
+        for (_, file, filed_under) in transcripts {
             let Ok(handle) = contain::open(&file) else {
                 report.unreadable += 1;
                 continue;
@@ -354,40 +405,13 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            match parser.parse(&mut BufReader::new(handle), scope) {
-                Outcome::Session(parsed) => {
-                    let active = parsed.ended.as_deref().or(parsed.started.as_deref());
-                    if let (Some(since), Some(active)) = (since, active)
-                        && active < since
-                    {
-                        continue;
-                    }
-                    let parsed = *parsed;
-                    let (counts, repeated_reads) = parsed.tally.finish();
-                    let session = SessionReport {
-                        host,
-                        id: id.clone(),
-                        checkout: parsed.checkout,
-                        format_version: parsed.format_version,
-                        started: parsed.started,
-                        ended: parsed.ended,
-                        adoption: counts.adoption(),
-                        counts,
-                        repeated_reads,
-                        subagents: None,
-                    };
-                    match filed_under.or(parsed.parent) {
-                        Some(parent) => report.subagents.push(SubagentReport {
-                            parent,
-                            attributed: false,
-                            session,
-                        }),
-                        None => {
-                            threads.push((host, parsed.thread.unwrap_or(id)));
-                            report.sessions.push(session);
-                        }
-                    }
-                }
+            match parser.parse(&mut BufReader::new(handle), scope, &mut seen) {
+                Outcome::Session(parsed) => entries.push(Entry {
+                    host,
+                    id,
+                    filed_under,
+                    parsed: *parsed,
+                }),
                 Outcome::OtherDirectory => report.other_directories += 1,
                 Outcome::Empty => report.empty += 1,
                 Outcome::Unsupported { reason, attributed } => {
@@ -397,6 +421,46 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
                         report.unsupported_unattributed += 1;
                     }
                 }
+            }
+        }
+    }
+    // The thread id of each reported session, by host, for attributing subagents.
+    let mut threads: Vec<(Host, String)> = Vec::new();
+    for entry in merge_threads(entries) {
+        let Entry {
+            host,
+            id,
+            filed_under,
+            parsed,
+        } = entry;
+        let active = parsed.ended.as_deref().or(parsed.started.as_deref());
+        if let (Some(since), Some(active)) = (since, active)
+            && active < since
+        {
+            continue;
+        }
+        let (counts, repeated_reads) = parsed.tally.finish();
+        let session = SessionReport {
+            host,
+            id: id.clone(),
+            checkout: parsed.checkout,
+            format_version: parsed.format_version,
+            started: parsed.started,
+            ended: parsed.ended,
+            adoption: counts.adoption(),
+            counts,
+            repeated_reads,
+            subagents: None,
+        };
+        match filed_under.or(parsed.parent) {
+            Some(parent) => report.subagents.push(SubagentReport {
+                parent,
+                attributed: false,
+                session,
+            }),
+            None => {
+                threads.push((host, parsed.thread.unwrap_or(id)));
+                report.sessions.push(session);
             }
         }
     }
@@ -420,6 +484,29 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
     report.aggregate.subagents = report.subagents.len() as u64;
     report.aggregate.adoption = report.aggregate.counts.adoption();
     report
+}
+
+/// Fold the transcripts of one thread into the first of them: a reverted Codex thread is a new
+/// rollout with the same thread id, and the old one stays.
+fn merge_threads(entries: Vec<Entry>) -> Vec<Entry> {
+    let mut merged: Vec<Entry> = Vec::with_capacity(entries.len());
+    let mut by_thread: AHashMap<(Host, String), usize> = AHashMap::new();
+    for entry in entries {
+        let key = entry.parsed.thread.clone().map(|thread| (entry.host, thread));
+        if let Some(&index) = key.as_ref().and_then(|key| by_thread.get(key)) {
+            let into = &mut merged[index].parsed;
+            for timestamp in [&entry.parsed.started, &entry.parsed.ended].into_iter().flatten() {
+                widen(&mut into.started, &mut into.ended, timestamp);
+            }
+            into.tally.absorb(entry.parsed.tally);
+            continue;
+        }
+        if let Some(key) = key {
+            by_thread.insert(key, merged.len());
+        }
+        merged.push(entry);
+    }
+    merged
 }
 
 /// Attribute each subagent to the reported session of its host whose thread id it names, and add

@@ -48,10 +48,13 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed");
 }
 
-/// Copy fixture `name` to `dest`, substituting the checkout paths.
+/// Copy fixture `name` to `dest`, substituting the checkout paths, and `{{N}}` with the file stem so
+/// one fixture placed twice carries distinct call ids.
 fn place(env: &Env, other: &Path, name: &str, dest: &Path) {
     let text = std::fs::read_to_string(Path::new(FIXTURES).join(name)).expect("read fixture");
+    let stem = dest.file_stem().expect("file stem").to_string_lossy();
     let text = text
+        .replace("{{N}}", &stem)
         .replace("{{REPO}}", &env.repo.to_string_lossy())
         .replace("{{WORKTREE}}", &env.worktree.to_string_lossy())
         .replace("{{OTHER}}", &other.to_string_lossy());
@@ -412,6 +415,104 @@ fn relative_paths_resolve_against_the_sessions_working_directory() {
         (0, 1),
         "`../../src/main.rs` is the src/main.rs basemind read; only the path above the checkout is outside"
     );
+}
+
+#[test]
+fn a_fork_counts_only_what_it_did_after_the_fork() {
+    let env = setup();
+    let day = env.home.join(".codex/sessions/2026/11/20");
+    place(&env, &env.repo, "codex/fork.jsonl", &day.join("rollout-fork.jsonl"));
+    let report = report(&env, None);
+    assert_eq!(
+        session(&report, "rollout-fork").counts,
+        Counts {
+            shell_search: 1,
+            output_tokens: OutputTokens {
+                read_search: 5,
+                ..OutputTokens::default()
+            },
+            ..Counts::default()
+        },
+        "the calls, outputs and token count copied from rollout-f are rollout-f's; the repeated token \
+         count adds nothing"
+    );
+    let parent = session(&report, "rollout-f");
+    assert_eq!(
+        (parent.counts.basemind, parent.counts.read_whole, parent.counts.errors),
+        (2, 1, 2)
+    );
+}
+
+#[test]
+fn a_reverted_thread_is_one_session() {
+    let env = setup();
+    let day = env.home.join(".codex/sessions/2026/11/20");
+    place(&env, &env.repo, "codex/revert.jsonl", &day.join("rollout-r.jsonl"));
+    let report = report(&env, None);
+    let ids: Vec<&str> = report.sessions.iter().map(|s| s.id.as_str()).collect();
+    assert!(!ids.contains(&"rollout-r"), "{ids:?}");
+    assert_eq!(report.aggregate.sessions, 5);
+    let thread = session(&report, "rollout-f");
+    assert_eq!(
+        (thread.counts.basemind, thread.counts.shell_search),
+        (2, 3),
+        "the copied basemind call once, the new search added"
+    );
+    assert_eq!(thread.ended.as_deref(), Some("2026-11-18T10:10:01.000Z"));
+    assert_eq!(thread.subagents.as_ref().map(|t| t.transcripts), Some(1));
+}
+
+#[test]
+fn a_legacy_subagent_skips_its_inherited_history_by_position() {
+    let env = setup();
+    let day = env.home.join(".codex/sessions/2026/11/18");
+    place(
+        &env,
+        &env.repo,
+        "codex/subagent-legacy.jsonl",
+        &day.join("rollout-l.jsonl"),
+    );
+    let report = report(&env, None);
+    let legacy = report
+        .subagents
+        .iter()
+        .find(|s| s.session.id == "rollout-l")
+        .expect("the Legacy-mode subagent");
+    let counts = &legacy.session.counts;
+    assert_eq!((counts.shell_search, counts.output_tokens.read_search), (1, 7));
+    assert_eq!(legacy.session.started.as_deref(), Some("2026-11-18T09:40:00.000Z"));
+}
+
+/// Set `path`'s modification time `secs` after the epoch.
+fn touch(path: &Path, secs: u64) {
+    let file = std::fs::File::options().write(true).open(path).expect("open");
+    file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+        .expect("set mtime");
+}
+
+#[test]
+fn a_resumed_claude_session_counts_only_its_new_calls() {
+    let env = setup();
+    let project = env.home.join(".claude/projects").join(slug(&env.repo));
+    // Named to sort before s1, so only the write order tells the original apart.
+    let resumed = project.join("s0.jsonl");
+    place(&env, &env.repo, "claude/resumed.jsonl", &resumed);
+    touch(&project.join("s1.jsonl"), 1_000);
+    touch(&resumed, 2_000);
+    let report = report(&env, None);
+    let s0 = session(&report, "s0");
+    assert_eq!(
+        (
+            s0.counts.basemind,
+            s0.counts.search_tool,
+            s0.counts.errors,
+            s0.counts.output_tokens.read_search
+        ),
+        (0, 1, 0, 6),
+        "the message, call and result copied from s1 are s1's"
+    );
+    let s1 = session(&report, "s1");
+    assert_eq!((s1.counts.basemind, s1.counts.errors), (1, 2));
 }
 
 #[test]

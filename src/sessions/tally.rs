@@ -251,6 +251,18 @@ impl Tally {
         *bucket += tokens;
     }
 
+    /// Fold in `other`, a later transcript of the same conversation.
+    pub fn absorb(&mut self, other: Tally) {
+        self.counts.add(&other.counts);
+        for (key, reads) in other.reads {
+            *self.reads.entry(key).or_insert(0) += reads;
+        }
+        self.known.extend(other.known);
+        self.outside.extend(other.outside);
+        self.searched |= other.searched;
+        self.calls.extend(other.calls);
+    }
+
     /// The final counts and the repository files read repeatedly, most-read first.
     pub fn finish(mut self) -> (Counts, Vec<RepeatedRead>) {
         let mut repeated: Vec<RepeatedRead> = self

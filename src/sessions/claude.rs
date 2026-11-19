@@ -8,8 +8,9 @@
 //! Each line is a JSON record. The ones read here carry `cwd`, `version` and `timestamp`; an
 //! `assistant` record's `message` holds `tool_use` blocks (`id`, `name`, `input`) and `usage`
 //! (`output_tokens`, repeated on every record of one message `id`), and a `user` record's `message`
-//! holds `tool_result` blocks (`tool_use_id`, `is_error`). Text, thinking and tool output are never
-//! deserialized.
+//! holds `tool_result` blocks (`tool_use_id`, `is_error`). A resumed or forked session repeats the
+//! earlier records with their `id`s, which [`super::Seen`] counts once. Text, thinking and tool
+//! output are never deserialized.
 
 use std::io::BufRead;
 use std::path::Path;
@@ -22,7 +23,7 @@ use serde_json::Value;
 use super::contain::{self, Found};
 use super::shell;
 use super::tally::{Call, Family};
-use super::{Outcome, Parsed, Scope, TranscriptParser, basemind_tool, major, widen};
+use super::{Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_tool, major, widen};
 
 /// The `version` majors whose record shape this parser was written against.
 pub const SUPPORTED_MAJORS: &[u64] = &[1, 2];
@@ -113,7 +114,13 @@ impl TranscriptParser for Claude {
         }
     }
 
-    fn parse(&self, reader: &mut dyn BufRead, scope: &Scope) -> Outcome {
+    /// Session files are named by a random id, so a resumed or forked session, which copies the
+    /// earlier one's records, is told apart from it by when each was written.
+    fn written(&self, path: &Path) -> Option<std::time::SystemTime> {
+        std::fs::symlink_metadata(path).and_then(|meta| meta.modified()).ok()
+    }
+
+    fn parse(&self, reader: &mut dyn BufRead, scope: &Scope, seen: &mut Seen) -> Outcome {
         let mut parsed: Option<Parsed> = None;
         let mut version_seen = false;
         let mut json_seen = false;
@@ -174,7 +181,7 @@ impl TranscriptParser for Claude {
                 widen(&mut session.started, &mut session.ended, timestamp);
             }
             if let Some(message) = record.message {
-                record_message(session, message, &mut tokens);
+                record_message(session, message, &mut tokens, seen);
             }
         }
         match parsed {
@@ -183,8 +190,10 @@ impl TranscriptParser for Claude {
                 attributed: true,
             },
             Some(mut session) => {
-                for (_, (output, families)) in tokens {
-                    session.tally.tokens(output, &families);
+                for (id, (output, families)) in tokens {
+                    if seen.first_response(&id) {
+                        session.tally.tokens(output, &families);
+                    }
                 }
                 Outcome::Session(Box::new(session))
             }
@@ -237,7 +246,12 @@ fn subagents(root: &Path, project: &Path, found: &mut Found) {
     }
 }
 
-fn record_message(session: &mut Parsed, message: Message, tokens: &mut AHashMap<String, (u64, Vec<Family>)>) {
+fn record_message(
+    session: &mut Parsed,
+    message: Message,
+    tokens: &mut AHashMap<String, (u64, Vec<Family>)>,
+    seen: &mut Seen,
+) {
     let Content::Blocks(blocks) = message.content else {
         return;
     };
@@ -248,10 +262,14 @@ fn record_message(session: &mut Parsed, message: Message, tokens: &mut AHashMap<
                 let name = block.name.as_deref().unwrap_or_default();
                 let call = classify(name, block.input.as_ref().unwrap_or(&Value::Null));
                 families.push(call.family);
-                session.tally.call(block.id.as_deref(), call);
+                if block.id.as_deref().is_none_or(|id| seen.first_call(id)) {
+                    session.tally.call(block.id.as_deref(), call);
+                }
             }
             "tool_result" => {
-                if let Some(id) = &block.tool_use_id {
+                if let Some(id) = &block.tool_use_id
+                    && seen.first_result(id)
+                {
                     session.tally.result(id, block.is_error.unwrap_or(false));
                 }
             }
