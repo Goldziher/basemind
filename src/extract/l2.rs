@@ -80,15 +80,13 @@ fn run_docs(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec<
 }
 
 fn build_call(q: &Query, m: &QueryMatch, source: &[u8], skip_lexical: &dyn Fn(usize) -> bool) -> Option<Call> {
-    let mut callee: Option<String> = None;
+    let mut callee: Option<Node> = None;
     let mut range_node = None;
     let mut lexical: (Option<Node>, Option<Node>) = (None, None);
     for cap in m.captures() {
         let cname = capture_name(q, cap.index);
         match cname {
-            "call.callee" => {
-                callee = cap.node.utf8_text(source).ok().map(|s| s.to_string());
-            }
+            "call.callee" => callee = Some(cap.node),
             "call.range" => range_node = Some(cap.node),
             "call.lexical_callee" => lexical.0 = Some(cap.node),
             "call.lexical_args" => lexical.1 = Some(cap.node),
@@ -102,15 +100,23 @@ fn build_call(q: &Query, m: &QueryMatch, source: &[u8], skip_lexical: &dyn Fn(us
         }
         return lexical_macro_call(name, args, source);
     }
-    let node = range_node?;
-    let pos = node.start_position();
-    Some(Call {
-        callee: callee?,
-        start_byte: node.start_byte() as u32,
-        end_byte: node.end_byte() as u32,
+    let (callee, range) = (callee?, range_node?);
+    Some(call_at_name(callee.utf8_text(source).ok()?.to_string(), callee, range))
+}
+
+/// A call positioned at its callee name node, ending where the call ends. In `a\n    .b()` and
+/// `a::b()` the call is at `b`, the line and column a text search reports and the byte a resolver
+/// records the use at, not at the receiver or path that starts the expression; it also keeps the
+/// calls of one chain (`a.b().c()`) at distinct start bytes.
+pub(super) fn call_at_name(callee: String, name: Node, range: Node) -> Call {
+    let pos = name.start_position();
+    Call {
+        callee,
+        start_byte: name.start_byte() as u32,
+        end_byte: range.end_byte().max(name.end_byte()) as u32,
         start_row: pos.row as u32,
         start_col: pos.column as u32,
-    })
+    }
 }
 
 /// Token kinds that, directly before `name(`, make it a definition or a binding pattern rather

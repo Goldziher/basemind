@@ -245,6 +245,26 @@ fn last_segment(name: &str) -> &str {
     cut.map_or(name, |at| &name[at..])
 }
 
+/// Where the qualified callee path ending at byte `name` of `text` starts: back from a call's name
+/// over identifier characters and the `::`, `.` and `->` separators, so `old_log::info(` and
+/// `client.get(` are read whole although the call is recorded at its name. Whitespace ends the path,
+/// so a chain link on its own line (`\n    .get(`) yields `.get`.
+pub(crate) fn qualified_start(text: &str, name: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut at = name.min(bytes.len());
+    while at > 0 {
+        let b = bytes[at - 1];
+        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'$' | b'.' | b':') {
+            at -= 1;
+        } else if b == b'>' && at >= 2 && bytes[at - 2] == b'-' {
+            at -= 2;
+        } else {
+            break;
+        }
+    }
+    at
+}
+
 /// The callee expression a call's source starts with: the text before its arguments, generic
 /// arguments or macro bang, on the call's first line.
 fn call_expression(source: &str) -> &str {

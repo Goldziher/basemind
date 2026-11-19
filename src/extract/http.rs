@@ -265,16 +265,20 @@ impl Routes {
 /// URL is not absolute.
 pub(super) fn client_call(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Call> {
     let (mut range, mut word, mut receiver, mut args) = (None, None, None, None);
+    let mut word_node = None;
     for cap in m.captures() {
         match capture_name(q, cap.index) {
             "http.range" => range = Some(cap.node),
-            "http.method" => word = text(cap.node, source),
+            "http.method" => {
+                word = text(cap.node, source);
+                word_node = Some(cap.node);
+            }
             "http.receiver" => receiver = text(cap.node, source),
             "http.args" => args = Some(cap.node),
             _ => {}
         }
     }
-    let (range, word, args) = (range?, word?, args?);
+    let (range, word, word_node, args) = (range?, word?, word_node?, args?);
     let positional = positional_args(args);
     let arg = |i: usize| positional.get(i).copied();
     let (method, url) = match word {
@@ -303,14 +307,7 @@ pub(super) fn client_call(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Ca
         return None;
     }
     let path = normalize_path(raw, true)?;
-    let pos = range.start_position();
-    Some(Call {
-        callee: format!("{method} {path}"),
-        start_byte: range.start_byte() as u32,
-        end_byte: range.end_byte() as u32,
-        start_row: pos.row as u32,
-        start_col: pos.column as u32,
-    })
+    Some(super::l2::call_at_name(format!("{method} {path}"), word_node, range))
 }
 
 fn is_absolute_http(raw: &str) -> bool {

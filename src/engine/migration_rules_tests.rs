@@ -188,3 +188,15 @@ fn load_refuses_a_symlinked_rule_file_and_directory() {
             .contains("outside")
     );
 }
+
+#[test]
+fn the_qualified_path_of_a_call_is_read_back_from_its_name() {
+    fn start<'t>(text: &'t str, name: &str) -> &'t str {
+        &text[qualified_start(text, text.rfind(name).expect("name"))..]
+    }
+    assert_eq!(start("    old_log::info(\"a\");", "info"), "old_log::info(\"a\");");
+    assert_eq!(start("let r = self.client.get(url);", "get"), "self.client.get(url);");
+    assert_eq!(start("p->run(1)", "run"), "p->run(1)");
+    assert_eq!(start("x = client\n    .get(url)", "get"), ".get(url)");
+    assert_eq!(start("info(1)", "info"), "info(1)");
+}
