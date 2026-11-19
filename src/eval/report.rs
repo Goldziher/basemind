@@ -54,6 +54,10 @@ pub struct TaskResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotation_accuracy: Option<f64>,
     pub score: Score,
+    /// The tool's recall reached `--min-recall` on a non-empty gold: the task counts toward the
+    /// credited fraction whether or not it has a baseline.
+    #[serde(default)]
+    pub credited: bool,
     /// Ranked only: whether this task used rank metrics.
     pub ranked: bool,
     /// Up to the first 20 returned items (`path` or `path:line`), for debugging misses.
@@ -65,6 +69,20 @@ pub struct TaskResult {
     pub baseline_score: Option<Score>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline_error: Option<String>,
+    /// The baseline errored or printed nothing: it scores recall 0 and stays out of the ratio.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub baseline_failed: bool,
+}
+
+impl TaskResult {
+    /// The baseline/tool ratio the gate and the savings median count: a credited task whose
+    /// baseline answered. An empty or failed shell answer is not a cheap one.
+    pub fn gated_ratio(&self) -> Option<f64> {
+        if self.baseline_failed || !self.credited {
+            return None;
+        }
+        self.savings.as_ref().and_then(|s| s.ratio)
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -133,7 +151,7 @@ pub struct Report {
     pub min_recall: f64,
     pub modes: BTreeMap<EvalMode, ModeReport>,
     pub overall: ModeReport,
-    /// ADR-0022 verdict per task kind.
+    /// ADR-0031 verdict per task kind.
     #[serde(default)]
     pub gate: BTreeMap<EvalMode, GateVerdict>,
 }
@@ -169,7 +187,7 @@ fn savings_for(results: &[&TaskResult]) -> Option<ModeSavings> {
         return None;
     }
     let credited: Vec<_> = with.iter().filter(|(_, s)| s.credited).collect();
-    let ratios: Vec<f64> = credited.iter().filter_map(|(_, s)| s.ratio).collect();
+    let ratios: Vec<f64> = credited.iter().filter_map(|(r, _)| r.gated_ratio()).collect();
     let saved: Vec<f64> = credited.iter().map(|(_, s)| s.saved_tokens as f64).collect();
     let mut models: Vec<f64> = with.iter().filter_map(|(_, s)| s.model_ratio).collect();
     models.sort_by(f64::total_cmp);
@@ -251,7 +269,7 @@ pub fn aggregate(results: &[TaskResult], tokenizer: &str, root: &str, tasks_file
         min_recall,
         modes: by_mode.iter().map(|(m, v)| (*m, mode_report(v, min_recall))).collect(),
         overall: mode_report(&all, min_recall),
-        gate: by_mode.iter().map(|(m, v)| (*m, verdict(v, tokenizer))).collect(),
+        gate: by_mode.iter().map(|(m, v)| (*m, verdict(*m, v, tokenizer))).collect(),
     }
 }
 
@@ -440,6 +458,7 @@ mod tests {
                 ndcg: ranked.then_some(f1),
                 ..Score::default()
             },
+            credited: f1 >= 0.8,
             ranked,
             returned: vec![],
             pages: 1,
@@ -448,6 +467,7 @@ mod tests {
             savings: None,
             baseline_score: None,
             baseline_error: None,
+            baseline_failed: false,
         }
     }
 
