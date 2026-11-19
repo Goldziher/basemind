@@ -25,6 +25,10 @@
           "description": "Add one line before and after each hit.",
           "type": "boolean"
         },
+        "ranges": {
+          "description": "Merged ±5-line read spans per file, for `code_read`.",
+          "type": "boolean"
+        },
         "limit": {
           "description": "Max hits (default 100).",
           "type": "integer"
@@ -118,6 +122,10 @@
         "end_line": {
           "description": "Last line of a span, inclusive (default: `line`). Not with `symbol`.",
           "type": "integer"
+        },
+        "ranges": {
+          "description": "Spans like `120-148,310`, alone; read on with `next_ranges`.",
+          "type": "string"
         }
       },
       "required": [

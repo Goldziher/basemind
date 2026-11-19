@@ -32,7 +32,6 @@ pub fn unavailable(mode: EvalMode) -> Option<&'static str> {
         EvalMode::Cycles => Some("not implemented: `code_refs` relation `cycles` (#135)"),
         EvalMode::GrepChanged => Some("not implemented: `code_grep` `changed` (#122)"),
         EvalMode::FindLarge => Some("not implemented: `find_files` `min_lines` (#127)"),
-        EvalMode::ReadAround => Some("not implemented: `ranges` on `code_grep` and `code_read` (#129)"),
         EvalMode::Explain => Some("not implemented: the `code explain` engine op (#120)"),
         _ => None,
     }
@@ -144,7 +143,8 @@ async fn answer(server: &BasemindServer, task: &Task) -> Result<Answer> {
 }
 
 /// `read_around`: every page of `code_grep` with the task's arguments (`ranges: true`), then one
-/// `code_read` per file with that file's ranges. Every call is charged; the items are the lines read.
+/// `code_read` per file with that file's ranges, read on through `next_ranges` when the size cap
+/// cut it. Every call is charged; the items are the lines read.
 async fn answer_read_around(server: &BasemindServer, task: &Task) -> Result<Answer> {
     let mut args = task_args(task);
     let mut out = Answer::default();
@@ -167,10 +167,18 @@ async fn answer_read_around(server: &BasemindServer, task: &Task) -> Result<Answ
         }
     }
     for (path, ranges) in reads {
-        let read = serde_json::json!({ "path": path, "ranges": ranges });
-        let text = call(server, EvalMode::ReadAround, read.clone()).await?;
-        let body = out.page(&text);
-        out.items.extend(extract_items(EvalMode::ReadAround, &read, &body));
+        let mut ranges = Some(ranges);
+        while let Some(spans) = ranges.take() {
+            let read = serde_json::json!({ "path": path, "ranges": spans });
+            let text = call(server, EvalMode::ReadAround, read.clone()).await?;
+            let body = out.page(&text);
+            out.items.extend(extract_items(EvalMode::ReadAround, &read, &body));
+            ranges = body.get("next_ranges").and_then(Value::as_str).map(str::to_string);
+            if ranges.is_some() && out.pages >= MAX_PAGES {
+                out.cut = true;
+                break;
+            }
+        }
     }
     Ok(out)
 }
@@ -277,12 +285,11 @@ mod tests {
     use super::*;
     use crate::eval::task::parse_tasks;
 
-    const ANALYSIS: [EvalMode; 6] = [
+    const ANALYSIS: [EvalMode; 5] = [
         EvalMode::Impact,
         EvalMode::Cycles,
         EvalMode::GrepChanged,
         EvalMode::FindLarge,
-        EvalMode::ReadAround,
         EvalMode::Explain,
     ];
 
@@ -293,6 +300,7 @@ mod tests {
             assert!(reason.starts_with("not implemented"), "{reason}");
         }
         assert!(unavailable(EvalMode::Grep).is_none());
+        assert!(unavailable(EvalMode::ReadAround).is_none());
         assert!(unavailable(EvalMode::DiffStructural).is_none());
     }
 
