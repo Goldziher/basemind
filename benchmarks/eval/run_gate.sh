@@ -7,7 +7,7 @@
 #
 # BASEMIND_BIN must be built with the `tokenizer` feature (o200k counts; ADR-0022 rejects bytes/4) and
 # `code-intel` (the Rust import resolver the `impact` and `cycles` kinds need). The `read_around`
-# baseline is what `rg` prints, so `rg` must be on PATH (it is not pinned by the mise toolchain);
+# baseline is what `rg` prints, so `rg` must be on PATH (`mise install` provides the pinned one);
 # its version goes into `run.tsv`.
 # Both cache directories must be set, exist and be empty: a run against the default cache could
 # take over a live daemon and index. RESULTS_DIR defaults to `benchmarks/eval/results`.

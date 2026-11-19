@@ -235,7 +235,7 @@ tokio (credited 0.68); `git_blame` fails `blame_symbol` on tokio (1.11x); `git_d
 ### Baseline per kind
 
 The baseline is the cheapest shell command a competent agent would run to get the same items, scored against the same
-gold. `fd` is not installed and `rg` is not pinned by the repository's mise toolchain, so `git grep -n` (the output shape
+gold. `fd` is not installed and the gold generators do not require `rg`, so `git grep -n` (the output shape
 of `rg -n`) and `git ls-files | grep` stand in for them; ADR-0022 names a targeted `git grep` too. `read_around` is the
 exception, below.
 
@@ -264,8 +264,8 @@ exception, below.
 around each hit", not a format built for the comparison. rg merges overlapping and adjacent context windows and
 prints the path on every row (`path:N:text` for a match, `path-N-text` for context, `--` between groups) because
 that is what it prints without a tty, as the harness runs it. `-g '*.EXT'` keeps the gold's file set; rg skips
-hidden and ignored files `git grep` would search, which counts against the baseline's recall. Because rg is not
-pinned by the mise toolchain, `run_gate.sh` refuses to run this kind without it and records `rg --version` in
+hidden and ignored files `git grep` would search, which counts against the baseline's recall. rg is pinned in
+`mise.toml`; `run_gate.sh` still refuses to run this kind without it on PATH and records `rg --version` in
 `run.tsv`.
 
 ### What the gold cannot cover
