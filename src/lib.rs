@@ -97,6 +97,7 @@ pub mod sysres;
 pub mod textmatch;
 pub mod version;
 pub mod watcher;
+pub mod wire;
 
 pub use config::Config;
 

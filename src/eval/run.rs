@@ -84,12 +84,14 @@ struct Answer {
 }
 
 impl Answer {
-    /// Charge one response to the answer and return it parsed.
-    fn page(&mut self, text: &str) -> Value {
+    /// Charge one response to the answer and return it read back ([`crate::wire::decode`]): the
+    /// items are scored from the text an agent reads, so an answer that does not read back is a task
+    /// error, never an empty answer.
+    fn page(&mut self, text: &str) -> Result<Value, String> {
         self.pages += 1;
         self.tokens += count_tokens(text);
         self.text.push_str(text);
-        serde_json::from_str(text).unwrap_or(Value::Null)
+        crate::wire::decode(text)
     }
 }
 
@@ -109,7 +111,10 @@ async fn answer(server: &BasemindServer, task: &Task) -> Result<Answer> {
     let mut out = Answer::default();
     loop {
         let text = call(server, task.mode, args.clone()).await?;
-        let body = out.page(&text);
+        let body = out.page(&text).map_err(|e| {
+            let head: String = text.chars().take(200).collect();
+            anyhow!("{}: unreadable answer ({e}): {head}", task.mode.tool_key())
+        })?;
         out.items.extend(extract_items(task.mode, &task.args, &body));
         if task.mode == EvalMode::Grep {
             out.annotations.extend(grep_annotations(&body));

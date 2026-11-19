@@ -110,7 +110,7 @@ where
     blocking_answer(move || {
         let started = std::time::Instant::now();
         let params = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
-        let result = answer(&ws, p, op);
+        let result = answer(&ws, p, op).map(|result| as_text(P::TOOL, result));
         record(&ws, &telemetry, P::TOOL, &params, started, &result);
         result
     })
@@ -138,8 +138,18 @@ fn call_blocking<P: Paged, R: Serialize>(
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     let params = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
-    let result = bound(p, |p| answer(ws, p, op));
+    let result = bound(p, |p| answer(ws, p, op)).map(|result| as_text(P::TOOL, result));
     record(ws, telemetry, P::TOOL, &params, started, &result);
+    result
+}
+
+/// `result` with its text block written in `tool`'s encoding ([`crate::wire::encode`]); the
+/// structured content stays JSON. After cursor binding, so the text carries the bound cursor, and
+/// before the telemetry row, so the row costs the text sent.
+fn as_text(tool: &str, mut result: CallToolResult) -> CallToolResult {
+    if let Some(value) = &result.structured_content {
+        result.content = vec![rmcp::model::ContentBlock::text(crate::wire::encode(tool, value))];
+    }
     result
 }
 

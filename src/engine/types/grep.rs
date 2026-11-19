@@ -170,6 +170,21 @@ impl GrepHit {
     }
 }
 
+impl GrepHit {
+    /// Bytes this hit's rows take in the text answer's row block: its context rows and its match row
+    /// (with its columns when it writes them), each with its line break.
+    pub(crate) fn plain_bytes(&self) -> u64 {
+        let digits = |line: u32| u64::from(line.checked_ilog10().unwrap_or(0) + 1);
+        let context: u64 = self
+            .before()
+            .chain(self.after())
+            .map(|(line, text)| digits(line) + 3 + text.len() as u64)
+            .sum();
+        let column = if self.write_column { digits(self.column) + 1 } else { 0 };
+        context + digits(self.line) + column + 3 + self.text.len() as u64
+    }
+}
+
 /// A line around a match, as `grep -C` prints it: `"<line>- <text>"`.
 fn context_row(line: u32, text: &str) -> String {
     format!("{line}- {text}")

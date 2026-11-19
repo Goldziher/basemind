@@ -11,7 +11,7 @@ use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
 use crate::engine::MapCache;
-use crate::engine::budget::{apply_budget, budget};
+use crate::engine::budget::{apply_budget, apply_budget_toon, budget};
 use crate::engine::changed::admits;
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
@@ -273,7 +273,12 @@ fn respond(
     max_tokens: Option<u32>,
 ) -> Result<FilesResponse, EngineError> {
     let sized = files.sized;
-    let budget = apply_budget(files.rows, max_tokens);
+    // A list is written as TOON, a `min_lines` map as JSON (ADR-0053).
+    let budget = if sized {
+        apply_budget(files.rows, max_tokens)
+    } else {
+        apply_budget_toon(files.rows, max_tokens)
+    };
     let files = budget.items;
     let next_cursor = (total > files.len()).then(|| Cursor::encode_in_memory((skip + files.len()) as u64, generation));
     Ok(FilesResponse {

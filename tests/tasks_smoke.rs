@@ -96,7 +96,7 @@ fn call(tool: &'static str, arguments: Value) -> CallToolRequestParams {
 
 fn body_of(result: &rmcp::model::CallToolResult) -> Value {
     let text = result.content[0].as_text().expect("result has a text block");
-    serde_json::from_str(&text.text).expect("result text is JSON")
+    basemind::wire::decode(&text.text).expect("result text reads back")
 }
 
 /// The defect this guards: calls that took 6 to 27 ms were answered as background tasks because

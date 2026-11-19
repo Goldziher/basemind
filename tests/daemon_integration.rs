@@ -425,8 +425,8 @@ async fn hosted_keyword_search_reads_the_daemon_index_without_self_forwarding() 
         .and_then(|content| content.first())
         .and_then(|content| content["text"].as_str())
         .unwrap_or_else(|| panic!("hosted keyword result must contain JSON text: {response}"));
-    let result: Value = serde_json::from_str(result_text)
-        .unwrap_or_else(|error| panic!("hosted keyword tool payload is not JSON ({error}): {result_text}"));
+    let result: Value = basemind::wire::decode(result_text)
+        .unwrap_or_else(|error| panic!("hosted keyword tool payload does not read back ({error}): {result_text}"));
     assert!(
         result.get("lanes_unavailable").is_none(),
         "hosted keyword search must not report an unavailable lane: {result}"
@@ -1262,7 +1262,7 @@ fn hosted_payload(response: &Value) -> Value {
         .and_then(|content| content.first())
         .and_then(|content| content["text"].as_str())
         .unwrap_or_else(|| panic!("hosted response has no text content: {response}"));
-    serde_json::from_str(text).unwrap_or_else(|error| panic!("hosted payload is not JSON ({error}): {text}"))
+    basemind::wire::decode(text).unwrap_or_else(|error| panic!("hosted payload does not read back ({error}): {text}"))
 }
 
 /// Page through a writer-session `--json` CLI query via `--cursor`, returning the first page's total

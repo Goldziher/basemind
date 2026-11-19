@@ -660,7 +660,7 @@ async fn code_response(shared: &crate::mcp::ServedWorkspace, query: CodeQuery) -
             _ => None,
         })
         .unwrap_or_default();
-    let mut parsed: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    let mut parsed: serde_json::Value = crate::wire::decode(&text).unwrap_or(serde_json::Value::Null);
     scrub_timings(&mut parsed);
     serde_json::to_string(&parsed).expect("re-serialize the scrubbed response")
 }

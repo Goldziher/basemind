@@ -59,7 +59,7 @@ fn decode(result: &CallToolResult) -> Value {
         .iter()
         .find_map(|c| c.as_text().map(|t| t.text.clone()))
         .unwrap_or_default();
-    serde_json::from_str(&raw).unwrap_or(Value::Null)
+    basemind::wire::decode(&raw).unwrap_or(Value::Null)
 }
 
 fn call_params(args: Value) -> CallToolRequestParams {

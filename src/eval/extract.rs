@@ -1,5 +1,6 @@
-//! Turn a tool response (parsed JSON) into the ranked list of [`Item`]s the scorer compares to
-//! gold. The item shape per mode:
+//! Turn a tool response into the ranked list of [`Item`]s the scorer compares to gold. The response
+//! is the tool's text block read back to JSON ([`crate::wire::decode`], ADR-0053), so a text an
+//! agent could not read fails its task. The item shape per mode:
 //!
 //! | mode | item |
 //! |---|---|

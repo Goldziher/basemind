@@ -123,7 +123,7 @@ fn decode_text(result: &CallToolResult) -> Value {
             _ => None,
         })
         .unwrap_or_default();
-    serde_json::from_str(&raw).unwrap_or(Value::Null)
+    basemind::wire::decode(&raw).unwrap_or(Value::Null)
 }
 
 /// The hits of a response as rows, each with its `path`. `code_refs` lists hits under their file

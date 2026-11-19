@@ -19,5 +19,14 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
   `cursor`. No tool answers a stale cursor with an empty page.
 - **Notices.** An empty or partial answer carrying a `notice` (`empty_index`, `warming_up`,
   `building_index`, `rescanning`) means "retry shortly", not "no matches".
+- **Text answers.** The text a model reads is written per tool, in the form that measured fewest
+  tokens (ADR-0053). `code_grep` writes its other fields as `key: value` lines, then each file as
+  `# <path>` and each enclosing symbol as `## <symbol>` over its rows; rows before any symbol
+  header, or under a bare `##`, are outside every symbol. `code_outline`, `git_diff` and a
+  `find_files` list are [TOON](https://toonformat.dev): `key: value` lines, and a list of objects
+  as one table, `symbols[N]{name,kind,...}:` and a comma-separated row per object, a value quoted
+  only where it would be misread. Every other tool answers in compact JSON. A header naming a path
+  or symbol that starts with `"`, has leading or trailing whitespace or holds a control character
+  is a JSON string. MCP `structuredContent` is JSON for every tool.
 - **CLI output.** Human output prints bodies and diffs in full and cuts only table cells, with a
-  note on stderr. `--json` prints the response the MCP tool returns.
+  note on stderr. `--json` prints the response as JSON, as MCP `structuredContent` carries it.

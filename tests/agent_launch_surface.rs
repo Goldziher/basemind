@@ -121,7 +121,7 @@ fn text(result: &CallToolResult) -> Value {
             _ => None,
         })
         .unwrap_or_default();
-    serde_json::from_str(&raw).unwrap_or(Value::Null)
+    basemind::wire::decode(&raw).unwrap_or(Value::Null)
 }
 
 /// The session lists neither lead tool and answers both as unknown tools.

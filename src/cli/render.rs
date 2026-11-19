@@ -49,23 +49,6 @@ pub struct Emit {
     pub called: std::time::Instant,
 }
 
-/// Wire encoding of a tool response, for the `--format` flag on commands whose MCP tool takes one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum WireFormat {
-    /// Structured JSON (the default).
-    Json,
-    /// Compact tabular TOON, rendered as-is in human mode; `--json` still prints JSON.
-    Toon,
-}
-
-/// The `format` string the MCP params carry for an optional `--format` choice.
-pub fn wire(format: Option<WireFormat>) -> Option<String> {
-    format.map(|f| match f {
-        WireFormat::Json => "json".to_string(),
-        WireFormat::Toon => "toon".to_string(),
-    })
-}
-
 /// Render a duration compactly: `285 µs`, or `41.2 ms` once it reaches a millisecond.
 fn format_us(us: u64) -> String {
     if us < MS_THRESHOLD_US {
@@ -90,8 +73,8 @@ pub fn emit(tool_name: &str, result: &CallToolResult, opts: &Emit, out: &mut imp
 /// added alongside it. In human mode both are lifted out of the payload and reported as a compact
 /// timing line on `err`, so stdout carries only the answer and stays pipe-clean.
 ///
-/// A tool asked for `format: "toon"` answers with TOON text (and the same data as structured
-/// content). Human mode renders that response as TOON; `--json` always wins and prints the JSON.
+/// Both modes read the structured content: a tool's text block is written for a model
+/// ([`crate::wire`]), not for the terminal.
 pub fn emit_to(
     tool_name: &str,
     result: &CallToolResult,
@@ -99,7 +82,7 @@ pub fn emit_to(
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> Result<()> {
-    let (mut value, toon) = payload(result)?;
+    let mut value = payload(result)?;
     if opts.json {
         if let Value::Object(map) = &mut value {
             map.insert("startup_us".to_string(), Value::from(opts.startup_us));
@@ -113,11 +96,7 @@ pub fn emit_to(
     };
     let elapsed_us = reported.or_else(|| u64::try_from(opts.called.elapsed().as_micros()).ok());
     let mut cut = Truncated::default();
-    if toon {
-        writeln!(out, "{}", crate::mcp::toon::encode(&value))?;
-    } else {
-        render_human_counting(tool_name, &value, out, &mut cut)?;
-    }
+    render_human_counting(tool_name, &value, out, &mut cut)?;
     if cut.cells > 0 {
         writeln!(
             err,
@@ -143,29 +122,27 @@ struct Truncated {
     cells: usize,
 }
 
-/// The tool's data plus whether the tool answered in TOON.
-///
-/// Structured content is authoritative (every tool sets it); the text block is the fallback for a
-/// tool that only mirrors JSON as text. A text block that is not JSON next to structured content is
-/// the TOON mirror.
-fn payload(result: &CallToolResult) -> Result<(Value, bool)> {
-    let text = result.content.iter().find_map(|c| match c {
-        ContentBlock::Text(t) => Some(t.text.as_str()),
-        _ => None,
-    });
+/// The tool's data: the structured content when present (every verb tool sets it), otherwise the
+/// first text block read back with [`crate::wire::decode`].
+fn payload(result: &CallToolResult) -> Result<Value> {
     if let Some(structured) = &result.structured_content {
-        let toon = text.is_some_and(|t| serde_json::from_str::<Value>(t).is_err());
-        return Ok((structured.clone(), toon));
+        return Ok(structured.clone());
     }
-    let text = text.context("tool returned no text content")?;
-    let value = serde_json::from_str(text).with_context(|| "parse tool JSON response")?;
-    Ok((value, false))
+    let text = result
+        .content
+        .iter()
+        .find_map(|c| match c {
+            ContentBlock::Text(t) => Some(t.text.as_str()),
+            _ => None,
+        })
+        .context("tool returned no text content")?;
+    crate::wire::decode(text).map_err(|e| anyhow::anyhow!("parse tool response: {e}"))
 }
 
 /// Extract the JSON payload from a tool result: the structured content when present, otherwise the
 /// first text block parsed as JSON.
 pub fn result_to_value(result: &CallToolResult) -> Result<Value> {
-    payload(result).map(|(value, _)| value)
+    payload(result)
 }
 
 /// Print the JSON value as pretty JSON.
@@ -720,29 +697,6 @@ mod tests {
             "stdout must be clean: {out}"
         );
         assert!(err.contains("250 µs query") && err.contains("1.5 ms startup"), "{err}");
-    }
-
-    #[test]
-    fn toon_responses_render_end_to_end() {
-        let data = json!({"total": 1, "symbols": [{"line": 1, "name": "alpha"}], "elapsed_us": 9});
-        let mut result = rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-            crate::mcp::toon::encode(&data),
-        )]);
-        result.structured_content = Some(data);
-        let (out, err) = emit_capture("code_outline", &result, false);
-        assert!(
-            out.contains("symbols[1]{line,name}:"),
-            "human mode renders the TOON table: {out}"
-        );
-        assert!(
-            !out.contains("elapsed_us"),
-            "timing is lifted out of the payload: {out}"
-        );
-        assert!(err.contains("query"), "{err}");
-        let (json_out, _) = emit_capture("code_outline", &result, true);
-        let parsed: serde_json::Value = serde_json::from_str(&json_out).expect("--json stays JSON with toon");
-        assert_eq!(parsed["symbols"][0]["name"], "alpha");
-        assert_eq!(parsed["startup_us"], 1_500);
     }
 
     #[test]
