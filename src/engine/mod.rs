@@ -23,6 +23,7 @@ pub(crate) mod import_graph;
 pub(crate) mod l1_cache;
 #[cfg(any(feature = "memory", feature = "code-search"))]
 pub(crate) mod lance_cell;
+pub(crate) mod manifests;
 pub(crate) mod map_cache;
 #[cfg(feature = "memory")]
 pub(crate) mod memory;

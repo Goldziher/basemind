@@ -52,6 +52,9 @@ pub(crate) const LARGE_FILE_LINES: u32 = 2000;
 /// Large files `index_status` names; `find_files` with `min_lines` lists the rest.
 const LARGE_FILES_LISTED: usize = 5;
 
+/// Most-imported files `index_status` names; `basemind overview` lists more.
+const MOST_IMPORTED_LISTED: usize = 5;
+
 /// The code files of at least [`LARGE_FILE_LINES`] lines: their count and the
 /// [`LARGE_FILES_LISTED`] longest, largest first and ties by path.
 fn large_files<'a>(
@@ -132,6 +135,7 @@ impl Workspace {
                 total_size_bytes: 0,
                 languages: BTreeMap::new(),
                 large_files: None,
+                most_imported: Vec::new(),
                 cache_dir: self.cache_dir(),
                 grammar_dir: grammar_dir(),
                 schema_version: crate::extract::SCHEMA_VER,
@@ -152,6 +156,10 @@ impl Workspace {
             total_size = total_size.saturating_add(entry.size_bytes);
         }
         let large_files = large_files(&store.index.files);
+        // No graph (no index view in this session) is no list, not a failed status.
+        let most_imported = crate::engine::import_graph::import_graph_held(self, &store)
+            .map(|graph| crate::engine::ops::overview::most_imported(&graph, MOST_IMPORTED_LISTED).0)
+            .unwrap_or_default();
         let by_lang: BTreeMap<String, usize> = by_lang_ref.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
         let file_count = store.index.files.len();
         let blob_count = count_fm_blobs();
@@ -177,6 +185,7 @@ impl Workspace {
             total_size_bytes: total_size,
             languages: by_lang,
             large_files: Some(large_files),
+            most_imported,
             cache_dir: self.cache_dir(),
             grammar_dir: grammar_dir(),
             schema_version: crate::extract::SCHEMA_VER,

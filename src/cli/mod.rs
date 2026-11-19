@@ -33,6 +33,7 @@ pub mod init_settings;
 pub mod init_verb;
 pub mod interrupt;
 pub mod memory;
+pub mod overview;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod registry;
 pub mod render;
@@ -68,6 +69,9 @@ pub enum ToolCmd {
     Admin(admin::AdminCmd),
     /// Index health for this workspace: file counts, languages, scan age.
     Status,
+    /// The repository's shape: languages, layout, manifests, entry points, largest and most
+    /// imported files, routes, naming conventions, recent commits.
+    Overview(overview::OverviewArgs),
 }
 
 /// Resolve a user-supplied CLI path into the repo-relative `RelPath` key the index is keyed by
@@ -162,6 +166,7 @@ pub fn run(
             ToolCmd::Memory(m) => memory::run(&tools, m, &opts, &mut out).await?,
             ToolCmd::Admin(a) => admin::run(&tools, a, &opts, &mut out).await?,
             ToolCmd::Status => admin::run_status(&tools, &opts, &mut out).await?,
+            ToolCmd::Overview(args) => overview::run(&tools, args, &opts, &mut out).await?,
         }
         out.flush().context("flush stdout")?;
         Ok(())

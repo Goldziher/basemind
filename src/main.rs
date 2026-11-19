@@ -106,6 +106,9 @@ enum Cmd {
     Doctor,
     /// Index health for this workspace: file counts, languages, scan age.
     Status,
+    /// The repository's shape in one call: languages, top-level layout, build manifests and entry
+    /// points, the largest and most-imported files, HTTP routes, naming conventions, recent commits.
+    Overview(basemind::cli::overview::OverviewArgs),
     /// Print a shell completion script to stdout (`basemind completions zsh > _basemind`).
     Completions {
         /// Shell to generate completions for.
@@ -395,6 +398,7 @@ fn run() -> Result<()> {
             let _ = basemind::lang::ensure_grammars();
             dispatch(basemind::cli::ToolCmd::Status)
         }
+        Cmd::Overview(args) => dispatch(basemind::cli::ToolCmd::Overview(args)),
         Cmd::Completions { shell } => {
             // Buffered so a closed pipe (`| head`) is a quiet error, not clap_complete's write panic.
             let mut script = Vec::new();
@@ -433,7 +437,14 @@ fn run() -> Result<()> {
 fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
     let consumes_json = matches!(
         cmd,
-        Cmd::Code(_) | Cmd::Git(_) | Cmd::Memory(_) | Cmd::Admin(_) | Cmd::Cache(_) | Cmd::Status | Cmd::Doctor
+        Cmd::Code(_)
+            | Cmd::Git(_)
+            | Cmd::Memory(_)
+            | Cmd::Admin(_)
+            | Cmd::Cache(_)
+            | Cmd::Status
+            | Cmd::Overview(_)
+            | Cmd::Doctor
     );
     #[cfg(all(feature = "comms", any(unix, windows)))]
     let consumes_json = consumes_json

@@ -656,21 +656,30 @@ impl GraphCache {
 /// Takes the store read lock while building, so the caller must not hold it.
 pub(crate) fn import_graph(ws: &Workspace) -> Result<Arc<ImportGraph>, EngineError> {
     let generation = ws.cache_generation.load(Ordering::Acquire);
-    ws.import_graph.get_or_build(generation, || {
-        let store = ws.store_read();
-        let view = index_view(&store)?;
-        let files = store
-            .index
-            .files
-            .iter()
-            .map(|(path, entry)| (path, entry.language.as_str()));
-        Ok(ImportGraph::build(
-            view.file_edges(),
-            files,
-            has_resolver,
-            view.import_probes_complete(),
-        ))
-    })
+    ws.import_graph
+        .get_or_build(generation, || build_from(&ws.store_read()))
+}
+
+/// [`import_graph`] for a caller that already holds the store read lock (`index_status`), which
+/// must not take it a second time.
+pub(crate) fn import_graph_held(ws: &Workspace, store: &crate::store::Store) -> Result<Arc<ImportGraph>, EngineError> {
+    let generation = ws.cache_generation.load(Ordering::Acquire);
+    ws.import_graph.get_or_build(generation, || build_from(store))
+}
+
+fn build_from(store: &crate::store::Store) -> Result<ImportGraph, EngineError> {
+    let view = index_view(store)?;
+    let files = store
+        .index
+        .files
+        .iter()
+        .map(|(path, entry)| (path, entry.language.as_str()));
+    Ok(ImportGraph::build(
+        view.file_edges(),
+        files,
+        has_resolver,
+        view.import_probes_complete(),
+    ))
 }
 
 /// Whether a resolver that writes file-edge rows is compiled in for `language`.

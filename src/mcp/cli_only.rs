@@ -11,11 +11,12 @@ use crate::engine::Workspace;
 use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams};
 use crate::engine::types::graph::{CyclesParams, ImpactParams};
 use crate::engine::types::memory::MemoryDeleteParams;
+use crate::engine::types::overview::OverviewParams;
 use crate::engine::types::search::GetChunkParams;
 
 /// The CLI-only commands (`git churn`, `git by-path`, `code chunk`, `memory delete`, and the
-/// analyses of ADR-0047 such as `code impact` and `code cycles`), which ADR-0018 keeps off the agent
-/// surface. A CLI session ([`BasemindServer::for_cli`]) answers them by name,
+/// analyses of ADR-0047 such as `code impact`, `code cycles` and `overview`), which ADR-0018 keeps
+/// off the agent surface. A CLI session ([`BasemindServer::for_cli`]) answers them by name,
 /// off `tools/list`; any other session answers them as unknown tools.
 pub(super) const CLI_ONLY: &[&str] = &[
     "git_churn",
@@ -24,6 +25,7 @@ pub(super) const CLI_ONLY: &[&str] = &[
     "memory_delete",
     "code_impact",
     "code_cycles",
+    "overview",
 ];
 
 /// `arguments` as the command's params; a mismatch is a usage error, as a verb tool's is.
@@ -64,6 +66,10 @@ impl BasemindServer {
             },
             "code_cycles" => match params::<CyclesParams>(name, arguments) {
                 Ok(p) => self.cli_op(p, Workspace::code_cycles).await,
+                Err(error) => Err(error),
+            },
+            "overview" => match params::<OverviewParams>(name, arguments) {
+                Ok(p) => self.cli_op(p, Workspace::overview).await,
                 Err(error) => Err(error),
             },
             _ => Err(McpError::invalid_params(
