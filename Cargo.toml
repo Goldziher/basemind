@@ -255,7 +255,7 @@ mach2 = "0.7"
 
 # ~keep `basemind serve --lead` (ADR-0040) hosts the agent-launch supervisor; launching is Unix-only.
 [target.'cfg(unix)'.dependencies]
-basemind-agents = { version = "0.1.0", path = "crates/basemind-agents", optional = true }
+basemind-agents = { version = "0.1.1", path = "crates/basemind-agents", optional = true }
 
 [dev-dependencies]
 basemind = { path = ".", features = ["test-support"] }
