@@ -230,28 +230,7 @@ fn every_skill_manual_section_matches_its_manual_page() {
     for skill in &skills {
         let text = std::fs::read_to_string(skill).expect("read skill");
         let relative = skill.strip_prefix(&root).unwrap_or(skill).display().to_string();
-        let mut rest = text.as_str();
-        while let Some(start) = rest.find("<!-- manual:") {
-            let after = &rest[start + "<!-- manual:".len()..];
-            let Some((topic, body)) = after.split_once(" -->\n") else {
-                failures.push(format!("{relative}: malformed manual marker"));
-                break;
-            };
-            let close = format!("<!-- /manual:{topic} -->");
-            let Some(end) = body.find(&close) else {
-                failures.push(format!("{relative}: `{topic}` section is not closed"));
-                break;
-            };
-            sections += 1;
-            match basemind::cli::manual::spliced(topic) {
-                None => failures.push(format!("{relative}: no manual page `{topic}`")),
-                Some(page) if page != body[..end] => failures.push(format!(
-                    "{relative}: `{topic}` differs from docs/manual/{topic}.md; run `mise run plugin:generate`"
-                )),
-                Some(_) => {}
-            }
-            rest = &body[end + close.len()..];
-        }
+        sections += check_manual_sections(&relative, &text, &mut failures);
     }
     assert!(
         sections >= 33,
@@ -263,4 +242,59 @@ fn every_skill_manual_section_matches_its_manual_page() {
         "skill manual sections drifted:\n  {}",
         failures.join("\n  ")
     );
+}
+
+/// Check the manual sections of one skill file against their pages, pushing each mismatch onto
+/// `failures`; return how many sections it holds. A Windows checkout may hold the file with CRLF
+/// line endings, and [`basemind::cli::manual::spliced`] always answers with LF, so the text is read
+/// with its line endings normalised.
+fn check_manual_sections(relative: &str, text: &str, failures: &mut Vec<String>) -> usize {
+    let text = text.replace("\r\n", "\n");
+    let mut sections = 0;
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find("<!-- manual:") {
+        let after = &rest[start + "<!-- manual:".len()..];
+        let Some((topic, body)) = after.split_once(" -->\n") else {
+            failures.push(format!("{relative}: malformed manual marker"));
+            break;
+        };
+        let close = format!("<!-- /manual:{topic} -->");
+        let Some(end) = body.find(&close) else {
+            failures.push(format!("{relative}: `{topic}` section is not closed"));
+            break;
+        };
+        sections += 1;
+        match basemind::cli::manual::spliced(topic) {
+            None => failures.push(format!("{relative}: no manual page `{topic}`")),
+            Some(page) if page != body[..end] => failures.push(format!(
+                "{relative}: `{topic}` differs from docs/manual/{topic}.md; run `mise run plugin:generate`"
+            )),
+            Some(_) => {}
+        }
+        rest = &body[end + close.len()..];
+    }
+    sections
+}
+
+/// A skill file checked out with CRLF line endings holds the same sections, matching their pages.
+#[test]
+fn a_crlf_skill_file_reads_the_same_manual_sections() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut skills = Vec::new();
+    skill_files(&root, &mut skills);
+    let (skill, text) = skills
+        .iter()
+        .map(|skill| {
+            let text = std::fs::read_to_string(skill).expect("read skill");
+            (skill, text.replace("\r\n", "\n"))
+        })
+        .find(|(_, text)| text.contains("<!-- manual:"))
+        .expect("a skill file with a manual section");
+    let relative = skill.display().to_string();
+    let mut failures = Vec::new();
+    let lf = check_manual_sections(&relative, &text, &mut failures);
+    assert!(lf >= 1 && failures.is_empty(), "{failures:?}");
+    let crlf = check_manual_sections(&relative, &text.replace('\n', "\r\n"), &mut failures);
+    assert_eq!(crlf, lf, "{failures:?}");
+    assert!(failures.is_empty(), "{failures:?}");
 }
