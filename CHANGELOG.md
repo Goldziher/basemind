@@ -148,12 +148,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (importers) answer with rows as the shell prints them (ADR-0052, amending ADR-0034): a `code_symbols`
   row is `"<path>:<line>: <signature>"`, `code_grep` hits are
   `{"<path>": {"<symbol>": ["<line>: <text>"]}}` with context lines as `"<line>- <text>"`, a
-  `git_log` commit is `"<sha12> <summary>"`, and `git_blame` hunks are `"<line>[-<end_line>] <sha12>"`
-  with each commit's `author`, `time` and `summary` once in `commits`. `total` appears only beside
-  `next_cursor`, `find_files` with `min_lines` maps path to lines, and `in_cycle` on importers is a
-  count. On the value-gate corpora the median answer of each kind fell by a quarter to a half (basemind /
-  tokio): `symbols` 91 / 155 to 46 / 94 tokens, `git_path` 566 / 265 to 286 / 138, `blame_symbol`
-  162 / 175 to 81 / 84, `find_large` 162 / 156 to 93 / 87, with recall unchanged. The mapping from every
+  `git_log` commit is `"<sha12> <summary>"` (`"<sha12> <author>: <summary>"` in a search by `author`)
+  with the recent and directory lists' files in one `files` map, and `git_blame` hunks are
+  `"<line>[-<end_line>] <sha12>"` with each commit's `author`, `time` and `summary` once in `commits`.
+  `total` appears only beside `next_cursor`, `find_files` with `min_lines` maps path to lines, and
+  `in_cycle` on importers is a count, with `deeper: true` when importers lie past `depth`. On the
+  value-gate corpora the median answer of each changed kind fell by 13% to 58% (basemind / tokio):
+  `symbols` 91 / 155 to 46 / 94 tokens, `grep` 56 / 83 to 44 / 58, `git_path` 566 / 265 to 286 / 138,
+  `git_symbol` 73 / 72 to 32 / 30, `blame_symbol` 162 / 175 to 81 / 84, `find_large` 162 / 156 to
+  93 / 87, with recall unchanged; `callers`, `references`, `implementations` and `cycles` did not
+  change. `find` stays at 0.67x on basemind, just under the locating floor (ADR-0052). The mapping from every
   removed field is in [docs/UPGRADING.md](docs/UPGRADING.md#lean-rows).
 - **BREAKING:** every `code_refs` call site carries a `resolution` (#125, ADR-0047): `same_file`,
   `imported`, `scope_resolved`, `elsewhere`, `name_only` or `external`, in place of the `resolved`

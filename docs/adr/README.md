@@ -117,7 +117,7 @@ them.
 | [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Accepted (amended by ADR-0051) |
 | [0032](0032-layering-as-built.md) | Library crate layering as built — module table, schema validation, open edges | Accepted (amended by ADR-0039) |
 | [0033](0033-store-evidence-collection-and-recovery-rules.md) | Store rules after the sixth storage review — evidence, collection, recovery | Accepted |
-| [0034](0034-lean-locating-rows.md) | Lean rows for the locating tools | Accepted |
+| [0034](0034-lean-locating-rows.md) | Lean rows for the locating tools | Accepted (amended by ADR-0052) |
 | [0035](0035-unreleased-plugin-surface-marker.md) | A dated marker for plugin content ahead of its release | Accepted |
 | [0036](0036-group-index-as-built.md) | Group index as built — no rollout switch, the group lock, read-only opens | Accepted (amended by ADR-0041, ADR-0043) |
 | [0037](0037-retrieval-store-amendments.md) | Retrieval store amendments — liveness list, store version, group location, model identity | Accepted |
@@ -130,7 +130,7 @@ them.
 | [0044](0044-launched-agent-comms-and-user-mcp-isolation.md) | Launched agents use their comms thread, and start none of the user's MCP servers | Accepted |
 | [0045](0045-daemon-stop-and-idle-rules-as-built.md) | Daemon stop and idle rules as built after the comms v2 cutover | Accepted |
 | [0046](0046-release-commit-reaches-main-after-its-release.md) | The release commit reaches main only after its release is public | Accepted |
-| [0047](0047-analysis-commands-and-the-import-graph.md) | Analyses ship as daemon-answered CLI commands; the file-level import graph | Proposed |
+| [0047](0047-analysis-commands-and-the-import-graph.md) | Analyses ship as daemon-answered CLI commands; the file-level import graph | Proposed (amended by ADR-0052) |
 | [0048](0048-http-routes-and-client-calls.md) | HTTP routes as symbols, client calls as call rows, linked by path | Proposed |
 | [0049](0049-reading-outside-the-repository.md) | Reading outside the repository — session transcripts and dependency documentation | Proposed |
 | [0050](0050-one-engine-configuration-per-process.md) | One engine configuration per process, and no environment below the root layer | Proposed |
