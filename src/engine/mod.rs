@@ -14,6 +14,11 @@ pub(crate) mod freshness;
 pub(crate) mod git;
 pub(crate) mod grep_text;
 mod handle;
+#[cfg_attr(
+    not(all(test, any(feature = "code-intel-js", feature = "code-intel-stack"))),
+    allow(dead_code, reason = "the import graph's commands and arguments land in later waves")
+)]
+pub(crate) mod import_graph;
 pub(crate) mod l1_cache;
 #[cfg(any(feature = "memory", feature = "code-search"))]
 pub(crate) mod lance_cell;

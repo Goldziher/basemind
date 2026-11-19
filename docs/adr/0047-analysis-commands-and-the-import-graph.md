@@ -98,22 +98,46 @@ these arguments and fields:
 
 - **Row.** One row per importer in `import_targets`, under the importer's prefix at the reserved
   `local_start = u32::MAX - 1`, beside `PROBE_MANIFEST_START`. Its value holds the deduplicated
-  first-hop targets with their import line, a per-edge flag marking a type-only import, the counts
-  of external and unresolved imports, and the unresolved specifiers (capped). No keyspace is added.
+  first-hop targets with the offset of their first import, a per-edge kind byte, the counts of
+  external and unresolved imports, and the unresolved specifiers (capped). No keyspace is added.
+  The value is `external:u32 ‖ unresolved:u32 ‖ edges:u32 ‖ edge* ‖ specifier*`, an edge being
+  `kinds:u8 ‖ u16:len ‖ target ‖ local_start:u32` and a specifier `u16:len ‖ bytes` (big-endian).
+- **Edge kinds.** `kinds` is a bit set (`EdgeKinds`, `src/index/keys_probe.rs`) of every kind of
+  import behind the edge: `import` (binds a name: a JS named or default import, a Rust `use`, a Go
+  import), `type_only` (`import type`), `module_only` (a JS side-effect import, namespace import
+  or `export … from` re-export: runtime, binds no export) and `module_decl` (a Rust `mod x;`: the
+  parent module contains the child file). An edge with `import` or `module_only` is a runtime
+  edge; `local_start` points at its first runtime import, else its first declaration, else its
+  first type-only import. An unknown bit or an empty set makes the row malformed.
 - **Writer.** `stitch_cross_file_edges` (`src/intel/xfile.rs`) writes it once a target path is
   known and before export matching, so barrel files, side-effect imports and unresolved imports are
   counted. The row is deleted with the importer prefix, so invalidation is inherited.
-  `IMPORT_PROBE_VER` (`src/index/mod.rs`) goes from 1 to 2, which forces one wholesale pass.
+  Every change to the row bumps `IMPORT_PROBE_VER` (`src/index/mod.rs`), which forces one
+  wholesale pass; the kind byte took it to 5.
 - **Rust and Go resolvers,** file level only (no bindings, no facts), in new
   `src/intel/module_resolver.rs`, `module_rust.rs` and `module_go.rs`, hooked into
   `src/intel/resolve_pass.rs`:
   - Rust: `mod x;` maps to `x.rs` or `x/mod.rs` beside the importer; `use crate::…` to the longest
     existing module file under the crate root of the nearest `Cargo.toml`; `super::` and `self::`
-    are relative; anything else is external.
+    are relative.
+  - Rust paths that start at a crate name are classified by the package's `Cargo.toml`:
+    `std`, `core`, `alloc`, `proc_macro`, `test` and registry dependencies (all dependency
+    tables, by their code name) are external. The package's own library (from its tests,
+    binaries, examples), a path dependency inside the repository, a `workspace = true` dependency
+    whose `[workspace.dependencies]` entry has a path and a dependency the workspace `[patch]`es to
+    a path are crates of the repository: the path resolves like `crate::…` in that crate, so a
+    workspace member is an internal edge, not a separate bucket. A path through a name the file
+    binds (its own item, or a name another `use` brought in) is no edge and is not counted. Any
+    other name is unresolved: it is no crate the manifest declares, so the resolver failed to
+    place it. Without a `Cargo.toml` such a path is external.
   - Go: an import path under the `go.mod` module prefix maps to the package directory, one edge per
     non-test `.go` file in it. Build tags are ignored and the coverage note says so.
-- **Type-only imports** are a second tier: excluded from every graph answer by default, included
-  only by the CLI flag `--include-type-imports`. No MCP argument selects them.
+- **Two tiers are left out by default.** Type-only imports and Rust `mod` declarations are excluded
+  from every graph answer (cycles, importer and dependency walks, in-degree, reachability) unless
+  the caller asks: the CLI flags `--include-type-imports` and `--include-module-decls`. No MCP
+  argument selects them. An edge that also holds a runtime import is always in. A `mod`
+  declaration is containment, not use: with it, a child's `use crate::…` closes a cycle through
+  every parent above it, which on this repository merged 392 files into one component.
 
 ### 5. The graph is built at query time
 
@@ -197,3 +221,11 @@ these arguments and fields:
   schema bytes.
 - **Type-only imports in the default graph** — rejected: they create cycles that do not exist at
   run time.
+- **`mod` declarations in the default graph** — rejected: every Rust parent-child pair plus any
+  `use crate::…` back to an ancestor is a cycle, so the cycle report names the module tree, not
+  dependencies.
+- **One kind per edge instead of a bit set** — rejected: a parent that declares a module and also
+  `use`s it, or a JS file importing one target both at runtime and by type, would lose the
+  weaker kind; the set keeps both and the tier test stays one mask.
+- **A separate `workspace` count for Rust workspace crates** — rejected: they are files of the
+  repository, so resolving them to the member crate's module files gives real edges.

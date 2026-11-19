@@ -12,16 +12,27 @@
 //!   through `#[path]`). A file is a crate root only by that layout, never by its name: a
 //!   `src/foo/main.rs` below `src/lib.rs` is the module `foo::main`. With no module file at all,
 //!   the path names an item of the crate root file.
-//! - Anything else (`std::`, a dependency, `::x`) is external.
+//! - A path starting at a crate name is classified by the package's `Cargo.toml`
+//!   ([`crate::intel::module_rust_crates`]): the standard library and registry dependencies are
+//!   external; the package's own library (from its tests, binaries, examples) and path dependencies
+//!   inside the repository (workspace members) resolve like a `crate::` path of that crate, to its
+//!   module files; a name that is no crate the manifest declares is unresolved. A path through a
+//!   name the file binds itself (`use Kind::*` for its own enum, `use io::Write` after
+//!   `use std::io`), or any unknown name in a file with a glob `use` that may have brought it in,
+//!   is no edge and is not counted. Without a `Cargo.toml` such a path is external.
 //!
 //! Inline modules (`mod tests { … }`) are scopes inside one file: `use super::*` in one resolves to
 //! the file itself, which is not an edge. `pub use` re-exports are not followed: an importer gets an
 //! edge to the module it names, the first hop.
 
+use std::rc::Rc;
+
 use ahash::{AHashMap, AHashSet};
 
 use crate::extract::{Import, Symbol, SymbolKind};
+use crate::index::keys::EdgeKinds;
 use crate::intel::module_resolver::{ModuleImport, ModuleTarget, Probe, join, parent_dir, strip_dir};
+use crate::intel::module_rust_crates::{CrateRef, Manifest, classify_crate, lib_root, normalize, parse_manifest};
 
 /// Where a crate's module tree is rooted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,12 +125,22 @@ struct DeclaredModule {
     inline: bool,
 }
 
-/// Rust module resolver. Caches each `Cargo.toml` path's target root files (`None` when absent) and
-/// each shared module directory's including crates.
+/// Rust module resolver. Caches each `Cargo.toml` path's parse (`None` when absent) and each shared
+/// module directory's including crates.
 #[derive(Default)]
 pub(crate) struct RustModules {
-    manifests: AHashMap<String, Option<Vec<String>>>,
+    manifests: AHashMap<String, Option<Rc<Manifest>>>,
     includers: AHashMap<String, Vec<String>>,
+}
+
+/// The package an importer belongs to: its manifest's directory and parse.
+type Package = (String, Rc<Manifest>);
+
+/// The names a file binds itself: its items and the names its `use`s bring in. A glob `use` can
+/// bring in any name, so with one no unknown name is evidence of a failed resolution.
+struct Bound<'a> {
+    names: AHashSet<&'a str>,
+    glob: bool,
 }
 
 impl RustModules {
@@ -142,7 +163,10 @@ impl RustModules {
             .flatten()
             .filter(|bytes| crate::hashing::hex(&crate::hashing::hash_bytes(bytes)) == content_hash);
         let modules = declared_modules(symbols, source.as_deref());
-        let layout = self.crate_layout(probe, importer);
+        let package = self.manifest(probe, importer);
+        let layout = package
+            .as_ref()
+            .and_then(|(dir, manifest)| crate_layout(probe, importer, dir, &manifest.targets));
         let file_scope = layout.as_ref().and_then(|layout| module_path(layout, importer));
         // With no `Cargo.toml` there is no layout to read roots from (a `rustc` or Bazel crate), so
         // a `lib.rs` or `main.rs` is then taken for the root its name suggests.
@@ -151,6 +175,21 @@ impl RustModules {
             None => matches!(importer.rsplit('/').next(), Some("lib.rs" | "main.rs")),
         };
         let names: AHashSet<&str> = modules.iter().map(|module| module.name.as_str()).collect();
+        let leaves: Vec<(u32, UseLeaf)> = imports
+            .iter()
+            .filter(|import| import.module.is_none())
+            .flat_map(|import| {
+                use_leaves(&import.raw)
+                    .into_iter()
+                    .map(|leaf| (import.start_byte, leaf))
+            })
+            .collect();
+        let mut bound: AHashSet<&str> = symbols.iter().map(|symbol| symbol.name.as_str()).collect();
+        bound.extend(leaves.iter().filter_map(|(_, leaf)| leaf.binds.as_deref()));
+        let bound = Bound {
+            names: bound,
+            glob: leaves.iter().any(|(_, leaf)| leaf.glob),
+        };
 
         let mut out = Vec::new();
         for module in modules.iter().filter(|module| !module.inline) {
@@ -159,112 +198,160 @@ impl RustModules {
                 anchor: module.start,
                 specifier: format!("mod {}", module.name),
                 target,
+                kind: EdgeKinds::MODULE_DECL,
             });
         }
         for import in imports {
-            if let Some(name) = &import.module {
-                let target = if name == "self" {
-                    ModuleTarget::SelfFile
-                } else {
-                    ModuleTarget::External
-                };
-                out.push(ModuleImport {
-                    anchor: import.start_byte,
-                    specifier: format!("extern crate {name}"),
-                    target,
-                });
+            let Some(name) = &import.module else {
                 continue;
-            }
-            let scope = file_scope
-                .as_ref()
-                .map(|base| scope_at(base, &modules, import.start_byte));
-            for path in use_paths(&import.raw) {
-                let target = match (&layout, &scope) {
-                    _ if !is_internal(&path, &names) => ModuleTarget::External,
-                    (Some(layout), Some(scope)) => {
-                        let includers = &mut self.includers;
-                        resolve_path(probe, includers, layout, scope, &path, &names, importer)
-                    }
-                    _ => ModuleTarget::Unresolved,
-                };
-                out.push(ModuleImport {
-                    anchor: import.start_byte,
-                    specifier: path.join("::"),
-                    target,
-                });
-            }
+            };
+            let target = if name == "self" {
+                ModuleTarget::SelfFile
+            } else {
+                self.crate_path(probe, package.as_ref(), importer, std::slice::from_ref(name))
+            };
+            out.push(ModuleImport {
+                anchor: import.start_byte,
+                specifier: format!("extern crate {name}"),
+                target,
+                kind: EdgeKinds::IMPORT,
+            });
+        }
+        for &(anchor, ref leaf) in &leaves {
+            let path = &leaf.path;
+            let scope = file_scope.as_ref().map(|base| scope_at(base, &modules, anchor));
+            let target = match (&layout, &scope) {
+                _ if !is_internal(path, &names) => self.external_path(probe, package.as_ref(), importer, leaf, &bound),
+                (Some(layout), Some(scope)) => {
+                    let includers = &mut self.includers;
+                    resolve_path(probe, includers, layout, scope, path, &names, importer)
+                }
+                _ => ModuleTarget::Unresolved,
+            };
+            out.push(ModuleImport {
+                anchor,
+                specifier: path.join("::"),
+                target,
+                kind: EdgeKinds::IMPORT,
+            });
         }
         out.sort_by_key(|import| import.anchor);
         out
     }
 
-    /// The crate `importer` belongs to, from the nearest `Cargo.toml` above it: the target root it
-    /// is, else the standard-layout crate it falls in, unless a declared target root's directory
-    /// holds it more closely.
-    fn crate_layout(&mut self, probe: &mut Probe<'_>, importer: &str) -> Option<CrateLayout> {
-        let (manifest_dir, targets) = self.manifest(probe, importer)?;
-        if targets.iter().any(|target| target == importer) {
-            return Some(CrateLayout::new(
-                parent_dir(importer).to_string(),
-                vec![importer.to_string()],
-            ));
-        }
-        let standard = standard_layout(probe, &manifest_dir, importer);
-        let declared = targets
-            .iter()
-            .filter(|target| strip_dir(importer, parent_dir(target)).is_some())
-            .max_by(|a, b| (parent_dir(a).len(), *a).cmp(&(parent_dir(b).len(), *b)));
-        match (standard, declared) {
-            (Some(standard), Some(target)) if parent_dir(target).len() <= standard.dir.len() => Some(standard),
-            (_, Some(target)) => Some(CrateLayout::new(parent_dir(target).to_string(), vec![target.clone()])),
-            (standard, None) => standard,
+    /// The target of a `use` path that does not start in the importer's own crate: a path through a
+    /// name the file binds, or one starting at a crate name (see the module docs).
+    fn external_path(
+        &mut self,
+        probe: &mut Probe<'_>,
+        package: Option<&Package>,
+        importer: &str,
+        leaf: &UseLeaf,
+        bound: &Bound<'_>,
+    ) -> ModuleTarget {
+        let (absolute, path) = match leaf.path.split_first() {
+            Some((first, rest)) if first.is_empty() => (true, rest),
+            _ => (false, leaf.path.as_slice()),
+        };
+        let Some(first) = path.first() else {
+            return ModuleTarget::External;
+        };
+        // `use serde;` binds the name it names: that binding is no evidence the name is in scope.
+        let binds_itself = path.len() == 1 && leaf.binds.as_ref() == Some(first);
+        let in_scope = !absolute && !binds_itself && (bound.glob || bound.names.contains(first.as_str()));
+        match self.crate_path(probe, package, importer, path) {
+            ModuleTarget::Unresolved if in_scope => ModuleTarget::InScope,
+            target => target,
         }
     }
 
-    /// The directory of the nearest `Cargo.toml` above `importer` and the target root files it
-    /// declares; every candidate is a probe.
-    fn manifest(&mut self, probe: &mut Probe<'_>, importer: &str) -> Option<(String, Vec<String>)> {
-        let mut dir = parent_dir(importer);
-        loop {
-            let manifest = join(dir, "Cargo.toml");
-            probe.record(&manifest);
-            let root = probe.root;
-            let targets = self.manifests.entry(manifest).or_insert_with_key(|manifest| {
-                let text = std::fs::read_to_string(root.join(manifest)).ok()?;
-                Some(cargo_targets(&text, parent_dir(manifest)))
-            });
-            if let Some(targets) = targets {
-                return Some((dir.to_string(), targets.clone()));
+    /// The target of `path`, whose first segment is a crate name, for code of `package`.
+    fn crate_path(
+        &mut self,
+        probe: &mut Probe<'_>,
+        package: Option<&Package>,
+        importer: &str,
+        path: &[String],
+    ) -> ModuleTarget {
+        let Some(((dir, manifest), name)) = package.zip(path.first()) else {
+            return ModuleTarget::External;
+        };
+        let workspace = if manifest.dependencies.contains_key(name.as_str()) {
+            self.workspace(probe, dir)
+        } else {
+            None
+        };
+        let section = workspace.as_ref().and_then(|manifest| manifest.workspace.as_ref());
+        match classify_crate(name, dir, manifest, section) {
+            CrateRef::External => ModuleTarget::External,
+            CrateRef::Unknown => ModuleTarget::Unresolved,
+            CrateRef::Local(package_dir) => {
+                let member = self.manifest_in(probe, &package_dir);
+                let root = lib_root(&package_dir, member.as_deref());
+                let layout = CrateLayout::new(parent_dir(&root).to_string(), vec![root]);
+                let mut absolute = vec!["crate".to_string()];
+                absolute.extend(path[1..].iter().cloned());
+                let includers = &mut self.includers;
+                resolve_path(probe, includers, &layout, &[], &absolute, &AHashSet::new(), importer)
             }
-            if dir.is_empty() {
-                return None;
-            }
-            dir = parent_dir(dir);
         }
+    }
+
+    /// The manifest of the workspace holding the package in `package_dir`: the nearest `Cargo.toml`
+    /// at or above it with a `[workspace]` table. Every candidate is a probe.
+    fn workspace(&mut self, probe: &mut Probe<'_>, package_dir: &str) -> Option<Rc<Manifest>> {
+        ancestors(package_dir).find_map(|dir| {
+            self.manifest_in(probe, dir)
+                .filter(|manifest| manifest.workspace.is_some())
+        })
+    }
+
+    /// The parse of `dir/Cargo.toml`, recorded as a probe; `None` when there is none.
+    fn manifest_in(&mut self, probe: &mut Probe<'_>, dir: &str) -> Option<Rc<Manifest>> {
+        let manifest = join(dir, "Cargo.toml");
+        probe.record(&manifest);
+        let root = probe.root;
+        self.manifests
+            .entry(manifest)
+            .or_insert_with_key(|manifest| {
+                let text = std::fs::read_to_string(root.join(manifest)).ok()?;
+                Some(Rc::new(parse_manifest(&text, parent_dir(manifest))))
+            })
+            .clone()
+    }
+
+    /// The directory of the nearest `Cargo.toml` above `importer` and its parse; every candidate is
+    /// a probe.
+    fn manifest(&mut self, probe: &mut Probe<'_>, importer: &str) -> Option<Package> {
+        ancestors(parent_dir(importer)).find_map(|dir| Some((dir.to_string(), self.manifest_in(probe, dir)?)))
     }
 }
 
-/// The repo-relative root files of the targets a `Cargo.toml` in `manifest_dir` declares a `path`
-/// for. A manifest that does not parse declares none.
-fn cargo_targets(text: &str, manifest_dir: &str) -> Vec<String> {
-    let Ok(manifest) = toml::from_str::<toml::Table>(text) else {
-        return Vec::new();
-    };
-    fn path(target: &toml::Value) -> Option<&str> {
-        target.get("path").and_then(toml::Value::as_str)
+/// `dir` and each directory above it, up to the repository root `""`.
+fn ancestors(dir: &str) -> impl Iterator<Item = &str> {
+    std::iter::successors(Some(dir), |dir| (!dir.is_empty()).then(|| parent_dir(dir)))
+}
+
+/// The crate `importer` belongs to, in the package in `manifest_dir` declaring `targets`: the target
+/// root it is, else the standard-layout crate it falls in, unless a declared target root's directory
+/// holds it more closely.
+fn crate_layout(probe: &mut Probe<'_>, importer: &str, manifest_dir: &str, targets: &[String]) -> Option<CrateLayout> {
+    if targets.iter().any(|target| target == importer) {
+        return Some(CrateLayout::new(
+            parent_dir(importer).to_string(),
+            vec![importer.to_string()],
+        ));
     }
-    let mut paths: Vec<&str> = Vec::new();
-    paths.extend(manifest.get("lib").and_then(path));
-    for kind in ["bin", "test", "example", "bench"] {
-        let targets = manifest.get(kind).and_then(toml::Value::as_array);
-        paths.extend(targets.into_iter().flatten().filter_map(path));
+    let standard = standard_layout(probe, manifest_dir, importer);
+    let declared = targets
+        .iter()
+        .filter(|target| strip_dir(importer, parent_dir(target)).is_some())
+        .max_by(|a, b| (parent_dir(a).len(), *a).cmp(&(parent_dir(b).len(), *b)));
+    match (standard, declared) {
+        (Some(standard), Some(target)) if parent_dir(target).len() <= standard.dir.len() => Some(standard),
+        (_, Some(target)) => Some(CrateLayout::new(parent_dir(target).to_string(), vec![target.clone()])),
+        (standard, None) => standard,
     }
-    let build = manifest.get("package").and_then(|package| package.get("build"));
-    paths.extend(build.and_then(toml::Value::as_str));
-    paths
-        .into_iter()
-        .filter_map(|path| normalize(&join(manifest_dir, path)))
-        .collect()
 }
 
 /// The crate holding `importer` in Cargo's standard layout of the package in `manifest_dir`. A file
@@ -413,21 +500,6 @@ fn path_attribute(source: &[u8], start: usize) -> Option<String> {
     }
 }
 
-/// `path` with `.` and `..` segments applied, or `None` when it leaves the repository.
-fn normalize(path: &str) -> Option<String> {
-    let mut segments: Vec<&str> = Vec::new();
-    for segment in path.split('/') {
-        match segment {
-            "" | "." => {}
-            ".." => {
-                segments.pop()?;
-            }
-            _ => segments.push(segment),
-        }
-    }
-    Some(segments.join("/"))
-}
-
 /// The module path of `importer` within its crate: `[]` for the crate root, `["a", "b"]` for
 /// `a/b.rs` or `a/b/mod.rs`.
 fn module_path(layout: &CrateLayout, importer: &str) -> Option<Vec<String>> {
@@ -567,10 +639,26 @@ fn tokens(source: &str) -> Vec<Token<'_>> {
     out
 }
 
+/// One leaf of a `use` tree: its path and the name it binds in the file (`None` for a glob or `_`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UseLeaf {
+    path: Vec<String>,
+    binds: Option<String>,
+    /// The leaf is a glob (`a::*`), bringing in every public name of `path`.
+    glob: bool,
+}
+
 /// The leaf paths of a `use` declaration's tree, `self` leaves folded into their module and a
 /// leading `::` kept as an empty first segment: `pub use crate::a::{self, b::C as D, e::*};` gives
 /// `crate::a`, `crate::a::b::C` and `crate::a::e`.
+#[cfg(test)]
 fn use_paths(raw: &str) -> Vec<Vec<String>> {
+    use_leaves(raw).into_iter().map(|leaf| leaf.path).collect()
+}
+
+/// The leaves of a `use` declaration's tree (see [`use_paths`]) with the names they bind: `D` for
+/// `b::C as D`, `a` for `a::{self}`, none for `e::*`.
+fn use_leaves(raw: &str) -> Vec<UseLeaf> {
     let tokens = tokens(raw);
     let mut at = 0;
     if tokens.first() == Some(&Token::Ident("pub")) {
@@ -588,16 +676,19 @@ fn use_paths(raw: &str) -> Vec<Vec<String>> {
     at += 1;
     let mut out = Vec::new();
     use_tree(&tokens, &mut at, Vec::new(), &mut out);
-    for path in &mut out {
-        if path.len() > 1 && path.last().is_some_and(|last| last == "self") {
-            path.pop();
+    for leaf in &mut out {
+        if leaf.path.len() > 1 && leaf.path.last().is_some_and(|last| last == "self") {
+            leaf.path.pop();
+            if leaf.binds.as_deref() == Some("self") {
+                leaf.binds = leaf.path.last().cloned();
+            }
         }
     }
-    out.retain(|path| !path.is_empty() && path.as_slice() != ["self"]);
+    out.retain(|leaf| !leaf.path.is_empty() && leaf.path.as_slice() != ["self"]);
     out
 }
 
-fn use_tree(tokens: &[Token<'_>], at: &mut usize, mut prefix: Vec<String>, out: &mut Vec<Vec<String>>) {
+fn use_tree(tokens: &[Token<'_>], at: &mut usize, mut prefix: Vec<String>, out: &mut Vec<UseLeaf>) {
     if prefix.is_empty() && tokens.get(*at) == Some(&Token::PathSep) {
         prefix.push(String::new());
         *at += 1;
@@ -611,15 +702,28 @@ fn use_tree(tokens: &[Token<'_>], at: &mut usize, mut prefix: Vec<String>, out: 
                     *at += 1;
                     continue;
                 }
+                let mut binds = Some((*name).to_string());
                 if tokens.get(*at) == Some(&Token::Ident("as")) {
+                    binds = match tokens.get(*at + 1) {
+                        Some(Token::Ident(alias)) if *alias != "_" => Some((*alias).to_string()),
+                        _ => None,
+                    };
                     *at += 2;
                 }
-                out.push(prefix);
+                out.push(UseLeaf {
+                    path: prefix,
+                    binds,
+                    glob: false,
+                });
                 return;
             }
             Some(Token::Star) => {
                 *at += 1;
-                out.push(prefix);
+                out.push(UseLeaf {
+                    path: prefix,
+                    binds: None,
+                    glob: true,
+                });
                 return;
             }
             Some(Token::Open) => {

@@ -22,10 +22,10 @@
 //! targets, re-export hop files, failed candidates, `tsconfig.json` / `package.json`). That reverse
 //! map is what lets the incremental pass re-stitch exactly the importers a changed path can affect.
 //! It also records the importer's file-level edges ([`FileEdges`]): every indexed file an import
-//! resolves to at the first hop, type-only imports included and flagged, whether or not the name
-//! binds an export there (a barrel forwards it), plus the imports that resolved to none. A JS
-//! side-effect import, namespace import or `export … from` re-export is a `module_only` import: it
-//! counts as a file edge and joins no export.
+//! resolves to at the first hop, whether or not the name binds an export there (a barrel forwards
+//! it), plus the imports that resolved to none. Each edge carries the [`EdgeKinds`] of the imports
+//! behind it: a type-only import, or a JS side-effect import, namespace import or `export … from`
+//! re-export (a `module_only` import, which joins no export), is flagged as such.
 //!
 //! Best-effort: any resolver miss or unindexed target is logged at debug and skipped; a commit
 //! failure warns but never aborts the scan. Idempotency across re-scans is documented on
@@ -39,7 +39,7 @@ use std::rc::Rc;
 use ahash::AHashMap;
 
 use crate::index::IndexDb;
-use crate::index::keys::{FileEdge, FileEdges, MAX_UNRESOLVED_SPECIFIERS};
+use crate::index::keys::{EdgeKinds, FileEdge, FileEdges, MAX_UNRESOLVED_SPECIFIERS};
 use crate::intel::model::{ExportEdge, ImportEdge, ResolvedEdge};
 use crate::intel::resolver::{ProbeSet, SpecifierResolver};
 use crate::intel::stage_budget::BudgetedWriter;
@@ -319,24 +319,57 @@ pub fn stitch_cross_file_edges(
 /// module stitch ([`crate::intel::module_resolver`]), whose resolvers classify a miss themselves.
 #[derive(Default)]
 pub(crate) struct FileEdgesBuilder {
-    /// Target -> (first runtime binding, first type-only binding).
-    targets: AHashMap<crate::path::RelPath, (Option<u32>, Option<u32>)>,
+    targets: AHashMap<crate::path::RelPath, TargetImports>,
     external: u32,
     unresolved: u32,
     unresolved_specifiers: Vec<String>,
 }
 
+/// The imports of one target seen so far: their kinds and the anchor [`FileEdge::local_start`]
+/// takes, the first import of the most real kind.
+struct TargetImports {
+    kinds: EdgeKinds,
+    anchor: u32,
+    anchor_rank: u8,
+}
+
+/// Which import anchors an edge: a runtime one before a module declaration before a type-only one.
+fn anchor_rank(kind: EdgeKinds) -> u8 {
+    if kind.runtime() {
+        0
+    } else if kind.contains(EdgeKinds::MODULE_DECL) {
+        1
+    } else {
+        2
+    }
+}
+
 impl FileEdgesBuilder {
     /// `import` resolved to the indexed file `target`.
     fn hit(&mut self, target: crate::path::RelPath, import: &ImportEdge) {
-        self.hit_at(target, import.local_start, import.is_type);
+        let kind = if import.is_type {
+            EdgeKinds::TYPE_ONLY
+        } else if import.module_only {
+            EdgeKinds::MODULE_ONLY
+        } else {
+            EdgeKinds::IMPORT
+        };
+        self.hit_at(target, import.local_start, kind);
     }
 
-    /// An import at byte `local_start` resolved to the indexed file `target`.
-    pub(crate) fn hit_at(&mut self, target: crate::path::RelPath, local_start: u32, is_type: bool) {
-        let (runtime, type_only) = self.targets.entry(target).or_default();
-        let slot = if is_type { type_only } else { runtime };
-        *slot = Some(slot.map_or(local_start, |start| start.min(local_start)));
+    /// An import of `kind` at byte `local_start` resolved to the indexed file `target`.
+    pub(crate) fn hit_at(&mut self, target: crate::path::RelPath, local_start: u32, kind: EdgeKinds) {
+        let rank = anchor_rank(kind);
+        let entry = self.targets.entry(target).or_insert(TargetImports {
+            kinds: kind,
+            anchor: local_start,
+            anchor_rank: rank,
+        });
+        entry.kinds = entry.kinds.union(kind);
+        if (rank, local_start) < (entry.anchor_rank, entry.anchor) {
+            entry.anchor = local_start;
+            entry.anchor_rank = rank;
+        }
     }
 
     /// `import` resolved to no indexed file. A relative specifier (`./x`, `../x`, `.x`, `/x`) names a
@@ -368,12 +401,10 @@ impl FileEdgesBuilder {
         let mut edges: Vec<FileEdge> = self
             .targets
             .into_iter()
-            .filter_map(|(target, (runtime, type_only))| {
-                Some(FileEdge {
-                    target,
-                    local_start: runtime.or(type_only)?,
-                    type_only: runtime.is_none(),
-                })
+            .map(|(target, imports)| FileEdge {
+                target,
+                local_start: imports.anchor,
+                kinds: imports.kinds,
             })
             .collect();
         edges.sort_unstable_by(|a, b| a.target.cmp(&b.target));

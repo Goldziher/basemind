@@ -735,14 +735,14 @@ fn import_probe_rows_roundtrip_and_leave_with_the_importer() {
 }
 
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
-fn edges_to(targets: &[(&str, u32, bool)], external: u32) -> keys::FileEdges {
+fn edges_to(targets: &[(&str, u32, keys::EdgeKinds)], external: u32) -> keys::FileEdges {
     keys::FileEdges {
         edges: targets
             .iter()
-            .map(|(target, local_start, type_only)| keys::FileEdge {
+            .map(|(target, local_start, kinds)| keys::FileEdge {
                 target: RelPath::from(*target),
                 local_start: *local_start,
-                type_only: *type_only,
+                kinds: *kinds,
             })
             .collect(),
         external,
@@ -759,8 +759,14 @@ fn file_edge_rows_read_back_and_leave_with_the_importer() {
     let (_d, db) = fresh_db();
     let (app, other) = (RelPath::from("src/app.ts"), RelPath::from("src/other.ts"));
     let impl_ts = RelPath::from("src/impl.ts");
-    let app_edges = edges_to(&[("src/impl.ts", 7, false), ("src/types.ts", 50, true)], 2);
-    let other_edges = edges_to(&[("src/impl.ts", 3, false)], 0);
+    let app_edges = edges_to(
+        &[
+            ("src/impl.ts", 7, keys::EdgeKinds::IMPORT),
+            ("src/types.ts", 50, keys::EdgeKinds::TYPE_ONLY),
+        ],
+        2,
+    );
+    let other_edges = edges_to(&[("src/impl.ts", 3, keys::EdgeKinds::IMPORT)], 0);
 
     let mut w = db.writer();
     w.upsert_import_probes(&app, &[(7, impl_ts.clone(), 40)], &[keys::probe_hash("src/impl.ts")]);

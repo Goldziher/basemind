@@ -24,6 +24,9 @@ pub(crate) mod module_resolver;
 /// Rust file-level module resolution (`mod` and `use` paths → module files), for the import graph.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 pub(crate) mod module_rust;
+/// What a `Cargo.toml` tells the Rust module resolver: target roots, dependencies, workspace paths.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+pub(crate) mod module_rust_crates;
 pub mod resolve;
 pub(crate) mod resolve_pass;
 /// Per-language module-specifier resolution (importer specifier → repo-relative target file),

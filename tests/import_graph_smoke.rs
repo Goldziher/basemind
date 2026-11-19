@@ -9,7 +9,7 @@
 use std::fs;
 
 use basemind::config::ConfigV1;
-use basemind::index::keys::FileEdges;
+use basemind::index::keys::{EdgeKinds, FileEdges};
 use basemind::index::view::IndexView;
 use basemind::scanner::{EmbedMode, ScanSource, scan};
 use basemind::store::{Store, VIEW_WORKING};
@@ -103,13 +103,22 @@ mod js {
         let rows = rows(&store);
         let app = row(&rows, "app.ts");
         assert_eq!(targets(app), ["all.ts", "named.ts", "ns.ts", "polyfill.ts", "types.ts"]);
-        let type_only: Vec<&str> = app
+        let kinds: Vec<(&str, EdgeKinds)> = app
             .edges
             .iter()
-            .filter(|edge| edge.type_only)
-            .map(|edge| edge.target.as_str().unwrap())
+            .map(|edge| (edge.target.as_str().unwrap(), edge.kinds))
             .collect();
-        assert_eq!(type_only, ["types.ts"]);
+        assert_eq!(
+            kinds,
+            [
+                ("all.ts", EdgeKinds::MODULE_ONLY),
+                ("named.ts", EdgeKinds::MODULE_ONLY),
+                ("ns.ts", EdgeKinds::MODULE_ONLY),
+                ("polyfill.ts", EdgeKinds::MODULE_ONLY),
+                ("types.ts", EdgeKinds::TYPE_ONLY),
+            ],
+            "each import binding no export is module-only; the type re-export is type-only"
+        );
         let polyfill = app
             .edges
             .iter()
@@ -178,6 +187,55 @@ mod rust {
             .find(|edge| edge.target.as_str() == Some("src/b/c.rs"))
             .unwrap();
         assert_eq!(to_c.local_start as usize, B.find("mod c;").unwrap());
+    }
+}
+
+mod rust_workspace {
+    use super::*;
+
+    const MAIN: &str = "use agents::session::Session;\nuse serde::Serialize;\nuse std::fmt;\nuse undeclared::X;\n\
+                        pub fn run() {}\n";
+
+    /// A workspace member named through a path dependency resolves into the member crate's files;
+    /// the standard library and a registry dependency are external; an undeclared crate name is
+    /// unresolved. A parent's `mod` declaration is a `module_decl` edge, a `use` an `import` one.
+    #[test]
+    fn a_workspace_member_import_is_an_edge_into_the_member_crate() {
+        let (_dir, store) = scanned(&[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+                 agents = { package = \"app-agents\", path = \"crates/agents\" }\nserde = \"1\"\n\n\
+                 [workspace]\nmembers = [\"crates/agents\"]\n",
+            ),
+            ("src/lib.rs", "pub mod engine;\n"),
+            ("src/engine.rs", MAIN),
+            (
+                "crates/agents/Cargo.toml",
+                "[package]\nname = \"app-agents\"\nversion = \"0.1.0\"\n",
+            ),
+            ("crates/agents/src/lib.rs", "pub mod session;\n"),
+            ("crates/agents/src/session.rs", "pub struct Session;\n"),
+            ("tests/it.rs", "use app::engine::run;\n"),
+        ]);
+        if !indexed(&store, "src/engine.rs") {
+            return;
+        }
+        let rows = rows(&store);
+        assert_eq!(
+            summary(&rows, "src/engine.rs"),
+            (owned(&["crates/agents/src/session.rs"]), 2, 1)
+        );
+        assert_eq!(row(&rows, "src/engine.rs").unresolved_specifiers, ["undeclared::X"]);
+        assert_eq!(row(&rows, "src/engine.rs").edges[0].kinds, EdgeKinds::IMPORT);
+        let lib = row(&rows, "src/lib.rs");
+        assert_eq!(targets(lib), ["src/engine.rs"]);
+        assert_eq!(lib.edges[0].kinds, EdgeKinds::MODULE_DECL);
+        assert_eq!(
+            summary(&rows, "tests/it.rs"),
+            (owned(&["src/engine.rs"]), 0, 0),
+            "a test crate names its package's library"
+        );
     }
 }
 
