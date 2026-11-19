@@ -144,6 +144,7 @@ Each call site carries `resolution`, one of:
 | `elsewhere` | Checked against the definition pinned with `path`, and binds to another one. |
 | `name_only` | No resolution facts for the site: matched by name alone. |
 | `external` | No resolution facts, and the index defines no symbol of the name. |
+| `path_match` | An HTTP call linked to a route by its method and normalized path. |
 
 A page names its most common grade once as `resolution_default`, and a row leaves its own out when
 it is that one; a page with no `resolution_default` is all `name_only`. `resolution_counts` gives
@@ -164,6 +165,15 @@ the rows per grade, before any filter.
   across files through imports; every other language gets tree-sitter scope binding.
 - **From a reference to its definition.** `relation: "definition"` returns the definition the
   reference at `path` / `line` binds to, or a `resolution_note` when there is none.
+- **HTTP routes.** A route is a `route` symbol named `METHOD /path`, parameters written `:param`;
+  a call with a literal URL is a call site of the same shape. The callers of a route (its name, or
+  `path` pinning it) are the calls it matches best, graded `path_match`: the methods agree (a route
+  of `ANY` takes every method) and the paths match segment for segment, else one is a suffix of the
+  other (a client base URL, or a router mounted in another file). An exact match beats a suffix, a
+  longer suffix a shorter one, and a literal segment a parameter. A call that several routes match
+  equally well carries `ambiguous`: two services may expose the path. `relation: "definition"` on a
+  call returns its route with `resolution: "path_match"`, or the tied routes under `ambiguous` and
+  no `definition`. URLs built from variables are out of reach.
 <!-- /manual:resolution -->
 
 ## Paging and budgets

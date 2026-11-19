@@ -96,6 +96,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the files a change touched: a revision against the working tree (empty: `HEAD`) or `A..B`, with a
   `+importers` suffix adding the files that import a changed file directly. The answer carries
   `scope_files`, so a change that touched nothing reads apart from one without a hit.
+- `code_refs` call sites take `changed` (#122) and `ranges` (#129) as `code_grep` does, and link HTTP
+  calls to routes (#126, ADR-0048): a `METHOD /path` name, or `path` pinning a route symbol, lists
+  the calls with a literal URL whose method and normalized path match that route best (exact, then
+  the longest suffix), graded `path_match` and `ambiguous` when several routes tie; relation
+  `definition` on such a call returns its route, or the tied routes under `ambiguous`.
 
 ### Changed
 

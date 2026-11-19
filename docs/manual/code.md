@@ -19,6 +19,7 @@ symbol or span you need. Paths are repository-relative with forward slashes.
 | Which files import this file? | `code_refs {"relation":"importers","path":"src/store.rs","depth":2}` | `basemind code refs --relation importers --path src/store.rs --depth 2` |
 | Which import cycles are there? | `code_refs {"relation":"cycles"}` | `basemind code refs --relation cycles` |
 | Which definition does this bind to? | `code_refs {"name":"open","relation":"definition","path":"src/main.rs","line":42}` | `basemind code definition src/main.rs 42 open` |
+| Which HTTP calls reach this route? | `code_refs {"name":"GET /users/:param"}` | `basemind code refs "GET /users/:param"` |
 | Which file is named like X? | `find_files {"query":"readme"}` | `basemind code find readme` |
 | List files under a directory | `find_files {"path_prefix":"src/mcp/"}` | `basemind code files --path-prefix src/mcp/` |
 
@@ -42,7 +43,14 @@ symbol or span you need. Paths are repository-relative with forward slashes.
   `code-search` feature; without it the call is an error naming the feature.
 - `code_refs` matches the whole identifier: `bar` finds `Foo::bar()` and `bar()`, not `bar_baz()`.
   `match: "substring"` widens it. Each call site carries a `resolution` grade; see
-  `basemind manual resolution`.
+  `basemind manual resolution`. `ranges` answers the call sites as each file's merged read spans
+  (`{"<path>": {"ranges": [[start, end], ...], "hits": n}}`, every site widened by 5 lines), to pass
+  to `code_read` `ranges`.
+- `code_refs` with a `METHOD /path` name (`GET /users/:param`, any parameter syntax) lists the
+  HTTP calls with a literal URL that reach that route, graded `path_match`; with `path` pinning a
+  route symbol it lists that route's calls. `relation: "definition"` with the call's own
+  `METHOD /path` (its row's `callee`) and its `line` returns the route it reaches. A URL built from
+  variables is out of reach.
 - `code_refs` `importers` with `path` and no `name` walks the file-level import graph: the files
   importing that file, grouped `by_depth`, `depth` hops out (default 1, at most 5). `cycles` lists
   the import cycles, smallest first; with `path`, only that file's own. Both report per-language
@@ -50,10 +58,11 @@ symbol or span you need. Paths are repository-relative with forward slashes.
   no importers or no cycles. Type-only imports and Rust `mod` declarations are left out.
 - `find_files` covers code, documents and every other file git tracks; a query with one typo still
   finds its file. `min_lines` lists code files of at least that many lines, largest first.
-- `changed` on `code_grep`, `code_symbols` and `find_files` keeps only the files changed since a
-  revision, diffed against the working tree (`""` means `HEAD`: the uncommitted changes), or
-  between `A..B`. Append `+importers` to add the files importing them. The response counts the
-  files in scope as `scope_files`; an empty scope is a result, an unknown revision an error.
+- `changed` on `code_grep`, `code_symbols`, `code_refs` (call sites) and `find_files` keeps only
+  the files changed since a revision, diffed against the working tree (`""` means `HEAD`: the
+  uncommitted changes), or between `A..B`. Append `+importers` to add the files importing them.
+  The response counts the files in scope as `scope_files`; an empty scope is a result, an unknown
+  revision an error.
 
 ## Failures name their fix
 
