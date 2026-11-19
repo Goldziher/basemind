@@ -115,7 +115,8 @@ fn minimal_call(tool: &str) -> Option<(Value, Option<&'static str>)> {
         "find_files" => (json!({"query": "lib"}), Some("src/lib.rs")),
         "docs_search" => (json!({"query": "widget"}), Some("README.md")),
         "git_log" => (json!({}), Some("init")),
-        "git_blame" => (json!({"path": "src/lib.rs"}), Some("src/lib.rs")),
+        // A blame answer no longer echoes its path (ADR-0052): the fixture's one commit names it.
+        "git_blame" => (json!({"path": "src/lib.rs"}), Some("\"summary\":\"init\"")),
         "git_diff" => (json!({}), Some("is_clean")),
         "memory_save" => (json!({"key": "skew/probe", "value": "x"}), None),
         "memory_search" => (json!({"query": "probe"}), None),
