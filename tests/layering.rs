@@ -748,13 +748,7 @@ fn violations(root: &Path, modules: &[Module]) -> BTreeSet<String> {
         for item in &module.items {
             collector.visit_item(item);
         }
-        let file = module
-            .file
-            .strip_prefix(root)
-            .unwrap_or(&module.file)
-            .display()
-            .to_string()
-            .replace('\\', "/");
+        let file = repo_relative(root, &module.file);
         for raw in collector.refs {
             let tag = if raw.test { " [test]" } else { "" };
             let Some(absolute) = absolutize(module, &raw.segments) else {
@@ -777,6 +771,28 @@ fn violations(root: &Path, modules: &[Module]) -> BTreeSet<String> {
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// `file` relative to `root`, written with `/` whatever the platform, so a finding reads the same
+/// on Windows as the allowlists and expectations written here.
+fn repo_relative(root: &Path, file: &Path) -> String {
+    file.strip_prefix(root)
+        .unwrap_or(file)
+        .display()
+        .to_string()
+        .replace('\\', "/")
+}
+
+#[test]
+fn repo_relative_writes_windows_separators_as_slashes() {
+    assert_eq!(
+        repo_relative(Path::new("/repo"), Path::new(r"/repo/src\config\documents.rs")),
+        "src/config/documents.rs"
+    );
+    assert_eq!(
+        repo_relative(Path::new("/repo"), Path::new("/repo/src/data_root.rs")),
+        "src/data_root.rs"
+    );
 }
 
 #[test]
@@ -1412,12 +1428,7 @@ fn no_env_reads_below_root() {
         .filter(|m| !m.test && matches!(layer_of(&m.path), Some(Core | Retrieval | Engine)))
     {
         checked += 1;
-        let file = module
-            .file
-            .strip_prefix(&root)
-            .unwrap_or(&module.file)
-            .display()
-            .to_string();
+        let file = repo_relative(&root, &module.file);
         for read in env_reads(&module.items) {
             *found.entry(format!("{file} -> {read}")).or_default() += 1;
         }
