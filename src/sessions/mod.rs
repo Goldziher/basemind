@@ -21,7 +21,7 @@ pub mod contain;
 pub mod shell;
 pub mod tally;
 
-use std::io::{BufRead, BufReader};
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -397,15 +397,12 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
         transcripts.sort();
         let mut seen = Seen::default();
         for (_, file, filed_under) in transcripts {
-            let Ok(handle) = contain::open(&file) else {
+            let Ok(mut reader) = contain::reader(&file) else {
                 report.unreadable += 1;
                 continue;
             };
-            let id = file
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            match parser.parse(&mut BufReader::new(handle), scope, &mut seen) {
+            let id = contain::transcript_id(&file);
+            match parser.parse(&mut reader, scope, &mut seen) {
                 Outcome::Session(parsed) => entries.push(Entry {
                     host,
                     id,

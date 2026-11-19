@@ -418,6 +418,25 @@ fn relative_paths_resolve_against_the_sessions_working_directory() {
 }
 
 #[test]
+fn a_compressed_codex_rollout_is_read() {
+    let env = setup();
+    let day = env.home.join(".codex/sessions/2026/11/20");
+    let plain = day.join("rollout-z.jsonl");
+    place(&env, &env.repo, "codex/subdir.jsonl", &plain);
+    let text = std::fs::read(&plain).expect("read placed fixture");
+    std::fs::remove_file(&plain).expect("remove plain rollout");
+    // A corrupt one beside it is counted as unreadable, never dropped.
+    std::fs::write(day.join("rollout-y.jsonl.zst"), b"not zstd").expect("write corrupt rollout");
+    let compressed = zstd::encode_all(text.as_slice(), 3).expect("compress");
+    std::fs::write(day.join("rollout-z.jsonl.zst"), compressed).expect("write compressed rollout");
+    let report = report(&env, None);
+    let z = session(&report, "rollout-z");
+    assert_eq!(z.repeated_reads.len(), 1);
+    assert_eq!(z.counts.shell_search + z.counts.read_whole, 6);
+    assert_eq!(report.unreadable, 1, "the corrupt rollout");
+}
+
+#[test]
 fn a_fork_counts_only_what_it_did_after_the_fork() {
     let env = setup();
     let day = env.home.join(".codex/sessions/2026/11/20");

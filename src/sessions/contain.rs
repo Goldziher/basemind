@@ -3,7 +3,7 @@
 //! under its root, and a transcript is opened read-only without following a final symlink.
 
 use std::fs::File;
-use std::io;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// A transcript root as found.
@@ -36,7 +36,27 @@ pub fn open_root(path: &Path) -> RootState {
     RootState::Present(canonical)
 }
 
-/// The `*.jsonl` files a walk found, and how many entries it refused.
+/// Whether `path` names a transcript: `*.jsonl`, or `*.jsonl.zst` as Codex compresses a rollout it
+/// no longer writes to.
+pub fn is_transcript(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(COMPRESSED))
+}
+
+/// The suffix of a zstd-compressed transcript.
+pub const COMPRESSED: &str = ".jsonl.zst";
+
+/// A transcript's id: its file name without `.jsonl` or `.jsonl.zst`.
+pub fn transcript_id(path: &Path) -> String {
+    let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+    name.strip_suffix(COMPRESSED)
+        .or_else(|| name.strip_suffix(".jsonl"))
+        .unwrap_or(&name)
+        .to_owned()
+}
+
+/// The transcript files a walk found, and how many entries it refused.
 #[derive(Debug, Default)]
 pub struct Found {
     pub files: Vec<PathBuf>,
@@ -46,7 +66,7 @@ pub struct Found {
     pub refused: u64,
 }
 
-/// Collect the `*.jsonl` files under `dir` (inside `root`), descending at most `depth` levels and
+/// Collect the transcript files under `dir` (inside `root`), descending at most `depth` levels and
 /// following no symlink.
 pub fn walk(root: &Path, dir: &Path, depth: usize, found: &mut Found) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -63,7 +83,7 @@ pub fn walk(root: &Path, dir: &Path, depth: usize, found: &mut Found) {
             if depth > 0 {
                 walk(root, &path, depth - 1, found);
             }
-        } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
+        } else if kind.is_file() && is_transcript(&path) {
             match path.canonicalize() {
                 Ok(canonical) if canonical.starts_with(root) => found.files.push(canonical),
                 _ => found.refused += 1,
@@ -98,6 +118,18 @@ pub fn open(path: &Path) -> io::Result<File> {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a regular file"));
     }
     Ok(file)
+}
+
+/// Open a transcript ([`open`]) for reading lines, decompressing a `*.jsonl.zst` one. A compressed
+/// transcript that does not decode is an error here, not an empty transcript.
+pub fn reader(path: &Path) -> io::Result<Box<dyn BufRead>> {
+    let file = open(path)?;
+    if !path.to_string_lossy().ends_with(COMPRESSED) {
+        return Ok(Box::new(BufReader::new(file)));
+    }
+    let mut decoded = BufReader::new(zstd::stream::read::Decoder::new(file)?);
+    decoded.fill_buf()?;
+    Ok(Box::new(decoded))
 }
 
 #[cfg(test)]

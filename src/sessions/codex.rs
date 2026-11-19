@@ -1,4 +1,6 @@
-//! Codex transcripts: `~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl`.
+//! Codex transcripts: `~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl`, or `.jsonl.zst`
+//! once Codex has compressed a rollout it no longer writes to (`codex-rs/rollout` `compression.rs`);
+//! [`super::contain::reader`] decompresses those.
 //!
 //! The record shapes follow the `openai/codex` sources (`codex-rs/history` `RolloutLine` /
 //! `RolloutItem`, `codex-rs/protocol` `SessionMeta`, `ResponseItem`, `TokenCountEvent`). Each line is
