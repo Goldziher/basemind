@@ -1,0 +1,2 @@
+{"type":"user","cwd":"{{REPO}}/crates/core","version":"2.1.0","sessionId":"s7","timestamp":"2026-11-18T13:00:00.000Z","message":{"role":"user","content":"SECRET-SUBDIR-PROMPT"}}
+{"type":"assistant","cwd":"{{REPO}}/crates/core","version":"2.1.0","sessionId":"s7","timestamp":"2026-11-18T13:01:00.000Z","message":{"id":"d1","role":"assistant","content":[{"type":"tool_use","id":"d-t1","name":"Grep","input":{"pattern":"SECRET-SUBDIR"}}],"usage":{"output_tokens":3}}}

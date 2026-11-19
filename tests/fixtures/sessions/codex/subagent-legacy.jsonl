@@ -1,0 +1,6 @@
+{"timestamp":"2026-11-18T09:40:00.000Z","type":"session_meta","payload":{"session_id":"eeee","id":"legacy","parent_thread_id":"eeee","timestamp":"2026-11-18T09:40:00.000Z","cwd":"{{REPO}}","originator":"codex_cli_rs","cli_version":"0.169.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"eeee","depth":1,"agent_role":"worker"}}},"agent_nickname":"SECRET-NICKNAME","subagent_history_start_ordinal":4}}
+{"timestamp":"2026-11-17T09:20:00.000Z","type":"session_meta","payload":{"session_id":"eeee","id":"eeee","timestamp":"2026-11-17T09:20:00.000Z","cwd":"{{REPO}}","originator":"codex_cli_rs","cli_version":"0.169.0","source":"cli"}}
+{"timestamp":"2026-11-17T09:20:04.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"rg SECRET-LEGACY-INHERITED src\"}","call_id":"inherited-legacy"}}
+{"timestamp":"2026-11-17T09:20:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":999}}}}
+{"timestamp":"2026-11-18T09:40:01.000Z","type":"response_item","payload":{"type":"function_call","id":"fc_9","name":"exec_command","arguments":"{\"cmd\":\"grep -rn SECRET-SUBAGENT-PATTERN src\"}","call_id":"lg1"}}
+{"timestamp":"2026-11-18T09:40:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":7}}}}

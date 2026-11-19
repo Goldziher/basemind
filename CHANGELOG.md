@@ -132,6 +132,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or the tied routes under `ambiguous`.
 - An exact `code_refs` name no longer lists HTTP calls whose path ends in it: `GET /users/me` is not
   a call of `me`.
+- `basemind sessions` (CLI only, #128, ADR-0049): per-session counts of basemind calls against shell
+  searches, reads and edits from the local Claude Code and Codex transcripts of this repository and its
+  worktrees, counts and repository paths only. Sessions started in a subdirectory count, and subagents
+  (Claude Code's `subagents/` transcripts, Codex's subagent rollouts) are reported on their own and
+  attributed to their parent session. Codex rollouts are read in the current format, compressed ones
+  included: namespaced MCP calls, code-mode `exec` scripts and their nested tool calls, and exit status
+  from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
+  and relative paths are taken from the session's working directory. Sessions of a removed worktree
+  are not counted.
 
 ### Changed
 

@@ -3,7 +3,7 @@
 //! under its root, and a transcript is opened read-only without following a final symlink.
 
 use std::fs::File;
-use std::io;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// A transcript root as found.
@@ -36,15 +36,37 @@ pub fn open_root(path: &Path) -> RootState {
     RootState::Present(canonical)
 }
 
-/// The `*.jsonl` files a walk found, and how many entries it refused.
+/// Whether `path` names a transcript: `*.jsonl`, or `*.jsonl.zst` as Codex compresses a rollout it
+/// no longer writes to.
+pub fn is_transcript(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(COMPRESSED))
+}
+
+/// The suffix of a zstd-compressed transcript.
+pub const COMPRESSED: &str = ".jsonl.zst";
+
+/// A transcript's id: its file name without `.jsonl` or `.jsonl.zst`.
+pub fn transcript_id(path: &Path) -> String {
+    let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+    name.strip_suffix(COMPRESSED)
+        .or_else(|| name.strip_suffix(".jsonl"))
+        .unwrap_or(&name)
+        .to_owned()
+}
+
+/// The transcript files a walk found, and how many entries it refused.
 #[derive(Debug, Default)]
 pub struct Found {
     pub files: Vec<PathBuf>,
+    /// Subagent transcripts, each with the id of the session the host filed it under.
+    pub subagents: Vec<(PathBuf, String)>,
     /// Symlinks, and files that resolve outside their root.
     pub refused: u64,
 }
 
-/// Collect the `*.jsonl` files under `dir` (inside `root`), descending at most `depth` levels and
+/// Collect the transcript files under `dir` (inside `root`), descending at most `depth` levels and
 /// following no symlink.
 pub fn walk(root: &Path, dir: &Path, depth: usize, found: &mut Found) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -61,7 +83,7 @@ pub fn walk(root: &Path, dir: &Path, depth: usize, found: &mut Found) {
             if depth > 0 {
                 walk(root, &path, depth - 1, found);
             }
-        } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
+        } else if kind.is_file() && is_transcript(&path) {
             match path.canonicalize() {
                 Ok(canonical) if canonical.starts_with(root) => found.files.push(canonical),
                 _ => found.refused += 1,
@@ -98,9 +120,101 @@ pub fn open(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// The longest transcript line parsed. A longer one (a corrupt file, an inlined image) is skipped
+/// without being held in memory, and counted.
+pub const LINE_MAX: usize = 32 << 20;
+
+/// One line of a transcript.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Line {
+    /// The line's bytes are in the buffer, without the newline.
+    Read,
+    /// Blank.
+    Blank,
+    /// Longer than [`LINE_MAX`]: skipped.
+    TooLong,
+    /// The end of the transcript, or a read error.
+    End,
+}
+
+/// Read the next line into `buf`, holding at most [`LINE_MAX`] bytes of it.
+pub fn next_line(reader: &mut dyn BufRead, buf: &mut Vec<u8>) -> Line {
+    buf.clear();
+    let mut too_long = false;
+    let mut any = false;
+    loop {
+        let chunk = match reader.fill_buf() {
+            Ok([]) => break,
+            Ok(chunk) => chunk,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Line::End,
+        };
+        any = true;
+        let (take, done) = match memchr::memchr(b'\n', chunk) {
+            Some(at) => (at, at + 1),
+            None => (chunk.len(), chunk.len()),
+        };
+        if !too_long && buf.len() + take <= LINE_MAX {
+            buf.extend_from_slice(&chunk[..take]);
+        } else {
+            too_long = true;
+            buf.clear();
+        }
+        let ended = take < done;
+        reader.consume(done);
+        if ended {
+            break;
+        }
+    }
+    match (any, too_long) {
+        (false, _) => Line::End,
+        (true, true) => Line::TooLong,
+        (true, false) if buf.iter().all(u8::is_ascii_whitespace) => Line::Blank,
+        (true, false) => Line::Read,
+    }
+}
+
+/// Open a transcript ([`open`]) for reading lines, decompressing a `*.jsonl.zst` one. A compressed
+/// transcript that does not decode is an error here, not an empty transcript.
+pub fn reader(path: &Path) -> io::Result<Box<dyn BufRead>> {
+    let file = open(path)?;
+    if !path.to_string_lossy().ends_with(COMPRESSED) {
+        return Ok(Box::new(BufReader::new(file)));
+    }
+    let mut decoded = BufReader::new(zstd::stream::read::Decoder::new(file)?);
+    decoded.fill_buf()?;
+    Ok(Box::new(decoded))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_line_over_the_cap_is_skipped_and_the_next_one_read() {
+        let mut text = b"{}\n\n".to_vec();
+        text.extend(std::iter::repeat_n(b'x', LINE_MAX + 1));
+        text.extend_from_slice(b"\n{\"a\":1}");
+        let mut reader = io::BufReader::with_capacity(4096, text.as_slice());
+        let mut buf = Vec::new();
+        let mut lines = Vec::new();
+        loop {
+            let line = next_line(&mut reader, &mut buf);
+            if line == Line::End {
+                break;
+            }
+            lines.push((line, String::from_utf8_lossy(&buf).into_owned()));
+        }
+        assert_eq!(
+            lines,
+            vec![
+                (Line::Read, "{}".to_owned()),
+                (Line::Blank, String::new()),
+                (Line::TooLong, String::new()),
+                (Line::Read, r#"{"a":1}"#.to_owned()),
+            ]
+        );
+    }
 
     #[test]
     fn a_filesystem_root_is_refused_and_a_missing_root_is_missing() {

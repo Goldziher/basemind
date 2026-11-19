@@ -37,7 +37,7 @@ prints a one-line summary of the daemon's active workspaces for a shell prompt.
 | `basemind admin telemetry` | What was queried and the tokens saved, over `--window`. |
 | `basemind admin eval` | Score retrieval quality against a JSONL task file (`benchmarks/eval/`). |
 | `basemind admin tokens` | Count tokens in stdin with the o200k tokenizer. |
-| `basemind sessions` | Count basemind calls against shell searches in the local agent transcripts. |
+| `basemind sessions` | Count basemind calls against shell searches in the local agent transcripts, subagents included; a removed worktree's sessions are not counted. |
 | `basemind completions <shell>` | Print a shell completion script. |
 | `basemind man` | Print the man page (roff). |
 | `basemind manual [topic]` | Print this manual. |
