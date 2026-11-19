@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `basemind git hotspots [--since 90d] [--path P] [--limit N]` (CLI only, #134): the files a commit in
+  the window touched where two or more of commits, distinct authors, lines, symbols, the longest
+  function and importers are in their top 10%, as raw numbers with no score. The window ends at
+  HEAD's author time.
 - `[documents.dependencies]` (off by default): a full scan indexes the README, CHANGELOG and `docs/**`
   of the dependencies `Cargo.toml` + `Cargo.lock`, `package.json`, `pyproject.toml` + `uv.lock` /
   `poetry.lock` and `go.mod` name, under `deps/<ecosystem>/<name>@<version>/<file>`, so
