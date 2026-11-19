@@ -249,10 +249,13 @@ impl Default for CodeIntelConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AnalysisConfig {
-    /// Extra entry points of `basemind code deadcode`, as globs with the `[scan] include` syntax (a
-    /// bare name matches that path and everything beneath it): files a tool, a framework or a
-    /// loader runs by name, which no manifest or language convention declares. The reachability
-    /// walk starts from them too.
+    /// Extra entry points of `basemind code deadcode`, as globs with the `[scan] include` syntax: a
+    /// pattern with glob characters is used as written; a bare name without a slash (`main.py`)
+    /// matches a path segment of that name at any depth and everything beneath it; a bare path
+    /// with a slash (`tools/gen.py`) is anchored to the root. These are files a tool, a framework
+    /// or a loader runs by name, which no manifest or language convention declares: the walk starts
+    /// from them, a JS export in one counts as called, and a Python top-level name in one is at
+    /// most `low`. A pattern that matches no indexed code file is reported in the notes.
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub entry_points: Vec<String>,

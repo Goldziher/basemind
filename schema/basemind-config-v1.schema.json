@@ -342,7 +342,7 @@
       "type": "object",
       "properties": {
         "entry_points": {
-          "description": "Extra entry points of `basemind code deadcode`, as globs with the `[scan] include` syntax (a\nbare name matches that path and everything beneath it): files a tool, a framework or a\nloader runs by name, which no manifest or language convention declares. The reachability\nwalk starts from them too.",
+          "description": "Extra entry points of `basemind code deadcode`, as globs with the `[scan] include` syntax: a\npattern with glob characters is used as written; a bare name without a slash (`main.py`)\nmatches a path segment of that name at any depth and everything beneath it; a bare path\nwith a slash (`tools/gen.py`) is anchored to the root. These are files a tool, a framework\nor a loader runs by name, which no manifest or language convention declares: the walk starts\nfrom them, a JS export in one counts as called, and a Python top-level name in one is at\nmost `low`. A pattern that matches no indexed code file is reported in the notes.",
           "type": "array",
           "items": {
             "type": "string",

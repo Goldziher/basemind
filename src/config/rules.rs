@@ -53,9 +53,7 @@ pub fn compile_patterns<'a>(patterns: impl IntoIterator<Item = &'a str>) -> Resu
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
         if pattern.trim_start().starts_with('!') {
-            return Err(format!(
-                "{pattern:?}: negated patterns are not supported; list what to keep in `include` instead"
-            ));
+            return Err(format!("{pattern:?}: negated patterns are not supported"));
         }
         for expanded in expand_pattern(pattern) {
             let glob = Glob::new(&expanded).map_err(|e| format!("{pattern:?}: {e}"))?;
@@ -66,7 +64,8 @@ pub fn compile_patterns<'a>(patterns: impl IntoIterator<Item = &'a str>) -> Resu
 }
 
 /// Post-deserialization checks the JSON schema cannot express: non-empty `[scan] include`, valid
-/// globs in every list, and a well-formed `[languages]` table.
+/// globs in every list, no empty `[analysis] entry_points` pattern, and a well-formed `[languages]`
+/// table.
 pub fn validate(cfg: &ConfigV1) -> Result<(), String> {
     if cfg.scan.include.is_empty() {
         return Err(
@@ -86,8 +85,24 @@ pub fn validate(cfg: &ConfigV1) -> Result<(), String> {
         ("[code_search] embed_exclude", &cfg.code_search.embed_exclude),
         ("[analysis] entry_points", &cfg.analysis.entry_points),
     ];
+    if cfg
+        .analysis
+        .entry_points
+        .iter()
+        .any(|pattern| pattern.trim().is_empty())
+    {
+        return Err("[analysis] entry_points holds an empty pattern; remove it or name the entry files".to_string());
+    }
     for (name, list) in lists {
-        compile_patterns(list.iter().map(String::as_str)).map_err(|e| format!("invalid glob in {name}: {e}"))?;
+        compile_patterns(list.iter().map(String::as_str)).map_err(|e| {
+            let negated = list.iter().any(|pattern| pattern.trim_start().starts_with('!'));
+            let advice = match name {
+                _ if !negated => "",
+                "[analysis] entry_points" => "; list only the files to treat as entry points",
+                _ => "; list what to keep in `include` instead",
+            };
+            format!("invalid glob in {name}: {e}{advice}")
+        })?;
     }
     crate::lang_rules::LangRules::from_config(&cfg.languages)?;
     Ok(())
@@ -344,6 +359,27 @@ mod tests {
     fn negated_patterns_are_rejected_not_taken_literally() {
         let err = compile_patterns(["!foo"]).expect_err("negation");
         assert!(err.contains("negated"), "{err}");
+    }
+
+    #[test]
+    fn an_analysis_list_names_its_own_advice_and_refuses_an_empty_pattern() {
+        let mut cfg = ConfigV1::with_defaults();
+        cfg.analysis.entry_points = vec!["!tools/*.py".to_string()];
+        let err = validate(&cfg).expect_err("negation");
+        assert!(
+            err.contains("[analysis] entry_points") && err.contains("entry points") && !err.contains("`include`"),
+            "{err}"
+        );
+        cfg.scan.exclude = vec!["!vendor".to_string()];
+        cfg.analysis.entry_points = Vec::new();
+        let err = validate(&cfg).expect_err("negation");
+        assert!(err.contains("`include`"), "{err}");
+        cfg.scan.exclude = Vec::new();
+        cfg.analysis.entry_points = vec![String::new()];
+        let err = validate(&cfg).expect_err("empty");
+        assert!(err.contains("empty pattern"), "{err}");
+        cfg.analysis.entry_points = vec!["tools/*.py".to_string()];
+        validate(&cfg).expect("a valid list");
     }
 
     #[test]
