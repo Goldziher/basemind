@@ -679,3 +679,36 @@ fn a_locked_idle_group_is_kept() {
     assert_eq!(report.groups_evicted, 0, "{report:?}");
     assert!(group.join(crate::index::INDEX_DIR).exists());
 }
+
+/// Workspaces tied on last activity rank the same whatever order the directory listing gave them:
+/// the greatest path is protected as most recently used and the others are evicted in path order.
+#[test]
+fn a_tie_on_last_activity_ranks_by_path_whatever_the_listing_order() {
+    let activity = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let candidate = |key: &str| EvictionCandidate {
+        activity,
+        hot: false,
+        has_views: true,
+        protected: None,
+        dir: PathBuf::from("/cache/workspaces").join(key),
+    };
+    let ranked = |keys: &[&str]| {
+        let mut candidates: Vec<EvictionCandidate> = keys.iter().map(|key| candidate(key)).collect();
+        rank_candidates(&mut candidates, &[]);
+        candidates
+            .iter()
+            .map(|candidate| {
+                let key = candidate.dir.file_name().unwrap().to_string_lossy().into_owned();
+                (key, candidate.protected)
+            })
+            .collect::<Vec<_>>()
+    };
+    let expected = [
+        ("key-a".to_string(), None),
+        ("key-b".to_string(), None),
+        ("key-c".to_string(), Some(ProtectionReason::MostRecentlyUsed)),
+    ];
+    assert_eq!(ranked(&["key-a", "key-b", "key-c"]), expected);
+    assert_eq!(ranked(&["key-c", "key-b", "key-a"]), expected);
+    assert_eq!(ranked(&["key-b", "key-c", "key-a"]), expected);
+}

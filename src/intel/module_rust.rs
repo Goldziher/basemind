@@ -4,10 +4,14 @@
 //!   directory for `mod.rs` and crate roots, else `<dir>/<stem>/`), or to its `#[path]` file.
 //! - A `use` path starting with `crate::`, `self::`, `super::` or a module the file declares maps to
 //!   the longest prefix of it that is a module file under the crate root, the crate root being
-//!   found from the nearest `Cargo.toml` (`src/`, `src/bin/*`, `tests/*`, `examples/*`,
-//!   `benches/*`; a file in `tests/x/` belongs to `tests/x/main.rs`, else to `tests/x.rs`, which
-//!   loads it through `#[path]`). With no module file at all, the path names an item of the crate
-//!   root file.
+//!   found from the nearest `Cargo.toml`: a target `path` it declares (`[lib]`, `[[bin]]`,
+//!   `[[test]]`, `[[example]]`, `[[bench]]`, `package.build`), else Cargo's standard layout
+//!   (`src/lib.rs`, `src/main.rs`, `src/bin/*`, `tests/*`, `examples/*`, `benches/*`,
+//!   `build.rs`; a file in `tests/x/` belongs to `tests/x/main.rs`, else `tests/x/` is a module
+//!   shared by every crate in `tests/` that declares `mod x;`, and by `tests/x.rs`, which loads it
+//!   through `#[path]`). A file is a crate root only by that layout, never by its name: a
+//!   `src/foo/main.rs` below `src/lib.rs` is the module `foo::main`. With no module file at all,
+//!   the path names an item of the crate root file.
 //! - Anything else (`std::`, a dependency, `::x`) is external.
 //!
 //! Inline modules (`mod tests { … }`) are scopes inside one file: `use super::*` in one resolves to
@@ -27,18 +31,79 @@ struct CrateLayout {
     /// The crate root file's candidates in order; the first indexed one is the root. Probed only
     /// when a path falls back to the root, so editing `lib.rs` does not re-stitch the whole crate.
     roots: Vec<String>,
+    /// For a module directory `<top>/x/` that is no crate of its own (`tests/common/` without a
+    /// `main.rs`): `x`, the module the crates directly in `<top>/` load with `mod x;`.
+    shared: Option<String>,
 }
 
 impl CrateLayout {
+    /// A crate whose module paths start from `dir` and whose root is one of `roots`.
+    fn new(dir: String, roots: Vec<String>) -> Self {
+        Self {
+            dir,
+            roots,
+            shared: None,
+        }
+    }
+
     /// Whether `importer` is (a candidate for) the crate root file.
     fn is_root(&self, importer: &str) -> bool {
         self.roots.iter().any(|root| root == importer)
     }
 
-    /// The crate root file, when one is indexed.
-    fn root_file(&self, probe: &mut Probe<'_>) -> Option<String> {
-        self.roots.iter().find(|root| probe.indexed(root)).cloned()
+    /// The crate root files a path falling back to the root names: the first indexed root, or for a
+    /// shared module every crate including it.
+    ///
+    /// A shared module such as `tests/common/mod.rs` belongs to each test crate that declares
+    /// `mod common;`, so its `crate::` and `super::` paths name a module of each of them. A module
+    /// file below it resolves the same in all of them, since they share the directory; an item of
+    /// the crate root resolves to every including root, plus `tests/common.rs`, which conventionally
+    /// loads `tests/common/` through `#[path]`. The listing of `<top>/` is a probe, so a crate
+    /// added, removed or edited there re-stitches the module.
+    fn root_files(&self, probe: &mut Probe<'_>, includers: &mut AHashMap<String, Vec<String>>) -> Vec<String> {
+        let Some(name) = &self.shared else {
+            return self
+                .roots
+                .iter()
+                .find(|root| probe.indexed(root))
+                .cloned()
+                .into_iter()
+                .collect();
+        };
+        probe.probes.insert_dir(&self.dir);
+        let (root, indexed) = (probe.root, probe.indexed);
+        includers
+            .entry(join(&self.dir, name))
+            .or_insert_with(|| {
+                let mut files = including_crates(root, &self.dir, name, indexed);
+                files.extend(self.roots.iter().filter(|root| indexed(root)).cloned());
+                files.sort_unstable();
+                files.dedup();
+                files
+            })
+            .clone()
     }
+}
+
+/// The indexed `.rs` files directly in `dir` that declare `mod name;`.
+fn including_crates(root: &std::path::Path, dir: &str, name: &str, indexed: &dyn Fn(&str) -> bool) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(root.join(dir)) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|file| file.ends_with(".rs"))
+        .map(|file| join(dir, &file))
+        .filter(|rel| indexed(rel))
+        .filter(|rel| {
+            std::fs::read_to_string(root.join(rel)).is_ok_and(|source| {
+                tokens(&source)
+                    .windows(3)
+                    .any(|window| window == [Token::Ident("mod"), Token::Ident(name), Token::Semi])
+            })
+        })
+        .collect()
 }
 
 /// A module declared in the importer: its name and, for an inline one, its body's byte span.
@@ -49,10 +114,12 @@ struct DeclaredModule {
     inline: bool,
 }
 
-/// Rust module resolver. Caches which directories hold a `Cargo.toml`.
+/// Rust module resolver. Caches each `Cargo.toml` path's target root files (`None` when absent) and
+/// each shared module directory's including crates.
 #[derive(Default)]
 pub(crate) struct RustModules {
-    manifests: AHashMap<String, bool>,
+    manifests: AHashMap<String, Option<Vec<String>>>,
+    includers: AHashMap<String, Vec<String>>,
 }
 
 impl RustModules {
@@ -77,7 +144,12 @@ impl RustModules {
         let modules = declared_modules(symbols, source.as_deref());
         let layout = self.crate_layout(probe, importer);
         let file_scope = layout.as_ref().and_then(|layout| module_path(layout, importer));
-        let is_root = layout.as_ref().is_some_and(|layout| layout.is_root(importer));
+        // With no `Cargo.toml` there is no layout to read roots from (a `rustc` or Bazel crate), so
+        // a `lib.rs` or `main.rs` is then taken for the root its name suggests.
+        let is_root = match &layout {
+            Some(layout) => layout.is_root(importer),
+            None => matches!(importer.rsplit('/').next(), Some("lib.rs" | "main.rs")),
+        };
         let names: AHashSet<&str> = modules.iter().map(|module| module.name.as_str()).collect();
 
         let mut out = Vec::new();
@@ -109,7 +181,10 @@ impl RustModules {
             for path in use_paths(&import.raw) {
                 let target = match (&layout, &scope) {
                     _ if !is_internal(&path, &names) => ModuleTarget::External,
-                    (Some(layout), Some(scope)) => resolve_path(probe, layout, scope, &path, &names, importer),
+                    (Some(layout), Some(scope)) => {
+                        let includers = &mut self.includers;
+                        resolve_path(probe, includers, layout, scope, &path, &names, importer)
+                    }
                     _ => ModuleTarget::Unresolved,
                 };
                 out.push(ModuleImport {
@@ -123,55 +198,43 @@ impl RustModules {
         out
     }
 
-    /// The crate `importer` belongs to, from the nearest `Cargo.toml` above it.
+    /// The crate `importer` belongs to, from the nearest `Cargo.toml` above it: the target root it
+    /// is, else the standard-layout crate it falls in, unless a declared target root's directory
+    /// holds it more closely.
     fn crate_layout(&mut self, probe: &mut Probe<'_>, importer: &str) -> Option<CrateLayout> {
-        let manifest_dir = self.manifest_dir(probe, importer)?;
-        let rel = strip_dir(importer, &manifest_dir)?;
-        for top in ["src/bin", "tests", "examples", "benches"] {
-            let Some(rest) = rel.strip_prefix(top).and_then(|rest| rest.strip_prefix('/')) else {
-                continue;
-            };
-            let top_dir = join(&manifest_dir, top);
-            return Some(match rest.split_once('/') {
-                None => CrateLayout {
-                    dir: top_dir,
-                    roots: vec![importer.to_string()],
-                },
-                Some((target, _)) => {
-                    let dir = join(&top_dir, target);
-                    let roots = vec![join(&dir, "main.rs"), format!("{dir}.rs")];
-                    CrateLayout { dir, roots }
-                }
-            });
+        let (manifest_dir, targets) = self.manifest(probe, importer)?;
+        if targets.iter().any(|target| target == importer) {
+            return Some(CrateLayout::new(
+                parent_dir(importer).to_string(),
+                vec![importer.to_string()],
+            ));
         }
-        if rel.starts_with("src/") {
-            let dir = join(&manifest_dir, "src");
-            let roots = if rel == "src/main.rs" {
-                vec![importer.to_string()]
-            } else {
-                vec![join(&dir, "lib.rs"), join(&dir, "main.rs")]
-            };
-            return Some(CrateLayout { dir, roots });
+        let standard = standard_layout(probe, &manifest_dir, importer);
+        let declared = targets
+            .iter()
+            .filter(|target| strip_dir(importer, parent_dir(target)).is_some())
+            .max_by(|a, b| (parent_dir(a).len(), *a).cmp(&(parent_dir(b).len(), *b)));
+        match (standard, declared) {
+            (Some(standard), Some(target)) if parent_dir(target).len() <= standard.dir.len() => Some(standard),
+            (_, Some(target)) => Some(CrateLayout::new(parent_dir(target).to_string(), vec![target.clone()])),
+            (standard, None) => standard,
         }
-        (rel == "build.rs").then(|| CrateLayout {
-            dir: manifest_dir,
-            roots: vec![importer.to_string()],
-        })
     }
 
-    /// The directory of the nearest `Cargo.toml` above `importer`; every candidate is a probe.
-    fn manifest_dir(&mut self, probe: &mut Probe<'_>, importer: &str) -> Option<String> {
+    /// The directory of the nearest `Cargo.toml` above `importer` and the target root files it
+    /// declares; every candidate is a probe.
+    fn manifest(&mut self, probe: &mut Probe<'_>, importer: &str) -> Option<(String, Vec<String>)> {
         let mut dir = parent_dir(importer);
         loop {
             let manifest = join(dir, "Cargo.toml");
             probe.record(&manifest);
             let root = probe.root;
-            let present = *self
-                .manifests
-                .entry(manifest)
-                .or_insert_with_key(|manifest| root.join(manifest).is_file());
-            if present {
-                return Some(dir.to_string());
+            let targets = self.manifests.entry(manifest).or_insert_with_key(|manifest| {
+                let text = std::fs::read_to_string(root.join(manifest)).ok()?;
+                Some(cargo_targets(&text, parent_dir(manifest)))
+            });
+            if let Some(targets) = targets {
+                return Some((dir.to_string(), targets.clone()));
             }
             if dir.is_empty() {
                 return None;
@@ -179,6 +242,69 @@ impl RustModules {
             dir = parent_dir(dir);
         }
     }
+}
+
+/// The repo-relative root files of the targets a `Cargo.toml` in `manifest_dir` declares a `path`
+/// for. A manifest that does not parse declares none.
+fn cargo_targets(text: &str, manifest_dir: &str) -> Vec<String> {
+    let Ok(manifest) = toml::from_str::<toml::Table>(text) else {
+        return Vec::new();
+    };
+    fn path(target: &toml::Value) -> Option<&str> {
+        target.get("path").and_then(toml::Value::as_str)
+    }
+    let mut paths: Vec<&str> = Vec::new();
+    paths.extend(manifest.get("lib").and_then(path));
+    for kind in ["bin", "test", "example", "bench"] {
+        let targets = manifest.get(kind).and_then(toml::Value::as_array);
+        paths.extend(targets.into_iter().flatten().filter_map(path));
+    }
+    let build = manifest.get("package").and_then(|package| package.get("build"));
+    paths.extend(build.and_then(toml::Value::as_str));
+    paths
+        .into_iter()
+        .filter_map(|path| normalize(&join(manifest_dir, path)))
+        .collect()
+}
+
+/// The crate holding `importer` in Cargo's standard layout of the package in `manifest_dir`. A file
+/// in `tests/x/` (likewise `src/bin/`, `examples/`, `benches/`) belongs to the crate rooted at
+/// `tests/x/main.rs`, a probe, when there is one; else `tests/x/` is a module directory shared by
+/// the crates in `tests/` (see [`CrateLayout::root_files`]).
+fn standard_layout(probe: &mut Probe<'_>, manifest_dir: &str, importer: &str) -> Option<CrateLayout> {
+    let rel = strip_dir(importer, manifest_dir)?;
+    for top in ["src/bin", "tests", "examples", "benches"] {
+        let Some(rest) = rel.strip_prefix(top).and_then(|rest| rest.strip_prefix('/')) else {
+            continue;
+        };
+        let top_dir = join(manifest_dir, top);
+        return Some(match rest.split_once('/') {
+            None => CrateLayout::new(top_dir, vec![importer.to_string()]),
+            Some((target, _)) => {
+                let dir = join(&top_dir, target);
+                let main = join(&dir, "main.rs");
+                if probe.indexed(&main) {
+                    CrateLayout::new(dir, vec![main])
+                } else {
+                    CrateLayout {
+                        roots: vec![format!("{dir}.rs")],
+                        dir: top_dir,
+                        shared: Some(target.to_string()),
+                    }
+                }
+            }
+        });
+    }
+    if rel.starts_with("src/") {
+        let dir = join(manifest_dir, "src");
+        let roots = if rel == "src/main.rs" {
+            vec![importer.to_string()]
+        } else {
+            vec![join(&dir, "lib.rs"), join(&dir, "main.rs")]
+        };
+        return Some(CrateLayout::new(dir, roots));
+    }
+    (rel == "build.rs").then(|| CrateLayout::new(manifest_dir.to_string(), vec![importer.to_string()]))
 }
 
 /// Every module the file declares, in source order, inline ones with their body span. A `mod` item
@@ -242,7 +368,7 @@ fn declared_module_file(
     }
     let file = importer.rsplit('/').next().unwrap_or(importer);
     let mut base = match file.strip_suffix(".rs") {
-        Some(stem) if !matches!(file, "mod.rs" | "lib.rs" | "main.rs") && !is_root => join(dir, stem),
+        Some(stem) if file != "mod.rs" && !is_root => join(dir, stem),
         _ => dir.to_string(),
     };
     for name in inline {
@@ -313,9 +439,6 @@ fn module_path(layout: &CrateLayout, importer: &str) -> Option<Vec<String>> {
     if path.last().is_some_and(|last| last == "mod") {
         path.pop();
     }
-    if matches!(path.as_slice(), [only] if only == "lib" || only == "main") {
-        path.clear();
-    }
     Some(path)
 }
 
@@ -329,6 +452,7 @@ fn is_internal(path: &[String], declared: &AHashSet<&str>) -> bool {
 /// Resolve an internal `use` path seen in module `scope` to the longest module-file prefix.
 fn resolve_path(
     probe: &mut Probe<'_>,
+    includers: &mut AHashMap<String, Vec<String>>,
     layout: &CrateLayout,
     scope: &[String],
     path: &[String],
@@ -364,13 +488,14 @@ fn resolve_path(
             None => break,
         }
     }
-    if found.is_none() {
-        found = layout.root_file(probe);
-    }
-    match found {
-        Some(file) if file == importer => ModuleTarget::SelfFile,
-        Some(file) => ModuleTarget::Files(vec![file]),
-        None => ModuleTarget::Unresolved,
+    let found = match found {
+        Some(file) => vec![file],
+        None => layout.root_files(probe, includers),
+    };
+    match found.as_slice() {
+        [] => ModuleTarget::Unresolved,
+        [file] if file == importer => ModuleTarget::SelfFile,
+        _ => ModuleTarget::Files(found),
     }
 }
 
@@ -384,6 +509,7 @@ enum Token<'a> {
     CloseParen,
     Comma,
     Star,
+    Semi,
     Other,
 }
 
@@ -406,13 +532,14 @@ fn tokens(source: &str) -> Vec<Token<'_>> {
                 out.push(Token::PathSep);
                 at += 2;
             }
-            b'{' | b'}' | b'(' | b')' | b',' | b'*' => {
+            b'{' | b'}' | b'(' | b')' | b',' | b'*' | b';' => {
                 out.push(match byte {
                     b'{' => Token::Open,
                     b'}' => Token::Close,
                     b'(' => Token::OpenParen,
                     b')' => Token::CloseParen,
                     b',' => Token::Comma,
+                    b';' => Token::Semi,
                     _ => Token::Star,
                 });
                 at += 1;
@@ -521,279 +648,5 @@ fn use_tree(tokens: &[Token<'_>], at: &mut usize, mut prefix: Vec<String>, out: 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::intel::resolver::ProbeSet;
-
-    fn paths(raw: &str) -> Vec<String> {
-        use_paths(raw).into_iter().map(|path| path.join("::")).collect()
-    }
-
-    #[test]
-    fn use_trees_expand_to_leaf_paths() {
-        assert_eq!(paths("use crate::a::B;"), ["crate::a::B"]);
-        assert_eq!(
-            paths("pub(crate) use crate::a::{self, b::C as D, e::*, /* x */ f};"),
-            ["crate::a", "crate::a::b::C", "crate::a::e", "crate::a::f"]
-        );
-        assert_eq!(paths("use super::*;"), ["super"]);
-        assert_eq!(paths("use ::std::fmt;"), ["::std::fmt"]);
-        assert_eq!(
-            paths("use std::{fmt, io::{self, Read}};"),
-            ["std::fmt", "std::io", "std::io::Read"]
-        );
-        assert_eq!(paths("pub use r#async::run;"), ["async::run"]);
-        assert_eq!(paths("use a::b as _;"), ["a::b"]);
-        assert!(paths("extern crate foo;").is_empty());
-    }
-
-    #[test]
-    fn path_attribute_reads_the_attribute_above_a_module() {
-        let src = b"#[cfg(unix)]\n#[path = \"sys/unix.rs\"]\n// the platform layer\nmod sys;\n";
-        let at = src.windows(4).position(|w| w == b"mod ").unwrap();
-        assert_eq!(path_attribute(src, at).as_deref(), Some("sys/unix.rs"));
-        let plain = b"fn f() {}\nmod a;\n";
-        let at = plain.windows(4).position(|w| w == b"mod ").unwrap();
-        assert_eq!(path_attribute(plain, at), None);
-        assert_eq!(normalize("a/./b/../c.rs").as_deref(), Some("a/c.rs"));
-        assert_eq!(normalize("../x.rs"), None);
-    }
-
-    #[test]
-    fn module_paths_follow_the_crate_layout() {
-        let layout = CrateLayout {
-            dir: "core/src".to_string(),
-            roots: vec!["core/src/lib.rs".to_string(), "core/src/main.rs".to_string()],
-        };
-        assert_eq!(module_path(&layout, "core/src/lib.rs"), Some(vec![]));
-        assert_eq!(module_path(&layout, "core/src/main.rs"), Some(vec![]));
-        assert_eq!(module_path(&layout, "core/src/a/mod.rs"), Some(vec!["a".to_string()]));
-        assert_eq!(
-            module_path(&layout, "core/src/a/b.rs"),
-            Some(vec!["a".to_string(), "b".to_string()])
-        );
-        assert_eq!(module_path(&layout, "other/x.rs"), None);
-    }
-
-    fn symbol(name: &str, kind: SymbolKind, start: usize, end: usize) -> Symbol {
-        Symbol {
-            name: name.to_string(),
-            kind,
-            start_byte: start as u32,
-            end_byte: end as u32,
-            start_row: 0,
-            start_col: 0,
-            signature: None,
-            decorators: Vec::new(),
-        }
-    }
-
-    /// An outline of `source` with its `mod` items and `use`/`extern crate` declarations, found by
-    /// line, as the L1 extractor records them.
-    fn outline(source: &str) -> (Vec<Symbol>, Vec<Import>) {
-        let mut symbols = Vec::new();
-        let mut imports = Vec::new();
-        let mut offset = 0;
-        let mut open: Vec<(String, usize)> = Vec::new();
-        for line in source.split_inclusive('\n') {
-            let text = line.trim();
-            let start = offset + line.find(text).unwrap_or(0);
-            if let Some(rest) = text.strip_prefix("pub ").unwrap_or(text).strip_prefix("mod ") {
-                let name = rest.trim_end_matches([';', '{', ' ', '}']).to_string();
-                if text.ends_with([';', '}']) {
-                    symbols.push(symbol(&name, SymbolKind::Module, start, start + text.len()));
-                } else {
-                    open.push((name, start));
-                }
-            } else if text == "}" {
-                let (name, start) = open.pop().unwrap();
-                symbols.push(symbol(
-                    &name,
-                    SymbolKind::Module,
-                    start,
-                    offset + line.find('}').unwrap() + 1,
-                ));
-            } else if text.starts_with("use ") || text.starts_with("pub use ") {
-                imports.push(Import {
-                    module: None,
-                    raw: text.to_string(),
-                    start_byte: start as u32,
-                    end_byte: (start + text.len()) as u32,
-                });
-            } else if let Some(rest) = text.strip_prefix("extern crate ") {
-                imports.push(Import {
-                    module: Some(rest.trim_end_matches(';').split(' ').next().unwrap().to_string()),
-                    raw: text.to_string(),
-                    start_byte: start as u32,
-                    end_byte: (start + text.len()) as u32,
-                });
-            }
-            offset += line.len();
-        }
-        (symbols, imports)
-    }
-
-    /// Resolve `importer` in a repository holding `files` (all indexed) on disk.
-    fn resolve(files: &[(&str, &str)], importer: &str) -> (Vec<(String, ModuleTarget)>, ProbeSet) {
-        let dir = tempfile::tempdir().unwrap();
-        for (rel, body) in files {
-            let path = dir.path().join(rel);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, body).unwrap();
-        }
-        let indexed: AHashSet<String> = files
-            .iter()
-            .filter(|(rel, _)| rel.ends_with(".rs"))
-            .map(|(rel, _)| (*rel).to_string())
-            .collect();
-        let lookup = |rel: &str| indexed.contains(rel);
-        let source = files.iter().find(|(rel, _)| *rel == importer).unwrap().1;
-        let mut probes = ProbeSet::default();
-        let (symbols, imports) = outline(source);
-        let content_hash = crate::hashing::hex(&crate::hashing::hash_bytes(source.as_bytes()));
-        let imports = RustModules::default().resolve(
-            &mut Probe {
-                root: dir.path(),
-                indexed: &lookup,
-                probes: &mut probes,
-            },
-            importer,
-            &content_hash,
-            &symbols,
-            &imports,
-        );
-        let out = imports
-            .into_iter()
-            .map(|import| (import.specifier, import.target))
-            .collect();
-        (out, probes)
-    }
-
-    fn files(rels: &[&str]) -> ModuleTarget {
-        ModuleTarget::Files(rels.iter().map(|rel| (*rel).to_string()).collect())
-    }
-
-    const MANIFEST: &str = "[package]\nname = \"demo\"\n";
-
-    #[test]
-    fn mod_declarations_load_sibling_and_nested_module_files() {
-        let lib =
-            "mod a;\npub mod b;\nmod gone;\n#[path = \"sys/unix.rs\"]\nmod sys;\nmod inline {\n    mod deep;\n}\n";
-        let (resolved, probes) = resolve(
-            &[
-                ("Cargo.toml", MANIFEST),
-                ("src/lib.rs", lib),
-                ("src/a.rs", "mod c;\n"),
-                ("src/a/c.rs", ""),
-                ("src/b/mod.rs", ""),
-                ("src/sys/unix.rs", ""),
-                ("src/inline/deep.rs", ""),
-            ],
-            "src/lib.rs",
-        );
-        assert_eq!(
-            resolved,
-            [
-                ("mod a".to_string(), files(&["src/a.rs"])),
-                ("mod b".to_string(), files(&["src/b/mod.rs"])),
-                ("mod gone".to_string(), ModuleTarget::Unresolved),
-                ("mod sys".to_string(), files(&["src/sys/unix.rs"])),
-                ("mod deep".to_string(), files(&["src/inline/deep.rs"])),
-            ]
-        );
-        assert!(probes.contains("src/gone.rs") && probes.contains("src/gone/mod.rs"));
-        assert!(probes.contains("src/Cargo.toml") && probes.contains("Cargo.toml"));
-
-        let (resolved, _) = resolve(
-            &[("Cargo.toml", MANIFEST), ("src/a.rs", "mod c;\n"), ("src/a/c.rs", "")],
-            "src/a.rs",
-        );
-        assert_eq!(resolved, [("mod c".to_string(), files(&["src/a/c.rs"]))]);
-    }
-
-    #[test]
-    fn use_paths_resolve_to_the_longest_module_file() {
-        let b = "use crate::a::Thing;\nuse crate::a::c::{self, Deep};\nuse crate::Root;\nuse super::sibling::f;\n\
-                 use self::inner::g;\nuse std::fmt;\nuse serde::Serialize;\nextern crate alloc;\nmod inner;\n\
-                 mod tests {\n    use super::*;\n    use super::super::a::Thing;\n}\n";
-        let (resolved, _) = resolve(
-            &[
-                ("Cargo.toml", MANIFEST),
-                ("src/lib.rs", ""),
-                ("src/a.rs", ""),
-                ("src/a/c.rs", ""),
-                ("src/m/mod.rs", ""),
-                ("src/m/b.rs", b),
-                ("src/m/sibling.rs", ""),
-                ("src/m/b/inner.rs", ""),
-            ],
-            "src/m/b.rs",
-        );
-        assert_eq!(
-            resolved,
-            [
-                ("crate::a::Thing".to_string(), files(&["src/a.rs"])),
-                ("crate::a::c".to_string(), files(&["src/a/c.rs"])),
-                ("crate::a::c::Deep".to_string(), files(&["src/a/c.rs"])),
-                ("crate::Root".to_string(), files(&["src/lib.rs"])),
-                ("super::sibling::f".to_string(), files(&["src/m/sibling.rs"])),
-                ("self::inner::g".to_string(), files(&["src/m/b/inner.rs"])),
-                ("std::fmt".to_string(), ModuleTarget::External),
-                ("serde::Serialize".to_string(), ModuleTarget::External),
-                ("extern crate alloc".to_string(), ModuleTarget::External),
-                ("mod inner".to_string(), files(&["src/m/b/inner.rs"])),
-                ("super".to_string(), ModuleTarget::SelfFile),
-                ("super::super::a::Thing".to_string(), files(&["src/m/mod.rs"])),
-            ]
-        );
-    }
-
-    #[test]
-    fn crate_roots_cover_binaries_tests_and_a_missing_manifest() {
-        let (resolved, _) = resolve(
-            &[
-                ("tool/Cargo.toml", MANIFEST),
-                ("tool/src/bin/cli.rs", "mod args;\nuse crate::args::Args;\n"),
-                ("tool/src/bin/args.rs", ""),
-                ("tool/tests/it.rs", "mod common;\n"),
-                ("tool/tests/common/mod.rs", ""),
-            ],
-            "tool/src/bin/cli.rs",
-        );
-        assert_eq!(
-            resolved,
-            [
-                ("mod args".to_string(), files(&["tool/src/bin/args.rs"])),
-                ("crate::args::Args".to_string(), files(&["tool/src/bin/args.rs"])),
-            ]
-        );
-        let (resolved, _) = resolve(
-            &[
-                ("tool/Cargo.toml", MANIFEST),
-                ("tool/tests/it.rs", "mod common;\n"),
-                ("tool/tests/common/mod.rs", ""),
-            ],
-            "tool/tests/it.rs",
-        );
-        assert_eq!(
-            resolved,
-            [("mod common".to_string(), files(&["tool/tests/common/mod.rs"]))]
-        );
-
-        let (resolved, _) = resolve(
-            &[
-                ("Cargo.toml", MANIFEST),
-                (
-                    "tests/suite.rs",
-                    "#[path = \"suite/case.rs\"]\nmod case;\nfn shared() {}\n",
-                ),
-                ("tests/suite/case.rs", "use super::shared;\n"),
-            ],
-            "tests/suite/case.rs",
-        );
-        assert_eq!(resolved, [("super::shared".to_string(), files(&["tests/suite.rs"]))]);
-
-        let (resolved, _) = resolve(&[("loose/x.rs", "use crate::y::Z;\n")], "loose/x.rs");
-        assert_eq!(resolved, [("crate::y::Z".to_string(), ModuleTarget::Unresolved)]);
-    }
-}
+#[path = "module_rust_tests.rs"]
+mod tests;

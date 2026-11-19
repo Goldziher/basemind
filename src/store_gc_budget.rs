@@ -538,20 +538,28 @@ fn eviction_candidates(
             dir,
         });
     }
+    rank_candidates(&mut candidates, newer);
+    Ok(candidates)
+}
+
+/// Protect the most recently used workspace and order `candidates` for eviction, cold before hot,
+/// least recently used first. A tie on last activity is broken by the workspace path, so the
+/// outcome does not depend on the order the filesystem listed the workspaces in: the greatest path
+/// counts as the most recently used and is evicted last.
+fn rank_candidates(candidates: &mut [EvictionCandidate], newer: &[PathBuf]) {
     // The most recently used workspace across every worktree of every repo is always protected,
     // however old it is and whatever the grace window says.
     if let Some(mru) = candidates
         .iter()
         .filter(|candidate| candidate.has_views && !newer.contains(&candidate.dir))
-        .max_by_key(|candidate| candidate.activity)
+        .max_by(|a, b| (a.activity, &a.dir).cmp(&(b.activity, &b.dir)))
         .map(|candidate| candidate.dir.clone())
     {
         for candidate in candidates.iter_mut().filter(|candidate| candidate.dir == mru) {
             candidate.protected = Some(ProtectionReason::MostRecentlyUsed);
         }
     }
-    candidates.sort_by_key(|candidate| (candidate.hot, candidate.activity));
-    Ok(candidates)
+    candidates.sort_by(|a, b| (a.hot, a.activity, &a.dir).cmp(&(b.hot, b.activity, &b.dir)));
 }
 
 /// What became of a workspace picked for eviction.
