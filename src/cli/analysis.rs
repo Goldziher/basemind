@@ -49,7 +49,11 @@ pub(super) async fn call(tools: &Tools, cmd: AnalysisCmd) -> (&'static str, Resu
 pub(super) fn gate(cmd: &AnalysisCmd) -> Option<Gate> {
     match cmd {
         AnalysisCmd::Migration(cmd) => analysis_migration::gate(cmd),
-        AnalysisCmd::Deadcode(args) if args.fail_on_dead_code => Some(deadcode::fail_on_dead_code),
+        AnalysisCmd::Deadcode(args) if args.fail_on_dead_code => Some(if args.tier.is_some() {
+            deadcode::fail_on_listed
+        } else {
+            deadcode::fail_on_high
+        }),
         AnalysisCmd::Impact(_) | AnalysisCmd::Cycles(_) | AnalysisCmd::Deadcode(_) => None,
     }
 }

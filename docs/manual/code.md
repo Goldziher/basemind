@@ -78,15 +78,23 @@ These read the index (the daemon answers them when one runs) and have no MCP too
 - `basemind code deadcode` reports files no entry point reaches through the import graph,
   definitions whose name nothing else in the indexed code spells, and imports that resolve to
   nothing, each with a confidence tier (`high`, `medium`, `low`) and its reason, plus a coverage
-  note per language. Entry points are the build manifests' targets and each language's
-  conventions (tests, examples, benches, build scripts, `__main__`, Go `package main`, Java `main`),
-  plus the globs listed in `[analysis] entry_points` of `basemind.toml`;
-  exported names (Rust `pub` in a library, Go capitalised, a JS `export` a package publishes, Python
-  `__all__`) are never reported. A name spelled only in comments is `medium`, only in strings
-  `low`; dispatch, decorators and attributes lower a tier and say why. `--path` narrows to a file
-  or directory, `--kind files|symbols|imports` to one kind, `--tier` sets the lowest confidence
-  listed, `--limit` caps each list (default 100), and `--fail-on-dead-code` exits 1 when anything
-  is reported, for CI.
+  note per language. Entry points are the build manifests' targets, the `<script>`s of a package's
+  `index.html`, each language's conventions (tests, examples, benches, build scripts, `__main__`,
+  Go `package main`, Java `main` and JUnit tests, Django and Celery modules, framework routes) and
+  the globs listed in `[analysis] entry_points` of `basemind.toml`. Exported names are not reported:
+  Rust `pub` in a library crate, Go capitalised outside `package main`, a JS `export` a package's
+  `main`, `exports`, `source`, `module` or `types` reaches, Python names in `__all__`, Java
+  `public` and `protected`. Other exports are reported at a lowered tier: a JS `export` no package
+  publishes is at most `medium`, a public Python name in a module without `__all__` at most `low`,
+  and a Rust `pub` item of a binary crate is judged like any other. A name spelled only in comments
+  is `medium`, only in strings `low`; dispatch, decorators and attributes lower a tier and say why.
+  `--path` narrows to a file or directory, `--kind files|symbols|imports` to one kind, `--tier` sets
+  the lowest confidence listed, and `--limit` caps each list (default 100). `--fail-on-dead-code`
+  exits 1 for CI when a `high` finding is reported, or one at `--tier` when given: `low` means
+  "check before deleting", and most languages put live code there. A report that could not judge a
+  requested kind in full (the index is not ready, the resolve pass is unfinished, no import resolver
+  in this build, unreadable files) lists why under `incomplete`, and the gate exits 1 on it instead
+  of passing.
 - `basemind code migration check [name]` counts the remaining uses of the old forms each rule of
   `.basemind/migrations/<name>.toml` names (a `call`, `import`, `identifier` or `text` pattern),
   per rule and file, with the share migrated and the progress across runs; the history is kept in

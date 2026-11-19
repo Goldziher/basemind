@@ -1,7 +1,9 @@
 //! `basemind code deadcode` end to end: the built binary over a scanned Rust crate holding one of
 //! each finding, in text and `--json`, the `--tier`/`--kind` filters, the `--fail-on-dead-code`
-//! exit codes, `[analysis] entry_points`, a malformed request's usage exit, and what a build without
-//! an import resolver still reports.
+//! exit codes (`high` by default, the given tier otherwise, and a refusal to pass a report that
+//! judged nothing), `[analysis] entry_points`, a malformed request's usage exit, what a build
+//! without an import resolver still reports, and each language's export and entry rules over a
+//! repository of Go, TypeScript, Python, Java and Rust.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -34,7 +36,7 @@ struct Fixture {
     comms: tempfile::TempDir,
 }
 
-fn crate_with_dead_code() -> Fixture {
+fn fixture() -> Fixture {
     basemind::store::init_isolated_cache();
     let fixture = Fixture {
         repo: tempfile::tempdir().expect("tempdir"),
@@ -43,6 +45,21 @@ fn crate_with_dead_code() -> Fixture {
     let root = fixture.repo.path();
     git(root, &["init", "-q"]);
     git(root, &["config", "commit.gpgsign", "false"]);
+    fixture
+}
+
+/// Commit everything and scan.
+fn commit_and_scan(fixture: &Fixture) {
+    let root = fixture.repo.path();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "init"]);
+    let scan = basemind(fixture, &["scan", "--quiet"]);
+    assert!(scan.status.success(), "{}", String::from_utf8_lossy(&scan.stderr));
+}
+
+fn crate_with_dead_code() -> Fixture {
+    let fixture = fixture();
+    let root = fixture.repo.path();
     write(
         root,
         "Cargo.toml",
@@ -59,10 +76,7 @@ fn crate_with_dead_code() -> Fixture {
         "pub fn api() { live(); }\nfn live() {}\nfn never_named() {}\n",
     );
     write(root, "src/orphan.rs", "pub fn lost() {}\n");
-    git(root, &["add", "-A"]);
-    git(root, &["commit", "-qm", "init"]);
-    let scan = basemind(&fixture, &["scan", "--quiet"]);
-    assert!(scan.status.success(), "{}", String::from_utf8_lossy(&scan.stderr));
+    commit_and_scan(&fixture);
     fixture
 }
 
@@ -125,7 +139,36 @@ fn deadcode_reports_each_kind_with_its_tier_and_gates_ci() {
         "{}",
         String::from_utf8_lossy(&failing.stderr)
     );
-    assert!(String::from_utf8_lossy(&failing.stderr).contains("finding(s)"));
+    let stderr = String::from_utf8_lossy(&failing.stderr);
+    assert!(stderr.contains("2 finding(s) at or above tier `high`"), "{stderr}");
+    let only_low = basemind(
+        &fixture,
+        &["code", "deadcode", "--kind", "imports", "--fail-on-dead-code"],
+    );
+    assert_eq!(
+        only_low.status.code(),
+        Some(0),
+        "a bare gate ignores `low` (the Rust unresolved import): {}",
+        String::from_utf8_lossy(&only_low.stderr)
+    );
+    let at_low = basemind(
+        &fixture,
+        &[
+            "code",
+            "deadcode",
+            "--kind",
+            "imports",
+            "--tier",
+            "low",
+            "--fail-on-dead-code",
+        ],
+    );
+    assert_eq!(
+        at_low.status.code(),
+        Some(1),
+        "`--tier low` gates on `low`: {}",
+        String::from_utf8_lossy(&at_low.stderr)
+    );
     let clean = basemind(
         &fixture,
         &[
@@ -158,7 +201,8 @@ fn deadcode_reports_each_kind_with_its_tier_and_gates_ci() {
     );
 }
 
-/// Without a resolver the graph has no edges, so files and imports are not judged; symbols still are.
+/// Without a resolver the graph has no edges, so files and imports are not judged; symbols still are,
+/// and a gate over files or imports refuses to pass on a report that judged nothing.
 #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
 #[test]
 fn without_a_resolver_only_symbols_are_judged() {
@@ -183,13 +227,227 @@ fn without_a_resolver_only_symbols_are_judged() {
             .is_some_and(|note| note.contains("no import resolver")),
         "{report}"
     );
+    assert!(
+        report["incomplete"][0]
+            .as_str()
+            .is_some_and(|why| why.starts_with("files and imports: no indexed language has an import resolver")),
+        "{report}"
+    );
+
+    let files = basemind(
+        &fixture,
+        &["code", "deadcode", "--kind", "files", "--fail-on-dead-code"],
+    );
+    let stderr = String::from_utf8_lossy(&files.stderr);
+    assert_eq!(files.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("the report is incomplete, so the gate judged nothing") && stderr.contains("--kind symbols"),
+        "{stderr}"
+    );
+    let symbols = basemind(
+        &fixture,
+        &["code", "deadcode", "--kind", "symbols", "--fail-on-dead-code"],
+    );
+    let stderr = String::from_utf8_lossy(&symbols.stderr);
+    assert_eq!(symbols.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("1 finding(s)"), "symbols alone are judged: {stderr}");
 }
 
 #[test]
 fn a_malformed_request_exits_with_a_usage_error() {
     let fixture = crate_with_dead_code();
-    let zero = basemind(&fixture, &["code", "deadcode", "--limit", "0"]);
-    assert_eq!(zero.status.code(), Some(2), "{}", String::from_utf8_lossy(&zero.stderr));
+    // The engine refuses a `limit` out of range (clap takes any `u32`).
+    for limit in ["0", "10001"] {
+        let refused = basemind(&fixture, &["code", "deadcode", "--limit", limit]);
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert_eq!(refused.status.code(), Some(2), "{stderr}");
+        assert!(
+            stderr.contains("`limit` is 1 to 10000"),
+            "the engine's refusal: {stderr}"
+        );
+    }
+    // clap refuses an unknown tier before the engine sees it.
     let unknown = basemind(&fixture, &["code", "deadcode", "--tier", "certain"]);
     assert_eq!(unknown.status.code(), Some(2));
+}
+
+/// One repository per language rule: a Go module with `internal/`, a Vite TypeScript package with
+/// `exports`, a script and root-relative and query-suffixed imports, a Python package with
+/// `__all__` and a console script, a JUnit 5 test class, and a tokio-style crate that declares a
+/// module inside a macro and `include!`s a file.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+fn polyglot() -> Fixture {
+    let fixture = fixture();
+    let root = fixture.repo.path();
+    write(root, "go.mod", "module example.com/m\n\ngo 1.22\n");
+    write(
+        root,
+        "cmd/tool/main.go",
+        "package main\n\nimport \"example.com/m/internal/used\"\n\nfunc main() { used.Used() }\n",
+    );
+    write(
+        root,
+        "internal/used/u.go",
+        "package used\n\nfunc Used() {}\n\nfunc stale() {}\n",
+    );
+    write(root, "internal/dead/d.go", "package dead\n\nfunc Gone() {}\n");
+
+    write(
+        root,
+        "web/package.json",
+        r#"{ "name": "web", "exports": { ".": "./src/index.ts" }, "scripts": { "gen": "node tools/gen.js" } }"#,
+    );
+    write(
+        root,
+        "web/index.html",
+        "<html><body><script type=\"module\" src=\"/src/main.tsx\"></script></body></html>\n",
+    );
+    write(root, "web/public/vite.svg", "<svg/>\n");
+    write(root, "web/src/icon.svg", "<svg/>\n");
+    write(root, "web/src/index.ts", "export function api() { return 1; }\n");
+    write(
+        root,
+        "web/src/main.tsx",
+        "import viteLogo from '/vite.svg';\nimport Icon from './icon.svg?react';\nimport { shown } from './extra';\n\
+         const url = `https://x/${shown()}`;\nconsole.log(viteLogo, Icon, url);\n",
+    );
+    write(
+        root,
+        "web/src/extra.ts",
+        "export function shown() { return 'a'; }\nexport function spare() { return 'b'; }\n",
+    );
+    write(root, "web/tools/gen.js", "console.log('gen');\n");
+
+    write(
+        root,
+        "pyproject.toml",
+        "[project]\nname = \"pkg\"\nversion = \"0.1.0\"\n\n[project.scripts]\ntool = \"pkg.cli:run\"\n",
+    );
+    write(root, "pkg/__init__.py", "from .api import load\n");
+    write(root, "pkg/cli.py", "def run():\n    print('run')\n");
+    write(
+        root,
+        "pkg/api.py",
+        "__all__ = [\"load\"]\n\n\ndef load():\n    return 1\n\n\ndef _unused():\n    return 2\n",
+    );
+
+    write(
+        root,
+        "src/test/java/com/acme/OrderServiceTest.java",
+        "package com.acme;\n\nimport org.junit.jupiter.api.Test;\n\nclass OrderServiceTest {\n    @Test\n    void placesAnOrder() {}\n}\n",
+    );
+
+    write(root, "Cargo.toml", "[package]\nname = \"rt\"\nversion = \"0.1.0\"\n");
+    write(
+        root,
+        "src/lib.rs",
+        "macro_rules! cfg_rt {\n    ($($item:item)*) => { $($item)* }\n}\n\ncfg_rt! {\n    pub mod runtime;\n}\n\n\
+         include!(\"gen/table.rs\");\n",
+    );
+    write(root, "src/runtime.rs", "pub fn spawn() {}\n");
+    write(root, "src/gen/table.rs", "pub const TABLE: [u8; 1] = [0];\n");
+    commit_and_scan(&fixture);
+    fixture
+}
+
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[test]
+fn each_language_rule_holds_on_a_polyglot_repository() {
+    let fixture = polyglot();
+    let report = json(&fixture, &["code", "deadcode", "--limit", "10000"]);
+    let listed = |kind: &str, key: &str| -> Vec<(String, String)> {
+        report[kind]
+            .as_array()
+            .unwrap_or_else(|| panic!("{kind}: {report}"))
+            .iter()
+            .map(|f| {
+                (
+                    f[key].as_str().unwrap_or_default().to_string(),
+                    f["tier"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    };
+    let files = listed("files", "path");
+    let symbols = listed("symbols", "name");
+    let imports = listed("imports", "specifier");
+    let tier_of =
+        |found: &[(String, String)], key: &str| found.iter().find(|(k, _)| k == key).map(|(_, tier)| tier.clone());
+
+    // The check fired: what is dead in each language is found.
+    assert_eq!(
+        tier_of(&files, "internal/dead/d.go").as_deref(),
+        Some("high"),
+        "{report}"
+    );
+    assert_eq!(tier_of(&symbols, "stale").as_deref(), Some("high"), "{report}");
+    assert_eq!(tier_of(&symbols, "_unused").as_deref(), Some("high"), "{report}");
+    assert_eq!(
+        tier_of(&symbols, "spare").as_deref(),
+        Some("medium"),
+        "an export no package publishes: {report}"
+    );
+
+    // Live code in each language is never `high`.
+    for (path, tier) in &files {
+        assert!(
+            path == "internal/dead/d.go" || tier != "high",
+            "{path} is reached or declared out of the resolver's sight: {report}"
+        );
+    }
+    assert_ne!(
+        tier_of(&files, "src/runtime.rs").as_deref(),
+        Some("high"),
+        "declared by `mod` inside a macro: {report}"
+    );
+    assert_eq!(
+        tier_of(&files, "src/gen/table.rs").as_deref(),
+        Some("low"),
+        "`include!`d, which the resolver does not follow: {report}"
+    );
+    for live in ["web/tools/gen.js", "web/src/main.tsx", "web/src/extra.ts", "pkg/cli.py"] {
+        assert_eq!(tier_of(&files, live), None, "{live} is an entry or reached: {report}");
+    }
+    for live in [
+        "Used",
+        "api",
+        "shown",
+        "run",
+        "load",
+        "OrderServiceTest",
+        "placesAnOrder",
+        "spawn",
+    ] {
+        assert_eq!(
+            tier_of(&symbols, live),
+            None,
+            "{live} is used, exported or an entry: {report}"
+        );
+    }
+    for live in ["/vite.svg", "./icon.svg?react"] {
+        assert_eq!(tier_of(&imports, live), None, "{live} names a file on disk: {report}");
+    }
+    assert!(report["incomplete"].is_null(), "{report}");
+
+    // `web/` holds only a `medium` finding: a bare gate passes, `--tier medium` fails.
+    let web = basemind(&fixture, &["code", "deadcode", "--path", "web", "--fail-on-dead-code"]);
+    assert_eq!(web.status.code(), Some(0), "{}", String::from_utf8_lossy(&web.stderr));
+    let medium = basemind(
+        &fixture,
+        &[
+            "code",
+            "deadcode",
+            "--path",
+            "web",
+            "--tier",
+            "medium",
+            "--fail-on-dead-code",
+        ],
+    );
+    assert_eq!(
+        medium.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&medium.stderr)
+    );
 }
