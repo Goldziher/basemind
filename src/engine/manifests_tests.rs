@@ -140,13 +140,13 @@ fn package_json_reads_main_bin_exports_scripts_and_workspaces() {
   "main": "./dist/index.js",
   "bin": { "webctl": "bin/cli.js" },
   "exports": { ".": { "import": "./src/index.mjs", "require": "./dist/index.js" }, "./feature/*": "./src/feature/*.js" },
-  "scripts": { "build": "tsc", "test": "vitest" },
+  "scripts": { "build": "tsc", "test": "vitest", "postinstall": "node install.js && echo ok" },
   "workspaces": { "packages": ["packages/*"] },
   "dependencies": { "react": "^18", "zod": "^3" },
   "devDependencies": { "vitest": "^1" },
   "peerDependencies": { "react-dom": "^18" }
 }"#;
-    let files = ["web/bin/cli.js", "web/src/index.mjs"];
+    let files = ["web/bin/cli.js", "web/install.js", "web/src/index.mjs"];
     let m = parse_with("web/package.json", text, &files, &BTreeMap::new());
     assert_eq!(m.name.as_deref(), Some("web"));
     assert_eq!(m.members, ["packages/*"]);
@@ -160,6 +160,7 @@ fn package_json_reads_main_bin_exports_scripts_and_workspaces() {
             (TargetKind::Export, None, None),
             (TargetKind::Export, None, Some("web/src/index.mjs".into())),
             (TargetKind::Script, Some("build"), None),
+            (TargetKind::Script, Some("postinstall"), Some("web/install.js".into())),
             (TargetKind::Script, Some("test"), None),
         ],
         "an unindexed `main` (a build output) is declared but not resolved; a glob export is skipped"

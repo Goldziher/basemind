@@ -529,11 +529,20 @@ fn npm(path: &str, dir: &str, text: &str, files: &FileSet<'_>) -> Result<Manifes
     for export in exports.into_iter().take(EXPORTS_MAX) {
         m.targets.push(file_target(TargetKind::Export, None, &export));
     }
+    let scripts = json.get("scripts").and_then(serde_json::Value::as_object);
     for script in json_keys(json.get("scripts")) {
+        let command = scripts
+            .and_then(|scripts| scripts.get(&script))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        // The first word of the command that names an indexed file: `node install.js`.
+        let path = command
+            .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|'))
+            .find_map(|word| files.indexed(dir, word));
         m.targets.push(Target {
             kind: TargetKind::Script,
             name: Some(script),
-            path: None,
+            path,
         });
     }
     Ok(m)
