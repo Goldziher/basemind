@@ -296,13 +296,28 @@ fn default_log_directive(verbosity: Verbosity) -> &'static str {
 #[global_allocator]
 static GLOBAL: basemind::allocator::MiMalloc = basemind::allocator::MiMalloc;
 
+/// Stack of the thread every command runs on, the main-thread size Linux and macOS give.
+///
+/// The main thread's stack is the one the platform picks (1 MiB on Windows, 8 MiB on Linux and
+/// macOS); every thread Rust spawns gets an explicit size. Clap's derive builds the whole command
+/// tree in nested generated functions whose unoptimized frames grow by kilobytes per flag (about
+/// 1 MiB in a debug build), so on the main thread Windows overflowed where Unix had room. Running
+/// on a sized thread gives every platform the same stack.
+const CLI_STACK_SIZE: usize = 8 * 1024 * 1024;
+
 /// Exit-code contract: see [`basemind::cli::exit`].
 fn main() -> std::process::ExitCode {
     // First, before argument parsing, logging or the runtime: a lead seals itself so no process of
     // the same user can write requests into its stdin through /proc in the meantime.
     #[cfg(all(feature = "comms", unix))]
     serve_lead::seal_if_lead();
-    match run() {
+    let outcome = std::thread::Builder::new()
+        .name("basemind-cli".to_owned())
+        .stack_size(CLI_STACK_SIZE)
+        .spawn(run)
+        .map_err(|error| anyhow::Error::new(error).context("start the command thread"))
+        .and_then(|cli| cli.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)));
+    match outcome {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Error: {}", basemind::cli::exit::render(&error));
