@@ -250,7 +250,6 @@ async fn stop_is_refused_while_a_forwarded_rescan_is_running() {
 /// daemon in the middle of a first build's write to `git-history.fjall/`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hosted_git_history_sync_pins_the_daemon() {
-    const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
     const POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
     crate::store::init_isolated_cache();
@@ -285,27 +284,26 @@ async fn a_hosted_git_history_sync_pins_the_daemon() {
         .serve_conn(root, broker.hosted_history())
         .await
         .expect("hosted stack");
+    // The stack requests its sync, and takes the pin, before `serve_conn` returns; the build lock
+    // keeps the sync from ending.
     let syncing = Arc::clone(&served.workspace.history_syncing);
-    let pinned = tokio::time::timeout(WAIT, async {
-        while broker.work_inflight() == 0 {
-            tokio::time::sleep(POLL).await;
-        }
-    })
-    .await;
     assert!(
         syncing.load(Ordering::Acquire),
         "the stack's sync waits on the build lock"
     );
-    assert!(pinned.is_ok(), "the waiting sync pins the daemon");
+    assert_eq!(broker.work_inflight(), 1, "the waiting sync pins the daemon");
 
     drop(release_tx);
     building.join().expect("lock holder");
-    tokio::time::timeout(WAIT, async {
-        while syncing.load(Ordering::Acquire) || broker.work_inflight() != 0 {
-            tokio::time::sleep(POLL).await;
-        }
-    })
-    .await
-    .expect("the pin is released when the sync ends");
+    // No deadline: the sync's walk and compaction share a process-wide pool and the disk with every
+    // other test, so how long it takes says nothing about the pin. ~keep
+    while syncing.load(Ordering::Acquire) {
+        tokio::time::sleep(POLL).await;
+    }
+    assert_eq!(
+        broker.work_inflight(),
+        0,
+        "the pin is released by the time the sync is seen finished"
+    );
     drop((served, conn));
 }

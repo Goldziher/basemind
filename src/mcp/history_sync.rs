@@ -50,6 +50,8 @@ pub(super) fn request(shared: &Workspace) {
     let history_dir = crate::git_history::shared_history_basemind_dir(&shared.root);
     let pin = shared.work_pin.as_ref().map(|pin| pin());
     runtime.spawn_blocking(move || {
+        // Locals drop in reverse: the pin is released before the flag clears, so a sync seen finished
+        // no longer holds the daemon. ~keep
         let _syncing = syncing;
         let _pin = pin;
         match crate::git_history::builder::sync(&git_history, &repo, &history_dir) {
