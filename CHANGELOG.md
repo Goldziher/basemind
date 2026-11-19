@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `basemind overview` (#131, CLI only, answered by the daemon): languages with file and line counts,
+  top-level directories, build manifests (`Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`,
+  `pom.xml`, `build.gradle`) with their dependencies and declared entry points, the largest and most
+  imported files, HTTP routes, naming conventions per language and the latest commits; `--sections`
+  picks sections and `--limit` bounds each list. `index_status` gains `most_imported`, the five files
+  with the most runtime importers (ADR-0047).
 - `[documents.dependencies]` (off by default): a full scan indexes the README, CHANGELOG and `docs/**`
   of the dependencies `Cargo.toml` + `Cargo.lock`, `package.json`, `pyproject.toml` + `uv.lock` /
   `poetry.lock` and `go.mod` name, under `deps/<ecosystem>/<name>@<version>/<file>`, so

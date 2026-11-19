@@ -89,6 +89,10 @@ pub(crate) struct StatusResponse {
     /// Code files too long to read whole. Absent while a writer holds the store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub large_files: Option<LargeFiles>,
+    /// The files most others import (runtime imports; at most five). Absent when no import
+    /// resolver placed an edge, or while a writer holds the store.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub most_imported: Vec<crate::engine::types::overview::ImportedFile>,
     /// basemind's cache directory for this workspace: its index views, git cache and telemetry.
     pub cache_dir: String,
     /// The tree-sitter grammar cache, which the language pack owns and other tools share.

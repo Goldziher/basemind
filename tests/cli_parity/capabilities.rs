@@ -265,6 +265,10 @@ pub fn table() -> Vec<Row> {
             "reads the operator's local agent transcripts in the CLI process; kept off MCP and the daemon (ADR-0049)",
         ),
         cli_only(
+            "overview",
+            "repository shape report; a CLI command answered by the daemon, no verb tool (ADR-0047)",
+        ),
+        cli_only(
             "admin eval",
             "offline evaluation harness over a JSONL task file; drives the tools rather than being one",
         ),
