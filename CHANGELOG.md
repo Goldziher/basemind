@@ -144,6 +144,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
+  list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
+  `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`
+  groups them; the other three are [TOON](https://toonformat.dev), which writes a list of objects
+  as one table. Every other tool keeps JSON, which TOON did not shorten on the value-gate corpora;
+  `structuredContent` and `--json` stay JSON everywhere. Median answer, JSON to now (basemind /
+  tokio): `grep` 44 / 58 to 39 / 53 tokens, `grep_changed` 50 / 79 to 47 / 74, `read_around` 366 /
+  249 to 340 / 231 (1.31x / 1.52x to 1.43x / 1.61x against `rg -n -C5`), `outline` 875 / 500 to
+  669 / 359, `diff` 401 / 219 to 381 / 209, `diff_structural` 133 / 84 to 114 / 74, `find` 12 / 14
+  to 11 / 13, with recall unchanged. `max_tokens` charges what each tool writes. `admin eval`
+  scores the text block (`basemind::wire::decode`); an answer it cannot read is a task error. The
+  `toon-format` crate (MIT, without its CLI feature) encodes and decodes TOON.
+
 - **BREAKING:** `code_symbols`, `code_grep`, `find_files`, `git_log`, `git_blame` and `code_refs`
   (importers) answer with rows as the shell prints them (ADR-0052, amending ADR-0034): a `code_symbols`
   row is `"<path>:<line>: <signature>"`, `code_grep` hits are

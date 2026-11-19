@@ -298,6 +298,23 @@ against every parent, as `git log --cc` does; so `git_log {path}` no longer list
 the path unchanged from one side. It still lists every other commit that changed the path: unlike
 `git log -- <path>`, it prunes no side of a merge.
 
+### Text answers
+
+A tool's MCP text block is no longer always the JSON of its answer (ADR-0053). `structuredContent`
+and the CLI's `--json` output stay JSON for every tool, with the shapes above.
+
+| Tool | Text block |
+| --- | --- |
+| `code_grep` (rows) | the other fields as `key: value` lines, then `# <path>`, `## <symbol>` (bare `##`: outside every symbol) and the rows as `"<line>: <text>"` rows read without the quotes; rows before any symbol header are outside every symbol |
+| `code_outline`, `git_diff`, `find_files` (a list) | [TOON](https://toonformat.dev): `key: value` lines, a list of flat objects as a table `name[N]{field,...}:` with one comma-separated row each, a list of scalars inline `name[N]: a,b` |
+| every other tool, `code_grep` with `ranges`, `find_files` with `min_lines` | compact JSON, as before |
+
+A client that parsed the text block as JSON reads `structuredContent` instead, or decodes the text
+with `basemind::wire::decode` (Rust) or a TOON decoder plus the `code_grep` header rules. A path or
+symbol in a `code_grep` header is a JSON string when it starts with `"`, has leading or trailing
+whitespace or holds a control character. The token budget (`max_tokens`) charges the encoding the
+tool writes, so a budgeted page of these tools holds more rows than before.
+
 ## Upgrading to agent comms v2 (ADR-0021)
 
 The `agents` MCP tool and the `basemind agents` CLI group are removed in the same release, with no

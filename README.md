@@ -711,6 +711,17 @@ instead of nudge.
 </details>
 
 <details>
+<summary><strong>How answers are written</strong></summary>
+
+Each tool's text answer is written in the form that measured fewest tokens on the value-gate
+corpora ([ADR-0053](docs/adr/0053-text-answers-encoded-per-tool.md)): `code_grep` rows under
+`# <path>` and `## <symbol>` headers, as `rg --heading` groups them; `code_outline`, `git_diff` and a
+`find_files` list as [TOON](https://toonformat.dev) tables; compact JSON for the rest. MCP
+`structuredContent` and the CLI's `--json` are JSON for every tool.
+
+</details>
+
+<details>
 <summary><strong>Measure it on your own repo</strong></summary>
 
 `basemind admin eval` runs a task file of lookups through the same code the MCP tools use, scores
