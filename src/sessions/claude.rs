@@ -25,7 +25,7 @@ use serde_json::Value;
 use super::contain::{self, Found};
 use super::shell;
 use super::tally::{Call, Family};
-use super::{Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_tool, major, widen};
+use super::{Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_tool, version_check, widen};
 
 /// The `version` majors whose record shape this parser was written against.
 pub const SUPPORTED_MAJORS: &[u64] = &[1, 2];
@@ -180,13 +180,15 @@ impl TranscriptParser for Claude {
             };
             if !version_seen && let Some(version) = &record.version {
                 version_seen = true;
-                if !major(version).is_some_and(|m| SUPPORTED_MAJORS.contains(&m)) {
-                    return Outcome::Unsupported {
-                        reason: format!("unknown version {version}"),
-                        attributed: true,
-                    };
+                match version_check(version, SUPPORTED_MAJORS, "version") {
+                    Ok(printable) => session.format_version = printable,
+                    Err(reason) => {
+                        return Outcome::Unsupported {
+                            reason,
+                            attributed: true,
+                        };
+                    }
                 }
-                session.format_version = Some(version.clone());
             }
             if let Some(timestamp) = &record.timestamp {
                 widen(&mut session.started, &mut session.ended, timestamp);

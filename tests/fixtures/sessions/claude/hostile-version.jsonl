@@ -1,0 +1,2 @@
+{"type":"user","cwd":"{{REPO}}","version":"2.1.0-SECRET-VERSION\u001b]0;SECRET-TITLE\u0007","sessionId":"s12","timestamp":"2026-11-18T15:00:00.000Z","message":{"role":"user","content":"SECRET-HOSTILE-PROMPT"}}
+{"type":"assistant","cwd":"{{REPO}}","version":"2.1.0-SECRET-VERSION\u001b]0;SECRET-TITLE\u0007","sessionId":"s12","timestamp":"2026-11-18T15:01:00.000Z","message":{"id":"h1","role":"assistant","content":[{"type":"tool_use","id":"h-t1","name":"Grep","input":{"pattern":"SECRET-HOSTILE"}}],"usage":{"output_tokens":2}}}

@@ -467,6 +467,12 @@ pub fn collect(roots: &SessionRoots, scope: &Scope, since: Option<&str>) -> Repo
         }
     }
     attribute(&mut report, &threads, &subagent_threads);
+    // An attributed subagent shows its session's file name; any other names a transcript string.
+    for subagent in report.subagents.iter_mut().filter(|s| !s.attributed) {
+        if token(&subagent.parent, ID_MAX).is_none() {
+            subagent.parent = "unparseable".to_owned();
+        }
+    }
     report
         .sessions
         .sort_by(|a, b| a.started.cmp(&b.started).then_with(|| a.id.cmp(&b.id)));
@@ -569,6 +575,32 @@ fn attribute(report: &mut Report, threads: &[(Host, String)], subagent_threads: 
 fn basemind_tool(name: &str) -> bool {
     name.rsplit_once("__")
         .is_some_and(|(server, _)| server.contains("basemind"))
+}
+
+/// The longest version string printed.
+const VERSION_MAX: usize = 32;
+
+/// The longest thread id printed.
+const ID_MAX: usize = 128;
+
+/// `text` when it is a plain token of at most `max` bytes of `[0-9A-Za-z._+-]`, the shape of a
+/// version or an id. A string taken from a transcript is printed only then, so no transcript text or
+/// terminal escape reaches the output.
+fn token(text: &str, max: usize) -> Option<&str> {
+    let plain = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-');
+    (!text.is_empty() && text.len() <= max && text.bytes().all(plain)).then_some(text)
+}
+
+/// A transcript's version, if it is printable, or why it is not supported: `field` names it.
+fn version_check(version: &str, supported: &[u64], field: &str) -> Result<Option<String>, String> {
+    let printable = token(version, VERSION_MAX);
+    if major(version).is_some_and(|m| supported.contains(&m)) {
+        return Ok(printable.map(str::to_owned));
+    }
+    Err(match printable {
+        Some(version) => format!("unknown {field} {version}"),
+        None => format!("unparseable {field}"),
+    })
 }
 
 /// The leading integer of a version string (`2.1.3` → 2).

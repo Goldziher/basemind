@@ -1,0 +1,2 @@
+{"timestamp":"2026-11-18T15:10:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"SECRET-ROOT\u001b[2J","id":"hchild","parent_thread_id":"SECRET-PARENT\u001b[2J","cwd":"{{REPO}}","cli_version":"0.169.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"SECRET-PARENT\u001b[2J","depth":1}}}}}
+{"timestamp":"2026-11-18T15:10:01.000Z","ordinal":1,"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"rg -n SECRET-HOSTILE-CHILD src\"}","call_id":"hc1"}}

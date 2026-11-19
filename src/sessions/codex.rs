@@ -31,7 +31,7 @@ use super::code_mode::{self, Arg};
 use super::contain::{self, Found};
 use super::shell;
 use super::tally::{Call, Family};
-use super::{Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_tool, major, widen};
+use super::{Outcome, Parsed, Scope, Seen, TranscriptParser, basemind_tool, version_check, widen};
 
 /// The `cli_version` majors whose record shape this parser was written against.
 pub const SUPPORTED_MAJORS: &[u64] = &[0];
@@ -117,18 +117,19 @@ impl TranscriptParser for Codex {
             return Outcome::OtherDirectory;
         };
         let checkout = located.checkout;
-        let Some(version) = meta.cli_version.clone() else {
+        let Some(version) = meta.cli_version.as_deref() else {
             return attributed("no cli_version".to_owned());
         };
-        if !major(&version).is_some_and(|m| SUPPORTED_MAJORS.contains(&m)) {
-            return attributed(format!("unknown cli_version {version}"));
-        }
+        let version = match version_check(version, SUPPORTED_MAJORS, "cli_version") {
+            Ok(printable) => printable,
+            Err(reason) => return attributed(reason),
+        };
         let own_start = meta.subagent_history_start_ordinal;
         let mut session = Parsed {
             checkout: checkout.label.clone(),
             thread: text(meta.id.as_ref()),
             parent: parent(&meta),
-            format_version: Some(version),
+            format_version: version,
             started: None,
             ended: None,
             tally: scope.tally_for(&located),

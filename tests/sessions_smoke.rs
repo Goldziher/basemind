@@ -664,34 +664,91 @@ fn a_repository_configuration_cannot_move_the_roots() {
     assert_eq!(report.sessions.len(), 5);
 }
 
+/// Run `basemind --root <repo> sessions [--json]` with the temporary home and fresh data and comms
+/// directories, assert that no transcript text or control character reached stdout or stderr, and
+/// return stdout.
+#[cfg(unix)]
+fn run_sessions(env: &Env, json: bool) -> String {
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_basemind"));
+    command
+        .arg("--root")
+        .arg(&env.repo)
+        .arg("sessions")
+        .env("HOME", &env.home)
+        .env("BASEMIND_DATA_HOME", scratch.path().join("data"))
+        .env("BASEMIND_COMMS_DIR", scratch.path().join("comms"))
+        .env_remove("RUST_LOG");
+    if json {
+        command.arg("--json");
+    }
+    let output = command.output().expect("run basemind sessions");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
+    let stderr = String::from_utf8(output.stderr).expect("utf-8 stderr");
+    for text in [&stdout, &stderr] {
+        assert!(!text.contains("SECRET"), "transcript text leaked:\n{text}");
+        assert!(
+            !text.chars().any(|c| c.is_control() && c != '\n'),
+            "a control character reached the output:\n{text:?}"
+        );
+        assert!(!text.contains("--json has no effect"), "{text}");
+    }
+    stdout
+}
+
+#[cfg(unix)]
+#[test]
+fn transcript_strings_are_printed_only_as_plain_tokens() {
+    let env = setup();
+    let project = env.home.join(".claude/projects").join(slug(&env.repo));
+    let day = env.home.join(".codex/sessions/2026/11/20");
+    place(
+        &env,
+        &env.repo,
+        "claude/hostile-version.jsonl",
+        &project.join("s12.jsonl"),
+    );
+    place(
+        &env,
+        &env.repo,
+        "codex/hostile-version.jsonl",
+        &day.join("rollout-hv.jsonl"),
+    );
+    place(
+        &env,
+        &env.repo,
+        "codex/hostile-parent.jsonl",
+        &day.join("rollout-hp.jsonl"),
+    );
+    let json: serde_json::Value = serde_json::from_str(&run_sessions(&env, true)).expect("JSON report");
+    let s12 = json["sessions"]
+        .as_array()
+        .and_then(|list| list.iter().find(|s| s["id"] == "s12"))
+        .expect("s12, a supported major");
+    assert_eq!(s12["format_version"], serde_json::Value::Null);
+    let hv = json["unsupported"]
+        .as_array()
+        .and_then(|list| list.iter().find(|u| u["id"] == "rollout-hv"))
+        .expect("rollout-hv");
+    assert_eq!(hv["reason"], "unparseable cli_version");
+    let hp = json["subagents"]
+        .as_array()
+        .and_then(|list| list.iter().find(|s| s["id"] == "rollout-hp"))
+        .expect("rollout-hp");
+    assert_eq!(
+        (&hp["parent"], &hp["attributed"]),
+        (&"unparseable".into(), &false.into())
+    );
+    let text = run_sessions(&env, false);
+    assert!(text.contains("rollout-hv (unparseable cli_version)"), "{text}");
+}
+
 #[cfg(unix)]
 #[test]
 fn the_command_prints_counts_and_never_transcript_text() {
     let env = setup();
-    let scratch = tempfile::tempdir().expect("tempdir");
-    let run = |json: bool| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_basemind"));
-        command
-            .arg("--root")
-            .arg(&env.repo)
-            .arg("sessions")
-            .env("HOME", &env.home)
-            .env("BASEMIND_DATA_HOME", scratch.path().join("data"))
-            .env("BASEMIND_COMMS_DIR", scratch.path().join("comms"))
-            .env_remove("RUST_LOG");
-        if json {
-            command.arg("--json");
-        }
-        let output = command.output().expect("run basemind sessions");
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-        let stdout = String::from_utf8(output.stdout).expect("utf-8 stdout");
-        let stderr = String::from_utf8(output.stderr).expect("utf-8 stderr");
-        for text in [&stdout, &stderr] {
-            assert!(!text.contains("SECRET"), "transcript text leaked:\n{text}");
-            assert!(!text.contains("--json has no effect"), "{text}");
-        }
-        stdout
-    };
+    let run = |json: bool| run_sessions(&env, json);
 
     let json: serde_json::Value = serde_json::from_str(&run(true)).expect("JSON report");
     assert_eq!(json["aggregate"]["sessions"], 5);
