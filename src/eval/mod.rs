@@ -28,8 +28,11 @@ use clap::Args;
 use crate::mcp::BasemindServer;
 use crate::mcp::tokens::TOKENS_ARE_COUNTED;
 
-pub use gate::{GATE_MIN_CREDITED, GATE_MIN_RATIO, GateVerdict};
-pub use report::{Regression, Report, TaskResult, aggregate, compare, markdown};
+pub use gate::{
+    GATE_MIN_CREDITED, GREP_MIN_SYMBOL_ACCURACY, GateVerdict, Job, LOCATING_MAX_RECALL_DEFICIT, LOCATING_MIN_RATIO,
+    REDUCING_MIN_RATIO, job,
+};
+pub use report::{BuildInfo, Regression, Report, TaskResult, aggregate, compare, markdown};
 pub use score::{Item, Score, score};
 pub use task::{EvalMode, Scoring, Task, parse_tasks};
 

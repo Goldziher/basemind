@@ -42,7 +42,9 @@ Every generator takes `--repo`, `--seed`, `--n`, `--exclude GLOB` (repeatable), 
 tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `read` to `code_read`, `references` / `callers` /
 `implementations` / `dependents` to `code_refs`, `grep` to `code_grep`, `find` to `find_files`, `git_search` /
 `git_path` / `git_symbol` to `git_log`, `blame` / `blame_symbol` to `git_blame`, `diff` / `diff_structural` to
-`git_diff`, `docs` to `docs_search`.
+`git_diff`, `docs` to `docs_search`. The analysis kinds map to the tool whose argument they exercise: `impact` and
+`cycles` to `code_refs`, `grep_changed` to `code_grep`, `find_large` to `find_files`, `read_around` to `code_read`
+(after a `code_grep` with `ranges`), and `explain` to the CLI-only `code explain`.
 
 | generator | mode(s) | gold |
 |---|---|---|
@@ -86,7 +88,8 @@ One JSON object per line (blank lines and `#` lines are skipped; ids are unique)
 ```
 
 - `mode`: `symbols`, `outline`, `read`, `references`, `callers`, `implementations`, `dependents`, `grep`, `find`,
-  `git_search`, `git_path`, `git_symbol`, `blame`, `blame_symbol`, `diff`, `diff_structural`, `docs`.
+  `git_search`, `git_path`, `git_symbol`, `blame`, `blame_symbol`, `diff`, `diff_structural`, `docs`, `impact`,
+  `cycles`, `grep_changed`, `find_large`, `read_around`, `explain`.
 - `args`: the arguments of the tool the mode maps to, exactly as the MCP tool takes them; an unknown argument fails
   the task. `symbols`: `{name, limit}`. `outline`: `{path}`. `references`: `{name, limit}`. `callers`:
   `{path, name, limit}`. `dependents`: `{name, relation: "importers"}`. `grep`: `{pattern, regex: true, language,
@@ -103,8 +106,12 @@ One JSON object per line (blank lines and `#` lines are skipped; ids are unique)
   (`path:line:` prefixes), `grep_context` (`rg -n -C` / `grep -n -C` output: `path:N:` match and `path-N-` context
   rows, split at the earliest separator whose prefix is a file), `paths`, `shas` (first token of each line,
   abbreviations resolved with `git rev-parse`), `blame` (`git blame` default output), `diff` (a unified diff's
-  added/removed lines), `diff_symbols` (definition names on added/removed lines), `read` (every line of the files read).
-  Without `items` the baseline is charged for tokens only.
+  added/removed lines), `diff_symbols` (definition names on added/removed lines), `read` (every line of the files read),
+  `explain` (`path:line` of each `path:N:text` row of a file, and `->name` for each name called on any other line that
+  is not a path or a `git log` row). Without `items` the baseline is charged for tokens only.
+  A baseline that exits above 1 or prints nothing is a **baseline failure** (`baseline_failed` on the row): it scores
+  recall 0 where it has `items`, and its ratio is left out of the median (see the gate). The baseline runs even when
+  the tool errored, so both arms are scored on the same tasks.
 - `annotations` (`grep`, optional): `path:line` -> the definition that line sits in; scored as the share of returned
   gold hits whose attached `symbol` has that name (`annotation_accuracy`, not part of the gate).
 - Unknown fields (for example `meta`) are ignored.
@@ -182,11 +189,32 @@ analysis kinds' gold, edge resolution and baselines on a fixture with a known mo
 - `docs` and semantic lookups need the `documents` build; without it those tasks error.
 - Gold is derived by syntax and text, not by scope resolution, so it is exact for basemind's name-based tools and only an approximation of "the right answer" for an agent that wanted a specific binding.
 
-## Value gate (ADR-0022)
+## Value gate (ADR-0022, by job as ADR-0031 amends it)
 
-The gate runs the committed task files over a pinned corpus and gives each tool a verdict: a task kind passes on a
-corpus when at least 0.70 of its tasks are credited (tool recall >= 0.8) and the median baseline/tool token ratio over
-the credited tasks is at least 1.5, counted with o200k; a tool passes when every one of its kinds passes on every corpus.
+The gate runs the committed task files over a pinned corpus and gives each tool a verdict; a tool passes when every one
+of its kinds passes on every corpus. Every kind has a job, declared in one table (`job` in `src/eval/gate.rs`), and the
+job picks the rule a kind must meet on each corpus, counted with o200k:
+
+| job | kinds | rule |
+|---|---|---|
+| locating: the answer is a list of places | `symbols`, `grep`, `references`, `callers`, `implementations`, `dependents`, `find`, `git_search`, `git_path`, `git_symbol`, `diff`; `impact`, `grep_changed`, `find_large` | credited >= 0.70, median ratio >= 0.67, and mean recall no more than 0.02 below the baseline's |
+| reducing: the answer replaces reading content | `outline`, `read`, `blame`, `blame_symbol`, `diff_structural`, `docs`, `semantic` (no task kind yet); `read_around`, `explain` | credited >= 0.70 and median ratio >= 1.5 |
+| correctness: no shell command answers it | `cycles` | credited >= 0.70 |
+
+`grep` also needs the enclosing-symbol accuracy of `code_grep` at 0.95 or more (ADR-0031 rule 4). The kinds before the
+semicolons are ADR-0031's; the 0.34 analysis kinds after them (and the correctness job) are ADR-0051 (proposed),
+which classifies them as the second 0.34 gate run did. Counting rules:
+
+- **Credited**: tool recall >= 0.8 on a non-empty gold, over every task of the kind, errors included.
+- **Ratio**: baseline tokens / tool tokens, nearest-rank median over the credited tasks whose baseline answered. A
+  baseline failure (it exited above 1 or printed nothing) is left out: an empty shell answer is not a cheap one.
+- **Recall parity**: the tool's and the baseline's mean recall over the tasks whose baseline is scored (it names
+  `items`), a failed baseline scoring 0. A locating kind whose baselines name no `items` has no verdict.
+- **No verdict** (`n/a`): tokens not counted as o200k, no tasks, a credited set whose baselines all failed, or a check
+  with nothing to compare. A failing check wins over an undecidable one.
+
+`gate.py` lists every kind under the tool it drives and refuses a report that gates a kind it does not list, or lists
+under another tool than the report names, so a failing analysis kind always fails its tool in `gate.md`.
 
 ### Reproduce
 
@@ -214,13 +242,17 @@ BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)" \
   `coverage` has no Rust resolver row (no `code-intel`) for a task file with `impact` / `cycles` tasks, scans each repository,
   runs `basemind admin eval --tasks ... --min-recall 0.8`, and stops any daemon it could have started on exit.
 - `gate.py RESULTS_DIR` turns the per-corpus reports into `gate.md` / `gate.json`.
+- The binary: each report's `build` holds the Cargo version, `build_id` (a hash of the executable) and the features
+  compiled in, and `run.tsv` adds `source_commit`, the commit of the checkout `run_gate.sh` runs from (`-dirty` with
+  uncommitted tracked changes). Run it from the checkout the binary was built from: the version string is not bumped
+  on main, so it does not identify the build. `gate.md` prints all of them.
 
 ### Read the table
 
-`results/gate.md` lists each tool's verdict, then one row per tool, kind and corpus: task and error counts, credited
-tasks (fraction), the tool's and the baseline's mean recall against the same gold, the tool's precision, median tokens of
-each arm over all the kind's tasks, the median ratio over the credited tasks, and for `grep` the share of hits whose
-attached symbol was right. A ratio below 1 means the shell answer was cheaper. Latency is in the per-corpus markdown and
+`results/gate.md` names the binary, lists each tool's verdict, then one row per tool, kind and corpus: the job, task and
+error counts, credited tasks (fraction), baseline failures, the tool's and the baseline's mean recall against the same
+gold (over the tasks whose baseline is scored), the tool's precision, median tokens of each arm over all the kind's
+tasks, the median ratio, and for `grep` the share of hits whose attached symbol was right. A ratio below 1 means the shell answer was cheaper. Latency is in the per-corpus markdown and
 `run.tsv` with the load average next to it; the machine is shared, so it is reported, never gated.
 
 ### First run
@@ -254,11 +286,11 @@ exception, below.
 | `blame`, `blame_symbol` | `git blame -L A,B` / `git blame -L '/fn NAME[(<]/,/^INDENT}/'` |
 | `diff`, `diff_structural` | `git diff FROM TO -- PATH` / `git diff FROM -- PATH` |
 | `impact` | `git grep -l -E` for `use` lines naming the target module as a path segment (for a crate root, every `use` through the crate), once more per depth-1 importer at depth 2 |
-| `cycles` | every import line of the language, `git grep -n` (tokens only) |
+| `cycles` | none: finding a cycle means resolving every import to a file and walking the graph, which no shell command an agent would run does. The old baseline, every import line of the repository (about 80k and 110k tokens), measured the repository's size and could not fail, so the kind is judged on correctness alone |
 | `grep_changed` | `git diff --name-only REV \| xargs git grep -n -F PATTERN` |
 | `find_large` | `git ls-files \| xargs awk ...` printing `<lines> <path>` (the `wc -l` listing with an unterminated last line counted) `\| sort -rn \| awk '$1>=N'` |
 | `read_around` | `rg -n -C5 -F -e PATTERN -g '*.EXT'`, its literal output (`grep_context`) |
-| `explain` | one command per section the tool answers: the file's definition lines, `git grep -n -w NAME` (callers), `sed -n` from the first attribute or doc comment to the body's end (doc, body, callees), the `impact` depth-1 `git grep -l -E` `use` lines for the definition's file (importers), `git log -n 5 -s --format='%h %an %aI %s' -L '/fn NAME[(<]/,/^INDENT}/:PATH'` (history); tokens only |
+| `explain` | one command per section the tool answers: the file's definition lines, `git grep -n -w NAME` (callers), `sed -n` from the first attribute or doc comment to the body's end (doc, body, callees), the `impact` depth-1 `git grep -l -E` `use` lines for the definition's file (importers), `git log -n 5 -s --format='%h %an %aI %s' -L '/fn NAME[(<]/,/^INDENT}/:PATH'` (history); scored with the `explain` reader (recall reported, not gated: a reducing kind) |
 
 `read_around` runs `rg` itself: the baseline is the literal output of the command an agent runs for "the lines
 around each hit", not a format built for the comparison. rg merges overlapping and adjacent context windows and

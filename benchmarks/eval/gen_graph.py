@@ -19,8 +19,10 @@ Baselines (ADR-0031 rule 5, the shell an agent would run):
            module's name as a path segment (for a crate root, every `use` through the crate), or for
            Python the module's last name in an import line. Depth 2 adds one grep per depth-1
            importer of the gold. Scored as paths.
-  cycles   every import line of the language (`git grep -n`), which the agent reads to find cycles.
-           Tokens only: no reader turns import lines into cycles.
+  cycles   none. Finding a cycle means resolving every import to a file and walking the graph, which
+           no shell command an agent would run does: the only shell answer is every import line of the
+           repository (about 100k tokens on each corpus), which no agent reads and which measures
+           the repository's size, not the tool. The kind is gated on correctness alone (ADR-0051).
 """
 
 from __future__ import annotations
@@ -31,10 +33,6 @@ import re
 import _common as c
 import _edges as e
 
-IMPORT_LINES = {
-    "rs": "^[[:space:]]*(pub(\\([^)]*\\))?[[:space:]]+)?(mod[[:space:]]+[A-Za-z0-9_]+[[:space:]]*;|use[[:space:]])",
-    "py": "^[[:space:]]*(from|import)[[:space:]]",
-}
 NOT_IDENT = "([^A-Za-z0-9_]|$)"
 USE_LINE = "^[[:space:]]*(pub(\\([^)]*\\))?[[:space:]]+)?use[[:space:]]"
 
@@ -133,8 +131,6 @@ def main() -> None:
 
     if "cycles" in kinds:
         comps = e.cycles(edges)
-        lines = "git grep -n -E " + c.shell_quote(IMPORT_LINES[a.ext]) + f" -- '*.{a.ext}'"
-        baseline = {"grep": lines}
         if comps:
             tasks.append(
                 {
@@ -144,7 +140,6 @@ def main() -> None:
                     "gold": sorted({f for comp in comps for f in comp}),
                     "scoring": "set",
                     "meta": {"variant": "all", "components": len(comps)},
-                    "baseline": baseline,
                 }
             )
         rng = repo.rng("cycles", a.seed)
@@ -165,7 +160,6 @@ def main() -> None:
                     "gold": member[path],
                     "scoring": "set",
                     "meta": {"variant": "path"},
-                    "baseline": baseline,
                 }
             )
     c.emit(tasks, a.out)

@@ -615,3 +615,43 @@ fn negative_impls_are_not_implementations_and_path_generic_impls_are_symbols() {
         .collect();
     assert!(impls.contains(&"B"), "{impls:?}");
 }
+
+#[test]
+fn impls_for_non_path_self_types_are_implementations_named_as_written() {
+    // tokio `net/addr.rs`, `process/kill.rs`, `util/linked_list.rs`, `stream_ext/collect.rs`.
+    let src = "\
+impl<T: ToSocketAddrs + ?Sized> ToSocketAddrs for &T {}
+impl ToSocketAddrs for (Ipv4Addr, u16) {}
+impl ToSocketAddrs for &[SocketAddr] {}
+impl ToSocketAddrs for str {}
+impl<T: Kill> Kill for &mut T {}
+unsafe impl<'a> Link for &'a Entry {}
+impl sealed::FromStreamPriv<()> for () {}
+impl<T> Buf for [T; 4] {}
+impl<T> Ptr for *const   T {}
+impl<T> Blanket for T {}
+impl<T> Tr for (
+    A,
+    B,
+) {}
+";
+    let map = l1(src);
+    assert_eq!(
+        impl_pairs(&map),
+        vec![
+            ("ToSocketAddrs", "&T"),
+            ("ToSocketAddrs", "(Ipv4Addr, u16)"),
+            ("ToSocketAddrs", "&[SocketAddr]"),
+            ("ToSocketAddrs", "str"),
+            ("Kill", "&mut T"),
+            ("Link", "&'a Entry"),
+            ("FromStreamPriv", "()"),
+            ("Buf", "[T; 4]"),
+            ("Ptr", "*const T"),
+            ("Blanket", "T"),
+            ("Tr", "(A, B,)"),
+        ]
+    );
+    let rows: Vec<u32> = map.implementations.iter().map(|i| i.start_row).collect();
+    assert_eq!(rows, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "each at its `impl` line");
+}

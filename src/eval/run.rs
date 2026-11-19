@@ -188,10 +188,14 @@ pub async fn run_task(server: &BasemindServer, root: &Path, task: &Task, min_rec
     let k = ranked.then(|| task.k());
     let sc = score(&ans.items, &gold, task.line_slack, k);
     let tokens = ans.tokens;
+    let credited = sc.recall >= min_recall && !gold.is_empty();
     let annotations = annotation_accuracy(&ans.annotations, &task.annotations);
 
-    let (savings, baseline_score, baseline_error) = match (&task.baseline, &error) {
-        (Some(spec), None) => match run_baseline(root, spec, count_tokens) {
+    // The baseline runs whether or not the tool answered, so both arms are scored on the same
+    // tasks. One that errors or prints nothing is a baseline failure: recall 0 where it has an
+    // `items` reader, and no ratio (`TaskResult::gated_ratio`).
+    let (savings, baseline_score, baseline_error, baseline_failed) = match &task.baseline {
+        Some(spec) => match run_baseline(root, spec, count_tokens) {
             Ok(b) => {
                 let model = estimate_from_text(task.mode.tool_key(), 0, &ans.text);
                 // A tool `savings.rs` has no model for (a CLI-only op such as `code_explain`) gets no
@@ -205,7 +209,7 @@ pub async fn run_task(server: &BasemindServer, root: &Path, task: &Task, min_rec
                         baseline_elapsed_us: b.elapsed_us,
                         ratio: has_answer.then(|| b.tokens as f64 / tokens as f64),
                         saved_tokens: b.tokens as i64 - tokens as i64,
-                        credited: sc.recall >= min_recall && !gold.is_empty(),
+                        credited,
                         model_ratio: (has_answer && modelled)
                             .then(|| model.baseline_tokens as f64 / model.actual_tokens as f64),
                         model_label: if modelled {
@@ -216,11 +220,17 @@ pub async fn run_task(server: &BasemindServer, root: &Path, task: &Task, min_rec
                     }),
                     baseline_score,
                     None,
+                    b.empty,
                 )
             }
-            Err(e) => (None, None, Some(format!("{e:#}"))),
+            Err(e) => (
+                None,
+                spec.items.map(|_| score(&[], &gold, task.line_slack, k)),
+                Some(format!("{e:#}")),
+                true,
+            ),
         },
-        _ => (None, None, None),
+        None => (None, None, None, false),
     };
 
     TaskResult {
@@ -234,6 +244,7 @@ pub async fn run_task(server: &BasemindServer, root: &Path, task: &Task, min_rec
         pages_cut: ans.cut,
         annotation_accuracy: annotations,
         score: sc,
+        credited,
         ranked,
         returned: ans
             .items
@@ -247,6 +258,7 @@ pub async fn run_task(server: &BasemindServer, root: &Path, task: &Task, min_rec
         savings,
         baseline_score,
         baseline_error,
+        baseline_failed,
     }
 }
 

@@ -613,7 +613,13 @@ mod scanned {
             },
         );
         assert!(cut.body.is_none());
-        assert_eq!(caller_lines(&cut), ["src/b.rs:4"]);
+        // Call rows are keyed by a content key that hashes the extract epoch, so which of the two
+        // callers comes first is not fixed.
+        let shown = caller_lines(&cut);
+        assert!(
+            matches!(shown.as_slice(), [one] if one == "src/b.rs:4" || one == "src/c.rs:2"),
+            "{shown:?}"
+        );
         let callers = &cut.truncated_sections[0];
         assert_eq!(
             (callers.section, callers.shown, callers.total, callers.reason),

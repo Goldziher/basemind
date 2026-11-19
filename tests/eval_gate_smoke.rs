@@ -245,3 +245,100 @@ fn a_wrong_gold_scores_both_arms_down_and_is_not_credited() {
         assert_eq!(rep["gate"]["diff"]["pass"], false);
     }
 }
+
+#[test]
+fn a_failed_baseline_scores_recall_0_and_a_tool_error_still_runs_its_baseline() {
+    use serde_json::json;
+    let f = fixture();
+    let refs = json!({"name": "alpha", "limit": 10});
+    let gold = ["c.rs:2".to_string(), "c.rs:3".to_string()];
+    let lines = vec![
+        task(
+            "answered",
+            "references",
+            refs.clone(),
+            &gold,
+            json!({"grep": "git grep -n -w alpha -- c.rs", "items": "grep_lines"}),
+        ),
+        // `true` prints nothing; `exit 3` fails. Both are baseline failures, not cheap answers.
+        task(
+            "silent",
+            "references",
+            refs.clone(),
+            &gold,
+            json!({"grep": "true", "items": "grep_lines"}),
+        ),
+        task(
+            "broken",
+            "references",
+            refs,
+            &gold,
+            json!({"grep": "exit 3", "items": "grep_lines"}),
+        ),
+        task(
+            "tool_error",
+            "read",
+            json!({"path": "a.rs", "symbol": "no_such_symbol"}),
+            &["a.rs:4".to_string()],
+            json!({"grep": "git grep -n 'fn alpha' -- a.rs", "items": "grep_lines"}),
+        ),
+        task(
+            "explain",
+            "explain",
+            json!({"target": "alpha"}),
+            &["a.rs:4".to_string(), "c.rs:2".to_string(), "c.rs:3".to_string()],
+            json!({"grep": ["git grep -n -E 'fn [a-z]' -- a.rs", "git grep -n -w -F -e alpha -- '*.rs'",
+                            "sed -n '4,6p' a.rs"], "items": "explain"}),
+        ),
+    ];
+    let report = f.dir.path().join("report.json");
+    let rows = eval(f.dir.path(), &lines, &report);
+    let row = |id: &str| {
+        rows.iter()
+            .find(|r| r["id"] == id)
+            .unwrap_or_else(|| panic!("no row {id}"))
+    };
+
+    assert_eq!(row("answered").get("baseline_failed"), None, "{}", row("answered"));
+    for id in ["silent", "broken"] {
+        let r = row(id);
+        assert_eq!(r["baseline_failed"], true, "{r}");
+        assert_eq!(
+            r["baseline_score"]["recall"], 0.0,
+            "a failed baseline scores recall 0: {r}"
+        );
+        assert_eq!(r["score"]["recall"], 1.0, "{r}");
+    }
+    assert_eq!(row("silent")["savings"]["baseline_tokens"], 0);
+    assert!(row("broken")["baseline_error"].is_string(), "{}", row("broken"));
+
+    let err = row("tool_error");
+    assert_eq!(err["ok"], false, "{err}");
+    assert_eq!(
+        err["baseline_score"]["recall"], 1.0,
+        "the baseline ran although the tool failed: {err}"
+    );
+    assert_eq!(err["savings"]["credited"], false, "{err}");
+
+    assert_eq!(
+        row("explain")["baseline_score"]["recall"],
+        1.0,
+        "definition and call sites read from the rows: {}",
+        row("explain")
+    );
+
+    let rep: Value = serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
+    let refs = &rep["gate"]["references"];
+    assert_eq!(
+        (refs["tool"].as_str(), refs["job"].as_str()),
+        (Some("code_refs"), Some("locating")),
+        "{refs}"
+    );
+    assert_eq!(refs["baseline_failed"], 2, "{refs}");
+    assert_eq!(refs["credited"], 3, "{refs}");
+    let mean = refs["baseline_recall"].as_f64().unwrap();
+    assert!((mean - 1.0 / 3.0).abs() < 1e-9, "two of three baselines failed: {refs}");
+    assert_eq!(rep["gate"]["explain"]["job"], "reducing");
+    assert!(rep["build"]["build_id"].is_string(), "{}", rep["build"]);
+    assert!(rep["build"]["features"].is_array(), "{}", rep["build"]);
+}

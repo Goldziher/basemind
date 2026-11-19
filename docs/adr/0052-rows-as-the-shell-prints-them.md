@@ -4,7 +4,7 @@ date: 2026-11-19
 amends: ["0034"]
 ---
 
-# ADR-0051: Locating rows as the shell prints them
+# ADR-0052: Locating rows as the shell prints them
 
 - **Deciders:** the repository owner
 - **Related:** amends ADR-0034 (lean rows); ADR-0031 (value gate by job), ADR-0018

@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod call_position_tests;
 #[cfg(feature = "documents")]
 pub mod doc;
 #[cfg(feature = "documents")]
@@ -97,7 +99,11 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 /// - 3: the BM25 keyword postings split camelCase and PascalCase identifiers into their words.
 /// - 4: HTTP routes become `Route` symbols and literal-URL client calls become call rows (ADR-0048);
 ///   Java gains its own query override.
-pub const EXTRACT_EPOCH: u16 = 4;
+/// - 5: a call is recorded at its callee name (`b` of `a\n    .b()` or `a::b()`), not at the start of
+///   its call expression.
+/// - 6: Rust trait impls for a reference, tuple, unit, array, slice, pointer or primitive self type
+///   become implementations, named by the type as written (`&mut T`, `(IpAddr, u16)`).
+pub const EXTRACT_EPOCH: u16 = 6;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {

@@ -71,7 +71,9 @@
 ;; and omit the trait_name so `build_implementation` skips the match (trait_name is required).
 
 ;; The trait is keyed by its last path segment, so `impl crate::a::Observer for X` and
-;; `impl<T> Extend<T> for Vec<T>` both index under the bare trait name.
+;; `impl<T> Extend<T> for Vec<T>` both index under the bare trait name. The self type is any type:
+;; `l1::implementor_name` names a path or generic type by its last segment (`Vec`) and any other type
+;; (`&mut T`, `(IpAddr, u16)`, `()`, `[u8]`, `*const T`, `str`) by its text as written.
 (impl_item
   trait: [
     (type_identifier) @impl.trait_name
@@ -81,14 +83,7 @@
       (scoped_type_identifier name: (type_identifier) @impl.trait_name)
     ])
   ]
-  type: [
-    (type_identifier) @impl.implementor
-    (scoped_type_identifier name: (type_identifier) @impl.implementor)
-    (generic_type type: [
-      (type_identifier) @impl.implementor
-      (scoped_type_identifier name: (type_identifier) @impl.implementor)
-    ])
-  ]) @impl.range
+  type: (_) @impl.implementor) @impl.range
 
 ;; section: routes
 ;;

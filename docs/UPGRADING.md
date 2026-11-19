@@ -262,7 +262,7 @@ lowered), `body_truncated` (`git_log` search: one commit's message was shortened
 
 The tools that locate (`code_symbols`, `code_grep`, `code_refs`, `find_files`, `git_log`,
 `git_diff`) answer with what the shell would print and what they add to it, and nothing that
-repeats per row or echoes the call (ADR-0034, ADR-0051). None of them carries `elapsed_us`
+repeats per row or echoes the call (ADR-0034, ADR-0052). None of them carries `elapsed_us`
 (`git_blame` keeps it); the CLI times the call when the response has none. A list gives `total` only
 beside `next_cursor`. The CLI's `--json` output has the same shapes.
 

@@ -16,6 +16,9 @@ use super::task::BaselineSpec;
 pub struct BaselineRun {
     pub tokens: u64,
     pub elapsed_us: u64,
+    /// Nothing but whitespace came out of the commands and the files read: the agent got no
+    /// answer, which the gate counts as a baseline failure, not as a cheap one.
+    pub empty: bool,
     /// The output read as items (`spec.items`), for scoring against the task's gold.
     pub items: Option<Vec<Item>>,
 }
@@ -69,6 +72,7 @@ pub fn run_baseline(root: &Path, spec: &BaselineSpec, count: fn(&str) -> u64) ->
     Ok(BaselineRun {
         tokens: count(&text),
         elapsed_us,
+        empty: text.trim().is_empty(),
         items: spec.items.map(|k| baseline_items(k, root, &command_output, &files)),
     })
 }
@@ -93,6 +97,7 @@ mod tests {
         };
         let run = run_baseline(dir.path(), &spec, count).unwrap();
         assert_eq!(run.tokens, 8);
+        assert!(!run.empty);
         assert!(run.items.is_none());
     }
 
@@ -123,7 +128,17 @@ mod tests {
             read: vec![],
             items: None,
         };
-        assert_eq!(run_baseline(dir.path(), &no_match, count).unwrap().tokens, 0);
+        let empty = run_baseline(dir.path(), &no_match, count).unwrap();
+        assert_eq!((empty.tokens, empty.empty), (0, true));
+        let blank = BaselineSpec {
+            grep: Some(OneOrMany::One("printf '\\n  \\n'".into())),
+            read: vec![],
+            items: None,
+        };
+        assert!(
+            run_baseline(dir.path(), &blank, count).unwrap().empty,
+            "whitespace is no answer"
+        );
         let broken = BaselineSpec {
             grep: Some(OneOrMany::One("exit 2".into())),
             read: vec![],

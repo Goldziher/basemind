@@ -1,50 +1,147 @@
-//! The ADR-0022 value gate, evaluated per task kind on one corpus (one report).
+//! The value gate of ADR-0022 as ADR-0031 amends it, evaluated per task kind on one corpus (one
+//! report).
 //!
-//! A task is credited when the tool's recall reaches `--min-recall` (0.8 in the gate). A kind
-//! passes when at least [`GATE_MIN_CREDITED`] of its tasks are credited and the median of
-//! baseline tokens / tool tokens over the credited tasks is at least [`GATE_MIN_RATIO`]. Tokens
-//! counted as `bytes/4` do not count, so without the `tokenizer` feature there is no verdict.
+//! A task is credited when the tool's recall reaches `--min-recall` (0.8 in the gate). Every kind
+//! has a [`Job`] ([`job`] is the one table), and the job picks the rule:
+//!
+//! - **reducing** (the answer replaces reading content): credited at least [`GATE_MIN_CREDITED`]
+//!   and median baseline/tool token ratio at least [`REDUCING_MIN_RATIO`];
+//! - **locating** (the answer is a list of places): credited at least [`GATE_MIN_CREDITED`], median
+//!   ratio at least [`LOCATING_MIN_RATIO`], and the tool's mean recall no more than
+//!   [`LOCATING_MAX_RECALL_DEFICIT`] below the baseline's;
+//! - **correctness** (no shell command an agent would run produces the answer, so there is no
+//!   baseline to compare): credited at least [`GATE_MIN_CREDITED`].
+//!
+//! `grep` also needs the enclosing-symbol accuracy of `code_grep` at [`GREP_MIN_SYMBOL_ACCURACY`]
+//! (ADR-0031 rule 4).
+//!
+//! The median is nearest-rank, over the credited tasks whose baseline answered. A baseline that
+//! errored or printed nothing is a baseline failure: it is left out of the ratio (an empty shell
+//! answer is not a cheap one) and scores recall 0 in the recall comparison. Recall means are taken
+//! over the tasks whose baseline was scored, the same tasks on both arms. Tokens counted as
+//! `bytes/4` do not count, so without the `tokenizer` feature there is no verdict.
 
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
 use super::report::{Report, TaskResult, percentile};
+use super::task::EvalMode;
 
-/// Least median baseline/tool token ratio over the credited tasks (ADR-0022 "Pass").
-pub const GATE_MIN_RATIO: f64 = 1.5;
-/// Least fraction of a kind's tasks that must be credited (ADR-0022 "Pass").
+/// Least fraction of a kind's tasks that must be credited, for every job (ADR-0022 "Pass").
 pub const GATE_MIN_CREDITED: f64 = 0.7;
+/// Least median baseline/tool token ratio of a reducing kind (ADR-0031 rule 2).
+pub const REDUCING_MIN_RATIO: f64 = 1.5;
+/// Least median baseline/tool token ratio of a locating kind (ADR-0031 rule 3).
+pub const LOCATING_MIN_RATIO: f64 = 0.67;
+/// Most a locating kind's mean recall may fall below the baseline's (ADR-0031 rule 3).
+pub const LOCATING_MAX_RECALL_DEFICIT: f64 = 0.02;
+/// Least share of `code_grep` hits whose enclosing symbol is right (ADR-0031 rule 4).
+pub const GREP_MIN_SYMBOL_ACCURACY: f64 = 0.95;
 /// The only tokenizer whose counts the gate accepts.
 pub const GATE_TOKENIZER: &str = "o200k";
+/// Float slack on every threshold, so a value that equals a threshold on paper (`1.00 - 0.98`)
+/// is not failed by rounding.
+const EPS: f64 = 1e-9;
+
+/// What a task kind's answer is for, which decides its pass rule (ADR-0031 rule 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Job {
+    /// The answer is a list of places; the shell's answer is already minimal.
+    Locating,
+    /// The answer replaces reading content. The default, because a report written before jobs
+    /// existed was judged by this rule (ADR-0022).
+    #[default]
+    Reducing,
+    /// No shell command an agent would run produces the answer, so only the tool's recall is
+    /// judged.
+    Correctness,
+}
+
+impl Job {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Locating => "locating",
+            Self::Reducing => "reducing",
+            Self::Correctness => "correctness",
+        }
+    }
+}
+
+/// The job of every task kind: ADR-0031 rule 1 for the kinds it lists, ADR-0051 for the 0.34
+/// analysis kinds (`impact` .. `explain`).
+pub fn job(mode: EvalMode) -> Job {
+    match mode {
+        EvalMode::Symbols
+        | EvalMode::Grep
+        | EvalMode::References
+        | EvalMode::Callers
+        | EvalMode::Implementations
+        | EvalMode::Dependents
+        | EvalMode::Find
+        | EvalMode::GitSearch
+        | EvalMode::GitPath
+        | EvalMode::GitSymbol
+        | EvalMode::Diff
+        | EvalMode::Impact
+        | EvalMode::GrepChanged
+        | EvalMode::FindLarge => Job::Locating,
+        EvalMode::Outline
+        | EvalMode::Read
+        | EvalMode::Blame
+        | EvalMode::BlameSymbol
+        | EvalMode::DiffStructural
+        | EvalMode::Docs
+        | EvalMode::ReadAround
+        | EvalMode::Explain => Job::Reducing,
+        EvalMode::Cycles => Job::Correctness,
+    }
+}
 
 /// One task kind's verdict.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct GateVerdict {
+    /// The tool the kind drives (`EvalMode::tool_key`); a failing kind fails it.
+    #[serde(default)]
+    pub tool: String,
+    #[serde(default)]
+    pub job: Job,
     /// Every task of the kind, errors and baseline failures included.
     pub tasks: usize,
     pub credited: usize,
     pub credited_fraction: f64,
-    /// Nearest-rank median of baseline/tool tokens over the credited tasks; absent with none.
+    /// Tasks whose baseline errored or printed nothing.
+    #[serde(default)]
+    pub baseline_failed: usize,
+    /// Nearest-rank median of baseline/tool tokens over the credited tasks whose baseline
+    /// answered; absent with none.
     pub median_ratio: Option<f64>,
+    /// Mean recall of the tool over the tasks whose baseline was scored; absent when none was.
+    #[serde(default)]
+    pub tool_recall: Option<f64>,
+    /// Mean recall of the baseline over the same tasks, a failed baseline scoring 0.
+    #[serde(default)]
+    pub baseline_recall: Option<f64>,
+    /// `grep` only: mean share of hits whose enclosing symbol was right.
+    #[serde(default)]
+    pub symbol_accuracy: Option<f64>,
     /// `None` when the gate cannot be evaluated (`reason` says why).
     pub pass: Option<bool>,
     pub reason: String,
 }
 
-/// The verdict for one kind's results counted with `tokenizer`.
-pub fn verdict(results: &[&TaskResult], tokenizer: &str) -> GateVerdict {
+fn mean(v: impl Iterator<Item = f64>) -> Option<f64> {
+    let (sum, n) = v.fold((0.0, 0usize), |(s, n), x| (s + x, n + 1));
+    (n > 0).then(|| sum / n as f64)
+}
+
+/// The verdict for `mode`'s results counted with `tokenizer`.
+pub fn verdict(mode: EvalMode, results: &[&TaskResult], tokenizer: &str) -> GateVerdict {
+    let job = job(mode);
     let tasks = results.len();
-    let mut ratios: Vec<f64> = results
-        .iter()
-        .filter_map(|r| r.savings.as_ref())
-        .filter(|s| s.credited)
-        .filter_map(|s| s.ratio)
-        .collect();
-    let credited = results
-        .iter()
-        .filter(|r| r.savings.as_ref().is_some_and(|s| s.credited))
-        .count();
+    let credited = results.iter().filter(|r| r.credited).count();
+    let mut ratios: Vec<f64> = results.iter().filter_map(|r| r.gated_ratio()).collect();
     ratios.sort_by(f64::total_cmp);
     let median_ratio = (!ratios.is_empty()).then(|| percentile(&ratios, 50.0));
     let credited_fraction = if tasks == 0 {
@@ -52,30 +149,112 @@ pub fn verdict(results: &[&TaskResult], tokenizer: &str) -> GateVerdict {
     } else {
         credited as f64 / tasks as f64
     };
+    let paired: Vec<(f64, f64)> = results
+        .iter()
+        .filter_map(|r| r.baseline_score.as_ref().map(|b| (r.score.recall, b.recall)))
+        .collect();
+    let tool_recall = mean(paired.iter().map(|p| p.0));
+    let baseline_recall = mean(paired.iter().map(|p| p.1));
+    let symbol_accuracy = mean(results.iter().filter_map(|r| r.annotation_accuracy));
     let (pass, reason) = if tokenizer != GATE_TOKENIZER {
         (None, format!("tokens counted as `{tokenizer}`, not `{GATE_TOKENIZER}`"))
     } else if tasks == 0 {
         (None, "no tasks".to_string())
     } else {
-        let mut why = Vec::new();
-        if credited_fraction < GATE_MIN_CREDITED {
-            why.push(format!("credited {credited_fraction:.2} < {GATE_MIN_CREDITED}"));
+        let mut checks = Checks::default();
+        checks.credited(credited_fraction);
+        match job {
+            Job::Reducing => checks.ratio(credited, median_ratio, REDUCING_MIN_RATIO),
+            Job::Locating => {
+                checks.ratio(credited, median_ratio, LOCATING_MIN_RATIO);
+                checks.recall_parity(tool_recall, baseline_recall);
+            }
+            Job::Correctness => {}
         }
-        match median_ratio {
-            Some(m) if m < GATE_MIN_RATIO => why.push(format!("median {m:.2}x < {GATE_MIN_RATIO}x")),
-            None => why.push("no credited task".to_string()),
-            Some(_) => {}
+        if mode == EvalMode::Grep {
+            checks.symbol_accuracy(symbol_accuracy);
         }
-        (Some(why.is_empty()), why.join("; "))
+        checks.outcome()
     };
     GateVerdict {
+        tool: mode.tool_key().to_string(),
+        job,
         tasks,
         credited,
         credited_fraction,
+        baseline_failed: results.iter().filter(|r| r.baseline_failed).count(),
         median_ratio,
+        tool_recall,
+        baseline_recall,
+        symbol_accuracy,
         pass,
         reason,
     }
+}
+
+/// The failed and the undecidable checks of one verdict. A failed check fails the kind; otherwise
+/// an undecidable one leaves it without a verdict.
+#[derive(Default)]
+struct Checks {
+    failed: Vec<String>,
+    undecided: Vec<String>,
+}
+
+impl Checks {
+    fn credited(&mut self, fraction: f64) {
+        if fraction < GATE_MIN_CREDITED - EPS {
+            self.failed
+                .push(format!("credited {fraction:.2} < {GATE_MIN_CREDITED}"));
+        }
+    }
+
+    fn ratio(&mut self, credited: usize, median: Option<f64>, min: f64) {
+        match median {
+            Some(m) if m < min - EPS => self.failed.push(format!("median {m:.2}x < {min}x")),
+            None if credited > 0 => self
+                .undecided
+                .push("no credited task has a baseline answer to compare".to_string()),
+            _ => {}
+        }
+    }
+
+    fn recall_parity(&mut self, tool: Option<f64>, baseline: Option<f64>) {
+        match (tool, baseline) {
+            (Some(t), Some(b)) if b - t > LOCATING_MAX_RECALL_DEFICIT + EPS => self.failed.push(format!(
+                "recall {t:.3} < baseline {b:.3} - {LOCATING_MAX_RECALL_DEFICIT}"
+            )),
+            (Some(_), Some(_)) => {}
+            _ => self
+                .undecided
+                .push("no baseline recall to compare (no baseline names an `items` reader)".to_string()),
+        }
+    }
+
+    fn symbol_accuracy(&mut self, accuracy: Option<f64>) {
+        match accuracy {
+            Some(a) if a < GREP_MIN_SYMBOL_ACCURACY - EPS => self
+                .failed
+                .push(format!("symbol accuracy {a:.3} < {GREP_MIN_SYMBOL_ACCURACY}")),
+            Some(_) => {}
+            None => self
+                .undecided
+                .push("no symbol accuracy measured (no task carries `annotations`)".to_string()),
+        }
+    }
+
+    fn outcome(self) -> (Option<bool>, String) {
+        if !self.failed.is_empty() {
+            (Some(false), self.failed.join("; "))
+        } else if !self.undecided.is_empty() {
+            (None, self.undecided.join("; "))
+        } else {
+            (Some(true), String::new())
+        }
+    }
+}
+
+fn opt(v: Option<f64>, digits: usize) -> String {
+    v.map_or_else(|| "-".into(), |x| format!("{x:.digits$}"))
 }
 
 /// The gate table, one row per task kind, with the baseline's own recall beside the tool's.
@@ -83,15 +262,16 @@ pub fn gate_markdown(r: &Report) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "\n## Value gate (ADR-0022: credited >= {GATE_MIN_CREDITED}, median >= {GATE_MIN_RATIO}x)\n"
+        "\n## Value gate (ADR-0031: credited >= {GATE_MIN_CREDITED} for every job; reducing median >= \
+         {REDUCING_MIN_RATIO}x; locating median >= {LOCATING_MIN_RATIO}x and recall >= baseline - \
+         {LOCATING_MAX_RECALL_DEFICIT}; grep symbol accuracy >= {GREP_MIN_SYMBOL_ACCURACY})\n"
     );
     let _ = writeln!(
         s,
-        "| kind | tool | tasks | credited | median x | tool R | baseline R | baseline R>=min | symbol acc | verdict |"
+        "| kind | tool | job | tasks | credited | baseline failed | median x | tool R | baseline R | symbol acc | verdict |"
     );
-    let _ = writeln!(s, "|---|---|---|---|---|---|---|---|---|---|");
+    let _ = writeln!(s, "|---|---|---|---|---|---|---|---|---|---|---|");
     for (mode, v) in &r.gate {
-        let m = r.modes.get(mode);
         let verdict = match v.pass {
             Some(true) => "PASS".to_string(),
             Some(false) => format!("FAIL ({})", v.reason),
@@ -99,121 +279,23 @@ pub fn gate_markdown(r: &Report) -> String {
         };
         let _ = writeln!(
             s,
-            "| {} | {} | {} | {} ({:.2}) | {} | {:.3} | {} | {}/{} | {} | {verdict} |",
+            "| {} | {} | {} | {} | {} ({:.2}) | {} | {} | {} | {} | {} | {verdict} |",
             mode.as_str(),
             mode.tool_key(),
+            v.job.as_str(),
             v.tasks,
             v.credited,
             v.credited_fraction,
-            v.median_ratio.map_or_else(|| "-".into(), |x| format!("{x:.2}")),
-            m.map_or(0.0, |m| m.mean_recall),
-            m.and_then(|m| m.baseline_mean_recall)
-                .map_or_else(|| "-".into(), |x| format!("{x:.3}")),
-            m.map_or(0, |m| m.baseline_recall_met),
-            m.map_or(0, |m| m.baseline_scored),
-            m.and_then(|m| m.mean_annotation_accuracy)
-                .map_or_else(|| "-".into(), |x| format!("{x:.3}")),
+            v.baseline_failed,
+            opt(v.median_ratio, 2),
+            opt(v.tool_recall, 3),
+            opt(v.baseline_recall, 3),
+            opt(v.symbol_accuracy, 3),
         );
     }
     s
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::eval::report::SavingsOutcome;
-    use crate::eval::score::Score;
-    use crate::eval::task::EvalMode;
-
-    fn task(tokens: u64, baseline: u64, credited: bool) -> TaskResult {
-        TaskResult {
-            id: "t".into(),
-            mode: EvalMode::Symbols,
-            ok: true,
-            error: None,
-            elapsed_us: 1,
-            tokens,
-            pages: 1,
-            pages_cut: false,
-            annotation_accuracy: None,
-            score: Score::default(),
-            ranked: false,
-            returned: vec![],
-            savings: Some(SavingsOutcome {
-                baseline_tokens: baseline,
-                ratio: Some(baseline as f64 / tokens as f64),
-                credited,
-                ..SavingsOutcome::default()
-            }),
-            baseline_score: None,
-            baseline_error: None,
-        }
-    }
-
-    fn run(v: &[TaskResult], tokenizer: &str) -> GateVerdict {
-        verdict(&v.iter().collect::<Vec<_>>(), tokenizer)
-    }
-
-    #[test]
-    fn passes_at_both_thresholds_exactly() {
-        // 7 of 10 credited, credited ratios 1.5 .. 2.0: median (nearest-rank) 1.5.
-        let mut v: Vec<TaskResult> = [150u64, 150, 150, 150, 200, 200, 200]
-            .iter()
-            .map(|b| task(100, *b, true))
-            .collect();
-        for _ in 0..3 {
-            v.push(task(100, 10_000, false));
-        }
-        let g = run(&v, "o200k");
-        assert_eq!((g.tasks, g.credited), (10, 7));
-        assert_eq!(g.median_ratio, Some(1.5));
-        assert_eq!(g.pass, Some(true), "{}", g.reason);
-    }
-
-    #[test]
-    fn fails_on_low_credit_or_low_ratio_and_ignores_uncredited_ratios() {
-        let mut low_credit: Vec<TaskResult> = (0..6).map(|_| task(100, 1000, true)).collect();
-        low_credit.extend((0..4).map(|_| task(100, 1000, false)));
-        let g = run(&low_credit, "o200k");
-        assert_eq!(g.pass, Some(false));
-        assert!(g.reason.contains("credited 0.60"), "{}", g.reason);
-
-        // Uncredited tasks have huge ratios; they must not lift the median.
-        let mut cheap: Vec<TaskResult> = (0..8).map(|_| task(100, 120, true)).collect();
-        cheap.extend((0..2).map(|_| task(1, 100_000, false)));
-        let g = run(&cheap, "o200k");
-        assert_eq!(g.median_ratio, Some(1.2));
-        assert_eq!(g.pass, Some(false));
-        assert!(g.reason.contains("median 1.20x"), "{}", g.reason);
-    }
-
-    #[test]
-    fn has_no_verdict_without_the_o200k_tokenizer_or_tasks() {
-        let v: Vec<TaskResult> = (0..10).map(|_| task(100, 1000, true)).collect();
-        let g = run(&v, "bytes/4");
-        assert_eq!(g.pass, None);
-        assert!(g.reason.contains("bytes/4"));
-        assert_eq!(run(&[], "o200k").pass, None);
-    }
-
-    #[test]
-    fn errors_count_against_the_credited_fraction() {
-        let mut v: Vec<TaskResult> = (0..7).map(|_| task(100, 1000, true)).collect();
-        for _ in 0..3 {
-            let mut e = task(100, 0, false);
-            e.ok = false;
-            e.savings = None;
-            v.push(e);
-        }
-        let g = run(&v, "o200k");
-        assert_eq!((g.tasks, g.credited), (10, 7));
-        assert_eq!(g.pass, Some(true));
-        v.push({
-            let mut e = task(100, 0, false);
-            e.savings = None;
-            e
-        });
-        // 7 of 11 is 0.64.
-        assert_eq!(run(&v, "o200k").pass, Some(false));
-    }
-}
+#[path = "gate_tests.rs"]
+mod tests;
