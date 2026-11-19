@@ -92,6 +92,7 @@ println!("{} runs as {}", launched.id, launched.agent);
   flavor's rule grants: the same permission mode, bypass and unverified-mode opt-ins, an
   `ApprovalPolicy` only where the rule consents to one (one that allows everything is a bypass),
   pre-approved MCP tools only from the rule's `allow_tools`, and a stop grace of at most 60 s.
+
 - **Topology.** One is supported: the supervisor lives in the lead's own process (`basemind serve
   --lead`, or an in-process embedding), never in the daemon. Launched agents are children of that
   process, and when it exits its sessions end. The lead's tool calls reach the supervisor in that
@@ -108,6 +109,7 @@ println!("{} runs as {}", launched.id, launched.agent);
   the user's `[agents.launch]` configuration, would make the launched agent a depth-0 launcher
   with a budget of its own. A lead started from a terminal basemind hosts (`shell`) is refused
   the same way.
+
 - **Who launches.** Nothing is trusted by default. Every caller carries a `Peer`: the process the
   kernel reports for its connection (`Peer::of_socket`), pinned to the process that connected (by
   its audit token's pid version on macOS, a pidfd on Linux 6.5+; `Peer::pins_connections` says
@@ -139,6 +141,7 @@ println!("{} runs as {}", launched.id, launched.agent);
   registered child is itself such a spawner. A caller without a peer cannot be built. The
   operator stops and answers any session and launches none. A session that is stopping launches
   nothing.
+
 - **Depth and fan-out.** A launched agent gets its own principal (`launched-<flavor>-<id>-<hex>`),
   `BASEMIND_AGENT_DEPTH` and a fresh 256-bit token; its depth comes from the supervisor's record,
   never the environment. A launch deeper than `max_depth`, beyond `max_concurrent` live sessions,
@@ -151,6 +154,7 @@ println!("{} runs as {}", launched.id, launched.agent);
   allowance (1024) and the supervisor's (the budget's `max_allows`); with none left the policy's
   allow becomes a denial before the harness sees it, and a caller's is refused
   (`allows_exhausted`).
+
 - **Audit.** Every registration, launch, refusal, stop, exit and approval decision is one record:
   when, the event, the caller as the supervisor verified it (an unverified caller is recorded as
   nobody, with what it `claimed` and its `peer` pid) and its depth, the session, the launched
@@ -171,6 +175,7 @@ println!("{} runs as {}", launched.id, launched.agent);
   harness has it: a launcher killed in between leaves that allow unrecorded (the session dies with
   it). One the policy gives to an ACP agent that cannot take a single-use allow is spent from the
   allowance and then sent as a denial.
+
 - **The reserve.** `FileAuditSink` appends one JSON object per line to a file it creates with
   mode 0600 and holds with an exclusive lock (a second writer is refused); it refuses a symbolic
   link, a file with another hard link, a non-regular file (a FIFO without blocking), another
@@ -190,6 +195,7 @@ println!("{} runs as {}", launched.id, launched.agent);
   count. A symbolic link among the path's directories is followed: the engine picks the path. The
   log is append-only as far as this writer goes, not tamper-resistant: the same user can rewrite
   it; rotating it is the operator's job.
+
 - **Sessions.** `status`, `list`, `wait`, `stop` (the operator, the configured launcher at the top
   of the session's tree, or a session above it, also once the sessions between them are reaped;
   ownership is by principal name, so a name bound again after `unregister_launcher` controls the
@@ -202,6 +208,7 @@ println!("{} runs as {}", launched.id, launched.agent);
   of that, and is refused with a `max_depth` above 1. Dropping the supervisor stops every session within its stop grace and kills
   what is left. A `SessionObserver` receives every event on the session's own thread; one that
   panics is dropped for that session and the session is stopped.
+
 - **Caveats** (`caveats(kind)`, reported on each launch and status). `DetachedServer` (OpenCode):
   `opencode serve --stdio` runs in a process group of its own, which outlived a kill of the
   session's group by about 1.7 to 3 s. While the session runs the supervisor reads the process
@@ -312,11 +319,14 @@ Limits:
 - The config's executable, its MCP server's command and its environment values are trusted; the
   configuration must restrict them. The executable check is not atomic with the exec, and outside
   the root is not the same as not writable by the agent.
+
 - The harnesses' user-level configuration (`~/.codex`, `~/.gemini`, `~/.cursor`, OpenCode's and
   Hermes's) still applies, but for Codex's and OpenCode's MCP servers, which a launch switches off
   (OpenCode's plugins still load). Claude Code's managed settings and user `CLAUDE.md` were not checked.
+
 - What Cursor's, Gemini's, Grok's, Hermes's and a generic agent's modes ask for, and what
   OpenCode's plan mode blocks, were not run against a live harness.
+
 - `BASEMIND_AGENT_ID` is self-asserted: a launched agent with a shell can post as anyone over
   comms. The supervisor does not take it, nor a principal or token, on its word; it places the
   peer process and admits a principal only from its registered process. What remains:
@@ -352,6 +362,7 @@ Limits:
 
   The launch token is readable by any process of the same user (`/proc/<pid>/environ` on Linux);
   it is honoured only from its own session's processes.
+
 - A descendant that leaves the process group survives a `Session`. `opencode acp` starts its
   server (`opencode serve --stdio`) in a process group of its own, with the MCP servers and plugins
   under it; it exits once its input closes, not when the group is killed (in a live probe about
@@ -360,8 +371,11 @@ Limits:
   first listing, or started and left between two listings 200 ms apart, is missed, and so is
   anything another flavor's harness detaches. OpenCode's global configuration started its own MCP
   servers although `session/new` named none.
+
 - A project file written during a session is only seen by the next launch.
+
 - The launcher must not ignore SIGCHLD or reap children it did not start, and must ignore SIGPIPE.
+
 - Nothing is launched off Unix. On Windows a plan already refuses a batch file (an npm `.cmd`
   shim, which runs through `cmd.exe` and finds `node` in the working directory first) and gives
   the child `NoDefaultCurrentDirectoryInExePath=1`; configure the program the shim starts.

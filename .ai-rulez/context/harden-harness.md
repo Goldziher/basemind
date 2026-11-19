@@ -22,11 +22,13 @@ cargo test --release --test harden -- --ignored --nocapture
 
    `ripgrep` (Rust), `tokio` (Rust), `typescript` (TS/JS), `react` (TS/JSX), `django` (Python),
    `requests` (Python), `gin` (Go), `ripgrep-shallow` (shallow clone smoke).
+
 2. For each repo: `basemind scan`, then an **in-process git-ops measurement** (`measure_git_ops`):
    build the git-history index synchronously and time warm, microsecond-resolution indexed-vs-live
    latency for `commits_touching` (hot + rare path), `recent_changes`, and `window_commits`, plus the
    build time and on-disk index size. Then it sweeps the verb tools (`drive_tools`, names checked
    against `KNOWN_TOOLS`), capturing per-call latency + result shapes.
+
 3. Asserts canaries (lower bounds, scan-resistant to upstream churn):
    - **tokio**: `code_refs("spawn")` `>= 50`, `find_files("src")` `>= 100`,
      `code_grep("fn spawn")` `>= 20`, `code_refs("Future", implementations)` `>= 20`,

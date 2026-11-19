@@ -164,11 +164,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flag. A row leaves out the page's `resolution_default`; `resolution_counts` gives the rows per
   value when they differ, and the `resolution` argument keeps the values asked for. The free-text
   `resolution` on callers and on relation `definition` is now `resolution_note`.
+
 - `code_symbols {"name":""}` is refused, as an empty `code_grep` pattern is, instead of answering an
   empty list.
+
 - **BREAKING (library):** `basemind::scanner::scan`, `scan_paths` and the other public scan entries
   take the `Retrieval` binding as an argument; a library caller passes
   `basemind::retrieval_wiring::backend()`.
+
 - **BREAKING (library):** the library no longer reads `BASEMIND_DATA_HOME`. The data home is
   `basemind::engine::EngineConfig::data_root` (a `basemind::data_root::DataRoot`), installed by
   `basemind::engine::Engine::new`; `basemind::cli::env_config::install_from_env()` builds it from the
@@ -182,18 +185,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   process starts, so a daemon it spawns (which runs in the comms dir) uses the same home. The
   `basemind::engine` and `basemind::data_root` modules are public, and `Store` has a public
   `data_root` field.
+
 - **BREAKING (library):** a process has one engine configuration (ADR-0050). A second
   `Engine::new` with the installed configuration returns a handle on it; one with any other
   configuration, or another data home, is refused with `EngineError::Unavailable`. Data homes are
   compared as directories, so a symlinked spelling is the same home.
+
 - The comms daemon a process spawns, and an agent `serve --lead` launches
   (`basemind_agents::LaunchConfig::data_home`), get the process's installed data home in
   `BASEMIND_DATA_HOME` rather than inheriting the variable.
+
 - Downloaded tree-sitter grammars are cached under the data home (`<data home>/grammars`) instead of
   the platform cache dir; `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR` still moves them, and the grammars are
   downloaded again once after the upgrade.
+
 - `mcp::serve_in_memory` refuses to run when `BASEMIND_DATA_HOME` names another data home than the
   one the process installed.
+
 - **BREAKING (library):** the operator grants (`BASEMIND_ALLOW_REPO_CREDENTIALS`,
   `BASEMIND_ALLOW_ANY_ROOT`, `BASEMIND_ALLOW_FOLLOW_SYMLINKS`, `BASEMIND_ALLOW_EXTRA_ROOTS`) are
   `EngineConfig::trust`, which the library reads instead of the environment.
@@ -203,29 +211,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BASEMIND_ALLOW_EXTRA_ROOTS` entry are now reported once when the process starts, not when a
   `basemind.toml` is loaded or a sweep reads the value; `basemind statusline` and `basemind hook`
   do not report them.
+
 - **BREAKING (library):** `BASEMIND_PARSE_TIMEOUT_MS`, `BASEMIND_GRAMMAR_OFFLINE`,
   `BASEMIND_CACHE_BUDGET_MB`, `BASEMIND_CACHE_GRACE_MINUTES`, `BASEMIND_BLOB_GC_GRACE_SECS`,
   `BASEMIND_MIN_FREE_MB` and `BASEMIND_MAX_DAEMONS` are `EngineConfig::{parse_timeout, grammars, gc,
   min_free_bytes, max_live_daemons}`; the library reads the configuration, and the parse-timeout cache
   static is gone.
+
 - **BREAKING (library):** the git, index and grep knobs (`BASEMIND_GIT_DELTA_CACHE_BYTES`,
   `BASEMIND_BLAME_MAX_BYTES`, `BASEMIND_BLAME_MAX_LINES`, `BASEMIND_GIT_CACHE_LOG_MAX_BYTES`,
   `BASEMIND_GIT_DISCOVER_PARENTS`, `BASEMIND_GH_INDEX`, `BASEMIND_INDEX_CACHE_BYTES`,
   `BASEMIND_GREP_BLOOM`) are `EngineConfig::{git, index_cache_bytes, grep_bloom}`, and the
   `BASEMIND_DAEMON_MAX_*` ceilings are `EngineConfig::daemon_caps` (`config::daemon::DaemonCaps`).
   The library reads none of them from the environment.
+
 - The tokio runtimes below the CLI are built in one module, `basemind::lance::runtime`: document
   extraction's (`extraction()`, 2 to 4 workers, a blocking pool capped at 256, was 16, so 64
   abandoned and 64 running extractions each keep two threads) and one current-thread runtime per
   vector store (`store()`, a blocking pool capped at 64, was tokio's 512). The two never share a
   blocking pool, so a hung document parse cannot hold up a search. Dropping a store shuts its
   runtime down, ending the tasks lance spawned for it before its directory can be removed.
+
 - A panic while a verb tool runs (an `index_rescan` scan, say) comes back as an internal-error
   result reading `tool task failed: …`, where it read `scan join: …` or
   `host rescan task panicked: …`.
+
 - A one-shot `basemind scan` gives each ONNX session the scan's cores minus the embed pool's other
   workers as intra-op threads (3 on 4 cores, was 2), and a set `[resources] embed_threads` now sets
   them too. The daemon keeps 2 and `serve` keeps `max(2, cores / 4)`: they share the machine.
+
 - **BREAKING: `docs_search` is rebuilt on one document store per repository group (ADR-0029,
   ADR-0037).**
   - A hit carries `chunk`, `cite` (pages, section, headings inside the hit, lines, bytes), `context`,
@@ -241,27 +255,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The rows live at `cache/groups/<group>/lance/<model>-<dim>-<hash>/`, shared by every worktree of
     the repository. The first scan deletes each view's old document store and re-extracts and
     re-embeds every document once (extraction digest `doc/4`, vectors keyed by model).
+
 - `code_refs` call sites, `callers` (with `path`) and `implementations` in a session that holds no
   index — a CLI command or a second `serve` beside a writer, with no daemon — are refused as busy
   (exit `3`), naming `basemind comms start`, instead of answering from an in-RAM projection of the
   blobs that could be truncated. The `projections_capped` notice is gone with it. `code_grep` still
   sweeps every file there, and relation `definition` still reads the intra-file facts.
+
 - A daemon-hosted session reads the daemon's index directly: its store borrows the pool writer's
   index handle per call, so reads are not held up by a scan, and it shares the daemon's git-history handle.
+
 - `cache gc` removes the whole `cache/groups/<group>/` directory, index included, of a group no workspace names
   (memory notes under `cache/repos/` stay); `group_stores_reaped` in its report counts those directories. A group
   that cannot be removed is logged and kept, and the rest of the GC still runs.
+
 - With the comms daemon up, a CLI tool command on the working view forwards its whole call to the
   daemon over one relay session (a `cli` client in the relay hello) instead of opening the store
   itself; the output and exit codes are unchanged. Against a daemon too old to take the call it exits
   `4` and names `basemind comms stop` (ADR-0039).
+
 - A CLI command beside another process that holds the workspace's index, with no daemon up, refuses
   `code_search`'s keyword lane, and a hybrid search none of whose lanes could run, as busy (exit `3`)
   naming `basemind comms start`, where it was an internal error (exit `1`). It no longer starts a
   daemon to read the lanes. It also no longer retries the git-history database such a process holds
   (about 1.5 s per command): history tools live-walk at once.
+
 - A CLI or hook resolving its agent id no longer creates a workspace cache directory that holds only that id: the
   id is derived from the workspace's cache path. A workspace whose id an older basemind persisted keeps it.
+
 - **BREAKING: the MCP tools are one per job.** The mode-dispatched `code`, `git`, `memory` and `admin`
   tools are replaced by 15 tools with exact schemas (ADR-0018, superseding ADR-0011): `code_outline`,
   `code_symbols`, `code_read`, `code_grep`, `code_search`, `code_refs`, `find_files`, `docs_search`,
@@ -384,6 +405,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `--hash-mode`, `--no-embed` and `--no-files` are removed. CLI parity is now "every MCP tool has a
     command" (ADR-0014 as amended): churn, changed-path regex search, chunk fetch, memory deletion, cache
     maintenance and telemetry are CLI only.
+
 - **BREAKING: the verb tools refuse calls that can only come back empty, bound what they return, and say
   every cut in one vocabulary.** These change responses and behaviour of the tools above.
   - One vocabulary for a cut. A page that ends at `limit` is paging: `next_cursor` says there is more
@@ -433,6 +455,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `stale`; `code_refs` with `path`, and `relation: "definition"`, return an error naming `index_rescan`.
     A file deleted since the scan gets one error from every tool, naming `index_rescan`. No tool reads an
     indexed file whole past `scan.max_file_bytes`.
+
 - **The `documents` cargo feature is split into tiers.** `documents` is now document search over local
   files without OCR or named-entity recognition: PDF (text layer), Office formats, spreadsheets, email,
   HTML, XML (SVG text is read as XML), Markdown/MDX and Jupyter notebooks, with chunking, language
@@ -454,8 +477,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The `full` build drops 67 locked packages (1204 to 1137) and 76 compiled crates (990 to 914); on
   aarch64-apple-darwin the release binary goes from 315.2 MB to 290.2 MB, its `__text` section from
   129.3 MB to 122.0 MB, and it no longer links `libheif` dynamically.
+
 - `xberg` 1.4.0 is now consumed from crates.io instead of a git revision. The lockfile package
   count is unchanged (1137); `xberg` was the last git dependency in the manifest.
+
 - **BREAKING: agent comms v2 (ADR-0021).** The mode-dispatched `agents` MCP tool (18 modes) and the
   `basemind agents` CLI group are removed, with no aliases. Three deferred tools replace them (found by
   tool search; the session-start hook and the server instructions name them): `agent_post`,
@@ -508,16 +533,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reported `"threads"`. The plugin hooks' inbox announcements need `jq`. The agent tools are not
   listed over the HTTP front-end. The `PreToolUse` hook injects a session `as` only on Claude Code
   and Codex; on other hosts the hooks act as the principal, like the tool calls.
+
 - **BREAKING: `basemind init` without a terminal writes only with `--yes`.** It used to append to
   `.gitignore` and write `basemind.toml` whenever stdin was not a TTY; it now prints what it would
   change. `/bm-init` passes `--yes` once the user has chosen.
+
 - `basemind init --settings-target` lists each read-only tool in `permissions.allow`, under
   `mcp__plugin_basemind_basemind__` and `mcp__basemind__`, instead of the
   `mcp__plugin_basemind_basemind__*` wildcard, which also approved `memory_save`, `index_rescan` and
   the agent tools. It removes that wildcard and entries for retired tools.
+
 - The plugin ships `scripts/statusline.sh`; `/bm-statusline` runs the installed plugin's copy
   instead of the marketplace clone's.
+
 - A `plugins-only` publish dispatch runs only from the release tag that names the plugin version.
+
 - cargo-deny checks the `full` dependency graph the release binaries are built from.
 
 ### Removed
@@ -1524,6 +1554,7 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
   overwritten in place at their content-hash path; the git cache refills lazily). The LanceDB document
   tables and the blob store are not wiped; orphaned blobs are reclaimed by the post-scan sweep. Stop
   the old daemon first with `basemind comms stop` so the new binary starts its own.
+
 - **CLI renames and removals, no aliases kept** (the MCP `admin` tool is unchanged):
 
   | Removed | Use instead |
@@ -1536,42 +1567,55 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
   | `serve --git-cache-mem`, `--no-git-cache-disk`, `--no-watch`, `--documents-*` | none; `serve` is a stdio relay to the daemon and ignored them |
 
   `admin` keeps `repo`, `telemetry`, `compress`, `tokens` and `eval`.
+
 - **Exit-code contract:** `0` ok, `1` error, `2` usage, `3` writer lock held by another process, `4`
   required daemon unreachable, `130` interrupted. `scan` and `rescan` used to print the lock notice and
   exit `0`; they now exit `3`. An invalid `rescan` path (outside the repo, or neither on disk nor
   indexed) and invalid tool parameters exit `2`.
+
 - **`cache clear` needs `--yes`** (or a terminal confirmation) for every component except `git-cache`,
   refuses with exit `3` while a writer holds the workspace lock, and refuses `blobs` while the daemon
   runs. `blobs` is the machine-global store shared by every workspace.
+
 - **`cache gc` deletes; `--dry-run` reports.** The old `admin gc` reported while `cache gc` was a no-op.
+
 - **Output changes:** the human-mode timing footer moved from stdout to stderr (`--json` keeps
   `elapsed_us` / `startup_us`); human output no longer truncates strings to 200 characters (only table
   cells are shortened, and stderr says so).
+
 - **`--format` accepts only `json` or `toon`** on `code semantic` and `memory documents`; the other
   closed-set flags are now value enums (see Added).
+
 - **`agents` / `workspace` `--json` reshaped** to the MCP response types and pretty-printed. `agents
   list` gains `description`, `skills`, `first_seen`, `last_seen`; threads use `last_activity_micros`;
   message rows gain `age_secs` and `body_sha`; empty optionals are omitted.
+
 - **`hook install` is safer, so old hooks should be refreshed.** It asks git for the hooks directory
   (honours `core.hooksPath` and linked worktrees), refuses to overwrite a pre-commit hook it did not
   write unless `--force` (the old one is kept as `pre-commit.bak`), and the generated hook is
   fail-open (exit 0 when `basemind` is missing or the scan fails). Re-run `hook install`.
+
 - **Code map is code-only.** Markdown, reStructuredText, AsciiDoc, vimdoc, CSV, JSON, YAML, TOML, INI,
   XML, `.properties`, `.env`, diffs, `.gitignore` / `.gitattributes` and Fluent files go to the document
   tier (searchable with `memory documents`), so `symbols`, `outline` and `grep` no longer return README
   headings or config keys. `[documents] include` / `exclude` and the MIME allowlist gate them. Builds
   without the `documents` feature keep the old behaviour.
+
 - **`code outline` / `symbols` no longer index names bound inside function, method or lambda bodies**
   (locals, nested functions); module- and class-level definitions are unchanged. Value-like symbols
   store a shorter signature (`MAX_RETRIES = 3` becomes `= 3`; initialisers cut at 80 characters).
+
 - **MCP logging is retired** (SEP-2577): no `logging` capability, no `logging/setLevel`, and `rescan`
   no longer emits the `rescan_complete` log notification. Counts are in the tool result; progress
   notifications are unchanged.
+
 - **MCP `memory` tool schema dropped ~26 `documents.*` / `llm.*` override fields** (`llm_api_key`,
   `llm_model`, `reranker_*`, `embedding_preset`, ...). They remain CLI flags, env vars and
   `basemind.toml` keys; `memory` mode `documents` keeps `format`, `max_tokens`, `mime_type`, `scope`,
   `entity_category` and `keywords_contains`. No API key travels as a tool argument any more.
+
 - **`agents` `wait` is capped at 40 s** (was 300).
+
 - **Comms protocol version 4:** requests carry ids. Stop the old daemon (`basemind comms stop`) after
   upgrading so clients and daemon speak the same version.
 
@@ -2180,6 +2224,7 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
   unreadable, so the guard cannot decide about it at all). It is a misconfiguration guard, not an
   authorization boundary: it does not defend against a caller who controls the process's arguments
   or environment. ([#62])
+
 - The grandfather clause reads an explicit record rather than inferring consent from a side effect.
   The guard writes `root-admission.json` into the root's workspace cache dir, stamped
   `pre_existing_index` (a standing admission that survives with no env var — the upgrade path) or
@@ -2189,13 +2234,16 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
   next hatch-free run would accept as evidence. The first verdict is the standing one and is never
   overwritten, and the write is best-effort — a failed write only degrades the guard to its
   index-means-admitted behaviour and never fails a scan. ([#62])
+
 - The HTTP transport's `?root=` now runs the same root discovery the CLI does, so naming a
   subdirectory of a repository attaches to that repository instead of being refused — the two
   front-ends previously disagreed about what a root is. ([#62])
+
 - Excluded directories are now pruned during the walk instead of being filtered per file after the
   walker has already descended into them, so a non-gitignored `node_modules` is no longer traversed
   and stat'd in full. The indexed set is unchanged. This also fixes the Linux watcher, which
   previously registered inotify watches inside trees it was excluding. ([#62])
+
 - **Breaking:** `[scan] extra_roots` now requires the operator to set `BASEMIND_ALLOW_EXTRA_ROOTS=1`
   in the environment. That key names directories *outside* the repository but is read from the
   scanned repository's own `basemind.toml`, so cloning and indexing a repo was enough to make
@@ -2205,6 +2253,7 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
   (they were appended after the ceiling was evaluated), are refused when they resolve to a
   filesystem or volume root, follow symlinks only when `[scan] follow_symlinks` is on (it was
   hard-coded on), and stop when a scan is cancelled. ([#62])
+
 - The scanner bounds what it stages into the index by **bytes** rather than by file count. BM25
   keyword postings — one entry per (term, chunk), staged on essentially every scan — previously
   counted toward no limit at all and could not force a commit; they now participate in the byte
@@ -2219,6 +2268,7 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
   worker before its result is returned. Worth having at monorepo scale, but not the 43.8 GiB.
   Directory pruning is a walk-cost win rather than a memory one. Stated explicitly so nobody
   re-derives the priorities from scratch next time. ([#62])
+
 - **Breaking:** `[resources] max_footprint_mb = 0` now means **auto**, not disabled. An existing
   config that carries the old default — as every config generated before this release does —
   therefore gains a memory ceiling on upgrade rather than keeping none. Auto budgets 75% of an
@@ -2228,10 +2278,12 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
   admits anyway after five seconds rather than failing a scan — so the change shapes peak memory
   and cannot make a scan that used to succeed start failing. A long-lived daemon shipping with its
   only memory bound disabled by default is what made 43.8 GiB reachable. ([#62])
+
 - The footprint gate works on Linux and Windows, not only macOS. Its sampler was
   `sysres::phys_footprint`, a Darwin-only metric returning `None` everywhere else, so on the
   machine that filed #62 the ceiling could not have throttled anything even if it had been
   configured. ([#62])
+
 - The MCP read stack no longer keeps every file's decoded outline resident for the process lifetime.
   The old `MapCache` was the only `O(total symbols)` structure with permanent lifetime — plus a
   second full copy of every import, plus a deep clone of the whole map on every watcher batch, times
@@ -2242,28 +2294,33 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
   in parallel, one stat per file instead of a full read and decode. A read-only session whose
   projections are truncated by the budget reports it through the existing lifecycle notice with
   `retry: false`, because rerunning cannot widen a budget. ([#62])
+
 - Per-keyspace Fjall memtable sizing replaces the 64 MiB default on all 17 keyspaces: 16 MiB for the
   BM25 posting list (the densest writer by far), 8 MiB for the secondary indexes the scanner
   rewrites once per file, less for the keyspaces a scan barely touches — all within fjall's
   recommended 8–64 MiB band. This is what `INDEX_PARTITION_REVISION` 4 → 5 exists to force: fjall
   persists `max_memtable_size` at keyspace *create* time and ignores the create options on reopen,
   so an index built by an earlier build would have kept the 64 MiB default forever. ([#62])
+
 - The staged-byte counter now models fjall's real per-entry cost (`64 + heap(key) + heap(value)`,
   where a payload of 20 bytes or fewer inlines and anything larger carries an 8-byte refcount
   header). Charging `key.len() + value.len()` undercounted what a `WriteBatch` actually holds by
   2–3×, so both the per-worker batch budget and the process-wide staging ceiling meant something
   other than what they said. It remains a deliberate lower bound: allocator size-class rounding and
   `Vec` growth slack are not modelled. ([#62])
+
 - The resolve pass no longer materialises the whole corpus. It previously built every file's
   resolved-reference edge set at once — one edge per resolved identifier use — held them through
   fact staging, then transformed rather than dropped them. The per-file edge set now cannot escape
   the file that produced it (there is no field to retain it in, so keeping the corpus set is a
   compile error), and the serial index writers gained the same byte bounds the parallel workers
   already had, closing the last staging path with no byte bound at all. ([#62])
+
 - `basemind scan` / `rescan` stream each file's line as the scan absorbs it instead of accumulating
   one result per file for the whole repository just to print it afterwards. `ScanReport` now carries
   the summary statistics only; a caller that wants the old whole-corpus vector asks for it
   explicitly. ([#62])
+
 - **Breaking:** git history is no longer indexed for a workspace root that is a subdirectory of the
   repository git discovery lands on. Those commits are addressed by paths that do not exist under
   the root, and walking them costs the whole ancestor object database — a 4.4k-file subdirectory of
@@ -2271,8 +2328,10 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
   unchanged (ascent is what lets `basemind scan src/` lift to the repository root); only the
   history integration is gated. `git init` in the directory, or
   `BASEMIND_GIT_DISCOVER_PARENTS=1`, restores the old behaviour. ([#62])
+
 - The Claude and Cursor plugin manifests launch `scripts/mcp-launch.sh serve --root <project dir>`
   over stdio instead of dialling `http://127.0.0.1:51786/mcp?root=…` — see *Security*. ([#62])
+
 - Dependency refresh: `xberg` repinned to the current 1.1.0 revision (internal extraction fixes and
   its own dependency updates), `crawlberg` 1.4.2 → 1.5.0, `rmcp` 3.1 → 3.2,
   `tree-sitter-language-pack` 1.15.12 → 1.16.1, `liter-llm` 1.18.4 → 1.19.1, `smallvec` 1.15 → 1.16,
@@ -2472,11 +2531,14 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
 
 - **Cache schema advances to 24.** Existing machine-global index, blob, and comms cache state is
   rebuilt on the next scan after upgrading.
+
 - **Release dependencies are current.** `tree-sitter-language-pack` is updated to 1.14.3,
   `crawlberg` to 1.1.4, and `liter-llm` to 1.16.0. The optional LSP bincode integration is pinned to
   2.0.1 because the published 3.0.0 crate is an intentionally non-compiling placeholder.
+
 - **Agent shell sessions now default to headless presentation.** Background MCP/CLI work no longer
   opens terminal tabs unless `[shells].visual` explicitly selects `current` or `window`.
+
 - **The two interactive front-ends are held back from releases.** The agent TUI (`basemind-tui`,
   ratatui) and the desktop UI (`basemind-ui`, tauri) are not ready to ship, so the release archive now
   contains the `basemind` binary alone, and the launcher subcommands that would re-exec them sit
@@ -2486,12 +2548,14 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
   `cargo build --workspace`, the `basemind-tui` replay/PTY suite still runs in CI, and a local
   `cargo install --path . --features full,agent-tui,desktop-ui` still gets both launchers. Nothing was
   published from these crates before — both carry `publish = false` — so no crates.io surface changes.
+
 - **Daemons self-reap sooner to stop the process/memory leak class.** The idle-reap default drops
   from 30 min to 10 min, and a new **bootstrap reaper** self-terminates a daemon that no client ever
   connects to within ~2 min (env `BASEMIND_COMMS_BOOTSTRAP_SECS`) — catching the spawn-and-abandon
   shape (a test or script that ran `daemon ensure` then exited) that previously left a daemon, and its
   tens of threads, resident. Behavioural only; no schema/`RELEASE_MINOR` bump. Test binaries pin a fast
   reap so a parallel `cargo test` no longer accumulates one lingering daemon per binary.
+
 - **BREAKING: `basemind-agent`'s LLM-facing tool names follow the domain consolidation.** The agent
   registered its code-map tools under the pre-consolidation flat names, so the model saw one
   vocabulary and the MCP surface another. They are now `domain_mode` in bare snake_case:
@@ -2506,12 +2570,14 @@ for `code grep`, MCP resources, and a more robust comms protocol (v4). Read **Br
   telemetry key at the boundary, keyed off the real mode vocabulary in `src/mcp/mode.rs`, so each
   baseline carries a single spelling — previously it carried both, and dropping either would have
   silently zeroed the agent TUI's "tokens saved" readout instead of failing a test.
+
 - **`call_graph` is re-expressed over the shared `codegraph`.** The tool no longer maintains its own
   call scan; it projects the resolved `Calls` edges of the shared, memoized graph the other graph
   tools already read. One user-visible consequence: a call whose callee does not resolve to an
   in-repo function-like definition (an external/library call) no longer surfaces as an empty-`sites`
   callee node — `call_graph` now reports only resolved, in-repo call relationships. The `callers`
   direction is unchanged. Read-side only; no blob/index schema change.
+
 - **BREAKING: the 85-tool MCP surface collapses into nine domain tools, each dispatched by a
   required `mode`.** Hosts defer MCP tools and surface them only through keyword search, so every
   extra tool name competed for the same query, and GH #50 showed one layer's schema defect took the

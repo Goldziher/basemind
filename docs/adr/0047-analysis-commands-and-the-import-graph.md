@@ -169,10 +169,13 @@ these arguments and fields:
 
   ADR-0048 adds `path_match`. `elsewhere` and `name_only` stay apart: one is a checked negative,
   the other an absence of evidence.
+
 - A row writes `resolution` only when it differs from the page's `resolution_default`, its most
   common value. The response adds `resolution_counts`, and the free-text response field
   `resolution` becomes `resolution_note`.
+
 - The request filter `resolution` takes one value or a comma list.
+
 - Precision under the filter is reported by the eval, not gated (ADR-0031 rule 10).
 
 ### 7. Queries scoped to a change (#122)

@@ -23,6 +23,7 @@ Keep it tight: one clear question → tool calls → the savings dashboard.
 
 1. Screen-record (macOS: `⇧⌘5`, "Record Selected Portion") to a `.mov`. Keep it
    ≤~30s; crop to the terminal/session pane.
+
 2. Convert to an optimized GIF with ffmpeg (two-pass palette — scaled to 1000px
    wide, 12 fps keeps it small and crisp):
 

@@ -43,14 +43,17 @@ The value gate of ADR-0022 stands except where this record changes it.
 
 2. **Pass rule for a reducing kind.** Unchanged: credited at least 0.7 and median ratio at least
    1.5, on each corpus.
+
 3. **Pass rule for a locating kind.** On each corpus, all of:
    - credited at least 0.7;
    - mean recall no more than 0.02 below the baseline's mean recall;
    - median ratio at least 0.67 over the credited tasks, that is, the tool's answer costs at most
      one and a half times the shell's.
+
 4. **What a locating tool adds is measured where it can be.** `code_grep` reports the enclosing
    symbol of each hit; its accuracy against the gold must be at least 0.95. This is the only such
    measure today; a tool that claims another gains a measure with it.
+
 5. **Baselines, per kind.** The baseline is the shell command an agent would run, with no
    whole-file read unless the answer is file content:
 
@@ -70,12 +73,16 @@ The value gate of ADR-0022 stands except where this record changes it.
    - The median is the nearest-rank median.
    - Recall on a ranked answer is recall within the returned results.
    - A paged answer is charged for every page up to the absent `next_cursor`.
+
 7. **Corpus and binary.** The basemind corpus is the previous release's tag; the binary is the build
    being released, built with the `tokenizer` feature. Both pins are in `benchmarks/eval/corpus.tsv`.
+
 8. **Tools that need a model.** `code_search` (kind `semantic`) and `docs_search` are run with their
    models present, on a machine that has them, before the release is cut. A release whose report
    lists either as "not run" has not run the gate.
+
 9. **`code_refs`** must pass on `references`, `callers`, `implementations` and `dependents`.
+
 10. **Gold.** The Rust gold comes from the committed `syn` extractor
     (`benchmarks/eval/rust_gold/`) and is name-based: it does not resolve scope. Precision against it
     is reported and does not gate.

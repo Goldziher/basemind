@@ -15,6 +15,7 @@ x-ai-rulez:
 Start the basemind MCP stdio server. Useful when manually testing tools via a client like `mcp-cli` or the rmcp REPL.
 
 1. Build if stale: `cargo build --release`.
+
 2. Run:
 
    ```bash

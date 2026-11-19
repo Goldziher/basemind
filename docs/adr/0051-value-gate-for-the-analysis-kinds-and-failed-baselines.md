@@ -43,22 +43,27 @@ ADR-0031 stands except where this record adds to it.
    a file and walking the graph; no `git grep` or `git log` does that, and no agent reads every
    import line of a repository. `cycles` is the only such kind. A kind joins this job only through an
    ADR that says why no shell answer exists.
+
 3. **Each kind counts against the tool it drives** (`EvalMode::tool_key`): `impact` and `cycles`
    against `code_refs`, `grep_changed` against `code_grep`, `find_large` against `find_files`,
    `read_around` against `code_read`, and `explain` against `code explain` (CLI-only, ADR-0047).
    `gate.py` refuses a gated kind that it lists under no tool, or under a tool other than the one the
    report names.
+
 4. **`explain` baseline items.** The baseline is scored against the same gold: `path:line` for each
    definition and call-site row, and `->name` for each name a body line calls. Its recall is
    reported. As a reducing kind, `explain` gates on credited and ratio only.
+
 5. **Failed baselines.** A baseline that errors or prints nothing is a baseline failure. Its recall
    is 0 wherever the kind reads baseline items, and it is left out of the ratio. The median ratio is
    taken over the credited tasks whose baseline answered. The baseline runs even when the tool
    errored, and the tool's and the baseline's mean recall are taken over the same tasks. The report
    counts failures per kind (`baseline_failed`).
+
 6. **Undecidable checks.** These cases get no verdict rather than a pass: a locating kind with no
    baseline recall to compare, a kind whose credited tasks all have failed baselines, and `grep`
    without a measured symbol accuracy.
+
 7. **Binary identity.** The report records the Cargo version, a hash of the executable and the
    features the binary was compiled with. `run_gate.sh` records the commit of the checkout it runs
    from (with `-dirty` for uncommitted tracked changes), and `gate.md` prints all of them.

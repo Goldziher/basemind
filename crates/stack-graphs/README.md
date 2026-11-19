@@ -16,11 +16,14 @@ pass uses to resolve references to definitions.
 ## Modifications
 
 - **Edition 2024**, clippy-clean under the workspace `-D warnings` bar.
+
 - `lsp-positions` is a workspace path dep (`crates/lsp-positions`), so the graph, the forked
   `tree-sitter-stack-graphs`, and this crate all share one `lsp_positions::Span` type.
+
 - Stripped: the C FFI (`src/c.rs`, `include/stack-graphs.h`, cbindgen), the `serde`,
   `visualization`, and `storage` (rusqlite/bincode) modules. basemind builds a `StackGraph` in
   memory and stitches it in-process — none of that surface is reachable.
+
 - **Two upstream panics on the stitching hot path were made recoverable.** A panic while resolving
   one file must never abort a scan of an 82k-file repository:
   - `Database::get_incoming_path_degree` (`src/stitching.rs`) indexed the lazily-grown

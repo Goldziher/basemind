@@ -37,8 +37,10 @@ binary does not advertise.
 1. **Trunk-based.** Work happens on short-lived branches, each in its own worktree. Maintainers
    fast-forward a branch onto `main` and push; outside contributions come as pull requests and are
    squash-merged. There is no long-lived feature or release branch.
+
 2. **`main` stays green.** CI runs on `main` after every push, including the Windows leg. A red run
    is fixed or reverted before anything else lands.
+
 3. **Breaking changes are batched into three releases:**
 
    | Release | Contents |
@@ -51,20 +53,24 @@ binary does not advertise.
    skew. A breaking change waits for its release. Patch releases stay compatible in tools, protocol
    and formats. A tool that ADR-0022's gate removes goes in the next of these releases, not in a
    patch.
+
 4. **Every minor release triggers an automatic rescan,** because derived stores are tied to the
    release minor (ADR-0025). 0.35 is the release whose formats are redesigned; 0.34 and 0.36
    rescan all the same.
+
 5. **Plugin content waits for its binary.** A change to plugin content (hooks, skills, commands or
    manifests under the plugin trees) that names a tool, mode or command the currently pinned binary
    lacks may reach `main` only when the release carrying that binary change is cut within one
    working day. Otherwise it waits on its branch. That is the one stated exception to short-lived
    branches.
+
 6. **A skew check gates every release.** It builds the binary, starts it through the plugin
    launcher, calls `tools/list`, and asserts that every tool name in the plugin's machine-readable
    list (`TOOL_NAMES` in `plugin/hooks/session-start`) is advertised. It then makes one call per
    advertised tool with the example arguments from that tool's description; a call that fails on
    its arguments blocks the release. This check does not exist yet and is to be written before
    0.34.
+
 7. **Version surfaces are bumped only by `mise run release:sync-version`.** No surface is edited by
    hand.
 

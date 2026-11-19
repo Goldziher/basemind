@@ -32,15 +32,18 @@ answer it today. What exists:
 1. **A route is a symbol.** A new tail `SymbolKind::Route` (ordinal 22). Its `name` is the method
    and the normalized path, `"GET /users/:param"`, with a router mount prefix folded in when it is a
    literal in the same file. Its `signature` is the handler's name.
+
 2. **A client call is a call row.** A call whose URL is a literal (or a template with literal
    segments) becomes a `Call` whose `callee` is `"GET /users/:param"`. Path normalization keeps
    literal segments and turns `${…}`, `{…}` and `:x` parameters into `:param` form, so both sides
    compare equal.
+
 3. **Extraction.** Two new query sections, `;; section: routes` and `;; section: http_calls`, with
    two new `QueryKind`s, in the language overrides. Java gains its first override,
    `src/queries/java.scm`, which ports the adapted TSLP symbol, call and implementation sections
    before adding the route sections, since an override replaces the fallback for every section.
    `EXTRACT_EPOCH` (`src/extract/mod.rs`) is bumped.
+
 4. **Scope, held for 0.34:**
 
    | Language | Servers | Clients |
@@ -52,6 +55,7 @@ answer it today. What exists:
    | Java | Spring MVC | none |
 
    Other frameworks and clients go to a follow-up issue.
+
 5. **No new keyspace and no new tool.** The symbol and call row families carry both. Queries:
    - `code_symbols {kind:"route"}` lists routes; `find_files` is unchanged.
    - `code_refs` callers of a route, named `METHOD /path` in any parameter syntax or pinned by

@@ -77,10 +77,12 @@ src/extract.rs:57:20 processFile`} lang="text" />
 - **Index build**: Seconds for small repos; the largest test case (81k TypeScript
   files) scans in around 18 seconds. Re-scans are much faster — only changed
   files are re-indexed.
+
 - **Query latency**: about a millisecond for an outline and 1–5 ms for symbol, reference
   and caller lookups on a 74k-file monorepo (in-process, p50; smaller repos are
   faster). Git history lookups in **tens of microseconds**.
   See [Performance](/reference/performance/).
+
 - **Outline before you read**: Use `code_outline` to see a file's
   structure (symbols, signatures, line numbers, imports) without opening it.
 

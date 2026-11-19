@@ -28,9 +28,11 @@ force for the clauses that changed. A clause not named here stands.
    `src/lance/live.rs`. `docs/layered-index-design.md` stays, marked historical, because the
    locked ADR-0016 links to it. Reason: nothing between the stages ships in a release, and a second layout
    doubles every store test for a format that is never released.
+
 2. **ADR-0028 rules 1 and 8, `index.lock`, become:** the group lock is the store's `.lock` with its
    `.lock.meta` holder record, in `cache/groups/<group>/`. Contention reports the holder like any
    other store lock.
+
 3. **ADR-0028 rule 8, "a process that cannot take the lock answers from blobs", is read with
    ADR-0030 rule 26 ("an open without the workspace lock writes nothing"):** a read-only open never
    opens the group database the way a writer does (schema stamp, incarnation, journal flush, wipe).
@@ -40,10 +42,12 @@ force for the clauses that changed. A clause not named here stands.
    schema is not read) and holds the lock until the command exits. A held lock answers from blobs.
    A long-lived reader (`serve` beside a writer) never takes the group lock: every writer of the
    group would wait on it. A writer that meets the query's lock retries as for any holder.
+
 4. **ADR-0028 rule 11, "a workspace's per-view `index.fjall` and `lance/` are deleted when this
    binary first scans it", becomes:** the per-view `index.fjall` is deleted at the writer open of
    each view, before the view is reconciled with the group. The workspace's `lance/` stays until the
    group vector store of ADR-0029 replaces it, since it is still the vector store in use.
+
 5. **ADR-0028 rule 2, BM25 rows, as built first:** postings are shared by every view of the group
    and keyed `term ‖ bm25 key ‖ ordinal`, the 16-byte key covering content hash, language, extract
    epoch and the `[code_search]` chunk digest. Each view keeps its path-keyed `code_bm25_by_path`
@@ -51,12 +55,15 @@ force for the clauses that changed. A clause not named here stands.
    count and score, give its BM25 totals, and list the terms whose postings a retired chunk leaves.
    A posting is deleted only when no view's forward rows name its key, under a per-group gate that a
    posting commit holds shared and the retirement or sweep exclusively.
+
 6. **ADR-0028 rule 7, order, stands:** name scans order rows by key, offset, path. Each returned page
    is sorted by path, and a cursor encodes the key position.
+
 7. **Rebuilds within the unreleased minor:** the group database records its row layout in group
    `meta`. An open that finds another layout in a database with an incarnation empties every
    keyspace and takes a new incarnation, so every view's file map is emptied and rescanned. A
    read-only open of such a database answers from blobs. `INDEX_PARTITION_REVISION` is not touched.
+
 8. **Who collects BM25 garbage, and when a pass walks the keyspaces** (`src/index/bm25_pass.rs`):
    every pass, full or incremental, retires the postings named by the forward rows it deleted, from
    a per-view ledger, and writes its stats as the stored ones plus its delta. The full posting
@@ -68,6 +75,7 @@ force for the clauses that changed. A clause not named here stands.
    liveness whenever a pass deleted a row: on the 4 000-file budget corpus a one-file edit's full
    pass spends about 1.5 s there in a debug build and raises the footprint by about 75 MiB of
    cached forward blocks. A content-keyed holder index would make that a point lookup per key.
+
 9. **ADR-0028 rules 2, 3 and 7, symbol and call rows, as built:** `symbols_by_path`,
    `symbols_by_name`, `calls_by_path` and `calls_by_callee` are shared by every view of the group
    and keyed by the 16-byte content key of content hash, language and extract epoch in place of
