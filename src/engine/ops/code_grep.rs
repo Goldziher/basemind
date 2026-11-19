@@ -15,7 +15,9 @@ use crate::engine::error::EngineError;
 use crate::engine::files::{IndexedFiles, Sweep};
 use crate::engine::filters::{Filters, PathFilter};
 use crate::engine::grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
-use crate::engine::types::grep::{CodeGrepParams, GrepHit, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse};
+use crate::engine::types::grep::{
+    CodeGrepParams, GrepHit, GrepHits, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse,
+};
 use crate::engine::workspace::Workspace;
 use crate::index::grep_bloom::GrepEntry;
 use crate::path::RelPath;
@@ -50,6 +52,13 @@ impl Workspace {
                 "`code_grep`: `pattern` is empty; pass the text to find.",
             ));
         }
+        let ranges = p.ranges.unwrap_or(false);
+        if ranges && p.context.unwrap_or(false) {
+            return Err(EngineError::invalid_argument(
+                "`code_grep`: `ranges` already widens each hit by 5 lines; drop `context`, or drop `ranges` \
+                 for hit lines with one line of context.",
+            ));
+        }
         self.wait_map_ready();
         workspace_grep(
             self,
@@ -60,6 +69,7 @@ impl Workspace {
                 limit: p.limit,
                 max_tokens: budget(p.max_tokens),
                 include_context: p.context.unwrap_or(false),
+                ranges,
                 literal: !p.regex.unwrap_or(false),
                 cursor: p.cursor,
             },
@@ -93,7 +103,7 @@ fn workspace_grep(
                     truncated: false,
                     truncated_reason: None,
                     budgeted: false,
-                    hits: Vec::new(),
+                    hits: GrepHits::Rows(Vec::new()),
                     next_cursor: None,
                     skipped_files: 0,
                     cursor_invalidated: true,
@@ -215,7 +225,14 @@ fn workspace_grep(
         params.include_context,
         skip_files,
     );
-    annotate_symbols(&cache, &mut hits);
+    if params.ranges {
+        // A range answer writes no line text or symbol, so the budget costs each hit without them.
+        for hit in &mut hits {
+            hit.text.clear();
+        }
+    } else {
+        annotate_symbols(&cache, &mut hits);
+    }
 
     // A page cut by `limit` is paging and says so with its cursor alone. Files the byte budget
     // left unread are a cut the caller did not ask for, on whichever page it shows.
@@ -239,6 +256,12 @@ fn workspace_grep(
         (budget.items, false, next_cursor)
     };
 
+    let hits = if params.ranges {
+        GrepHits::Ranges(read_ranges(hits))
+    } else {
+        GrepHits::Rows(hits)
+    };
+
     Ok(WorkspaceGrepResponse {
         total,
         truncated: byte_budget_hit,
@@ -250,6 +273,19 @@ fn workspace_grep(
         cursor_invalidated: false,
         notice: ws.lifecycle_notice(),
     })
+}
+
+/// A page's hits as per-file read ranges: each hit widened by
+/// [`DEFAULT_CONTEXT`](crate::engine::ranges::DEFAULT_CONTEXT) lines, clamped to the file it was
+/// read from, and merged.
+fn read_ranges(hits: Vec<GrepHit>) -> Vec<crate::engine::ranges::FileRanges> {
+    let lines: ahash::AHashMap<RelPath, u32> = hits.iter().map(|hit| (hit.path.clone(), hit.file_lines)).collect();
+    crate::engine::ranges::merge_hits(
+        hits.into_iter().map(|hit| (hit.path, hit.line)),
+        |path| lines.get(path).copied(),
+        crate::engine::ranges::RangeOptions::default(),
+    )
+    .files
 }
 
 /// Operator kill switch for the trigram-bloom prefilter: `BASEMIND_GREP_BLOOM=0` forces the full
@@ -588,6 +624,7 @@ fn collect_hits(
     let line_starts: Vec<usize> = std::iter::once(0)
         .chain(memchr::memchr_iter(b'\n', source.as_bytes()).map(|pos| pos + 1))
         .collect();
+    let file_lines = (line_starts.len() - usize::from(source.ends_with('\n'))) as u32;
 
     let mut out = Vec::with_capacity(sel.take);
     let text = lines_end_at_lf(re, source);
@@ -631,6 +668,7 @@ fn collect_hits(
                 context_after,
                 start_byte: match_start as u32,
                 stale: !source_fresh,
+                file_lines,
             },
         ));
     }

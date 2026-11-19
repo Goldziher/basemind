@@ -1329,6 +1329,51 @@ async fn mcp_server_exercises_representative_tools() {
         "a span read returns exactly the requested lines: {span:?}"
     );
 
+    let ranged = decode_text(
+        &service
+            .call_tool(call_params(
+                "code_grep",
+                json!({ "pattern": "alpha", "path": "a.rs", "ranges": true }),
+            ))
+            .await
+            .expect("code_grep(ranges)"),
+    );
+    let ranges = ranged
+        .pointer("/hits/a.rs/ranges")
+        .and_then(Value::as_array)
+        .expect("`ranges` lists each file's merged read ranges");
+    assert!(
+        !ranges.is_empty() && ranged.pointer("/hits/a.rs/hits").and_then(Value::as_u64) >= Some(1),
+        "a ranged grep maps each file to its ranges and hit count: {ranged}"
+    );
+    let first = (
+        ranges[0][0].as_u64().expect("start"),
+        ranges[0][1].as_u64().expect("end"),
+    );
+    let read = decode_text(
+        &service
+            .call_tool(call_params(
+                "code_read",
+                json!({ "path": "a.rs", "ranges": format!("{}-{}", first.0, first.1) }),
+            ))
+            .await
+            .expect("code_read(ranges)"),
+    );
+    assert_eq!(
+        (
+            read.pointer("/spans/0/line").and_then(Value::as_u64),
+            read.pointer("/spans/0/end_line").and_then(Value::as_u64),
+        ),
+        (Some(first.0), Some(first.1)),
+        "a ranged read returns each span it was given, with its lines: {read}"
+    );
+    assert!(
+        read.pointer("/spans/0/body")
+            .and_then(Value::as_str)
+            .is_some_and(|body| body.contains("alpha")),
+        "{read}"
+    );
+
     let _ = service.cancel().await;
 }
 
@@ -2867,6 +2912,33 @@ async fn code_and_index_tools_reject_inexact_arguments() {
     assert!(
         message.contains("`end_line` applies only to a line span") && message.contains("pass {path, symbol}"),
         "code_read with a symbol and a span end must name the accepted shapes: {message}"
+    );
+    for together in [
+        json!({ "path": "a.rs", "ranges": "1-2", "line": 1 }),
+        json!({ "path": "a.rs", "ranges": "1-2", "symbol": "alpha" }),
+    ] {
+        let message = refused(&service, "code_read", together.clone()).await;
+        assert!(
+            message.contains("`ranges` names every span itself") && message.contains("{path, ranges}"),
+            "code_read must refuse `ranges` with another selector: {together} -> {message}"
+        );
+    }
+    for malformed in ["1-", "a", "3-1", "0", ""] {
+        let message = refused(&service, "code_read", json!({ "path": "a.rs", "ranges": malformed })).await;
+        assert!(
+            message.contains("ranges item") && message.contains("e.g. \"120-148,310\""),
+            "a malformed span list must be refused naming the accepted shape: {malformed:?} -> {message}"
+        );
+    }
+    let message = refused(
+        &service,
+        "code_grep",
+        json!({ "pattern": "alpha", "ranges": true, "context": true }),
+    )
+    .await;
+    assert!(
+        message.contains("drop `context`"),
+        "code_grep must refuse `ranges` with `context`: {message}"
     );
 
     let message = refused(&service, "code_refs", json!({ "name": "alpha", "line": 3 })).await;

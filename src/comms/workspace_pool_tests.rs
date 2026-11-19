@@ -662,6 +662,7 @@ async fn code_response(shared: &crate::mcp::ServedWorkspace, query: CodeQuery) -
                     path: None,
                     language: None,
                     context: None,
+                    ranges: None,
                     limit: None,
                     cursor: None,
                     max_tokens: None,

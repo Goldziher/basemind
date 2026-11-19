@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{LifecycleNotice, default_true, is_zero};
 use crate::engine::cursor::Cursor;
+use crate::engine::ranges::FileRanges;
 use crate::path::RelPath;
 
 /// Arguments of `code_grep`.
@@ -24,6 +25,9 @@ pub struct CodeGrepParams {
     /// Add one line before and after each hit.
     #[serde(default)]
     pub context: Option<bool>,
+    /// Merged ±5-line read spans per file, for `code_read`.
+    #[serde(default)]
+    pub ranges: Option<bool>,
     /// Max hits (default 100).
     #[serde(default)]
     pub limit: Option<u32>,
@@ -59,6 +63,9 @@ pub struct WorkspaceGrepParams {
     /// Include 1 line of context before + after each hit. Default true.
     #[serde(default = "default_true")]
     pub include_context: bool,
+    /// Answer each file's hits as merged read ranges instead of lines.
+    #[serde(default)]
+    pub ranges: bool,
     /// Match `pattern` as literal text instead of compiling it as a regex.
     #[serde(default)]
     pub literal: bool,
@@ -100,6 +107,9 @@ pub(crate) struct GrepHit {
     /// The file changed since it was indexed. The hit is from the file as it is now, and `symbol`
     /// is left out: the indexed outline describes other bytes until `index_rescan`.
     pub stale: bool,
+    /// Lines in the file the hit was read from; bounds its read range, not part of the response.
+    #[schemars(skip)]
+    pub file_lines: u32,
 }
 
 impl crate::engine::by_path::Located for GrepHit {
@@ -147,6 +157,46 @@ impl Serialize for GrepHit {
     }
 }
 
+/// The hits of a `code_grep` page: one row per hit, or with `ranges` each file's hits merged into
+/// read ranges (`{"<path>": {"ranges": [[start, end], ...], "hits": n}}`, lines 1-based inclusive).
+#[derive(Debug)]
+pub(crate) enum GrepHits {
+    Rows(Vec<GrepHit>),
+    Ranges(Vec<FileRanges>),
+}
+
+impl Serialize for GrepHits {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        match self {
+            Self::Rows(rows) => crate::engine::by_path::serialize(rows, serializer),
+            Self::Ranges(files) => {
+                let mut map = serializer.serialize_map(Some(files.len()))?;
+                for file in files {
+                    map.serialize_entry(&file.path.to_str_lossy(), &FileRangesRow(file))?;
+                }
+                map.end()
+            }
+        }
+    }
+}
+
+/// One file's entry under `hits` with `ranges`.
+struct FileRangesRow<'a>(&'a FileRanges);
+
+impl Serialize for FileRangesRow<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let spans: Vec<[u32; 2]> = self.0.ranges.iter().map(|r| [r.span.start, r.span.end]).collect();
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("ranges", &spans)?;
+        map.serialize_entry("hits", &self.0.hits())?;
+        map.end()
+    }
+}
+
 /// Why a `workspace_grep` result was cut short. Present only when `truncated` is true — a grep that
 /// returned every match carries no reason, so an agent can tell a complete zero from a bounded one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
@@ -176,8 +226,8 @@ pub(crate) struct WorkspaceGrepResponse {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     /// The hits under the file each is in, files in the order searched.
-    #[serde(serialize_with = "crate::engine::by_path::serialize")]
-    pub hits: Vec<GrepHit>,
+    #[schemars(with = "serde_json::Value")]
+    pub hits: GrepHits,
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,

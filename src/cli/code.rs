@@ -72,6 +72,9 @@ pub enum CodeCmd {
         /// Last line, inclusive (default: `--line`).
         #[arg(long)]
         end_line: Option<u32>,
+        /// Several spans in one read, e.g. `120-148,310`; not with `--symbol` or `--line`.
+        #[arg(long)]
+        ranges: Option<String>,
     },
     /// Content search across indexed code files. The pattern is literal text unless `--regex`.
     Grep {
@@ -87,6 +90,9 @@ pub enum CodeCmd {
         /// Add one line before and after each match.
         #[arg(long)]
         context: bool,
+        /// Per file, the matches widened by 5 lines and merged into spans for `code read --ranges`.
+        #[arg(long)]
+        ranges: bool,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -303,6 +309,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             kind,
             line,
             end_line,
+            ranges,
         } => (
             "code_read",
             tools
@@ -314,6 +321,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         kind,
                         line,
                         end_line,
+                        ranges,
                     },
                     async |s, p| s.op_unpaged(p, Workspace::code_read).await,
                 )
@@ -325,6 +333,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             path,
             language,
             context,
+            ranges,
             limit,
             cursor,
             max_tokens,
@@ -339,6 +348,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         path,
                         language,
                         context: context.then_some(true),
+                        ranges: ranges.then_some(true),
                         limit,
                         cursor: cursor.map(Cursor),
                         max_tokens,
