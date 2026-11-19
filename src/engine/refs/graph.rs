@@ -115,7 +115,11 @@ pub(crate) fn run_graph_importers(
         }
         by_depth.entry(depth).or_default().push(graph.path(node).clone());
     }
-    // The depth the caller asked for bounds the walk as `limit` bounds a page: not a cut.
+    // The depth bounds the walk as `limit` bounds a page: not a cut. Importers past it are still
+    // signalled, since the default depth of 1 is one the caller may not have chosen.
+    let deeper = walk
+        .as_ref()
+        .is_some_and(|walk| walk.truncated == Some(crate::engine::import_graph::Truncation::Depth));
     let truncation = walk
         .and_then(|walk| walk.truncated)
         .filter(|cut| *cut != crate::engine::import_graph::Truncation::Depth);
@@ -126,6 +130,7 @@ pub(crate) fn run_graph_importers(
         budgeted: budgeted.budgeted,
         by_depth,
         in_cycle,
+        deeper,
         truncated: truncation.is_some(),
         truncated_reason: truncation.map(|cut| cut.reason()),
         coverage: file_coverage(&graph, &language, IMPORTERS_FALLBACK),

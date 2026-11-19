@@ -187,8 +187,12 @@ pub(crate) struct GraphImportersResponse {
     /// which `relation: "cycles"` with the same `path` lists. Absent when none.
     #[serde(default, skip_serializing_if = "super::is_zero")]
     pub in_cycle: usize,
+    /// Files import the file from beyond `depth`: a larger `depth` (up to 5) lists them. Absent
+    /// when none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deeper: bool,
     /// The walk stopped at its node cap, so files may lie beyond it. A walk that stops at the
-    /// `depth` asked for is not truncated: a larger `depth` walks further.
+    /// `depth` asked for is not truncated: `deeper` says whether more lie past it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// `scan_cap` whenever `truncated` is true.

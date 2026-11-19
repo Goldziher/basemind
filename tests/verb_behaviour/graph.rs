@@ -30,8 +30,8 @@ const CRATE: [(&str, &str); 9] = [
     ("g/src/r.rs", "use crate::q::Q;\npub struct R(pub Box<Option<Q>>);\n"),
 ];
 
-/// Direct importers by default; `depth` 2 adds the importers of those, and `in_cycle` counts the
-/// importers the file reaches back.
+/// Direct importers by default, with `deeper` saying more lie past them; `depth` 2 adds the
+/// importers of those, and `in_cycle` counts the importers the file reaches back.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_refs_importers_of_a_path_walk_the_import_graph_by_depth() {
@@ -48,6 +48,7 @@ async fn code_refs_importers_of_a_path_walk_the_import_graph_by_depth() {
         json!({
             "by_depth": { "1": ["g/src/b.rs", "g/src/c.rs"] },
             "in_cycle": 1,
+            "deeper": true,
         }),
         "{direct}"
     );
