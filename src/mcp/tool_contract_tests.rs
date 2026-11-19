@@ -62,7 +62,7 @@ fn json_of(result: &CallToolResult) -> Value {
         "unexpected tool error: {}",
         text_of(result)
     );
-    serde_json::from_str(&text_of(result)).expect("tool payload is JSON")
+    crate::wire::decode(&text_of(result)).expect("tool payload reads back")
 }
 
 fn symbols(name: &str) -> CodeSymbolsParams {

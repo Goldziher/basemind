@@ -62,7 +62,7 @@ fn server_with(root: &std::path::Path, repo: Option<Arc<crate::git::Repo>>) -> B
 fn json_of(result: &CallToolResult) -> Value {
     for content in &result.content {
         if let ContentBlock::Text(text) = content {
-            return serde_json::from_str(&text.text).expect("tool payload is JSON");
+            return crate::wire::decode(&text.text).expect("tool payload reads back");
         }
     }
     panic!("tool returned no text content");
