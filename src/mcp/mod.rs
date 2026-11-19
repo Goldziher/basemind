@@ -100,6 +100,12 @@ impl HostedReadStack {
         self.shared.clone()
     }
 
+    /// Resolves once this stack's watcher thread has exited, after the stack is dropped.
+    #[cfg(test)]
+    pub(crate) fn watcher_exited(&self) -> background::WatcherExited {
+        self._watcher.exited()
+    }
+
     /// Serve the workspace the daemon's pool opened, and start its single "warden": a
     /// background-running [`ServerState`] that owns freshness for the whole workspace (the
     /// empty-index auto-scan, the live filesystem watcher, cache warming and the git-history sync).

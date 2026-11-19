@@ -311,36 +311,6 @@ fn evict_idle_zero_drops_every_entry() {
     assert_eq!(pool.len(), 0);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn idle_eviction_stops_hosted_watcher_and_releases_read_stack() {
-    const RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
-    const RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(20);
-
-    store::init_isolated_cache();
-    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
-    let workspace = workspace_with_sources();
-    pool.rescan(workspace.path(), None, false, false, &ScanCancel::default())
-        .expect("scan workspace");
-
-    // ~keep Settled: the catch-up pass holds the stack until it ends, as any scan of it would.
-    let shared = hosted_stack(&pool, workspace.path()).await;
-    let weak = std::sync::Arc::downgrade(&shared.workspace);
-    drop(shared);
-
-    assert_eq!(
-        pool.evict_idle(Duration::ZERO),
-        1,
-        "workspace is removed from the hot pool"
-    );
-    tokio::time::timeout(RELEASE_TIMEOUT, async {
-        while weak.upgrade().is_some() {
-            tokio::time::sleep(RELEASE_POLL_INTERVAL).await;
-        }
-    })
-    .await
-    .expect("eviction must stop the hosted watcher and release its read stack");
-}
-
 /// Full rescans that pile up behind an identical in-flight full scan coalesce: both requests
 /// capture the full-scan generation before blocking on the store lock, the winner walks the tree,
 /// and the loser is served the winner's stats. A NON-coalesced second pass would have reported
@@ -544,12 +514,17 @@ async fn hosted_stack(pool: &std::sync::Arc<WorkspacePool>, root: &std::path::Pa
         .get_or_build_serve_state(root, no_history())
         .await
         .expect("build hosted read stack");
+    settled(&shared).await;
+    shared
+}
+
+/// Returns once `shared`'s boot work (map warm, catch-up scan) has settled and released the stack.
+async fn settled(shared: &crate::mcp::ServedWorkspace) {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while shared.workspace.lifecycle() != crate::engine::workspace::Lifecycle::Ready {
         assert!(std::time::Instant::now() < deadline, "the hosted stack never settled");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    shared
 }
 
 #[path = "workspace_pool_catchup_tests.rs"]

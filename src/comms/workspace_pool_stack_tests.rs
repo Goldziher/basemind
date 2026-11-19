@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{DEFAULT_HOT_CAP, WorkspacePool, no_history, workspace_with_sources};
+use super::{DEFAULT_HOT_CAP, WorkspacePool, hosted_stack, no_history, settled, workspace_with_sources};
 
 /// A sweep that runs the moment a stack is handed out must find it pinned. When the pin was a
 /// second step, a trim or idle sweep in between dropped the stack under the session, which then
@@ -43,22 +43,29 @@ async fn shedding_releases_every_stack_and_its_watcher() {
     crate::store::init_isolated_cache();
     let pool = Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
     let workspace = workspace_with_sources();
+    // Indexed first, so the stack boots into the catch-up pass, which lets go of it before the
+    // workspace reads settled; an initial scan leaves an embedding pass holding it. ~keep
+    pool.rescan(
+        workspace.path(),
+        None,
+        false,
+        false,
+        &crate::scanner::ScanCancel::default(),
+    )
+    .expect("scan workspace");
     let (shared, conn) = pool
         .serve_conn(workspace.path(), no_history())
         .await
         .expect("build hosted read stack");
+    settled(&shared).await;
     let weak = Arc::downgrade(&shared.workspace);
+    let watcher_exited = only_watcher_exited(&pool);
     drop(shared);
 
     assert_eq!(pool.shed_read_stacks().await, 1);
     assert_eq!(pool.warm_read_stacks(), 0);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while weak.upgrade().is_some() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the stack and its watcher are released");
+    watcher_exited.await;
+    assert_eq!(weak.strong_count(), 0, "the stack and its watcher are released");
     drop(conn);
 }
 
@@ -128,4 +135,52 @@ async fn a_poisoned_index_is_reopened_while_a_hosted_stack_serves_the_workspace(
         "the hosted store reads the new database"
     );
     drop((shared, conn));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_eviction_stops_hosted_watcher_and_releases_read_stack() {
+    crate::store::init_isolated_cache();
+    let pool = Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let workspace = workspace_with_sources();
+    pool.rescan(
+        workspace.path(),
+        None,
+        false,
+        false,
+        &crate::scanner::ScanCancel::default(),
+    )
+    .expect("scan workspace");
+
+    // ~keep Settled: the catch-up pass holds the stack until it ends, as any scan of it would.
+    let shared = hosted_stack(&pool, workspace.path()).await;
+    let weak = Arc::downgrade(&shared.workspace);
+    let watcher_exited = only_watcher_exited(&pool);
+    drop(shared);
+
+    assert_eq!(
+        pool.evict_idle(Duration::ZERO),
+        1,
+        "workspace is removed from the hot pool"
+    );
+    watcher_exited.await;
+    assert_eq!(
+        weak.strong_count(),
+        0,
+        "once its watcher has exited, nothing holds the evicted read stack"
+    );
+}
+
+/// Resolves once the watcher of `pool`'s only hosted stack has exited, after the stack is dropped.
+/// A stopping watcher hands its OS stream back and releases the stack on its own thread, so how
+/// long that takes is up to the scheduler; the bound here is a hang guard, not a deadline.
+fn only_watcher_exited(pool: &WorkspacePool) -> impl std::future::Future<Output = ()> + use<> {
+    let entries: Vec<Arc<super::super::WorkspaceEntry>> = pool.lock_map().values().cloned().collect();
+    assert_eq!(entries.len(), 1, "one hosted workspace");
+    let slot = entries[0].serve_state.try_lock().expect("the stack slot is free");
+    let exited = slot.as_ref().expect("a hosted stack").watcher_exited();
+    async move {
+        tokio::time::timeout(Duration::from_secs(120), exited.wait())
+            .await
+            .expect("the watcher thread exits");
+    }
 }

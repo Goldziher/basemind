@@ -551,6 +551,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The watcher no longer discards the OS's "events were dropped" signal (FSEvents `MustScanSubDirs`,
+  inotify queue overflow). A signal naming a subdirectory rescans that subtree; one naming the root,
+  or none, runs the whole-tree stat-and-hash pass of `index_rescan {}`; a burst of signals is one
+  pass. Before, an edit the OS dropped stayed unindexed until that file changed again.
+- A serve watcher whose read stack was evicted or shed no longer scans a batch it takes after the
+  drop: that scan reopened the evicted workspace (and its writer lock) to publish to a stack nobody
+  served.
 - A daemon-hosted workspace opened over a populated index catches up on the edits made while no
   watcher ran (the daemon's idle exit, a shed read stack, a `git checkout` or `git pull` in
   between): building the read stack runs the whole-tree stat-and-hash pass of `index_rescan {}` in

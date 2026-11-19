@@ -133,8 +133,9 @@ pub(crate) struct Workspace {
     /// populated index ([`BootScan::CatchUp`]). Non-zero surfaces as the `Rescanning` lifecycle so a
     /// client sees "results may be a moment stale" rather than treating a mid-rescan snapshot as
     /// final. A count, not a flag: a watcher batch that ends must not clear a catch-up still running.
-    /// Held through [`RescanMark`].
-    rescans_active: AtomicUsize,
+    /// Held through [`RescanMark`], which shares the counter rather than the workspace, so a pass
+    /// that drops its mark last holds no reference once the workspace reads settled.
+    rescans_active: Arc<AtomicUsize>,
     /// True when the in-RAM code map is built ON DEMAND — at the first
     /// [`await_cache_ready`](crate::mcp::ServerState::await_cache_ready) barrier — instead of at construction.
     ///
@@ -255,11 +256,11 @@ pub(crate) struct BootPlan {
 }
 
 /// One background rescan in flight on a [`Workspace`], counted in its lifecycle until dropped.
-pub(crate) struct RescanMark(Arc<Workspace>);
+pub(crate) struct RescanMark(Arc<AtomicUsize>);
 
 impl Drop for RescanMark {
     fn drop(&mut self) {
-        self.0.rescans_active.fetch_sub(1, Ordering::Relaxed);
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -338,7 +339,7 @@ impl Workspace {
             cache_warming: AtomicBool::new(defer_warm),
             cache_warm_ms: AtomicU64::new(0),
             warm_gate: WarmGate::default(),
-            rescans_active: AtomicUsize::new(0),
+            rescans_active: Arc::new(AtomicUsize::new(0)),
             lazy_cache: options.lazy_cache,
             lazy_cache_built: std::sync::OnceLock::new(),
             read_only: options.read_only,
@@ -446,9 +447,9 @@ impl Workspace {
     }
 
     /// Count a background rescan in the lifecycle until the returned mark is dropped.
-    pub(crate) fn mark_rescan(self: &Arc<Self>) -> RescanMark {
+    pub(crate) fn mark_rescan(&self) -> RescanMark {
         self.rescans_active.fetch_add(1, Ordering::Relaxed);
-        RescanMark(Arc::clone(self))
+        RescanMark(Arc::clone(&self.rescans_active))
     }
 
     /// Current [`Lifecycle`] derived from the boot/rescan atomics, applying the documented precedence.

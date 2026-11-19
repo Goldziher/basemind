@@ -13,6 +13,7 @@ use std::time::Duration;
 use super::{MapCache, ServerState};
 use crate::engine::{EngineError, Workspace};
 use crate::scanner::EmbedMode;
+use crate::watcher::BatchKind;
 
 /// Run `work` on the runtime's blocking pool, logging `panicked` if it panics.
 fn spawn_logged(panicked: &'static str, work: impl FnOnce() + Send + 'static) {
@@ -99,17 +100,20 @@ impl Writer {
         false
     }
 
-    /// The catch-up pass ([`spawn_catch_up`]): a whole-tree pass without embedding, reported as
-    /// [`scan`](Self::scan) reports, or `None` when it was cancelled. A hosted stack then takes the
-    /// pool's file map only when it differs from the one it serves
-    /// ([`Workspace::publish_store_if_changed`]): a publish bumps the generations every cursor is
-    /// bound to, and an unchanged tree must not cut a session's paging short. The comparison is with
-    /// the map, not the pass's counts, so a write another path made since the stack opened is taken.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    fn catch_up(&self) -> Result<Option<(usize, usize, usize)>, EngineError> {
+    /// A whole-tree pass that judges every file by its stat and hash, as `index_rescan {}` does:
+    /// the boot catch-up ([`spawn_catch_up`], without embedding) and the serve watcher's answer to
+    /// events the OS dropped. Reported as [`scan`](Self::scan) reports, or `None` when it was
+    /// cancelled. A hosted stack then takes the pool's file map only when it differs from the one it
+    /// serves ([`Workspace::publish_store_if_changed`]): a publish bumps the generations every cursor
+    /// is bound to, and an unchanged tree must not cut a session's paging short. The comparison is
+    /// with the map, not the pass's counts, so a write another path made since the stack opened is
+    /// taken.
+    fn tree_pass(&self, embed: EmbedMode) -> Result<Option<(usize, usize, usize)>, EngineError> {
+        #[cfg(all(feature = "comms", any(unix, windows)))]
         if let Some(pool) = &self.pool {
+            let embed = matches!(embed, EmbedMode::Inline);
             let (stats, cancelled) = pool
-                .hosted_rescan(&self.ws.root, None, false, false, false)
+                .hosted_rescan(&self.ws.root, None, false, embed, false)
                 .map_err(|error| EngineError::internal(format!("host rescan: {error}")))?;
             if cancelled {
                 return Ok(None);
@@ -122,7 +126,7 @@ impl Writer {
             }
             return Ok(Some((stats.scanned, stats.updated, stats.removed)));
         }
-        self.scan(None, EmbedMode::Deferred).map(Some)
+        self.scan(None, embed).map(Some)
     }
 }
 
@@ -219,8 +223,7 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
             return;
         }
         let started = std::time::Instant::now();
-        let outcome = writer.catch_up();
-        drop(rescanning);
+        let outcome = writer.tree_pass(EmbedMode::Deferred);
         let changed = match outcome {
             Ok(None) => {
                 tracing::debug!("catch-up cancelled: the daemon is draining");
@@ -248,7 +251,11 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
                     tracing::warn!(%error, "catch-up embedding pass failed");
                 }
             });
+        } else {
+            drop(writer);
         }
+        // Last: a workspace that reads settled holds no reference from this pass. ~keep
+        drop(rescanning);
     });
 }
 
@@ -307,12 +314,58 @@ fn touches_index(events: &[notify_debouncer_full::DebouncedEvent], target: &std:
 }
 
 /// Drop guard that requests shutdown of a filesystem watcher.
+///
+/// The request is asynchronous: the watcher thread hears it through the debouncer's queue, stops
+/// its OS stream and only then releases the server state it holds, which on a loaded machine is
+/// seconds after the drop. [`exited`](Self::exited) is the point it has.
 pub(super) struct WatcherGuard {
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Set by the drop, before the thread can hear the shutdown: a batch it takes from then on is
+    /// not scanned. The scan would reopen a workspace the pool just evicted, holding its writer lock
+    /// again, only to publish to a stack nobody serves.
+    stopping: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(all(test, feature = "comms", any(unix, windows)))]
+    exited: tokio::sync::watch::Receiver<()>,
+}
+
+/// The watcher thread's half of a [`WatcherGuard`]: dropped as the thread's last act, after
+/// everything else it held.
+type WatcherExit = tokio::sync::watch::Sender<()>;
+
+/// Resolves once a watcher thread has exited and released what it held.
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
+#[derive(Clone)]
+pub(crate) struct WatcherExited(tokio::sync::watch::Receiver<()>);
+
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
+impl WatcherExited {
+    pub(crate) async fn wait(mut self) {
+        while self.0.changed().await.is_ok() {}
+    }
+}
+
+impl WatcherGuard {
+    fn new() -> (Self, tokio::sync::oneshot::Receiver<()>, WatcherExit) {
+        let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (exit, _exited) = tokio::sync::watch::channel(());
+        let guard = Self {
+            shutdown: Some(shutdown),
+            stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(all(test, feature = "comms", any(unix, windows)))]
+            exited: _exited,
+        };
+        (guard, shutdown_rx, exit)
+    }
+
+    #[cfg(all(test, feature = "comms", any(unix, windows)))]
+    pub(super) fn exited(&self) -> WatcherExited {
+        WatcherExited(self.exited.clone())
+    }
 }
 
 impl Drop for WatcherGuard {
     fn drop(&mut self) {
+        self.stopping.store(true, std::sync::atomic::Ordering::Release);
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }
@@ -325,14 +378,17 @@ impl Drop for WatcherGuard {
 /// a blocking OS thread back through the current Tokio runtime. Dropping the guard requests
 /// shutdown and releases the watcher-owned server state.
 pub(super) fn spawn_serve_watcher(state: Arc<ServerState>) -> WatcherGuard {
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    spawn_serve_watcher_thread(state, shutdown_rx);
-    WatcherGuard {
-        shutdown: Some(shutdown_tx),
-    }
+    let (guard, shutdown_rx, exit) = WatcherGuard::new();
+    spawn_serve_watcher_thread(state, shutdown_rx, Arc::clone(&guard.stopping), exit);
+    guard
 }
 
-fn spawn_serve_watcher_thread(state: Arc<ServerState>, shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
+fn spawn_serve_watcher_thread(
+    state: Arc<ServerState>,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    stopping: Arc<std::sync::atomic::AtomicBool>,
+    exit: WatcherExit,
+) {
     let writer = Writer::of(&state);
     drop(state);
     let root = writer.ws.root.clone();
@@ -344,12 +400,20 @@ fn spawn_serve_watcher_thread(state: Arc<ServerState>, shutdown_rx: tokio::sync:
         .spawn(move || {
             let _runtime = handle.enter();
             tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
-            let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, _kind| {
+            let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, kind| {
+                if stopping.load(std::sync::atomic::Ordering::Acquire) {
+                    tracing::debug!("serve watcher: stopping; batch not scanned");
+                    return;
+                }
                 let rescanning = writer.ws.mark_rescan();
-                let outcome = writer.scan(Some(paths), EmbedMode::Inline);
+                let outcome = match kind {
+                    BatchKind::FullRescan => writer.tree_pass(EmbedMode::Inline),
+                    _ => writer.scan(Some(paths), EmbedMode::Inline).map(Some),
+                };
                 drop(rescanning);
                 match outcome {
-                    Ok((scanned, updated, removed)) => {
+                    Ok(None) => tracing::debug!("serve watcher: whole-tree rescan cancelled: the daemon is draining"),
+                    Ok(Some((scanned, updated, removed))) => {
                         tracing::debug!(scanned, updated, removed, "serve watcher: incremental rescan complete")
                     }
                     Err(error) => tracing::warn!(
@@ -362,6 +426,8 @@ fn spawn_serve_watcher_thread(state: Arc<ServerState>, shutdown_rx: tokio::sync:
                 tracing::warn!(%error, "serve watcher exited with error");
             }
             tracing::info!("serve watcher: exiting");
+            drop(writer);
+            drop(exit);
         })
         .ok();
 }
@@ -374,10 +440,7 @@ fn reopen_read_only(state: &ServerState, view: &str) -> Result<crate::store::Sto
 
 /// Spawn a passive index watcher whose lifetime is controlled by the returned guard.
 pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let guard = WatcherGuard {
-        shutdown: Some(shutdown_tx),
-    };
+    let (guard, mut shutdown_rx, exit) = WatcherGuard::new();
     let (basemind_dir, view) = {
         let store = match state.shared.try_store_read() {
             Ok(g) => g,
@@ -394,6 +457,9 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
             use notify::RecommendedWatcher;
             use notify_debouncer_full::{DebounceEventResult, NoCache, new_debouncer_opt};
             use std::sync::atomic::{AtomicBool, Ordering};
+            // Bound before `state`, so it drops after it on every return. ~keep
+            let _exit = exit;
+            let state = state;
 
             let (tx, rx) = std::sync::mpsc::sync_channel::<DebounceEventResult>(VIEW_WATCHER_QUEUE_CAPACITY);
             // Overflow state for a full queue: one bit, because every batch that reaches `target`

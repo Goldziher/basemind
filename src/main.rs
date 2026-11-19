@@ -799,6 +799,10 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
                 render::render_batch_header(&mut stdout, paths, verbosity);
                 render::render_files(&mut stdout, batch.results, verbosity);
             }
+            BatchKind::FullRescan => {
+                render::render_files(&mut stdout, batch.results, verbosity);
+                render::render_summary(&mut stdout, &batch.report.stats, verbosity);
+            }
         });
         basemind::watcher::watch(&root_buf, store_w, config_w, shutdown_rx, cb)
     });

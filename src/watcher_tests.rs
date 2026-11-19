@@ -737,3 +737,6 @@ fn dir_watches_follow_a_renamed_directory_subtree() {
         [&root.join("new"), &root.join("new/deep"), &root.join("oldish")]
     );
 }
+
+#[path = "watcher_rescan_tests.rs"]
+mod rescan;

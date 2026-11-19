@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,6 +46,10 @@ pub enum BatchKind {
     Incremental {
         paths: usize,
     },
+    /// The OS dropped events somewhere under the root (an FSEvents `MustScanSubDirs` naming the
+    /// root, an inotify queue overflow). The callback gets no paths: it runs a whole-tree pass,
+    /// which stats and hashes every file and re-extracts only what changed.
+    FullRescan,
 }
 
 /// Bound on the debouncer→consumer queue, in whole debounced batches.
@@ -86,6 +91,101 @@ impl PendingPaths {
     fn take(&self) -> Vec<PathBuf> {
         let mut set = self.0.lock().expect("pending paths poisoned");
         std::mem::take(&mut *set).into_iter().collect()
+    }
+}
+
+/// Where the OS said events were dropped since the consumer last looked: the whole tree, or the
+/// subtrees FSEvents named with `MustScanSubDirs`.
+#[derive(Default)]
+struct RescanScope {
+    /// A rescan event with no path (inotify's `IN_Q_OVERFLOW`) or naming the root or above.
+    whole: bool,
+    dirs: BTreeSet<PathBuf>,
+}
+
+impl RescanScope {
+    fn record(&mut self, paths: &[PathBuf]) {
+        if paths.is_empty() {
+            self.whole = true;
+        }
+        self.dirs.extend(paths.iter().cloned());
+    }
+
+    /// Resolve against `root`: `None` for the whole tree, else the subtrees under it (possibly none).
+    /// A path that is the root, above it or outside it cannot be narrowed, so it means the whole tree.
+    fn subtrees(self, root: &Path) -> Option<Vec<PathBuf>> {
+        if self.whole {
+            return None;
+        }
+        let mut dirs = Vec::with_capacity(self.dirs.len());
+        for dir in self.dirs {
+            if dir == root || !dir.starts_with(root) {
+                return None;
+            }
+            dirs.push(dir);
+        }
+        Some(dirs)
+    }
+}
+
+/// The rescan events the backend raised, recorded before the debouncer sees them. The debouncer
+/// keeps a single pending rescan event and overwrites it with the next one, so a burst naming
+/// several subtrees would reach the consumer as only the last of them.
+#[derive(Default)]
+struct RescanSignals(Mutex<RescanScope>);
+
+impl RescanSignals {
+    fn record(&self, paths: &[PathBuf]) {
+        self.0.lock().expect("rescan signals poisoned").record(paths);
+    }
+
+    fn take(&self) -> RescanScope {
+        std::mem::take(&mut *self.0.lock().expect("rescan signals poisoned"))
+    }
+}
+
+thread_local! {
+    /// Hands [`RescanTap::new`] the consumer's [`RescanSignals`]: the debouncer builds its backend
+    /// through `Watcher::new`, which takes no state of ours, synchronously on the calling thread.
+    static TAP_SIGNALS: RefCell<Option<Arc<RescanSignals>>> = const { RefCell::new(None) };
+}
+
+/// The backend `W`, with every rescan event it raises recorded into [`RescanSignals`] before the
+/// debouncer (which forwards it, coalesced to one, to wake the consumer) gets it.
+struct RescanTap<W>(W);
+
+impl<W: notify::Watcher> notify::Watcher for RescanTap<W> {
+    fn new<F: notify::EventHandler>(mut event_handler: F, config: NotifyConfig) -> notify::Result<Self> {
+        let signals = TAP_SIGNALS.with(|slot| slot.borrow_mut().take()).unwrap_or_default();
+        let tap = move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = &res
+                && event.need_rescan()
+            {
+                signals.record(&event.paths);
+            }
+            event_handler.handle_event(res);
+        };
+        W::new(tap, config).map(Self)
+    }
+
+    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> notify::Result<()> {
+        self.0.watch(path, recursive_mode)
+    }
+
+    fn unwatch(&mut self, path: &Path) -> notify::Result<()> {
+        self.0.unwatch(path)
+    }
+
+    fn paths_mut<'me>(&'me mut self) -> Box<dyn notify::PathsMut + 'me> {
+        self.0.paths_mut()
+    }
+
+    fn configure(&mut self, option: NotifyConfig) -> notify::Result<bool> {
+        self.0.configure(option)
+    }
+
+    fn kind() -> notify::WatcherKind {
+        W::kind()
     }
 }
 
@@ -188,6 +288,8 @@ fn watch_with<W: notify::Watcher>(
     let pending = Arc::new(PendingPaths::default());
     let pending_producer = Arc::clone(&pending);
     let debounce = Duration::from_millis(config.watch.debounce_ms);
+    let rescans = Arc::new(RescanSignals::default());
+    TAP_SIGNALS.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&rescans)));
     // ~keep NoCache, not the default RecommendedCache. On macOS/Windows the default is FileIdMap,
     // ~keep whose add_path recursively WalkDirs the whole subtree with follow_links(true) — at
     // ~keep watch() time and again on every dir create/rename — stat-ing every path into an
@@ -196,13 +298,15 @@ fn watch_with<W: notify::Watcher>(
     // ~keep and re-derive state from disk, so the FileId rename stitching NoCache drops is unused; a
     // ~keep rename just degrades to remove-old + create-new, which scan_paths already handles. Linux
     // ~keep already defaults to NoCache.
-    let mut debouncer = new_debouncer_opt::<_, W, NoCache>(
+    let debouncer = new_debouncer_opt::<_, RescanTap<W>, NoCache>(
         debounce,
         None,
         move |res| dispatch_debounced(&tx, &pending_producer, res),
         NoCache::new(),
         NotifyConfig::default(),
-    )?;
+    );
+    TAP_SIGNALS.with(|slot| slot.borrow_mut().take());
+    let mut debouncer = debouncer?;
 
     let mut filter = crate::scanner_filter::IndexFilter::new(root, config, crate::retrieval_wiring::backend())?;
 
@@ -302,6 +406,9 @@ fn watch_with<W: notify::Watcher>(
         // into their subtree when they turn out to be a directory, so a metadata change on a
         // directory does not rescan everything beneath it.
         let mut dir_events: BTreeSet<PathBuf> = BTreeSet::new();
+        // Every rescan event the backend raised so far, burst and all. The debounced copy that woke
+        // this loop (`EventKind::Other`, skipped below) is one of them, so a burst is one pass.
+        let rescan = rescans.take();
         for ev in queued.into_iter().flatten() {
             if !is_relevant(&ev.event.kind) {
                 continue;
@@ -317,7 +424,8 @@ fn watch_with<W: notify::Watcher>(
         let coalesced = pending.take();
         dir_events.extend(coalesced.iter().cloned());
         candidates.extend(coalesced);
-        if candidates.is_empty() {
+        let rescanned = (rescan.whole || !rescan.dirs.is_empty()).then(|| rescan.subtrees(root));
+        if candidates.is_empty() && rescanned.is_none() {
             continue;
         }
         candidates.sort();
@@ -333,6 +441,34 @@ fn watch_with<W: notify::Watcher>(
             }
         }
         filter.clear_cache();
+        match rescanned {
+            // Events were dropped somewhere under the root: no path set can stand for what changed,
+            // so the callback runs a whole-tree pass, which also covers this generation's paths.
+            Some(None) => {
+                info!("the OS dropped watch events under the root; rescanning the whole tree");
+                #[cfg(target_os = "linux")]
+                dir_watches.resync(&mut debouncer, &filter, root);
+                on_change(Vec::new(), BatchKind::FullRescan);
+                continue;
+            }
+            // A subtree to rescan is forwarded as a directory that may have changed, which the scan
+            // expands into the files on disk and the keys the index holds under it.
+            Some(Some(dirs)) => {
+                info!(
+                    n = dirs.len(),
+                    "the OS dropped watch events under subtrees; rescanning them"
+                );
+                for dir in dirs {
+                    #[cfg(target_os = "linux")]
+                    dir_watches.resync(&mut debouncer, &filter, &dir);
+                    dir_events.insert(dir.clone());
+                    candidates.push(dir);
+                }
+                candidates.sort();
+                candidates.dedup();
+            }
+            None => {}
+        }
         // Linux inotify watches one directory at a time. Release every watch at or under a path
         // that is no longer a directory (removed, or renamed or moved away: the kernel watch follows
         // the inode, so it would keep reporting under the old name), then arm every directory that
@@ -367,6 +503,17 @@ pub fn watch(
     store: Arc<Mutex<Store>>,
     config: Arc<Config>,
     shutdown: tokio::sync::oneshot::Receiver<()>,
+    on_batch: BatchCallback,
+) -> Result<(), WatchError> {
+    watch_store_with::<RecommendedWatcher>(root, store, config, shutdown, on_batch)
+}
+
+/// [`watch`] over the notify backend `W` (see [`watch_with`]).
+fn watch_store_with<W: notify::Watcher>(
+    root: &Path,
+    store: Arc<Mutex<Store>>,
+    config: Arc<Config>,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
     mut on_batch: BatchCallback,
 ) -> Result<(), WatchError> {
     info!(root = %root.display(), "initial scan");
@@ -395,7 +542,7 @@ pub fn watch(
     let current = Arc::new(Mutex::new(Arc::clone(&config)));
     let reload_current = Arc::clone(&current);
     let mut reloader = config_reloader(root);
-    watch_paths_reloading(
+    watch_with::<W>(
         root,
         &config,
         move || {
@@ -408,16 +555,30 @@ pub fn watch(
             let config = Arc::clone(&current.lock().expect("config poisoned"));
             let mut guard = store.lock().expect("store poisoned");
             let mut observer = CollectObserver::new();
-            match crate::scanner::scan_paths_with_observer(
-                root,
-                &mut guard,
-                &config,
-                &touched,
-                crate::scanner::EmbedMode::Inline,
-                &crate::scanner::ScanCancel::new(),
-                &mut observer,
-                crate::retrieval_wiring::backend(),
-            ) {
+            let scanned = if matches!(kind, BatchKind::FullRescan) {
+                crate::scanner::scan_with_observer(
+                    root,
+                    &mut guard,
+                    &config,
+                    crate::scanner::ScanSource::WorkingTree,
+                    crate::scanner::EmbedMode::Inline,
+                    &crate::scanner::ScanCancel::new(),
+                    &mut observer,
+                    crate::retrieval_wiring::backend(),
+                )
+            } else {
+                crate::scanner::scan_paths_with_observer(
+                    root,
+                    &mut guard,
+                    &config,
+                    &touched,
+                    crate::scanner::EmbedMode::Inline,
+                    &crate::scanner::ScanCancel::new(),
+                    &mut observer,
+                    crate::retrieval_wiring::backend(),
+                )
+            };
+            match scanned {
                 Ok(report) => {
                     on_batch(WatchBatch {
                         kind,
@@ -425,7 +586,7 @@ pub fn watch(
                         results: observer.results(),
                     });
                 }
-                Err(e) => warn!(error = %e, "scan_paths failed"),
+                Err(e) => warn!(error = %e, "watcher rescan failed"),
             }
         },
     )
@@ -509,6 +670,36 @@ impl DirWatches {
         }
         for p in paths {
             self.arm_tree(registry, filter, p);
+        }
+    }
+
+    /// Re-derive the watches under `dir` from disk once the OS dropped events beneath it: release
+    /// every watched directory there that is gone, arm every watchable one not yet armed.
+    fn resync(&mut self, registry: &mut impl DirRegistry, filter: &crate::scanner_filter::IndexFilter, dir: &Path) {
+        let gone: Vec<PathBuf> = self
+            .watched
+            .range(dir.to_path_buf()..)
+            .take_while(|p| p.starts_with(dir))
+            .filter(|p| !std::fs::symlink_metadata(p).is_ok_and(|meta| meta.is_dir()))
+            .cloned()
+            .collect();
+        for dir in gone {
+            registry.unwatch_dir(&dir);
+            self.watched.remove(&dir);
+        }
+        if !self.watched.contains(dir) && !filter.is_watchable_dir(dir) {
+            return;
+        }
+        for sub in filter.subtree_dirs(dir) {
+            if self.watched.contains(&sub) {
+                continue;
+            }
+            match registry.watch_dir(&sub) {
+                Ok(()) => {
+                    self.watched.insert(sub);
+                }
+                Err(e) => warn!(path = %sub.display(), error = %e, "inotify re-arm failed"),
+            }
         }
     }
 
