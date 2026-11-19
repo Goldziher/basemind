@@ -282,6 +282,14 @@ fn a_failed_baseline_scores_recall_0_and_a_tool_error_still_runs_its_baseline() 
             &["a.rs:4".to_string()],
             json!({"grep": "git grep -n 'fn alpha' -- a.rs", "items": "grep_lines"}),
         ),
+        task(
+            "explain",
+            "explain",
+            json!({"target": "alpha"}),
+            &["a.rs:4".to_string(), "c.rs:2".to_string(), "c.rs:3".to_string()],
+            json!({"grep": ["git grep -n -E 'fn [a-z]' -- a.rs", "git grep -n -w -F -e alpha -- '*.rs'",
+                            "sed -n '4,6p' a.rs"], "items": "explain"}),
+        ),
     ];
     let report = f.dir.path().join("report.json");
     let rows = eval(f.dir.path(), &lines, &report);
@@ -312,6 +320,13 @@ fn a_failed_baseline_scores_recall_0_and_a_tool_error_still_runs_its_baseline() 
     );
     assert_eq!(err["savings"]["credited"], false, "{err}");
 
+    assert_eq!(
+        row("explain")["baseline_score"]["recall"],
+        1.0,
+        "definition and call sites read from the rows: {}",
+        row("explain")
+    );
+
     let rep: Value = serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
     let refs = &rep["gate"]["references"];
     assert_eq!(
@@ -323,4 +338,5 @@ fn a_failed_baseline_scores_recall_0_and_a_tool_error_still_runs_its_baseline() 
     assert_eq!(refs["credited"], 3, "{refs}");
     let mean = refs["baseline_recall"].as_f64().unwrap();
     assert!((mean - 1.0 / 3.0).abs() < 1e-9, "two of three baselines failed: {refs}");
+    assert_eq!(rep["gate"]["explain"]["job"], "reducing");
 }

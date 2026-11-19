@@ -166,6 +166,11 @@ pub enum BaselineItems {
     /// `rg -n -C` / `grep -n -C` context output: `path:line:text` for a match, `path-line-text` for
     /// a context line, `--` between groups: `path:line` for both.
     GrepContext,
+    /// The `explain` baseline's output (ADR-0051): `path:line` for every `path:line:text` row of a
+    /// file (the definition lines and the call sites `git grep -n` prints), and `->name` for every
+    /// name called on a body line (any other line that is not a path or a `git log` row). A macro
+    /// (`name!(`) and the `fn` being defined are not calls.
+    Explain,
 }
 
 /// What an agent would do without basemind: shell command(s) run in the workspace root plus whole
@@ -301,5 +306,7 @@ mod tests {
         let t =
             parse_tasks("{\"id\":\"a\",\"mode\":\"read_around\",\"baseline\":{\"items\":\"grep_context\"}}").unwrap();
         assert_eq!(t[0].baseline.as_ref().unwrap().items, Some(BaselineItems::GrepContext));
+        let t = parse_tasks("{\"id\":\"a\",\"mode\":\"explain\",\"baseline\":{\"items\":\"explain\"}}").unwrap();
+        assert_eq!(t[0].baseline.as_ref().unwrap().items, Some(BaselineItems::Explain));
     }
 }

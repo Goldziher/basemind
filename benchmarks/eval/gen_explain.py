@@ -27,7 +27,9 @@ the shell an agent would run), one command per section the tool is scored and ch
   `git_symbol` baseline finds the function, with the short sha, author, author time and summary;
   where git cannot place that regex at HEAD the agent's known span `-L LINE,END:PATH` stands in.
 
-It is a reducing kind, charged for tokens only (no reader turns the output into items).
+It is a reducing kind (ADR-0051). The baseline is scored against the same gold with the `explain`
+items reader: the definition and call-site rows as `path:line`, and `->name` for each name called on
+a line of the `sed` body.
 """
 
 from __future__ import annotations
@@ -120,7 +122,7 @@ def main() -> None:
                 "gold": gold,
                 "scoring": "set",
                 "meta": {"path": d["path"], "callers": len(sites[d["name"]]), "callees": len(callees)},
-                "baseline": {"grep": grep},
+                "baseline": {"grep": grep, "items": "explain"},
             }
         )
     c.emit(tasks, a.out)

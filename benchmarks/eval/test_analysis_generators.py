@@ -248,6 +248,8 @@ class AnalysisGenerators(unittest.TestCase):
         self.assertEqual(by_path["src/a.rs"], ["src/a.rs", "src/b.rs"])
         self.assertEqual(by_path["src/c/extra.rs"], ["src/a/inner.rs", "src/c/extra.rs", "src/c/mod.rs"])
         self.assertEqual(len(by_path), 5)
+        # No shell command an agent would run finds a cycle, so the kind has no baseline to charge.
+        self.assertFalse([t["id"] for t in cycles if "baseline" in t])
 
         py = self.gen("gen_graph.py", "--ext", "py", "--kind", "cycles")
         self.assertEqual(py[0]["gold"], ["pkg/x.py", "pkg/y.py"])
@@ -314,6 +316,7 @@ class AnalysisGenerators(unittest.TestCase):
         )
         # widget.rs sits in no crate root's module tree, so no importers grep: outline, callers,
         # body, history.
+        self.assertEqual(t["baseline"]["items"], "explain", "the baseline is scored against the same gold")
         _outline, _callers, body, history = t["baseline"]["grep"]
         self.assertEqual(body, "sed -n '7,11p' 'src/widget.rs'")
         self.assertEqual(

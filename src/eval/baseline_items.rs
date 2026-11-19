@@ -37,6 +37,7 @@ pub fn baseline_items(kind: BaselineItems, root: &Path, output: &str, files: &[(
         }
         BaselineItems::CountedPaths => counted_paths(output),
         BaselineItems::GrepContext => grep_context(root, output),
+        BaselineItems::Explain => explain(root, output),
         BaselineItems::Blame => blame(root, output),
         BaselineItems::Diff => diff_lines(output),
         BaselineItems::DiffSymbols => diff_symbols(output),
@@ -119,6 +120,63 @@ fn grep_context(root: &Path, output: &str) -> Vec<Item> {
             })
         })
         .collect()
+}
+
+/// Keywords that take a parenthesised operand and are no call.
+const NOT_CALLS: &[&str] = &[
+    "if", "while", "match", "for", "loop", "return", "in", "as", "move", "fn", "let", "else", "where", "impl", "dyn",
+    "mut", "ref", "unsafe", "async", "await", "break", "continue", "yield",
+];
+
+/// The `explain` baseline: `path:N:text` rows of files under `root` give `path:line`; a body line
+/// (not a row, not a path, not a `<sha> ...` history row, not a `//` comment) gives `->name` for each
+/// name it calls.
+fn explain(root: &Path, output: &str) -> Vec<Item> {
+    let call = Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:::\s*<[^()]*>\s*)?\(").expect("static regex");
+    let mut is_file: BTreeMap<&str, bool> = BTreeMap::new();
+    let mut items = Vec::new();
+    for l in output.lines() {
+        let rows: Vec<(&str, &str)> = l
+            .match_indices(':')
+            .filter_map(|(i, _)| {
+                let rest = &l[i + 1..];
+                let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+                (i > 0 && digits > 0 && rest.as_bytes().get(digits) == Some(&b':')).then(|| (&l[..i], &rest[..digits]))
+            })
+            .collect();
+        if !rows.is_empty() {
+            // A grep row; one naming no file of the repository places nothing.
+            let row = rows
+                .into_iter()
+                .find(|(path, _)| *is_file.entry(path).or_insert_with(|| root.join(path).is_file()));
+            if let Some((path, line)) = row {
+                items.push(Item {
+                    path: path.to_string(),
+                    line: line.parse().ok(),
+                });
+            }
+            continue;
+        }
+        let t = l.trim();
+        let mut words = t.split_whitespace();
+        let history = words.next().is_some_and(is_sha) && words.next().is_some();
+        if t.is_empty() || t.starts_with("//") || history || root.join(t).is_file() {
+            continue;
+        }
+        for c in call.captures_iter(l) {
+            let (Some(whole), Some(name)) = (c.get(0), c.get(1)) else {
+                continue;
+            };
+            let defined = l[..whole.start()].trim_end().ends_with("fn");
+            if !defined && !NOT_CALLS.contains(&name.as_str()) {
+                items.push(Item {
+                    path: format!("->{}", name.as_str()),
+                    line: None,
+                });
+            }
+        }
+    }
+    items
 }
 
 /// Full shas for abbreviated ones, in order, resolved by `git rev-parse` in `root`. An abbreviation
@@ -330,6 +388,45 @@ missing.rs:2:text
                 it("src/a.rs:10"),
             ],
             "mixed separators and a path that is no file place nothing"
+        );
+    }
+
+    #[test]
+    fn explain_reads_rows_of_files_and_the_calls_on_body_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::create_dir_all(d.join("src")).unwrap();
+        std::fs::write(d.join("src/a.rs"), "").unwrap();
+        std::fs::write(d.join("src/b.rs"), "").unwrap();
+        let out = "\
+src/a.rs:3:pub fn run(x: u8) -> u8 {
+src/b.rs:9:    run(1);
+nowhere.rs:4:    run(2);
+    /// Calls `doc_only(` in a comment.
+    pub fn run(x: u8) -> u8 {
+        let v = helper(x).map(|y| y.wrapping_add(1));
+        if (v > 0) { println!(\"{v}\"); }
+        parse::<u8>(s); Vec::<u8>::new()
+    }
+src/b.rs
+a1b2c3d Jane 2026-01-01T00:00:00+00:00 fix(rt): call wake()
+";
+        let got = baseline_items(BaselineItems::Explain, d, out, &[]);
+        let want: Vec<Item> = [
+            "src/a.rs:3",
+            "src/b.rs:9",
+            "->helper",
+            "->map",
+            "->wrapping_add",
+            "->parse",
+            "->new",
+        ]
+        .iter()
+        .map(|s| it(s))
+        .collect();
+        assert_eq!(
+            got, want,
+            "rows of missing files, comments, keywords, macros, the definition and history rows place nothing"
         );
     }
 
