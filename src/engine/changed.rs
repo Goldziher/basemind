@@ -1,5 +1,6 @@
-//! The `changed` argument of `code_grep`, `code_symbols` and `find_files` (#122): a [`ChangeSpec`]
-//! resolved to the files it touches, which each op applies as one more path predicate.
+//! The `changed` argument of `code_grep`, `code_symbols`, `code_refs` (call sites) and `find_files`
+//! (#122): a [`ChangeSpec`] resolved to the files it touches, which each op applies as one more path
+//! predicate.
 //!
 //! The scope is resolved before an op takes the map cache or the store lock, because the importer
 //! expansion builds the import graph under the store read lock. A `+importers` suffix adds the files

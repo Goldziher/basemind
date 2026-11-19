@@ -31,6 +31,9 @@ pub(crate) struct CallRef {
 /// cursor carries it, and is refused as stale once it changes, since an edit moves the edited
 /// file's hits in that order.
 /// Call sites in files outside `scope` are not matches: they neither count nor list.
+///
+/// Under exact matching an HTTP request is no call of a name: `GET /users/me` ends in `/me`, the
+/// way a qualified path does, but calls a route, not a function `me` ([`names_call`]).
 pub(crate) fn scan_calls(
     idx: &dyn IndexView,
     name: &str,
@@ -48,13 +51,19 @@ pub(crate) fn scan_calls(
         cursor_after,
         SCAN_KEYS_EXAMINED_MAX,
         |callee, path| {
-            (finder.find(callee.as_bytes()).is_some()
-                && matching.accepts_callee(callee, name)
-                && crate::engine::changed::admits(scope, path))
-            .then_some(Kept::NAME_ONLY)
+            (names_call(&finder, callee, name, matching) && crate::engine::changed::admits(scope, path))
+                .then_some(Kept::NAME_ONLY)
         },
     )?;
     Ok((page, generation))
+}
+
+/// Whether the name scan for `name` (whose `finder` it is) lists a call to `callee`: the callee
+/// holds the name, `matching` accepts it, and under exact matching it is not an HTTP request.
+pub(crate) fn names_call(finder: &memchr::memmem::Finder<'_>, callee: &str, name: &str, matching: Matching) -> bool {
+    finder.find(callee.as_bytes()).is_some()
+        && matching.accepts_callee(callee, name)
+        && (matching == Matching::Substring || !super::routes::is_http_callee(callee))
 }
 
 /// How a scan lists a call site it keeps.
@@ -168,9 +177,17 @@ pub(crate) struct BudgetedCallPage {
 /// listed for a query of `name` ([`ReferenceHit::named`]) before it is costed, so the budget charges
 /// what is written.
 ///
+/// A page answered as read `ranges` writes no row: each hit is costed as the span it adds and each
+/// file as its entry ([`range_cost`]), so the budget does not cut a page for text it never writes.
+///
 /// The kept hits are then sorted by path (ADR-0036 rule 6): the scan's key order is by content
 /// key, which says nothing to a reader. The sort is stable, so one file's hits stay in offset order.
-pub(crate) fn budget_call_page(page: CallScanPage, name: &str, max_tokens: Option<u32>) -> BudgetedCallPage {
+pub(crate) fn budget_call_page(
+    page: CallScanPage,
+    name: &str,
+    max_tokens: Option<u32>,
+    ranges: bool,
+) -> BudgetedCallPage {
     let hits: Vec<ReferenceHit> = page.hits.into_iter().map(|hit| hit.named(name)).collect();
     let mut budgeted = if max_tokens.is_none() {
         BudgetedCallPage {
@@ -179,7 +196,12 @@ pub(crate) fn budget_call_page(page: CallScanPage, name: &str, max_tokens: Optio
             budgeted: false,
         }
     } else {
-        let budget = crate::engine::budget::apply_budget_by_path(hits, max_tokens);
+        let budget = if ranges {
+            let mut files: ahash::AHashSet<RelPath> = ahash::AHashSet::new();
+            crate::engine::budget::keep_prefix(hits, max_tokens, |hit| range_cost(hit, &mut files))
+        } else {
+            crate::engine::budget::apply_budget_by_path(hits, max_tokens)
+        };
         if budget.budgeted {
             let kept = budget.items.len();
             BudgetedCallPage {
@@ -197,6 +219,23 @@ pub(crate) fn budget_call_page(page: CallScanPage, name: &str, max_tokens: Optio
     };
     budgeted.hits.sort_by(|a, b| a.path.cmp(&b.path));
     budgeted
+}
+
+/// Bytes a file's entry in a range answer writes besides its path and spans:
+/// `"":{"ranges":[],"hits":NNNN},`.
+const RANGE_FILE_BYTES: u64 = 30;
+
+/// Tokens a hit costs in a range answer: at most one span `[start,end],`, plus its file's entry the
+/// first time `files` meets the file.
+fn range_cost(hit: &ReferenceHit, files: &mut ahash::AHashSet<RelPath>) -> u64 {
+    let digits = u64::from(hit.line.max(1).ilog10() + 1);
+    let span = 2 * digits + 4;
+    let file = if files.insert(hit.path.clone()) {
+        hit.path.as_bytes().len() as u64 + RANGE_FILE_BYTES
+    } else {
+        0
+    };
+    (span + file).div_ceil(4)
 }
 
 /// Set [`ReferenceHit::shared_line`] on each hit of a page, in scan order with its `hit_keys`:
@@ -290,13 +329,14 @@ pub(crate) fn scan_calls_examining(
 ) -> Result<CallScanPage, EngineError> {
     let finder = memchr::memmem::Finder::new(name.as_bytes());
     scan_calls_where(idx, name, limit, cursor_after, examine_cap, |callee, _| {
-        (finder.find(callee.as_bytes()).is_some() && matching.accepts_callee(callee, name)).then_some(Kept::NAME_ONLY)
+        names_call(&finder, callee, name, matching).then_some(Kept::NAME_ONLY)
     })
 }
 
 /// The scan behind [`scan_calls_examining`], over the callees that may contain `needle`: `keep`
 /// decides from a callee and its file whether the site is a match and how it is listed. A site it
-/// refuses costs no position lookup and does not count toward the scan cap.
+/// refuses costs no position lookup and does not count toward `scan_cap`; every key the scan
+/// examines, kept or refused, counts toward `examine_cap`.
 pub(crate) fn scan_calls_where(
     idx: &dyn crate::index::view::IndexView,
     needle: &str,

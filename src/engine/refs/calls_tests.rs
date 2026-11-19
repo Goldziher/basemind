@@ -84,6 +84,7 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                 cursor: None,
                 resolution: None,
                 scope: None,
+                ranges: false,
             },
             || None,
             |_| {},
@@ -113,6 +114,7 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                 cursor: None,
                 resolution: None,
                 scope: None,
+                ranges: false,
             },
             || None,
         )
@@ -198,6 +200,7 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
                 cursor: None,
                 resolution: None,
                 scope: None,
+                ranges: false,
             },
             || None,
         )
@@ -305,6 +308,7 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
                 cursor: None,
                 resolution: None,
                 scope: None,
+                ranges: false,
             },
             || None,
         )
@@ -442,6 +446,7 @@ fn a_renamed_import_caller_is_listed_when_the_in_ram_map_lacks_its_file() {
                     cursor: None,
                     resolution: None,
                     scope: None,
+                    ranges: false,
                 },
                 || None,
             )
@@ -459,6 +464,78 @@ fn a_renamed_import_caller_is_listed_when_the_in_ram_map_lacks_its_file() {
     let partial = callers(&crate::engine::MapCache::empty());
     assert!(renamed(&partial), "a map without the file still lists it: {partial}");
     assert_eq!(partial["total"], full["total"]);
+}
+
+/// A `changed` scope cuts the resolved refinement as it cuts the name scan: a caller outside the
+/// scope, even one only resolution sees (a renamed import), is neither listed nor counted in
+/// `resolved_total`, and the probe cap is spent on the scope's files alone.
+#[cfg(feature = "code-intel-js")]
+#[test]
+fn a_changed_scope_cuts_the_resolved_callers_to_its_files() {
+    use crate::engine::types::refs::FindCallersParams;
+    use crate::path::RelPath;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("util.ts"), b"export function target() { return 1; }\n").expect("util.ts");
+    std::fs::write(root.join("direct.ts"), b"import { target } from './util';\ntarget();\n").expect("direct.ts");
+    std::fs::write(
+        root.join("consumer.ts"),
+        b"import { target as g } from './util';\ng();\n",
+    )
+    .expect("consumer.ts");
+    let (store, cache) = scan_fixture(root);
+    let callers = |scope: Option<crate::engine::scope::ChangeScope>| {
+        decode(
+            &super::run_find_callers(
+                &store,
+                &local_index(&store),
+                crate::engine::files::IndexedFiles::contained(root),
+                &cache,
+                FindCallersParams {
+                    substring: false,
+                    path: RelPath::from("util.ts".as_bytes()),
+                    name: "target".to_string(),
+                    kind: None,
+                    line: None,
+                    limit: Some(100),
+                    max_tokens: None,
+                    cursor: None,
+                    resolution: None,
+                    scope,
+                    ranges: false,
+                },
+                || None,
+            )
+            .expect("find_callers"),
+        )
+    };
+
+    let whole = callers(None);
+    assert_eq!(
+        (whole["total"].clone(), whole["resolved_total"].clone()),
+        (serde_json::json!(2), serde_json::json!(2)),
+        "{whole}"
+    );
+    assert_eq!(
+        whole.pointer("/hits/consumer.ts/0/callee"),
+        Some(&serde_json::json!("g")),
+        "resolution lists the renamed caller: {whole}"
+    );
+
+    let mut scope = crate::engine::scope::ChangeScope::default();
+    scope.extend([RelPath::from("direct.ts".as_bytes())]);
+    let scoped = callers(Some(scope));
+    assert_eq!(
+        (scoped["total"].clone(), scoped["resolved_total"].clone()),
+        (serde_json::json!(1), serde_json::json!(1)),
+        "{scoped}"
+    );
+    assert_eq!(
+        scoped["hits"],
+        serde_json::json!({ "direct.ts": [{ "line": 2 }] }),
+        "the renamed caller lies outside the scope: {scoped}"
+    );
 }
 
 /// A `references` cursor is a position in the view's key order, and an edit moves the edited
@@ -487,6 +564,7 @@ fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
                 cursor,
                 resolution: None,
                 scope: None,
+                ranges: false,
             },
             || None,
             |_| {},

@@ -447,3 +447,110 @@ async fn a_route_is_called_by_the_http_requests_its_path_matches() {
         })
     );
 }
+
+/// A handler's file and another file defining a function of the same name as the second handler.
+const HANDLERS_RS: &str = "pub async fn me() {}\n";
+const OTHER_RS: &str = "pub fn me() {}\n";
+
+/// The callers of an HTTP handler are the routes naming it and the HTTP calls those routes answer
+/// (ADR-0048 decision 5). A route in the handler's own file names it; one in another file names
+/// only some definition of the name, so its rows are `ambiguous` when another file defines it too.
+/// An HTTP request is no call of a function its path ends in: `GET /users/me` does not call `me`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_handler_is_called_through_its_routes() {
+    let routes = format!("{ROUTES_RS}\npub async fn show_user() {{}}\n");
+    let (_dir, client) = started_with(&[
+        ("src/routes.rs", &routes),
+        ("src/requests.rs", REQUESTS_RS),
+        ("src/handlers.rs", HANDLERS_RS),
+        ("src/other.rs", OTHER_RS),
+    ])
+    .await;
+
+    let show_user = call(
+        &client,
+        "code_refs",
+        json!({ "name": "show_user", "path": "src/routes.rs" }),
+    )
+    .await;
+    assert_eq!(
+        (
+            show_user["resolution_default"].clone(),
+            show_user["total"].clone(),
+            show_user["hits"].clone()
+        ),
+        (
+            json!("path_match"),
+            json!(3),
+            json!({
+                "src/requests.rs": [
+                    { "line": 2, "callee": "GET /users/42" },
+                    { "line": 4, "callee": "GET /v2/users/7" }
+                ],
+                "src/routes.rs": [{ "line": 3, "callee": "GET /users/:param" }]
+            })
+        ),
+        "{show_user}"
+    );
+
+    let me = call(&client, "code_refs", json!({ "name": "me", "path": "src/handlers.rs" })).await;
+    assert_eq!(
+        (me["total"].clone(), me["hits"].clone()),
+        (
+            json!(2),
+            json!({
+                "src/requests.rs": [{ "line": 3, "callee": "GET /users/me", "ambiguous": true }],
+                "src/routes.rs": [{ "line": 4, "callee": "GET /users/me", "ambiguous": true }]
+            })
+        ),
+        "`me` is defined in two files, and the route is in neither: {me}"
+    );
+    let calls_of_me = call(&client, "code_refs", json!({ "name": "me" })).await;
+    assert_eq!(calls_of_me["total"], 0, "{calls_of_me}");
+}
+
+/// A route is pinned by its name in any parameter syntax, as it is looked up without `path`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_route_is_pinned_in_any_parameter_syntax() {
+    let (_dir, client) = started_with(&[("src/routes.rs", ROUTES_RS), ("src/requests.rs", REQUESTS_RS)]).await;
+    for name in ["GET /users/{id}", "GET /users/:id", "get /users/<id>"] {
+        let pinned = call(&client, "code_refs", json!({ "name": name, "path": "src/routes.rs" })).await;
+        assert_eq!(
+            (pinned["definition"]["name"].clone(), pinned["total"].clone()),
+            (json!("GET /users/:param"), json!(2)),
+            "{name}: {pinned}"
+        );
+    }
+}
+
+/// An HTTP call is located by a line of the indexed file: once the file is edited, `definition` is
+/// refused as for any other reference, and read ranges over it are flagged `stale`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_edited_client_file_is_refused_for_definition_and_its_ranges_are_stale() {
+    let (dir, client) = started_with(&[("src/routes.rs", ROUTES_RS), ("src/requests.rs", REQUESTS_RS)]).await;
+    let path = dir.path().join("src/requests.rs");
+    let source = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("// one\n// two\n// three\n{source}")).unwrap();
+
+    let message = call_err(
+        &client,
+        "code_refs",
+        json!({ "name": "GET /v2/users/7", "relation": "definition", "path": "src/requests.rs", "line": 4 }),
+    )
+    .await;
+    assert!(
+        message.contains("`src/requests.rs` changed since it was indexed"),
+        "{message}"
+    );
+
+    let ranged = call(
+        &client,
+        "code_refs",
+        json!({ "name": "GET /users/:param", "ranges": true }),
+    )
+    .await;
+    assert_eq!(
+        ranged["hits"],
+        json!({ "src/requests.rs": { "ranges": [[1, 5]], "hits": 2, "stale": true } })
+    );
+}

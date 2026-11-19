@@ -262,6 +262,7 @@ fn run_call_sites(
                 cursor: p.cursor,
                 resolution: p.resolution,
                 scope: p.scope,
+                ranges,
             };
             CodeRefsResult::Callers(run_callers(ws, callers)?)
         }
@@ -281,6 +282,7 @@ fn run_call_sites(
                     cursor: p.cursor,
                     resolution: p.resolution,
                     scope: p.scope,
+                    ranges,
                 },
                 || ws.lifecycle_notice(),
                 |hits| flag_listed(ws, &cache, hits),
@@ -288,16 +290,23 @@ fn run_call_sites(
             CodeRefsResult::References(references)
         }
     };
-    let (hits, scope_files_field) = match &mut answer {
-        CodeRefsResult::Callers(callers) => (&mut callers.hits, &mut callers.scope_files),
-        CodeRefsResult::References(references) => (&mut references.hits, &mut references.scope_files),
+    let (hits, scope_files_field, omitted) = match &mut answer {
+        CodeRefsResult::Callers(callers) => (&mut callers.hits, &mut callers.scope_files, &mut callers.omitted),
+        CodeRefsResult::References(references) => (
+            &mut references.hits,
+            &mut references.scope_files,
+            &mut references.omitted,
+        ),
         _ => unreachable!("relation `callers` answers call sites"),
     };
     *scope_files_field = scope_files;
     if ranges {
         let cache = ws.cache.load_full();
         let rows = std::mem::replace(hits, RefHits::Rows(Vec::new()));
-        *hits = rows.into_ranges(|path| cache.meta(path).map(|meta| meta.lines).filter(|lines| *lines > 0));
+        let (merged, uncovered) =
+            rows.into_ranges(|path| cache.meta(path).map(|meta| meta.lines).filter(|lines| *lines > 0));
+        *hits = merged;
+        *omitted = (uncovered > 0).then_some(uncovered);
     }
     Ok(answer)
 }

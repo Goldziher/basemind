@@ -2,7 +2,7 @@
 //! name scan in `calls_scan`), implementations (`impls`), the definition a reference binds to
 //! (`intel`), what an exact name match is (`matching`), how each call site was resolved
 //! (`resolution`), a file's importers and the import cycles over the import graph (`graph`), and the
-//! HTTP calls a route answers (`routes`). Each reads the index alone.
+//! HTTP calls a route answers (`routes`, over the table in `route_table`). Each reads the index alone.
 
 pub(crate) mod calls;
 pub(crate) mod calls_scan;
@@ -11,4 +11,5 @@ pub(crate) mod impls;
 pub(crate) mod intel;
 pub(crate) mod matching;
 pub(crate) mod resolution;
+pub(crate) mod route_table;
 pub(crate) mod routes;

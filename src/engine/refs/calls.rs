@@ -2,10 +2,12 @@
 //! definition. Both share the same `calls_by_callee` range scan; the second resolves the
 //! definition first.
 
-use super::calls_scan::{CallRef, CallScanPage, calls_in_files, content_keys, mark_shared_lines, scan_calls};
+use super::calls_scan::{
+    CallRef, CallScanPage, calls_in_files, content_keys, mark_shared_lines, names_call, scan_calls,
+};
 use super::matching::Matching;
 use super::resolution::{UseSources, classify_references, confirm_elsewhere, finish_page};
-use super::routes::{Endpoint, scan_route_calls};
+use super::routes::{Endpoint, handler_links, scan_route_calls};
 use crate::engine::MapCache;
 use crate::engine::cursor::{Cursor, stale_cursor};
 use crate::engine::error::EngineError;
@@ -107,7 +109,7 @@ pub(crate) fn run_find_references(
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
     let name = route.as_ref().map_or_else(|| params.name.clone(), Endpoint::name);
-    let mut finished = finish_page(scan, params.resolution, &name, params.max_tokens);
+    let mut finished = finish_page(scan, params.resolution, &name, params.max_tokens, params.ranges);
     flag_stale(&mut finished.page.hits);
     Ok(FindReferencesResponse {
         resolution_default: finished.default,
@@ -118,6 +120,7 @@ pub(crate) fn run_find_references(
         budgeted: finished.page.budgeted,
         hits: RefHits::Rows(finished.page.hits),
         scope_files: None,
+        omitted: None,
         next_cursor: stamp(finished.page.next_cursor, generation),
         notice: notice(),
     })
@@ -150,7 +153,11 @@ pub(crate) fn run_find_references(
 /// concurrently-readable `.rref` blobs plus the Fjall index `idx`, which the scan reads too.
 ///
 /// A `Route` definition has no call sites by name: its callers are the HTTP calls linked to it by
-/// path ([`scan_route_calls`]), graded `path_match`, and resolution does not run.
+/// path ([`scan_route_calls`]), graded `path_match`, and resolution does not run. A route name is
+/// pinned in any parameter syntax (`GET /users/{id}` picks the route `GET /users/:param`).
+///
+/// The callers of an HTTP handler also list the routes naming it and the HTTP calls those routes
+/// answer ([`handler_links`]), graded `path_match` and merged into the pages by key.
 pub(crate) fn run_find_callers(
     store: &crate::store::Store,
     idx: &dyn IndexView,
@@ -173,13 +180,15 @@ pub(crate) fn run_find_callers(
     })?;
     // The outline's spans and the resolution facts below are offsets into the indexed bytes.
     let source = freshness::load_fresh("code_refs", &params.path, &file, (&entry).into(), files.max_file_bytes)?;
+    // A route symbol is named in normalized form, which a route name in any parameter syntax parses to.
+    let pinned_name = Endpoint::parse(&params.name).map_or_else(|| params.name.clone(), |endpoint| endpoint.name());
     let symbol = crate::engine::pick::pick_symbol(
         "code_refs",
         &params.path,
         None,
         &l1.symbols,
         Some(&source),
-        &params.name,
+        &pinned_name,
         kind_filter,
         params.line,
     )?
@@ -203,14 +212,26 @@ pub(crate) fn run_find_callers(
         None => scan_calls(idx, &params.name, matching, limit, cursor_bytes.as_deref(), scope)?,
     };
     refuse_stale(stamped, generation)?;
+    let links = match route {
+        Some(_) => None,
+        None => {
+            let finder = memchr::memmem::Finder::new(params.name.as_bytes());
+            let listed = |callee: &str| names_call(&finder, callee, &params.name, matching);
+            handler_links(idx, cache, &params.path, &symbol.name, scope, listed)?
+        }
+    };
 
     // Resolution facts are a per-file blob the scan writes only for a file that produced some. No
     // blob is not `resolved_total: 0`: the language has no resolution engine, the resolve pass did
     // not finish, or this file bound nothing; `resolution` says which (`intel::resolution_gap`).
     let resolution_ran = route.is_none() && store.read_resolved_by_hex(&entry.hash_hex).ok().flatten().is_some();
     let resolved = if resolution_ran {
-        resolved_callers(store, idx, &params.path, &source, symbol, &params.name, limit)
-            .map(|resolved| resolved.within(scope))
+        let pinned = PinnedDefinition {
+            path: &params.path,
+            source: &source,
+            symbol,
+        };
+        resolved_callers(store, idx, pinned, &params.name, limit, scope)
     } else {
         None
     };
@@ -227,6 +248,10 @@ pub(crate) fn run_find_callers(
     };
 
     let mut page = merge_resolved(scan, resolved, &params.path, limit, cursor_bytes.as_deref());
+    if let Some(links) = links {
+        page = merge_keyed(page, links.hits, limit, cursor_bytes.as_deref());
+        page.total_is_partial |= links.partial;
+    }
     confirm_elsewhere(
         idx,
         &mut UseSources::new(files, cache),
@@ -237,7 +262,7 @@ pub(crate) fn run_find_callers(
     let total = page.total;
     let total_is_partial = page.total_is_partial;
     let name = route.as_ref().map_or_else(|| params.name.clone(), Endpoint::name);
-    let finished = finish_page(page, params.resolution, &name, params.max_tokens);
+    let finished = finish_page(page, params.resolution, &name, params.max_tokens, params.ranges);
     Ok(FindCallersResponse {
         definition,
         resolution_note,
@@ -250,6 +275,7 @@ pub(crate) fn run_find_callers(
         budgeted: finished.page.budgeted,
         hits: RefHits::Rows(finished.page.hits),
         scope_files: None,
+        omitted: None,
         next_cursor: stamp(finished.page.next_cursor, generation),
         notice: notice(),
     })
@@ -312,23 +338,15 @@ pub(crate) struct ResolvedCallers {
     /// callee `g`). Carried with their `calls_by_callee` key so they merge into the scan's
     /// key-ordered cursor stream rather than perturbing it.
     aliased: Vec<(Vec<u8>, ReferenceHit)>,
-    /// Total proven call sites, repo-wide and page-independent.
+    /// Total proven call sites in the scope, page-independent.
     total: u32,
 }
 
-impl ResolvedCallers {
-    /// The refinement cut to the files of a `changed` scope: the name scan lists no call site
-    /// elsewhere, so neither the aliased sites nor `resolved_total` count one.
-    fn within(mut self, scope: Option<&crate::engine::scope::ChangeScope>) -> Self {
-        let Some(scope) = scope else {
-            return self;
-        };
-        self.sites.retain(|path, _| scope.contains(path));
-        self.unprobed.retain(|path| scope.contains(path));
-        self.aliased.retain(|(_, hit)| scope.contains(&hit.path));
-        self.total = self.sites.values().map(|starts| starts.len() as u32).sum();
-        self
-    }
+/// The definition callers are pinned to: its file, the file's indexed bytes and its outline symbol.
+struct PinnedDefinition<'a> {
+    path: &'a crate::path::RelPath,
+    source: &'a [u8],
+    symbol: &'a crate::extract::Symbol,
 }
 
 /// A call site exactly as the index records it.
@@ -361,8 +379,8 @@ fn index_by_start(calls: Vec<CallRef>) -> ahash::AHashMap<u32, CallSite> {
 /// live at once, and the size of each forwarded `CallsInFiles` request.
 const CALL_SITE_BATCH: usize = 128;
 
-/// Build the resolved refinement for the definition `symbol` in `def_path`, whose indexed bytes
-/// are `def_source`. `None` when resolution has nothing to say about that definition (its facts do
+/// Build the resolved refinement for the `pinned` definition `symbol` in `def_path`, whose indexed
+/// bytes are `def_source`. `None` when resolution has nothing to say about that definition (its facts do
 /// not name it, or the call sites could not be fetched): every hit then stays `name_only`. A
 /// definition resolution knows and found no use of yields an empty refinement, which grades every
 /// hit `elsewhere` until [`confirm_elsewhere`] finds it binds to nothing. Cross-file uses come from the index when it is open, else the intra-file `.rref`
@@ -375,6 +393,10 @@ const CALL_SITE_BATCH: usize = 128;
 /// `[start_byte, end_byte)` AND whose identifier text equals `symbol.name`. That both bridges the
 /// offset gap and disambiguates same-named definitions living in other scopes.
 ///
+/// Only uses in the files of a `changed` `scope` are probed: the name scan lists no call site
+/// elsewhere, so neither the aliased sites nor `resolved_total` count one, and the probe cap is
+/// spent on the scope's files alone.
+///
 /// Work is bounded by `probe_cap` use-files, mirroring the scan's `scan_cap` convention. Past the
 /// cap the refinement simply stops proving things — hits stay `name_only` and the floor stays
 /// complete. Degrading toward "unchecked" is always safe; degrading toward "no callers" is what this
@@ -382,12 +404,16 @@ const CALL_SITE_BATCH: usize = 128;
 fn resolved_callers(
     store: &crate::store::Store,
     idx: &dyn IndexView,
-    def_path: &crate::path::RelPath,
-    def_source: &[u8],
-    symbol: &crate::extract::Symbol,
+    pinned: PinnedDefinition<'_>,
     name: &str,
     limit: usize,
+    scope: Option<&crate::engine::scope::ChangeScope>,
 ) -> Option<ResolvedCallers> {
+    let PinnedDefinition {
+        path: def_path,
+        source: def_source,
+        symbol,
+    } = pinned;
     let entry = store.lookup(def_path)?;
     let refs = store.read_resolved_by_hex(&entry.hash_hex).ok().flatten()?;
 
@@ -415,7 +441,7 @@ fn resolved_callers(
     let mut uses: Vec<(crate::path::RelPath, u32)> = Vec::new();
     for def_start in def_starts {
         for use_ref in crate::query::resolved_references(store, def_path, def_start) {
-            if seen.insert(use_ref.clone()) {
+            if crate::engine::changed::admits(scope, &use_ref.0) && seen.insert(use_ref.clone()) {
                 uses.push(use_ref);
             }
         }
@@ -508,12 +534,7 @@ fn proven(use_path: &crate::path::RelPath, def_path: &crate::path::RelPath) -> R
 /// Fold the resolved refinement into the name-scan page: grade each scan hit `same_file` or
 /// `imported` when resolution proved it binds to the definition in `def_path`, `elsewhere` when it
 /// did not, and `name_only` when its file lay past the probe cap; then merge in the aliased call
-/// sites the scan cannot see.
-///
-/// The merge is by `calls_by_callee` key — the same total order the scan iterates — so the emitted
-/// page stays a contiguous prefix of one key-ordered stream and the cursor contract is unchanged:
-/// `next_cursor` is the last key emitted, and the next call resumes strictly after it. Aliased hits
-/// already emitted (key <= cursor) are filtered out, so paging never duplicates them.
+/// sites the scan cannot see ([`merge_keyed`]).
 pub(crate) fn merge_resolved(
     mut page: CallScanPage,
     resolved: Option<ResolvedCallers>,
@@ -536,17 +557,34 @@ pub(crate) fn merge_resolved(
         };
     }
 
-    if resolved.aliased.is_empty() {
+    merge_keyed(page, resolved.aliased, limit, cursor_after)
+}
+
+/// Merge `extra` call sites, each with its `calls_by_callee` key, into a scan page. `extra` holds
+/// every such site across all pages, so each counts toward `total` once; the page lists those
+/// that sort after `cursor_after` and within the scan's reach.
+///
+/// The merge is by key, the total order the scan iterates, so the emitted page stays a contiguous
+/// prefix of one key-ordered stream: `next_cursor` is the last key emitted, and the next call
+/// resumes strictly after it. Sites already emitted (key <= cursor) are filtered out, so paging
+/// never duplicates them.
+pub(crate) fn merge_keyed(
+    mut page: CallScanPage,
+    extra: Vec<(Vec<u8>, ReferenceHit)>,
+    limit: usize,
+    cursor_after: Option<&[u8]>,
+) -> CallScanPage {
+    if extra.is_empty() {
         return page;
     }
-    let total = page.total.saturating_add(resolved.aliased.len() as u32);
+    let total = page.total.saturating_add(extra.len() as u32);
     // A scan that stopped at its examined-keys cap has looked at nothing past `stop`: an aliased
     // hit beyond it belongs to a later page, and the cursor must stay at `stop` for that page to
     // continue the scan from there.
     let stop = page.stopped_after.take();
     let scan_had_more = page.next_cursor.is_some() && stop.is_none();
 
-    let mut merged: Vec<(Vec<u8>, ReferenceHit, u32)> = Vec::with_capacity(page.hits.len() + resolved.aliased.len());
+    let mut merged: Vec<(Vec<u8>, ReferenceHit, u32)> = Vec::with_capacity(page.hits.len() + extra.len());
     for ((key, hit), start) in page
         .hit_keys
         .drain(..)
@@ -555,7 +593,7 @@ pub(crate) fn merge_resolved(
     {
         merged.push((key, hit, start));
     }
-    for (key, hit) in resolved.aliased {
+    for (key, hit) in extra {
         if cursor_after.is_some_and(|cursor| key.as_slice() <= cursor)
             || stop.as_deref().is_some_and(|stop| key.as_slice() > stop)
         {
