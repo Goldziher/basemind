@@ -1522,14 +1522,7 @@ fn runtime_builders() {
             builds.visit_item(item);
         }
         if builds.found > 0 {
-            files.insert(
-                module
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&module.file)
-                    .display()
-                    .to_string(),
-            );
+            files.insert(repo_relative(&root, &module.file));
         }
     }
     let expected: BTreeSet<String> = ["src/lance/runtime.rs".to_string()].into();
