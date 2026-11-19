@@ -109,3 +109,26 @@ pub(crate) fn default_true() -> bool {
 
 /// `truncated_reason` of a scan that stopped at its cap before the end of the matches.
 pub(crate) const SCAN_CAP: &str = "scan_cap";
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_symbol_change_whose_summary_opens_a_bracket_is_marked_modified() {
+        let row = |summary: &str, change: &'static str| {
+            serde_json::to_value(super::git::SymbolHistoryEntry {
+                sha: "0123456789ab".into(),
+                summary: summary.into(),
+                author: "a".into(),
+                author_time_unix: 0,
+                change,
+            })
+            .expect("a row")
+        };
+        assert_eq!(row("fix it", "modified"), "0123456789ab fix it");
+        assert_eq!(row("add it", "introduced"), "0123456789ab [introduced] add it");
+        assert_eq!(
+            row("[removed] typo", "modified"),
+            "0123456789ab [modified] [removed] typo"
+        );
+    }
+}

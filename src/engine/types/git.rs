@@ -737,7 +737,10 @@ pub(crate) struct DiffFileResponse {
 }
 
 /// One change of a symbol's history, written `"<sha> <summary>"`, with `[introduced]` or
-/// `[removed]` after the sha when the commit added or deleted the symbol rather than changed it.
+/// `[removed]` after the sha when the commit added or deleted the symbol rather than changed it. A
+/// change whose summary itself starts with `[` is marked `[modified]`, so a marker is never read out
+/// of a summary. When it was written is `git_log {rev}`'s answer: a date on every row costs the
+/// list the value gate's locating floor (ADR-0052).
 #[derive(Debug, schemars::JsonSchema)]
 pub(crate) struct SymbolHistoryEntry {
     pub sha: String,
@@ -752,7 +755,7 @@ pub(crate) struct SymbolHistoryEntry {
 impl Serialize for SymbolHistoryEntry {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let row = match self.change {
-            "modified" => format!("{} {}", self.sha, self.summary),
+            "modified" if !self.summary.starts_with('[') => format!("{} {}", self.sha, self.summary),
             change => format!("{} [{change}] {}", self.sha, self.summary),
         };
         serializer.serialize_str(&row)
@@ -769,7 +772,8 @@ pub(crate) struct SymbolHistoryResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commits_inspected: Option<u32>,
     /// `"<sha> [introduced] <summary>"`, newest first; `[removed]` likewise, and a plain
-    /// `"<sha> <summary>"` for a commit that changed the symbol.
+    /// `"<sha> <summary>"` for a commit that changed the symbol (`[modified]` when its summary
+    /// starts with `[`).
     pub history: Vec<SymbolHistoryEntry>,
     /// Why `history` is empty so far: the working tree does not define `name` (the text lists what
     /// the file does define) and no commit inspected up to this page does either. The last page is

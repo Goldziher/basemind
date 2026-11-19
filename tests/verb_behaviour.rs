@@ -326,8 +326,8 @@ fn commit_summaries(rows: &Value) -> Vec<String> {
         .collect()
 }
 
-/// A symbol history row as `(change, summary)`: `"<sha> [introduced] <summary>"` or
-/// `"<sha> [removed] <summary>"` is that change, a plain `"<sha> <summary>"` is `modified`.
+/// A symbol history row as `(change, summary)`: `"<sha> [introduced] <summary>"` or `[removed]` is
+/// that change, a plain `"<sha> <summary>"` (or `[modified]`) is `modified`.
 fn history_change(row: &Value) -> (String, String) {
     let rest = row
         .as_str()
@@ -335,7 +335,7 @@ fn history_change(row: &Value) -> (String, String) {
         .split_once(' ')
         .expect("`<sha> ...`")
         .1;
-    for change in ["introduced", "removed"] {
+    for change in ["introduced", "removed", "modified"] {
         if let Some(summary) = rest.strip_prefix(&format!("[{change}] ")) {
             return (change.to_string(), summary.to_string());
         }
