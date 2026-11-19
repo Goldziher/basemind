@@ -182,13 +182,15 @@ pub(super) fn run_diff_outline(ws: &Workspace, params: DiffOutlineParams) -> Res
         .resolve_rev(rev_spec)
         .map_err(|e| EngineError::invalid_argument(format!("resolve_rev({rev_spec}): {e}")))?;
 
-    let cache = ws.cache.load_full();
-    let here = cache.get(&params.path).map(|l1| {
-        l1.symbols
-            .iter()
-            .map(|s| (s.name.clone(), kind_to_str(s.kind)))
-            .collect::<Vec<(String, &'static str)>>()
-    });
+    let here = match detect_lang(ws, &params.path) {
+        Some(lang) => working_tree_outline(ws, "git_diff", &params.path, lang)?.map(|(l1, _)| {
+            l1.symbols
+                .iter()
+                .map(|s| (s.name.clone(), kind_to_str(s.kind)))
+                .collect::<Vec<(String, &'static str)>>()
+        }),
+        None => None,
+    };
 
     let rev_blob = repo
         .read_blob_at_rev(&rev_sha, &params.path)
@@ -250,7 +252,7 @@ pub(super) fn run_diff_outline(ws: &Workspace, params: DiffOutlineParams) -> Res
                 })
                 .collect(),
             0,
-            Some("path not indexed in the current view; entire file treated as removed".to_string()),
+            Some("path absent from the working tree; entire file treated as removed".to_string()),
         ),
         (None, None) => {
             return Err(EngineError::invalid_argument(format!(
@@ -442,31 +444,14 @@ pub(super) fn run_symbol_history(
     };
 
     // Which of the file's same-named definitions is meant. Line numbers differ at every revision,
-    // so the choice is carried through history as "the n-th definition of that name in the file".
-    // A file that is no longer indexed (deleted, renamed) has no outline to choose from and keeps
-    // the first. So does a symbol the working tree no longer defines: its history is still there
-    // to read, and only a name no inspected commit defines either is a mistake in the call.
-    // The outline and the bytes its spans are laid over follow one index entry; with the store
-    // busy, the in-RAM outline is used without spans.
-    let cache = ws.cache.load_full();
-    let outline = match ws.try_store_read() {
-        Ok(store) => crate::engine::freshness::indexed_outline(&store, &cache, &params.path).map(|(entry, l1)| {
-            let file = crate::engine::files::IndexedFiles::of(ws)
-                .file(&store, &params.path)
-                .ok();
-            (l1, file.map(|file| (file, entry)))
-        }),
-        Err(_) => cache.get(&params.path).map(|l1| (l1, None)),
-    };
+    // so the choice is carried through history as "the n-th definition of that name in the file",
+    // counted in the file as it is now. A file the working tree no longer has (deleted, renamed)
+    // has no outline to choose from and keeps the first. So does a symbol the working tree no
+    // longer defines: its history is still there to read, and only a name no inspected commit
+    // defines either is a mistake in the call.
     let mut absent_now: Option<EngineError> = None;
-    let occurrence = match outline {
-        Some((l1, indexed)) => {
-            let source = indexed.and_then(|(file, entry)| {
-                crate::engine::freshness::load(&file, (&entry).into(), ws.config.scan.max_file_bytes)
-                    .ok()
-                    .filter(|live| live.fresh)
-                    .map(|live| live.bytes)
-            });
+    let occurrence = match working_tree_outline(ws, "git_log", &params.path, lang)? {
+        Some((l1, source)) => {
             let defined_now = l1
                 .symbols
                 .iter()
@@ -476,7 +461,7 @@ pub(super) fn run_symbol_history(
                 &params.path,
                 None,
                 &l1.symbols,
-                source.as_deref(),
+                Some(source.as_slice()),
                 &params.name,
                 kind,
                 params.line,
@@ -489,8 +474,6 @@ pub(super) fn run_symbol_history(
                 Err(error) => return Err(error),
             }
         }
-        // No code outline (deleted, renamed, or a document when the documents tier holds it): the
-        // rule for a name the tree no longer defines.
         None => {
             absent_now = pick_symbol("git_log", &params.path, None, &[], None, &params.name, kind, None).err();
             0
@@ -630,6 +613,74 @@ pub(super) fn run_symbol_history(
     })
 }
 
+/// A working-tree file's outline and the bytes its spans lie over.
+type LiveOutline = (std::sync::Arc<crate::extract::FileMapL1>, std::sync::Arc<Vec<u8>>);
+
+/// The outline of `path` as the working tree holds it now, and the bytes its spans lie over;
+/// `None` when the working tree has no such file.
+///
+/// A git tool that names a symbol "in the file" means the file on disk. The index can lag it: the
+/// watcher rescans after a commit or an edit, so the store may have no entry for the file yet, one
+/// for older content, or be held by the rescan writing it. The indexed outline is used only while
+/// the live bytes are the content it was taken from; otherwise the live bytes are parsed, once per
+/// content (the outline cache keys them by blob id).
+fn working_tree_outline(
+    ws: &Workspace,
+    tool: &str,
+    path: &crate::path::RelPath,
+    lang: crate::lang::LangId,
+) -> Result<Option<LiveOutline>, EngineError> {
+    use crate::engine::files::{IndexedFiles, Unreadable, outside_repository};
+    use crate::engine::freshness;
+
+    let cache = ws.cache.load_full();
+    let (file, indexed) = {
+        let store = ws.try_store_read().ok();
+        let file = match store.as_deref().map(|store| IndexedFiles::of(ws).file(store, path)) {
+            Some(Ok(file)) => Some(file),
+            Some(Err(Unreadable::Outside)) => return Err(outside_repository(tool, path)),
+            // Not indexed, or the store is busy: the path is read only inside the repository.
+            // An external path is readable only as the scan admitted it.
+            Some(Err(Unreadable::NotIndexed)) | None if path.is_external() => None,
+            Some(Err(Unreadable::NotIndexed)) | None => {
+                Some(crate::path::contained_file(&ws.root, path).map_err(|_| outside_repository(tool, path))?)
+            }
+        };
+        let indexed = store
+            .as_deref()
+            .and_then(|store| freshness::indexed_outline(store, &cache, path));
+        (file, indexed)
+    };
+    let Some(file) = file else {
+        return Ok(None);
+    };
+    let max_bytes = ws.config.scan.max_file_bytes;
+    let bytes = match freshness::read_bounded(&file, max_bytes) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            return Err(EngineError::invalid_argument(format!(
+                "`{tool}`: `{path}` is over `scan.max_file_bytes` ({max_bytes}) in the working tree and is not \
+                 parsed for symbols. Ask about the whole file instead: `{tool} {{\"path\":\"{path}\"}}`."
+            )));
+        }
+        // Deleted or moved: the file has a history but no outline now.
+        Err(_) => return Ok(None),
+    };
+    if let Some((entry, l1)) = indexed
+        && freshness::matches_index((&entry).into(), &file, &bytes)
+    {
+        return Ok(Some((l1, std::sync::Arc::new(bytes))));
+    }
+    let oid = gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, &bytes)
+        .map_err(|e| EngineError::internal(format!("`{tool}`: hash `{path}`: {e}")))?;
+    let entry = outline_entry_for_blob(&ws.outline_cache, oid, lang, bytes)
+        .ok_or_else(|| EngineError::internal(format!("`{tool}`: could not parse `{path}` in the working tree")))?;
+    Ok(Some((
+        std::sync::Arc::clone(&entry.map),
+        std::sync::Arc::clone(&entry.source),
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -672,3 +723,7 @@ mod tests {
         assert_eq!(whole[0].text, "+a\n");
     }
 }
+
+#[cfg(test)]
+#[path = "file_live_tests.rs"]
+mod live_tests;
