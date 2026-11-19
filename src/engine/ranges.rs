@@ -281,6 +281,33 @@ pub(crate) fn format_spans(spans: &[LineSpan]) -> String {
     out
 }
 
+/// Writes `files` as a hit list does with ranges: `{"<path>": {"ranges": [[start, end], ...],
+/// "hits": n}}`, lines 1-based inclusive, files in their order. A path that is not UTF-8 is written
+/// lossily, since a JSON key is a string.
+pub(crate) fn serialize_files<S: serde::Serializer>(files: &[FileRanges], serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+
+    struct Row<'a>(&'a FileRanges);
+
+    impl serde::Serialize for Row<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap;
+
+            let spans: Vec<[u32; 2]> = self.0.ranges.iter().map(|r| [r.span.start, r.span.end]).collect();
+            let mut map = serializer.serialize_map(Some(2))?;
+            map.serialize_entry("ranges", &spans)?;
+            map.serialize_entry("hits", &self.0.hits())?;
+            map.end()
+        }
+    }
+
+    let mut map = serializer.serialize_map(Some(files.len()))?;
+    for file in files {
+        map.serialize_entry(&file.path.to_str_lossy(), &Row(file))?;
+    }
+    map.end()
+}
+
 #[cfg(test)]
 #[path = "ranges_tests.rs"]
 mod tests;

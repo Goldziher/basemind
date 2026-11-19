@@ -170,33 +170,10 @@ pub(crate) enum GrepHits {
 
 impl Serialize for GrepHits {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-
         match self {
             Self::Rows(rows) => crate::engine::by_path::serialize(rows, serializer),
-            Self::Ranges(files) => {
-                let mut map = serializer.serialize_map(Some(files.len()))?;
-                for file in files {
-                    map.serialize_entry(&file.path.to_str_lossy(), &FileRangesRow(file))?;
-                }
-                map.end()
-            }
+            Self::Ranges(files) => crate::engine::ranges::serialize_files(files, serializer),
         }
-    }
-}
-
-/// One file's entry under `hits` with `ranges`.
-struct FileRangesRow<'a>(&'a FileRanges);
-
-impl Serialize for FileRangesRow<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-
-        let spans: Vec<[u32; 2]> = self.0.ranges.iter().map(|r| [r.span.start, r.span.end]).collect();
-        let mut map = serializer.serialize_map(Some(2))?;
-        map.serialize_entry("ranges", &spans)?;
-        map.serialize_entry("hits", &self.0.hits())?;
-        map.end()
     }
 }
 
