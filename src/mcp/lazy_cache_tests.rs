@@ -178,7 +178,12 @@ async fn corpus_tool_builds_the_map_on_demand_and_sees_every_file() {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    let has = |name: &str| names.iter().any(|row| row.contains(name));
+    // A row is `"<path>:<line>: <signature>"`: the name is read from the signature, not a path.
+    let has = |name: &str| {
+        names
+            .iter()
+            .any(|row| row.split_once(": ").is_some_and(|(_, signature)| signature.contains(name)))
+    };
     assert!(
         has("alpha_marker") && has("beta_marker"),
         "the on-demand map must cover EVERY indexed file, not just some: got {names:?}"

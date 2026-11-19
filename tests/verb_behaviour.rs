@@ -440,12 +440,11 @@ async fn code_symbols_fuzzy_adds_subsequence_matches_below_the_substring_ones() 
 
     let ranked = call(&client, "code_symbols", json!({ "name": "render", "fuzzy": true })).await;
     let found = symbol_rows(&ranked);
-    let first_fuzzy = found
-        .iter()
-        .position(|row| !row.contains("render"))
-        .unwrap_or(found.len());
+    // The name is read from the signature after `"<path>:<line>: "`, so a path is never a match.
+    let literal = |row: &String| row.split_once(": ").is_some_and(|(_, signature)| signature.contains("render"));
+    let first_fuzzy = found.iter().position(|row| !literal(row)).unwrap_or(found.len());
     assert!(
-        found[first_fuzzy..].iter().all(|row| !row.contains("render")),
+        found[first_fuzzy..].iter().all(|row| !literal(row)),
         "fuzzy matches rank below every literal match: {ranked}"
     );
     assert_eq!(found[0], "src/outline.rs:18: pub fn render(&self) -> u32", "{ranked}");

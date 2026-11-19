@@ -646,7 +646,10 @@ async fn hosted_serve_rescans_through_the_daemon_and_sees_fresh_symbols() {
         .expect("search B");
     let names_b = symbol_names(&decode_text(&search_b));
     assert!(
-        names_b.iter().any(|row| row.contains("Beta")),
+        // A row is `"<path>:<line>: <signature>"`: the name is read from the signature, not a path.
+        names_b
+            .iter()
+            .any(|row| row.split_once(": ").is_some_and(|(_, signature)| signature.contains("Beta"))),
         "serve B reads 'Beta' from the shared index: {names_b:?}"
     );
     let rescan_b = peer_b
