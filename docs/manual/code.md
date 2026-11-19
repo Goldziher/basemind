@@ -75,6 +75,14 @@ These read the index (the daemon answers them when one runs) and have no MCP too
   `basemind code cycles --check <from> <to>` says whether `from` importing `to` would close a cycle.
   Both commands take `--include-type-imports` and `--include-module-decls` to follow type-only
   imports and Rust `mod` declarations too.
+- `basemind code explain <target>` briefs one symbol, file or `path:line` (the innermost definition
+  holding that line) in one answer. A symbol gets its definition (line span, signature, doc), its
+  body when it has 60 lines or fewer, its callers with their resolution, the names its body calls,
+  the files importing its file and the commits that changed it. A file gets its outline, the files
+  it imports and that import it, its hotspot signals, its recent commits and their authors. Each
+  list holds `--limit` rows (default 20) and the answer fits `--max-tokens` (default 6000); a cut
+  section is listed in `truncated_sections` with the call that returns the rest. `--sections`
+  picks sections and `--no-code` leaves the body out.
 - `basemind code migration check [name]` counts the remaining uses of the old forms each rule of
   `.basemind/migrations/<name>.toml` names (a `call`, `import`, `identifier` or `text` pattern),
   per rule and file, with the share migrated and the progress across runs; the history is kept in

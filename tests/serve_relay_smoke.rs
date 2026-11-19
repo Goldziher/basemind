@@ -194,7 +194,7 @@ async fn live_serve_sessions(root: &Path) -> u64 {
 }
 
 /// The CLI-only commands, which ADR-0018 and ADR-0047 keep off the agent surface.
-const CLI_ONLY: [(&str, &str); 9] = [
+const CLI_ONLY: [(&str, &str); 10] = [
     ("memory_delete", r#"{"key":"k"}"#),
     ("git_churn", "{}"),
     ("git_by_path", r#"{"pattern":"a"}"#),
@@ -204,6 +204,7 @@ const CLI_ONLY: [(&str, &str); 9] = [
     ("overview", "{}"),
     ("git_hotspots", "{}"),
     ("code_migration_check", "{}"),
+    ("code_explain", r#"{"target":"a.rs"}"#),
 ];
 
 /// A relay session is an agent's unless its hello says it is a CLI command's. An agent session (a

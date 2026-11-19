@@ -1204,6 +1204,7 @@ degrading to a truncated in-memory view.
 | `chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (CLI only). |
 | `impact <path\|symbol> [--depth]` / `impact --diff <rev\|A..B>` / `impact --changed` | Files that import a file, a symbol's defining files or a change's files, transitively through the file-level import graph, each with its depth and whether it is in a cycle (CLI only). |
 | `cycles [--path --max-size]` / `cycles --check <from> <to>` | Import cycles, smallest first, each with an import chain that closes it; or whether `from` importing `to` would close one. Type-only imports and Rust `mod` declarations count only with `--include-type-imports` / `--include-module-decls` (CLI only). |
+| `explain <symbol\|path\|path:line> [--sections --limit --no-code --max-tokens]` | One briefing: a symbol's definition, short body, graded callers, callees, importers and history, or a file's outline, imports, importers, hotspot signals, recent commits and owners; each cut section names the call that continues it (CLI only). |
 | `migration check [name] [--fail-on-remaining --ranges]` | Remaining uses of the old forms named in `.basemind/migrations/<name>.toml`, per rule and file, with the share migrated and the progress across runs (history kept in the cache dir). `--fail-on-remaining` exits 1 for CI (CLI only). |
 
 **Git (`basemind git`)**
