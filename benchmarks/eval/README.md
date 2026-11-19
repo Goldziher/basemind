@@ -62,9 +62,8 @@ tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `read` to `code_
 | `gen_read_around.py` | `read_around` | every line within 5 of a literal's hits, merged into ranges; the baseline is what `rg -n -C5` prints |
 | `gen_explain.py` | `explain` | a Rust fn's definition, call sites and `->callee` names, from `rust_gold` |
 
-The last five cover the 0.34 analysis kinds (ADR-0047). Until the engine op or argument each one drives lands,
-`basemind admin eval` skips its tasks: they are reported under "Skipped" with the missing op, and kept out of every
-aggregate and of the gate.
+The last five cover the 0.34 analysis kinds (ADR-0047). Their engine ops have landed, so `basemind admin eval` runs,
+scores and gates their tasks like every other kind.
 
 Each generator's docstring states the exact basemind semantics its gold encodes, measured against
 the real tools (for example: `references` counts call sites only and reports the line where the
