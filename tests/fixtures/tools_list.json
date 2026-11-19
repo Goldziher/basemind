@@ -40,6 +40,10 @@
         "max_tokens": {
           "description": "Token budget (default 6000).",
           "type": "integer"
+        },
+        "changed": {
+          "description": "Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.",
+          "type": "string"
         }
       },
       "required": [
@@ -296,6 +300,10 @@
         "max_tokens": {
           "description": "Token budget (default 6000).",
           "type": "integer"
+        },
+        "changed": {
+          "description": "Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.",
+          "type": "string"
         }
       },
       "required": [
@@ -408,6 +416,10 @@
         "min_lines": {
           "description": "Only code files of at least this many lines, largest first.",
           "type": "integer"
+        },
+        "changed": {
+          "description": "Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.",
+          "type": "string"
         }
       }
     },

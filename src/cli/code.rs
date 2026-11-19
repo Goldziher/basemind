@@ -53,6 +53,10 @@ pub enum CodeCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
+        /// Only files changed since this revision (`HEAD`: the uncommitted changes) or in `A..B`;
+        /// append `+importers` to add the files importing them.
+        #[arg(long)]
+        changed: Option<String>,
     },
     /// A symbol's source body (`--symbol`), or a 1-based inclusive line span (`--line`,
     /// `--end-line`).
@@ -101,6 +105,10 @@ pub enum CodeCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
+        /// Only files changed since this revision (`HEAD`: the uncommitted changes) or in `A..B`;
+        /// append `+importers` to add the files importing them.
+        #[arg(long)]
+        changed: Option<String>,
     },
     /// Search code by meaning; returns pointers, read one with `code read`.
     #[command(alias = "semantic")]
@@ -236,6 +244,10 @@ pub enum CodeCmd {
         /// Only code files of at least this many lines, largest first, with their line and byte counts.
         #[arg(long)]
         min_lines: Option<u32>,
+        /// Only files changed since this revision (`HEAD`: the uncommitted changes) or in `A..B`;
+        /// append `+importers` to add the files importing them.
+        #[arg(long)]
+        changed: Option<String>,
     },
     /// List indexed files. Shorthand for `find` with no query.
     Files {
@@ -297,6 +309,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             limit,
             cursor,
             max_tokens,
+            changed,
         } => (
             "code_symbols",
             tools
@@ -309,6 +322,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         limit,
                         cursor: cursor.map(Cursor),
                         max_tokens,
+                        changed,
                     },
                     async |s, p| s.op(p, Workspace::code_symbols).await,
                 )
@@ -348,6 +362,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             limit,
             cursor,
             max_tokens,
+            changed,
         } => (
             "code_grep",
             tools
@@ -363,6 +378,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         limit,
                         cursor: cursor.map(Cursor),
                         max_tokens,
+                        changed,
                     },
                     async |s, p| s.op(p, Workspace::code_grep).await,
                 )
@@ -515,6 +531,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             cursor,
             max_tokens,
             min_lines,
+            changed,
         } => (
             "find_files",
             tools
@@ -528,6 +545,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         cursor: cursor.map(Cursor),
                         max_tokens,
                         min_lines,
+                        changed,
                     },
                     async |s, p| s.op(p, Workspace::find_files).await,
                 )
@@ -552,6 +570,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         cursor: cursor.map(Cursor),
                         max_tokens,
                         min_lines: None,
+                        changed: None,
                     },
                     async |s, p| s.op(p, Workspace::find_files).await,
                 )

@@ -4,6 +4,7 @@
 
 pub(crate) mod budget;
 pub(crate) mod by_path;
+pub(crate) mod changed;
 mod code_search;
 pub(crate) mod cursor;
 pub(crate) mod definition;

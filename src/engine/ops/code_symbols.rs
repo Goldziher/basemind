@@ -13,8 +13,10 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 
 use super::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use crate::engine::budget::{apply_budget, budget};
+use crate::engine::changed::admits;
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
+use crate::engine::scope::ChangeScope;
 use crate::engine::types::SCAN_CAP;
 use crate::engine::types::code::{
     CodeSymbolsParams, SearchHitView, SearchResponse, SearchSymbolsParams, kind_to_str, parse_kind,
@@ -61,7 +63,8 @@ impl Workspace {
                 "`code_symbols`: `name` is empty; pass the name of the definition to find.",
             ));
         }
-        search_symbols(
+        let scope = crate::engine::changed::resolve(self, "code_symbols", p.changed.as_deref())?;
+        let mut response = search_symbols(
             self,
             SearchSymbolsParams {
                 needle: p.name,
@@ -71,12 +74,19 @@ impl Workspace {
                 max_tokens: budget(p.max_tokens),
                 cursor: p.cursor,
             },
-        )
+            scope.as_ref(),
+        )?;
+        response.scope_files = scope.map(|scope| scope.len());
+        Ok(response)
     }
 }
 
 /// Body of `code_symbols`.
-fn search_symbols(ws: &Workspace, params: SearchSymbolsParams) -> Result<SearchResponse, EngineError> {
+fn search_symbols(
+    ws: &Workspace,
+    params: SearchSymbolsParams,
+    scope: Option<&ChangeScope>,
+) -> Result<SearchResponse, EngineError> {
     ws.wait_map_ready();
     let kind = params.kind.as_deref().map(parse_kind).transpose()?;
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
@@ -90,6 +100,7 @@ fn search_symbols(ws: &Workspace, params: SearchSymbolsParams) -> Result<SearchR
         results: Vec::new(),
         next_cursor: None,
         cursor_invalidated,
+        scope_files: None,
         notice: ws.lifecycle_notice(),
     };
 
@@ -117,7 +128,7 @@ fn search_symbols(ws: &Workspace, params: SearchSymbolsParams) -> Result<SearchR
     let (page, offsets, window_end, total, total_is_partial) = {
         let mut literal: [Vec<Candidate<'_>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut literal_total = 0usize;
-        for (path, terms) in cache.terms().iter() {
+        for (path, terms) in cache.terms().iter().filter(|(path, _)| admits(scope, path)) {
             for symbol in terms.matching_symbols(&finder, kind) {
                 let rank = literal_rank(terms.name(symbol), needle);
                 literal_total += 1;
@@ -133,7 +144,7 @@ fn search_symbols(ws: &Workspace, params: SearchSymbolsParams) -> Result<SearchR
             let pattern = Pattern::parse(&params.needle, CaseMatching::Ignore, Normalization::Smart);
             let mut matcher = Matcher::new(Config::DEFAULT);
             let mut utf32: Vec<char> = Vec::new();
-            'sweep: for (path, terms) in cache.terms().iter() {
+            'sweep: for (path, terms) in cache.terms().iter().filter(|(path, _)| admits(scope, path)) {
                 for (symbol, name, symbol_kind) in terms.symbols() {
                     if kind.is_some_and(|k| symbol_kind != k) || finder.find(name).is_some() {
                         continue;
@@ -210,6 +221,7 @@ fn search_symbols(ws: &Workspace, params: SearchSymbolsParams) -> Result<SearchR
         results,
         next_cursor,
         cursor_invalidated: false,
+        scope_files: None,
         notice: ws.lifecycle_notice(),
     })
 }

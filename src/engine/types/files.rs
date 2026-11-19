@@ -32,6 +32,9 @@ pub struct FindFilesToolParams {
     /// Only code files of at least this many lines, largest first.
     #[serde(default)]
     pub min_lines: Option<u32>,
+    /// Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.
+    #[serde(default)]
+    pub changed: Option<String>,
 }
 
 /// `find_files` without a `query`: the listing's own arguments.
@@ -100,6 +103,10 @@ pub(crate) struct FilesResponse {
     pub cursor_invalidated: bool,
     /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    /// Files the `changed` scope holds, when one was passed: `0` is a change that touched nothing, told
+    /// apart from a change with no hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_files: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
 }

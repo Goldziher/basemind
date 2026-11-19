@@ -167,6 +167,7 @@ async fn corpus_tool_builds_the_map_on_demand_and_sees_every_file() {
         limit: None,
         cursor: None,
         max_tokens: None,
+        changed: None,
     };
     let result = server.code_symbols_call(params).await.expect("code_symbols");
     let payload = json_of(&result);

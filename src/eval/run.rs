@@ -28,7 +28,6 @@ pub const MAX_PAGES: u32 = 50;
 /// removes its arm here.
 pub fn unavailable(mode: EvalMode) -> Option<&'static str> {
     match mode {
-        EvalMode::GrepChanged => Some("not implemented: `code_grep` `changed` (#122)"),
         EvalMode::Explain => Some("not implemented: the `code explain` engine op (#120)"),
         _ => None,
     }
@@ -282,7 +281,7 @@ mod tests {
     use super::*;
     use crate::eval::task::parse_tasks;
 
-    const ANALYSIS: [EvalMode; 2] = [EvalMode::GrepChanged, EvalMode::Explain];
+    const ANALYSIS: [EvalMode; 1] = [EvalMode::Explain];
 
     #[test]
     fn skips_exactly_the_kinds_whose_op_has_not_landed() {
@@ -296,6 +295,7 @@ mod tests {
         assert!(unavailable(EvalMode::ReadAround).is_none());
         assert!(unavailable(EvalMode::DiffStructural).is_none());
         assert!(unavailable(EvalMode::FindLarge).is_none());
+        assert!(unavailable(EvalMode::GrepChanged).is_none());
     }
 
     #[test]
