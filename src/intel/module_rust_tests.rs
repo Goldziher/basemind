@@ -39,10 +39,10 @@ fn path_attribute_reads_the_attribute_above_a_module() {
 
 #[test]
 fn module_paths_follow_the_crate_layout() {
-    let layout = CrateLayout {
-        dir: "core/src".to_string(),
-        roots: vec!["core/src/lib.rs".to_string(), "core/src/main.rs".to_string()],
-    };
+    let layout = CrateLayout::new(
+        "core/src".to_string(),
+        vec!["core/src/lib.rs".to_string(), "core/src/main.rs".to_string()],
+    );
     assert_eq!(module_path(&layout, "core/src/lib.rs"), Some(vec![]));
     assert_eq!(module_path(&layout, "core/src/main.rs"), Some(vec![]));
     assert_eq!(module_path(&layout, "core/src/a/mod.rs"), Some(vec!["a".to_string()]));
@@ -360,4 +360,44 @@ fn cargo_toml_targets_are_crate_roots() {
     assert_eq!(resolved, [("mod args".to_string(), files(&["src/tool/args.rs"]))]);
     let (resolved, _) = resolve(&repo, "src/tool/args.rs");
     assert_eq!(resolved, [("crate::Root".to_string(), files(&["src/tool/main.rs"]))]);
+}
+
+#[test]
+fn a_shared_test_module_resolves_against_every_test_crate_including_it() {
+    let common = "mod fixtures;\nuse crate::common::fixtures::F;\nuse crate::Shared;\nuse super::Shared as S;\n";
+    let repo = [
+        ("Cargo.toml", MANIFEST),
+        ("tests/b.rs", "mod common;\n"),
+        ("tests/a.rs", "mod common;\nstruct Shared;\n"),
+        ("tests/c.rs", "// mod common;\nmod commons;\n"),
+        ("tests/d.rs", "mod common {\n}\n"),
+        ("tests/common/mod.rs", common),
+        ("tests/common/fixtures.rs", "use crate::common::F;\n"),
+        ("tests/x/main.rs", "mod util;\n"),
+        ("tests/x/util.rs", "use crate::Root;\n"),
+    ];
+    let (resolved, probes) = resolve(&repo, "tests/common/mod.rs");
+    assert_eq!(
+        resolved,
+        [
+            ("mod fixtures".to_string(), files(&["tests/common/fixtures.rs"])),
+            (
+                "crate::common::fixtures::F".to_string(),
+                files(&["tests/common/fixtures.rs"])
+            ),
+            ("crate::Shared".to_string(), files(&["tests/a.rs", "tests/b.rs"])),
+            ("super::Shared".to_string(), files(&["tests/a.rs", "tests/b.rs"])),
+        ]
+    );
+    assert!(
+        probes.contains("tests"),
+        "a test crate added to tests/ must re-stitch the module"
+    );
+    let (resolved, _) = resolve(&repo, "tests/common/fixtures.rs");
+    assert_eq!(
+        resolved,
+        [("crate::common::F".to_string(), files(&["tests/common/mod.rs"]))]
+    );
+    let (resolved, _) = resolve(&repo, "tests/x/util.rs");
+    assert_eq!(resolved, [("crate::Root".to_string(), files(&["tests/x/main.rs"]))]);
 }
