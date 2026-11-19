@@ -157,8 +157,10 @@ pub struct GotoDefinitionParams {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct DependentsResponse {
-    /// Importing files, across every page.
-    pub total: usize,
+    /// Importing files, across every page. Written only beside a `next_cursor`: a page without one
+    /// lists every importer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     pub paths: Vec<RelPath>,
@@ -172,20 +174,24 @@ pub(crate) struct DependentsResponse {
 /// file-level import graph (ADR-0047 decision 5), nearest first.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct GraphImportersResponse {
-    /// Importing files within `depth`, across every page.
-    pub total: usize,
+    /// Importing files within `depth`, across every page. Written only beside a `next_cursor`: a
+    /// page without one lists every importer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     /// This page's importers by their import distance from the file (`"1"`: direct importers),
     /// each list in path order.
     pub by_depth: std::collections::BTreeMap<u8, Vec<RelPath>>,
-    /// The importers on this page that the file also reaches: they share an import cycle with it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub in_cycle: Vec<RelPath>,
-    /// Files lie beyond the walk: deeper than `depth`, or past the node cap.
+    /// How many importers on this page the file also reaches: they share an import cycle with it,
+    /// which `relation: "cycles"` with the same `path` lists. Absent when none.
+    #[serde(default, skip_serializing_if = "super::is_zero")]
+    pub in_cycle: usize,
+    /// The walk stopped at its node cap, so files may lie beyond it. A walk that stops at the
+    /// `depth` asked for is not truncated: a larger `depth` walks further.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// `depth` or `scan_cap` whenever `truncated` is true.
+    /// `scan_cap` whenever `truncated` is true.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     /// What the graph cannot see: a language with no import resolver, or a resolve pass still

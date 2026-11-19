@@ -30,7 +30,7 @@ const CRATE: [(&str, &str); 9] = [
     ("g/src/r.rs", "use crate::q::Q;\npub struct R(pub Box<Option<Q>>);\n"),
 ];
 
-/// Direct importers by default; `depth` 2 adds the importers of those, and `in_cycle` names the
+/// Direct importers by default; `depth` 2 adds the importers of those, and `in_cycle` counts the
 /// importers the file reaches back.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -46,11 +46,8 @@ async fn code_refs_importers_of_a_path_walk_the_import_graph_by_depth() {
     assert_eq!(
         direct,
         json!({
-            "total": 2,
             "by_depth": { "1": ["g/src/b.rs", "g/src/c.rs"] },
-            "in_cycle": ["g/src/b.rs"],
-            "truncated": true,
-            "truncated_reason": "depth",
+            "in_cycle": 1,
         }),
         "{direct}"
     );
@@ -64,9 +61,8 @@ async fn code_refs_importers_of_a_path_walk_the_import_graph_by_depth() {
     assert_eq!(
         two,
         json!({
-            "total": 3,
             "by_depth": { "1": ["g/src/b.rs", "g/src/c.rs"], "2": ["g/src/d.rs"] },
-            "in_cycle": ["g/src/b.rs"],
+            "in_cycle": 1,
         }),
         "{two}"
     );
@@ -98,7 +94,7 @@ async fn code_refs_importers_of_a_path_walk_the_import_graph_by_depth() {
         json!({ "relation": "importers", "path": "g/src/d.rs" }),
     )
     .await;
-    assert_eq!(leaf, json!({ "total": 0, "by_depth": {} }), "{leaf}");
+    assert_eq!(leaf, json!({ "by_depth": {} }), "{leaf}");
 }
 
 /// Every cycle, smallest first, a component the shortest loop does not cover listed with its
@@ -174,7 +170,7 @@ async fn code_refs_graph_relations_name_the_missing_resolver() {
         json!({ "relation": "importers", "path": "g/src/a.rs" }),
     )
     .await;
-    assert_eq!(importers["total"], 0, "{importers}");
+    assert_eq!(importers["by_depth"], json!({}), "{importers}");
     let coverage = importers["coverage"].as_str().unwrap_or_default();
     assert!(
         coverage.contains("no import resolver for rust") && coverage.contains("{name, relation:\"importers\"}"),

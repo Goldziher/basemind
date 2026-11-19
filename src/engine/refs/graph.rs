@@ -108,25 +108,28 @@ pub(crate) fn run_graph_importers(
     // The target reaches an importer exactly when the importer is in the target's component.
     let reaches = target.map(|node| graph.reachable(&[node], Direction::Dependencies, Tiers::RUNTIME));
     let mut by_depth: BTreeMap<u8, Vec<RelPath>> = BTreeMap::new();
-    let mut in_cycle = Vec::new();
+    let mut in_cycle = 0;
     for &(depth, node) in &listed[..kept] {
-        let file = graph.path(node).clone();
         if reaches.as_ref().is_some_and(|mask| mask[node as usize]) {
-            in_cycle.push(file.clone());
+            in_cycle += 1;
         }
-        by_depth.entry(depth).or_default().push(file);
+        by_depth.entry(depth).or_default().push(graph.path(node).clone());
     }
-    let truncation = walk.and_then(|walk| walk.truncated);
+    // The depth the caller asked for bounds the walk as `limit` bounds a page: not a cut.
+    let truncation = walk
+        .and_then(|walk| walk.truncated)
+        .filter(|cut| *cut != crate::engine::import_graph::Truncation::Depth);
     let next = skip + kept;
+    let next_cursor = (next < total).then(|| Cursor::encode_in_memory(next as u64, generation));
     Ok(GraphImportersResponse {
-        total,
+        total: next_cursor.is_some().then_some(total),
         budgeted: budgeted.budgeted,
         by_depth,
         in_cycle,
         truncated: truncation.is_some(),
         truncated_reason: truncation.map(|cut| cut.reason()),
         coverage: file_coverage(&graph, &language, IMPORTERS_FALLBACK),
-        next_cursor: (next < total).then(|| Cursor::encode_in_memory(next as u64, generation)),
+        next_cursor,
         notice: ws.lifecycle_notice(),
     })
 }

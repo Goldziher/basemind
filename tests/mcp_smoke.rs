@@ -126,19 +126,35 @@ fn decode_text(result: &CallToolResult) -> Value {
     serde_json::from_str(&raw).unwrap_or(Value::Null)
 }
 
-/// The hits of a response as rows, each with its `path`. `code_grep` and `code_refs` list hits under
-/// their file (`{"<path>": [hit, ...]}`); the path is put back on each. A plain list (`code_search`,
-/// `docs_search`) is returned as it is.
+/// The hits of a response as rows, each with its `path`. `code_refs` lists hits under their file
+/// (`{"<path>": [hit, ...]}`); the path is put back on each. `code_grep` lists `"<line>: <text>"`
+/// rows under their file and enclosing symbol (`{"<path>": {"<symbol>": [row, ...]}}`); each match
+/// becomes `{path, line, text, symbol?, column?}`, one per column a row names, and context rows are
+/// left out. A plain list (`code_search`, `docs_search`) is returned as it is.
 fn hit_rows(body: &Value) -> Vec<Value> {
     match body.get("hits") {
         Some(Value::Object(files)) => files
             .iter()
-            .flat_map(|(path, rows)| {
-                rows.as_array().expect("a file's hits").iter().map(move |row| {
-                    let mut row = row.clone();
-                    row["path"] = json!(path);
-                    row
-                })
+            .flat_map(|(path, rows)| match rows {
+                Value::Object(groups) => groups
+                    .iter()
+                    .flat_map(|(symbol, rows)| {
+                        rows.as_array()
+                            .expect("a symbol's rows")
+                            .iter()
+                            .flat_map(move |row| grep_row(path, symbol, row.as_str().expect("a row")))
+                    })
+                    .collect::<Vec<_>>(),
+                rows => rows
+                    .as_array()
+                    .expect("a file's hits")
+                    .iter()
+                    .map(|row| {
+                        let mut row = row.clone();
+                        row["path"] = json!(path);
+                        row
+                    })
+                    .collect(),
             })
             .collect(),
         Some(Value::Array(rows)) => rows.clone(),
@@ -3325,10 +3341,13 @@ async fn code_refs_graph_relations_answer_and_refuse_their_shapes() {
     for (args, fields) in [
         (
             json!({ "relation": "importers", "path": "a.rs", "depth": 2 }),
-            ["total", "by_depth"],
+            &["by_depth"][..],
         ),
-        (json!({ "relation": "cycles" }), ["total", "cycles"]),
-        (json!({ "relation": "cycles", "path": "cyc1.rs" }), ["total", "cycles"]),
+        (json!({ "relation": "cycles" }), &["total", "cycles"][..]),
+        (
+            json!({ "relation": "cycles", "path": "cyc1.rs" }),
+            &["total", "cycles"][..],
+        ),
     ] {
         let result = service
             .call_tool(call_params("code_refs", args.clone()))

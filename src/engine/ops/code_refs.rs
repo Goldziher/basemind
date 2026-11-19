@@ -385,11 +385,12 @@ fn run_dependents(
     let page: Vec<crate::path::RelPath> = paths.into_iter().skip(skip).take(limit).collect();
     let budgeted = apply_budget(page, max_tokens);
     let next = skip + budgeted.items.len();
+    let next_cursor = (next < total).then(|| Cursor::encode_in_memory(next as u64, generation));
     Ok(DependentsResponse {
-        total,
+        total: next_cursor.is_some().then_some(total),
         budgeted: budgeted.budgeted,
         paths: budgeted.items,
-        next_cursor: (next < total).then(|| Cursor::encode_in_memory(next as u64, generation)),
+        next_cursor,
         notice: ws.lifecycle_notice(),
     })
 }

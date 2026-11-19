@@ -868,15 +868,17 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
 
     // Canaries count rows, so each asks for a budget far above its page instead of the default.
     const WHOLE_PAGE: u32 = 1_000_000;
-    // A list, or one grouped by file (`code_grep` / `code_refs` hits: `{"<path>": [row, ...]}`).
-    let count = |body: &Value, key: &str| match body.get(key) {
-        Some(Value::Array(rows)) => rows.len() as u64,
-        Some(Value::Object(files)) => files
-            .values()
-            .map(|rows| rows.as_array().map_or(0, Vec::len) as u64)
-            .sum(),
-        _ => 0,
-    };
+    // A list (`code_symbols` results), or one grouped by file (`code_refs` hits:
+    // `{"<path>": [row, ...]}`), or by file and enclosing symbol (`code_grep` hits:
+    // `{"<path>": {"<symbol>": [row, ...]}}`).
+    fn rows_in(value: &Value) -> u64 {
+        match value {
+            Value::Array(rows) => rows.len() as u64,
+            Value::Object(groups) => groups.values().map(rows_in).sum(),
+            _ => 0,
+        }
+    }
+    let count = |body: &Value, key: &str| body.get(key).map_or(0, rows_in);
 
     match repo_name {
         "react" => {
