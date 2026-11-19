@@ -100,4 +100,48 @@ mod tests {
         assert_eq!(kept.len(), 1);
         assert!(budgeted);
     }
+
+    fn commit(sha: &str, files: &[&str]) -> CommitView {
+        CommitView {
+            sha: sha.into(),
+            summary: "s".into(),
+            author: "a".into(),
+            with_author: false,
+            author_time_unix: 0,
+            files: Some(
+                files
+                    .iter()
+                    .map(|path| CommitFileView {
+                        path: crate::path::RelPath::from(path.as_bytes()),
+                        change: "modified",
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// A commit's files are written in the response's `files`, so they are charged to it, and the
+    /// kept commits hand their files over to that map.
+    #[test]
+    fn a_commit_is_charged_its_files_and_hands_them_to_the_files_map() {
+        // A 1-byte path costs 17 bytes; sha + summary + 8 is 11: four files make a commit 79 bytes
+        // (19 tokens), a commit without files 11 bytes (2 tokens). Without the files' cost the pair
+        // would be 4 tokens and fit either budget.
+        let commits = vec![commit("a", &["1", "2", "3", "4"]), commit("b", &[])];
+        let (kept, files, budgeted) = budget_commits_with_files(commits, Some(20));
+        assert_eq!(
+            kept.len(),
+            1,
+            "the second commit no longer fits once the first pays its files"
+        );
+        assert!(budgeted);
+        assert!(kept[0].files.is_none(), "a kept commit's files moved out of the row");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "a");
+        assert_eq!(files[0].1.len(), 4);
+
+        let (kept, files, budgeted) =
+            budget_commits_with_files(vec![commit("a", &["1", "2", "3", "4"]), commit("b", &[])], Some(21));
+        assert_eq!((kept.len(), files.len(), budgeted), (2, 2, false));
+    }
 }
