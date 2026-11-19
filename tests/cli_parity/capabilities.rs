@@ -187,6 +187,10 @@ pub fn table() -> Vec<Row> {
             "an analysis answered by the daemon, no verb tool until an eval kind earns one (ADR-0047)",
         ),
         cli_only(
+            "code deadcode",
+            "an analysis answered by the daemon, no verb tool until an eval kind earns one (ADR-0047)",
+        ),
+        cli_only(
             "code migration check",
             "a report over repository rule files with a CI exit gate; no tool until an eval kind measures it (ADR-0047)",
         ),

@@ -179,7 +179,12 @@ impl Workspace {
 
     /// Every build manifest beside the indexed files, parsed.
     fn manifests(&self, rows: &[FileRow]) -> Vec<Manifest> {
-        let files = FileSet::new(rows.iter().filter_map(|r| r.path.as_str()));
+        self.manifests_of(rows.iter().filter_map(|r| r.path.as_str()))
+    }
+
+    /// Every build manifest beside `paths` (indexed files), parsed. Shared with `deadcode` (#123).
+    pub(super) fn manifests_of<'a>(&self, paths: impl IntoIterator<Item = &'a str>) -> Vec<Manifest> {
+        let files = FileSet::new(paths);
         let sweep = Sweep::new(IndexedFiles::of(self));
         let exists = |rel: &str| sweep.path(&RelPath::from(rel)).is_some_and(|file| file.is_file());
         let read = |rel: &str, max: usize| {

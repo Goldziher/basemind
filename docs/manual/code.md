@@ -75,6 +75,18 @@ These read the index (the daemon answers them when one runs) and have no MCP too
   `basemind code cycles --check <from> <to>` says whether `from` importing `to` would close a cycle.
   Both commands take `--include-type-imports` and `--include-module-decls` to follow type-only
   imports and Rust `mod` declarations too.
+- `basemind code deadcode` reports files no entry point reaches through the import graph,
+  definitions whose name nothing else in the indexed code spells, and imports that resolve to
+  nothing, each with a confidence tier (`high`, `medium`, `low`) and its reason, plus a coverage
+  note per language. Entry points are the build manifests' targets and each language's
+  conventions (tests, examples, benches, build scripts, `__main__`, Go `package main`, Java `main`),
+  plus the globs listed in `[analysis] entry_points` of `basemind.toml`;
+  exported names (Rust `pub` in a library, Go capitalised, a JS `export` a package publishes, Python
+  `__all__`) are never reported. A name spelled only in comments is `medium`, only in strings
+  `low`; dispatch, decorators and attributes lower a tier and say why. `--path` narrows to a file
+  or directory, `--kind files|symbols|imports` to one kind, `--tier` sets the lowest confidence
+  listed, `--limit` caps each list (default 100), and `--fail-on-dead-code` exits 1 when anything
+  is reported, for CI.
 - `basemind code migration check [name]` counts the remaining uses of the old forms each rule of
   `.basemind/migrations/<name>.toml` names (a `call`, `import`, `identifier` or `text` pattern),
   per rule and file, with the share migrated and the progress across runs; the history is kept in

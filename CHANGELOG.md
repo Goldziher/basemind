@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replacement; the report gives remaining lines per rule and file, the share migrated, files holding
   both forms and failed presence assertions, and each run is appended to a history in the workspace
   cache dir. `--fail-on-remaining` exits 1; `--ranges` adds read ranges.
+- `basemind code deadcode` (CLI only, #123): files no entry point reaches through the import graph
+  (entry points from the build manifests, each language's conventions and the new
+  `[analysis] entry_points` globs in `basemind.toml`), definitions whose name no
+  other identifier in the indexed code spells, and imports that resolve to nothing. Each finding has
+  a tier and its reason: a name spelled only in comments is `medium`, only in strings `low`, and
+  dispatch, decorators, attributes and importers outside the repository lower a tier. Exported names
+  are not reported. `--path`, `--kind`, `--tier`, `--limit`; `--fail-on-dead-code` exits 1. A
+  `package.json` script's target now names the file its command runs (`node install.js`).
 - `basemind manual [topic]` prints an offline manual compiled into the binary: an index and pages
   on code navigation, resolution, git, documents, memory, agent messaging, indexing, paging, setup,
   exit codes, environment variables and troubleshooting. It needs no index or daemon. The pages in

@@ -16,6 +16,8 @@ pub struct ConfigV1 {
     #[serde(default)]
     pub code_intel: CodeIntelConfig,
     #[serde(default)]
+    pub analysis: AnalysisConfig,
+    #[serde(default)]
     pub watch: WatchConfig,
     #[serde(default)]
     pub cache: CacheConfig,
@@ -241,6 +243,19 @@ impl Default for CodeIntelConfig {
             precise_resolution: Self::default_precise_resolution(),
         }
     }
+}
+
+/// Inputs of the CLI analyses (`basemind code deadcode`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AnalysisConfig {
+    /// Extra entry points of `basemind code deadcode`, as globs with the `[scan] include` syntax (a
+    /// bare name matches that path and everything beneath it): files a tool, a framework or a
+    /// loader runs by name, which no manifest or language convention declares. The reachability
+    /// walk starts from them too.
+    #[serde(default)]
+    #[schemars(inner(length(min = 1)))]
+    pub entry_points: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -480,6 +495,7 @@ impl ConfigV1 {
             schema: "v1".to_string(),
             scan: ScanConfig::default(),
             code_intel: CodeIntelConfig::default(),
+            analysis: AnalysisConfig::default(),
             watch: WatchConfig::default(),
             cache: CacheConfig::default(),
             mcp: McpConfig::default(),

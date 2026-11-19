@@ -75,7 +75,7 @@ pub fn validate(cfg: &ConfigV1) -> Result<(), String> {
                 .to_string(),
         );
     }
-    let lists: [(&str, &[String]); 8] = [
+    let lists: [(&str, &[String]); 9] = [
         ("[scan] include", &cfg.scan.include),
         ("[scan] exclude", &cfg.scan.exclude),
         ("[documents] include", &cfg.documents.include),
@@ -84,6 +84,7 @@ pub fn validate(cfg: &ConfigV1) -> Result<(), String> {
         ("[documents] embed_exclude", &cfg.documents.embed_exclude),
         ("[code_search] embed_include", &cfg.code_search.embed_include),
         ("[code_search] embed_exclude", &cfg.code_search.embed_exclude),
+        ("[analysis] entry_points", &cfg.analysis.entry_points),
     ];
     for (name, list) in lists {
         compile_patterns(list.iter().map(String::as_str)).map_err(|e| format!("invalid glob in {name}: {e}"))?;

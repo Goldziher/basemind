@@ -11,6 +11,8 @@ use super::context::Tools;
 
 #[path = "analysis_cycles.rs"]
 mod cycles;
+#[path = "analysis_deadcode.rs"]
+mod deadcode;
 #[path = "analysis_impact.rs"]
 mod impact;
 
@@ -22,6 +24,9 @@ pub enum AnalysisCmd {
     /// Import cycles, smallest first, each with an import chain that closes it; or whether a new
     /// import would close one (CLI only).
     Cycles(cycles::CyclesArgs),
+    /// Files no entry point reaches, symbols nothing else names and imports that resolve to
+    /// nothing, each with a confidence tier and its reason (CLI only).
+    Deadcode(deadcode::DeadcodeArgs),
     /// Track a migration away from old forms (`check`).
     #[command(subcommand)]
     Migration(MigrationCmd),
@@ -35,6 +40,7 @@ pub(super) async fn call(tools: &Tools, cmd: AnalysisCmd) -> (&'static str, Resu
     match cmd {
         AnalysisCmd::Impact(args) => ("code_impact", impact::call(tools, args).await),
         AnalysisCmd::Cycles(args) => ("code_cycles", cycles::call(tools, args).await),
+        AnalysisCmd::Deadcode(args) => (deadcode::TOOL, deadcode::call(tools, args).await),
         AnalysisCmd::Migration(cmd) => analysis_migration::call(tools, cmd).await,
     }
 }
@@ -43,6 +49,7 @@ pub(super) async fn call(tools: &Tools, cmd: AnalysisCmd) -> (&'static str, Resu
 pub(super) fn gate(cmd: &AnalysisCmd) -> Option<Gate> {
     match cmd {
         AnalysisCmd::Migration(cmd) => analysis_migration::gate(cmd),
-        AnalysisCmd::Impact(_) | AnalysisCmd::Cycles(_) => None,
+        AnalysisCmd::Deadcode(args) if args.fail_on_dead_code => Some(deadcode::fail_on_dead_code),
+        AnalysisCmd::Impact(_) | AnalysisCmd::Cycles(_) | AnalysisCmd::Deadcode(_) => None,
     }
 }
