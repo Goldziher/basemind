@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use regex::Regex;
 
 use super::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
-use crate::engine::budget::{apply_budget_by_path, budget};
+use crate::engine::budget::{apply_budget_by_path, apply_budget_grep_rows, budget};
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
 use crate::engine::files::{IndexedFiles, Sweep};
@@ -252,7 +252,12 @@ fn workspace_grep(
         (None, false) => None,
     };
 
-    let budget = apply_budget_by_path(hits, params.max_tokens);
+    // A range answer is JSON; rows are the text answer's plain block (ADR-0053).
+    let budget = if params.ranges {
+        apply_budget_by_path(hits, params.max_tokens)
+    } else {
+        apply_budget_grep_rows(hits, params.max_tokens)
+    };
     let (hits, budgeted, next_cursor) = if budget.budgeted {
         let kept = budget.items.len();
         let resume = hit_cursors

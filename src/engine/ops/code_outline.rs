@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering;
 
 use super::SEARCH_LIMIT_MAX;
-use crate::engine::budget::{apply_budget, budget};
+use crate::engine::budget::{apply_budget_toon, budget};
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
 use crate::engine::files::{indexed_file, not_indexed_in};
@@ -95,7 +95,7 @@ impl Workspace {
                 }
             })
             .collect();
-        let budgeted = apply_budget(page, budget(p.max_tokens));
+        let budgeted = apply_budget_toon(page, budget(p.max_tokens));
         let symbols = budgeted.items;
         let next = skip + symbols.len();
         let imports: Vec<String> = if skip == 0 {

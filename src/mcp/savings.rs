@@ -75,9 +75,10 @@ const MEASURED: &[(&str, u64, &str)] = &[
 ];
 
 /// Whether a response answered with nothing: a `total` of 0, or every list and map it carries
-/// empty. An empty answer saved the agent nothing, whatever the tool's multiplier.
+/// empty. An empty answer saved the agent nothing, whatever the tool's multiplier. The text is read
+/// in whichever encoding its tool writes ([`crate::wire::decode`]).
 fn returned_nothing(text: &str) -> bool {
-    let Ok(serde_json::Value::Object(fields)) = serde_json::from_str::<serde_json::Value>(text) else {
+    let Ok(serde_json::Value::Object(fields)) = crate::wire::decode(text) else {
         return text.trim().is_empty();
     };
     if fields.get("total").and_then(serde_json::Value::as_u64) == Some(0) {

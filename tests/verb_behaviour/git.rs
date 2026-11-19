@@ -11,7 +11,7 @@ use std::process::Command;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use super::{Client, call_err, call_raw, serve_synced, text_of};
+use super::{Client, call_err, call_raw, json_of, serve_synced, text_of};
 
 const LIB_V1: &str = "pub fn alpha() -> u32 {\n    1\n}\n\npub fn beta() -> u32 {\n    2\n}\n";
 const LIB_V2: &str = "pub fn alpha() -> u32 {\n    10\n}\n\npub fn beta() -> u32 {\n    2\n}\n";
@@ -77,12 +77,16 @@ fn zero_elapsed(text: &str) -> String {
     out
 }
 
-/// The tool's JSON text, `elapsed_us` zeroed.
+/// The tool's answer as JSON, `elapsed_us` zeroed.
 async fn answer(client: &Client, tool: &'static str, arguments: Value) -> String {
     let result = call_raw(client, tool, arguments.clone()).await;
-    let text = text_of(&result);
-    assert_ne!(result.is_error, Some(true), "{tool} {arguments} failed: {text}");
-    zero_elapsed(&text)
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "{tool} {arguments} failed: {}",
+        text_of(&result)
+    );
+    zero_elapsed(&json_of(tool, &result))
 }
 
 /// Compare every `(label, actual, expected)` at once, so one run shows each drifted answer.
@@ -187,6 +191,9 @@ async fn git_diff_answers_byte_for_byte() {
     let (dir, client) = dated().await;
     let mut rows = Vec::new();
     let clean = answer(&client, "git_diff", json!({})).await;
+    // The text an agent reads is TOON (ADR-0053); the rows below pin its JSON.
+    let raw = call_raw(&client, "git_diff", json!({})).await;
+    assert_eq!(text_of(&raw), "is_clean: true");
     rows.push((
         "git_diff {} (clean)".to_string(),
         clean,

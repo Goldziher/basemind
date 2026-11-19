@@ -205,7 +205,7 @@ async fn collect_responses(root: &Path) -> Vec<Value> {
             .await
             .unwrap_or_else(|e| panic!("call {tool} {args}: {e}"));
         assert_ne!(result.is_error, Some(true), "call {tool} {args}: {}", text_of(&result));
-        let mut parsed: Value = serde_json::from_str(&text_of(&result)).unwrap_or(Value::Null);
+        let mut parsed: Value = basemind::wire::decode(&text_of(&result)).unwrap_or(Value::Null);
         scrub(&mut parsed);
         out.push(parsed);
     }
@@ -240,7 +240,7 @@ where
             .call_tool(call_params("code_outline", json!({"path": "module_000.rs"})))
             .await
             .expect("probe call");
-        let parsed: Value = serde_json::from_str(&text_of(&probe)).unwrap_or(Value::Null);
+        let parsed: Value = basemind::wire::decode(&text_of(&probe)).unwrap_or(Value::Null);
         if parsed.get("notice").is_none() {
             return;
         }

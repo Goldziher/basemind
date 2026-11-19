@@ -850,6 +850,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml 1.2.1+spec-1.1.0",
+ "toon-format",
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
@@ -11173,6 +11174,18 @@ dependencies = [
  "bytes",
  "prost",
  "tonic",
+]
+
+[[package]]
+name = "toon-format"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee91127810858e0dbcecb2947a0074a7d18bd191d56bcb581f5962374aed9fb8"
+dependencies = [
+ "indexmap 2.14.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

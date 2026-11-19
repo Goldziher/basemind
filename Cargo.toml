@@ -241,6 +241,8 @@ tokio = { version = "1", features = [
 ] }
 tokio-util = { version = "0.7", features = ["codec"] }
 toml = "1.2"
+# ~keep TOON text answers (ADR-0053); `cli` (the default) pulls a TUI and a tokenizer.
+toon-format = { version = "0.7", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.27"

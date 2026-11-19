@@ -53,6 +53,53 @@ pub(crate) fn apply_budget<T: Serialize>(items: Vec<T>, max_tokens: Option<u32>)
     })
 }
 
+/// [`apply_budget`] for a list an answer writes as a TOON array (`code_outline` symbols, a
+/// `find_files` list; ADR-0053): each item costs its bytes as TOON writes it
+/// ([`crate::wire::toon_element_bytes`]), a table row where the item is flat.
+pub(crate) fn apply_budget_toon<T: Serialize>(items: Vec<T>, max_tokens: Option<u32>) -> Budgeted<T> {
+    keep_prefix(items, max_tokens, |item| {
+        serde_json::to_value(item).map_or(0, |value| crate::wire::toon_element_bytes(&value).div_ceil(4))
+    })
+}
+
+/// [`apply_budget_by_path`] for `code_grep` rows, which the text answer writes as a plain block
+/// (ADR-0053): a hit costs its rows as written, plus its file's `# <path>` header the first time a
+/// kept hit is in that file, and its symbol's `## <symbol>` header the first time a kept hit is in
+/// that file and symbol (none for the rows outside every symbol that open a file).
+pub(crate) fn apply_budget_grep_rows(
+    items: Vec<super::types::grep::GrepHit>,
+    max_tokens: Option<u32>,
+) -> Budgeted<super::types::grep::GrepHit> {
+    let mut seen = GrepSeen::default();
+    keep_prefix(items, max_tokens, |hit| grep_hit_bytes(hit, &mut seen).div_ceil(4))
+}
+
+/// The files and (file, symbol) groups a `code_grep` block has written a header for so far.
+#[derive(Default)]
+pub(crate) struct GrepSeen {
+    files: ahash::AHashSet<crate::path::RelPath>,
+    groups: ahash::AHashSet<(crate::path::RelPath, String)>,
+}
+
+/// Bytes `hit` adds to a `code_grep` row block after the hits `seen` holds: its rows, and the
+/// headers it is the first to need.
+pub(crate) fn grep_hit_bytes(hit: &super::types::grep::GrepHit, seen: &mut GrepSeen) -> u64 {
+    let symbol = hit.symbol.as_deref().unwrap_or("");
+    let opens_file = seen.files.insert(hit.path.clone());
+    let file_bytes = if opens_file {
+        crate::wire::header(&hit.path.to_str_lossy()).len() as u64 + 3
+    } else {
+        0
+    };
+    let new_group = seen.groups.insert((hit.path.clone(), symbol.to_owned()));
+    let group_bytes = match (new_group, opens_file, symbol.is_empty()) {
+        (false, _, _) | (true, true, true) => 0,
+        (true, false, true) => 3,
+        (true, _, false) => crate::wire::header(symbol).len() as u64 + 4,
+    };
+    hit.plain_bytes() + file_bytes + group_bytes
+}
+
 /// Keep the longest leading prefix of `items` whose summed `cost` fits `max_tokens`; the first item
 /// is always kept so a page makes progress. `cost` is called once per item considered, in order.
 pub(crate) fn keep_prefix<T>(items: Vec<T>, max_tokens: Option<u32>, mut cost: impl FnMut(&T) -> u64) -> Budgeted<T> {

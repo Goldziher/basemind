@@ -2,7 +2,7 @@
   {
     "name": "code_grep",
     "title": "Search code and text files",
-    "description": "Use instead of `rg`/`grep` to find exact text (a string, identifier or comment) in indexed code and text files (markdown, config, data; not PDFs). `pattern` is literal unless `regex` is true. `hits`: file, then enclosing symbol (`\"\"`: none), to rows `\"<line>: <text>\"` (`\"<line>:<col>,<col>: ...\"`: matches sharing a line; `\"<line>- ...\"`: context). `stale`: files edited since indexing. `skipped_files` counts unsearchable files; `total` (with `next_cursor`) counts hits from `cursor` on. A `path` or `language` no indexed file has is an error. Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
+    "description": "Use instead of `rg`/`grep` to find exact text (a string, identifier or comment) in indexed code and text files (markdown, config, data; not PDFs). `pattern` is literal unless `regex` is true. Rows `<line>: <text>` (`<line>:<col>,<col>: ...`: matches sharing a line; `<line>- ...`: context) sit under `# <file>` and `## <symbol>` (`##`: none) headers, after `key: value` lines: `stale` (edited since indexing), `skipped_files` (unsearchable), `total` (with `next_cursor`: hits from `cursor` on). A `path` or `language` no indexed file has is an error. Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
     "inputSchema": {
       "properties": {
         "pattern": {

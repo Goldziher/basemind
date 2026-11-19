@@ -200,6 +200,19 @@ fn text_of(result: &CallToolResult) -> String {
         .unwrap_or_default()
 }
 
+/// `tool`'s text block as compact JSON, after checking it is exactly the tool's own encoding of that
+/// JSON (ADR-0053), so a byte-for-byte expectation written as JSON pins the text too.
+fn json_of(tool: &str, result: &CallToolResult) -> String {
+    let text = text_of(result);
+    let value = basemind::wire::decode(&text).unwrap_or_else(|error| panic!("{tool}: unreadable ({error}): {text}"));
+    assert_eq!(
+        basemind::wire::encode(tool, &value),
+        text,
+        "{tool}: not its own encoding"
+    );
+    value.to_string()
+}
+
 async fn call(client: &Client, tool: &'static str, arguments: Value) -> Value {
     let result = client
         .call_tool(CallToolRequestParams::new(tool).with_arguments(arguments.as_object().cloned().expect("object")))
@@ -207,7 +220,7 @@ async fn call(client: &Client, tool: &'static str, arguments: Value) -> Value {
         .unwrap_or_else(|error| panic!("{tool}: {error}"));
     let text = text_of(&result);
     assert_ne!(result.is_error, Some(true), "{tool} {arguments} failed: {text}");
-    serde_json::from_str(&text).unwrap_or_else(|error| panic!("{tool}: non-JSON payload ({error}): {text}"))
+    basemind::wire::decode(&text).unwrap_or_else(|error| panic!("{tool}: unreadable payload ({error}): {text}"))
 }
 
 /// A call's tool result, error or not.

@@ -47,7 +47,7 @@ fn decode_text(result: &CallToolResult) -> Value {
             _ => None,
         })
         .unwrap_or_default();
-    serde_json::from_str(&raw).unwrap_or(Value::Null)
+    basemind::wire::decode(&raw).unwrap_or(Value::Null)
 }
 
 /// Byte column of the `nth` (0-based) occurrence of `needle` within `line`.

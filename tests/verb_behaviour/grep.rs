@@ -2,7 +2,7 @@
 
 use serde_json::json;
 
-use super::{call, grep_hits, started, started_with};
+use super::{call, call_raw, grep_hits, started, started_with, text_of};
 
 /// `^` and `$` anchor at every line, as in any grep. Anchored to the file instead, `^pub fn ` could
 /// match once per file at most and only on its first line.
@@ -506,4 +506,25 @@ async fn code_grep_context_writes_n_lines_around_each_hit_once() {
     assert!(wide.contains("`context` is at most 10 lines (got 11)"), "{wide}");
     let flag = super::call_err(&client, "code_grep", json!({ "pattern": "x", "context": true })).await;
     assert!(flag.contains("`context` must be an integer"), "{flag}");
+}
+
+/// The text an agent reads: the other fields as `key: value` lines, then each file's rows under a
+/// `# <path>` header and their enclosing symbol's `## <symbol>` header (ADR-0053).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_grep_text_is_rows_under_file_and_symbol_headers() {
+    let (_dir, client) = started_with(&[(
+        "src/tricky.rs",
+        "// a: \"b\", c\nfn tricky_name() {\n    let x = \"tricky_name: \\t\";\n}\n",
+    )])
+    .await;
+    let result = call_raw(&client, "code_grep", json!({ "pattern": "tricky_name", "context": 1 })).await;
+    assert_eq!(
+        text_of(&result),
+        r#"# src/tricky.rs
+## tricky_name
+1- // a: "b", c
+2: fn tricky_name() {
+3:     let x = "tricky_name: \t";
+4- }"#
+    );
 }

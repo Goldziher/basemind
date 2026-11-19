@@ -203,7 +203,7 @@ fn decode_text(result: &CallToolResult) -> Value {
     if raw.is_empty() {
         return Value::Null;
     }
-    serde_json::from_str(&raw).unwrap_or(Value::String(raw))
+    basemind::wire::decode(&raw).unwrap_or(Value::String(raw))
 }
 
 /// The label a call is recorded under: `tool:mode` for a mode-dispatched tool, `tool:relation` for

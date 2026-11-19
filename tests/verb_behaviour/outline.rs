@@ -5,13 +5,18 @@
 
 use serde_json::json;
 
-use super::{Client, call_err, call_raw, started, text_of};
+use super::{Client, call_err, call_raw, json_of, started, text_of};
 
-/// The tool's JSON text with the measured `elapsed_us` zeroed, the one field that varies per call.
+/// The tool's answer as JSON with the measured `elapsed_us` zeroed, the one field that varies per call.
 async fn outline_text(client: &Client, arguments: serde_json::Value) -> String {
     let result = call_raw(client, "code_outline", arguments.clone()).await;
-    let text = text_of(&result);
-    assert_ne!(result.is_error, Some(true), "code_outline {arguments} failed: {text}");
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "code_outline {arguments} failed: {}",
+        text_of(&result)
+    );
+    let text = json_of("code_outline", &result);
     let (head, tail) = text.split_once("\"elapsed_us\":").expect("elapsed_us field");
     let digits = tail.find(|c: char| !c.is_ascii_digit()).unwrap_or(tail.len());
     format!("{head}\"elapsed_us\":0{}", &tail[digits..])
@@ -113,7 +118,7 @@ async fn every_refusal_keeps_its_exact_words() {
     }
 
     let first = call_raw(&client, "code_outline", json!({ "path": "src/outline.rs", "limit": 1 })).await;
-    let first: serde_json::Value = serde_json::from_str(&text_of(&first)).expect("JSON");
+    let first: serde_json::Value = serde_json::from_str(&json_of("code_outline", &first)).expect("JSON");
     let cursor = first["next_cursor"].as_str().expect("a second page").to_string();
     let (binding, _) = split_cursor(&cursor);
     let page_with =

@@ -6,14 +6,18 @@
 
 use serde_json::{Value, json};
 
-use super::{Client, call_err, call_raw, started, text_of};
+use super::{Client, call_err, call_raw, json_of, started, text_of};
 
 /// The tool's JSON text; it must not be an error.
 async fn answer(client: &Client, arguments: Value) -> String {
     let result = call_raw(client, "find_files", arguments.clone()).await;
-    let text = text_of(&result);
-    assert_ne!(result.is_error, Some(true), "find_files {arguments} failed: {text}");
-    text
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "find_files {arguments} failed: {}",
+        text_of(&result)
+    );
+    json_of("find_files", &result)
 }
 
 /// `text` with its `next_cursor` replaced: the cursor carries the map generation, which a deferred
@@ -113,6 +117,11 @@ async fn find_files_answers_byte_for_byte() {
         r#"{"total":2,"files":{"src/callers.rs":9},"next_cursor":"<cursor>"}"#.to_string(),
     ));
     assert_all(&rows);
+    // A list is TOON and a `min_lines` map JSON, as an agent reads them (ADR-0053).
+    let listed = call_raw(&client, "find_files", json!({ "query": "outline" })).await;
+    assert_eq!(text_of(&listed), "files[1]: src/outline.rs");
+    let sized = call_raw(&client, "find_files", json!({ "min_lines": 7, "language": "ruby" })).await;
+    assert_eq!(text_of(&sized), r#"{"files":{"worker.rb":7}}"#);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

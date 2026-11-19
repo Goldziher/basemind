@@ -177,6 +177,6 @@ impl Session {
         if result.is_error == Some(true) {
             return Err(text);
         }
-        serde_json::from_str(&text).map_err(|e| format!("non-JSON payload ({e}): {text}"))
+        basemind::wire::decode(&text).map_err(|e| format!("unreadable payload ({e}): {text}"))
     }
 }

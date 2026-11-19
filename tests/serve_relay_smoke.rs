@@ -75,7 +75,7 @@ fn decode_text(result: &CallToolResult) -> Value {
             _ => None,
         })
         .unwrap_or_default();
-    serde_json::from_str(&raw).unwrap_or(Value::Null)
+    basemind::wire::decode(&raw).unwrap_or(Value::Null)
 }
 
 fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {

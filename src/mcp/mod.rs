@@ -64,7 +64,6 @@ mod tools_admin;
 mod tools_agents;
 mod tools_git;
 mod tools_memory;
-pub(crate) mod toon;
 mod types;
 mod types_tools;
 
