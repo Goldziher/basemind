@@ -18,7 +18,7 @@ use crate::engine::error::EngineError;
 use crate::engine::filters::{Filters, PathFilter, Tally, grep_selects_no_file, language_of_doc, selects_no_file};
 use crate::engine::scope::ChangeScope;
 use crate::engine::types::files::{
-    FileHit, FilesResponse, FindFilesParams, FindFilesToolParams, ListFilesParams, SizedFile,
+    FileHit, FileList, FilesResponse, FindFilesParams, FindFilesToolParams, ListFilesParams, SizedFile,
 };
 use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
@@ -86,12 +86,15 @@ impl Workspace {
 }
 
 /// The response for a cursor minted on another in-RAM snapshot: restart from the top.
-fn invalidated(ws: &Workspace, limit_clamped: bool) -> Result<FilesResponse, EngineError> {
+fn invalidated(ws: &Workspace, limit_clamped: bool, sized: bool) -> Result<FilesResponse, EngineError> {
     Ok(FilesResponse {
-        total: 0,
+        total: None,
         limit_clamped,
         budgeted: false,
-        files: Vec::new(),
+        files: FileList {
+            rows: Vec::new(),
+            sized,
+        },
         next_cursor: None,
         cursor_invalidated: true,
         scope_files: None,
@@ -180,7 +183,7 @@ fn run_list_files(
         Some(c) => {
             let (offset, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != generation {
-                return invalidated(ws, limit_clamped);
+                return invalidated(ws, limit_clamped, false);
             }
             offset as usize
         }
@@ -244,27 +247,40 @@ fn run_list_files(
             return Err(refusal);
         }
     }
-    respond(ws, files, total, skip, limit_clamped, generation, params.max_tokens)
+    respond(
+        ws,
+        FileList {
+            rows: files,
+            sized: false,
+        },
+        total,
+        skip,
+        limit_clamped,
+        generation,
+        params.max_tokens,
+    )
 }
 
-/// The page of `files` (`total` of them from `skip` on), held to `max_tokens`.
+/// The page of `files` (`total` of them from `skip` on), held to `max_tokens`; `sized` for a
+/// `min_lines` page.
 fn respond(
     ws: &Workspace,
-    files: Vec<FileHit>,
+    files: FileList,
     total: usize,
     skip: usize,
     limit_clamped: bool,
     generation: u32,
     max_tokens: Option<u32>,
 ) -> Result<FilesResponse, EngineError> {
-    let budget = apply_budget(files, max_tokens);
+    let sized = files.sized;
+    let budget = apply_budget(files.rows, max_tokens);
     let files = budget.items;
     let next_cursor = (total > files.len()).then(|| Cursor::encode_in_memory((skip + files.len()) as u64, generation));
     Ok(FilesResponse {
-        total,
+        total: next_cursor.is_some().then_some(total),
         limit_clamped,
         budgeted: budget.budgeted,
-        files,
+        files: FileList { rows: files, sized },
         next_cursor,
         cursor_invalidated: false,
         scope_files: None,
@@ -302,7 +318,7 @@ fn run_find_files(
         Some(c) => {
             let (offset, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != generation {
-                return invalidated(ws, limit_clamped);
+                return invalidated(ws, limit_clamped, false);
             }
             offset as usize
         }
@@ -362,7 +378,18 @@ fn run_find_files(
         .take(limit)
         .map(|(_, path)| FileHit::Path(path.clone()))
         .collect();
-    respond(ws, page, total, skip, limit_clamped, generation, params.max_tokens)
+    respond(
+        ws,
+        FileList {
+            rows: page,
+            sized: false,
+        },
+        total,
+        skip,
+        limit_clamped,
+        generation,
+        params.max_tokens,
+    )
 }
 
 /// Body of `find_files` with `min_lines`: the code files of at least `min_lines` lines that pass the
@@ -382,7 +409,7 @@ fn run_large_files(
         Some(c) => {
             let (offset, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != generation {
-                return invalidated(ws, limit_clamped);
+                return invalidated(ws, limit_clamped, true);
             }
             offset as usize
         }
@@ -432,7 +459,18 @@ fn run_large_files(
             })
         })
         .collect();
-    respond(ws, page, total, skip, limit_clamped, generation, budget(p.max_tokens))
+    respond(
+        ws,
+        FileList {
+            rows: page,
+            sized: true,
+        },
+        total,
+        skip,
+        limit_clamped,
+        generation,
+        budget(p.max_tokens),
+    )
 }
 
 /// Every candidate `query` matches, with its score. A fuzzy subsequence match scores what nucleo

@@ -157,8 +157,9 @@ fn admin_status_reports_file_count() {
 fn code_files_enumerates() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(root, &["code", "files"], &["total", "files"]);
-    assert_eq!(v["total"], 2);
+    let v = assert_json_fields(root, &["code", "files"], &["files"]);
+    assert_eq!(v["files"].as_array().map(Vec::len), Some(2), "{v}");
+    assert!(v.get("total").is_none(), "no `next_cursor`, so no count: {v}");
     assert_human_contains(root, &["code", "files"], "a.rs");
 }
 

@@ -160,11 +160,20 @@ pub fn extract_items(mode: EvalMode, args: &Value, body: &Value) -> Vec<Item> {
             .map(|path| Item { path, line: None })
             .collect(),
         EvalMode::GrepChanged => grouped(body, "hits"),
-        EvalMode::FindLarge => array(body, "files")
-            .iter()
-            .filter_map(|f| f.as_str().map(str::to_string).or_else(|| s(f, "path")))
-            .map(|path| Item { path, line: None })
-            .collect(),
+        EvalMode::FindLarge => match body.get("files") {
+            Some(Value::Object(sized)) => sized
+                .keys()
+                .map(|path| Item {
+                    path: path.clone(),
+                    line: None,
+                })
+                .collect(),
+            _ => array(body, "files")
+                .iter()
+                .filter_map(|f| f.as_str().map(str::to_string).or_else(|| s(f, "path")))
+                .map(|path| Item { path, line: None })
+                .collect(),
+        },
         EvalMode::ReadAround => {
             let path = s(body, "path").unwrap_or_default();
             let spans = array(body, "spans");
@@ -499,6 +508,16 @@ mod tests {
             &json!({"files":[{"path":"big.rs","lines":4000},"plain.rs"]}),
         );
         assert_eq!(strs(&large), vec!["big.rs", "plain.rs"]);
+        let sized = extract_items(
+            EvalMode::FindLarge,
+            &Value::Null,
+            &json!({"files":{"big.rs":4000,"mid.rs":900}}),
+        );
+        assert_eq!(
+            strs(&sized),
+            vec!["big.rs", "mid.rs"],
+            "`{{path: lines}}` keeps the answer order"
+        );
 
         let around = extract_items(
             EvalMode::ReadAround,

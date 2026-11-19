@@ -288,7 +288,7 @@ async fn a_filter_that_selects_no_file_is_refused_with_what_would_match() {
         json!({ "query": "zzzzqqqq", "path_prefix": "src/" }),
     )
     .await;
-    assert_eq!(unmatched["total"], 0, "{unmatched}");
+    assert_eq!(unmatched["files"], json!([]), "{unmatched}");
 
     let never = call_err(&client, "git_log", json!({ "path": "src/never_existed.rs" })).await;
     assert!(
@@ -381,19 +381,24 @@ async fn a_filter_refusal_waits_for_a_finished_index() {
     let cache = basemind::store::workspace_cache_dir(dir.path());
     basemind::store::write_status_sidecar(&cache, 5, 5, &basemind::store::ScanHealth::resolving());
 
-    for (tool, arguments, total) in [
-        ("code_grep", json!({ "pattern": "fn", "language": "cobol" }), "total"),
-        ("code_grep", json!({ "pattern": "fn", "path": "no/such/dir/" }), "total"),
-        ("find_files", json!({ "language": "cobol" }), "total"),
-        ("find_files", json!({ "path_prefix": "nope/" }), "total"),
+    for (tool, arguments, rows) in [
+        ("code_grep", json!({ "pattern": "fn", "language": "cobol" }), "hits"),
+        ("code_grep", json!({ "pattern": "fn", "path": "no/such/dir/" }), "hits"),
+        ("find_files", json!({ "language": "cobol" }), "files"),
+        ("find_files", json!({ "path_prefix": "nope/" }), "files"),
         (
             "find_files",
             json!({ "query": "outline", "path_prefix": "nope/" }),
-            "total",
+            "files",
         ),
     ] {
         let page = call(&client, tool, arguments.clone()).await;
-        assert_eq!(page[total], 0, "{tool} {arguments}: {page}");
+        let listed = match &page[rows] {
+            Value::Array(rows) => rows.len(),
+            Value::Object(rows) => rows.len(),
+            other => panic!("{tool} {arguments}: `{rows}` is {other}: {page}"),
+        };
+        assert_eq!(listed, 0, "{tool} {arguments}: {page}");
         assert_eq!(
             page["notice"]["state"], "index_rebuilding",
             "{tool} {arguments}: {page}"

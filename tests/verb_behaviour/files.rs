@@ -49,46 +49,43 @@ async fn find_files_answers_byte_for_byte() {
     let cases = [
         (
             json!({}),
-            r#"{"total":4,"files":["src/callers.rs","src/outline.rs","tools.py","worker.rb"]}"#,
+            r#"{"files":["src/callers.rs","src/outline.rs","tools.py","worker.rb"]}"#,
         ),
-        (
-            json!({ "query": "outline" }),
-            r#"{"total":1,"files":["src/outline.rs"]}"#,
-        ),
-        (json!({ "query": "wroker" }), r#"{"total":1,"files":["worker.rb"]}"#),
+        (json!({ "query": "outline" }), r#"{"files":["src/outline.rs"]}"#),
+        (json!({ "query": "wroker" }), r#"{"files":["worker.rb"]}"#),
         (
             json!({ "query": "rb", "language": "ruby" }),
-            r#"{"total":1,"files":["worker.rb"]}"#,
+            r#"{"files":["worker.rb"]}"#,
         ),
         (
             json!({ "path_prefix": "src/" }),
-            r#"{"total":2,"files":["src/callers.rs","src/outline.rs"]}"#,
+            r#"{"files":["src/callers.rs","src/outline.rs"]}"#,
         ),
-        (json!({ "query": "zzz_none" }), r#"{"total":0,"files":[]}"#),
+        (json!({ "query": "zzz_none" }), r#"{"files":[]}"#),
         (
             json!({ "limit": 2 }),
             r#"{"total":4,"files":["src/callers.rs","src/outline.rs"],"next_cursor":"<cursor>"}"#,
         ),
         (
             json!({ "limit": 999999 }),
-            r#"{"total":4,"limit_clamped":true,"files":["src/callers.rs","src/outline.rs","tools.py","worker.rb"]}"#,
+            r#"{"limit_clamped":true,"files":["src/callers.rs","src/outline.rs","tools.py","worker.rb"]}"#,
         ),
         (
             json!({ "min_lines": 7 }),
-            r#"{"total":3,"files":[{"path":"src/outline.rs","lines":21,"bytes":281},{"path":"src/callers.rs","lines":9,"bytes":182},{"path":"worker.rb","lines":7,"bytes":41}]}"#,
+            r#"{"files":{"src/outline.rs":21,"src/callers.rs":9,"worker.rb":7}}"#,
         ),
         (
             json!({ "min_lines": 7, "query": "callers" }),
-            r#"{"total":1,"files":[{"path":"src/callers.rs","lines":9,"bytes":182}]}"#,
+            r#"{"files":{"src/callers.rs":9}}"#,
         ),
         (
             json!({ "min_lines": 7, "language": "ruby" }),
-            r#"{"total":1,"files":[{"path":"worker.rb","lines":7,"bytes":41}]}"#,
+            r#"{"files":{"worker.rb":7}}"#,
         ),
-        (json!({ "min_lines": 1000 }), r#"{"total":0,"files":[]}"#),
+        (json!({ "min_lines": 1000 }), r#"{"files":{}}"#),
         (
             json!({ "min_lines": 7, "limit": 1 }),
-            r#"{"total":3,"files":[{"path":"src/outline.rs","lines":21,"bytes":281}],"next_cursor":"<cursor>"}"#,
+            r#"{"total":3,"files":{"src/outline.rs":21},"next_cursor":"<cursor>"}"#,
         ),
     ];
     let mut rows = Vec::new();
@@ -102,7 +99,7 @@ async fn find_files_answers_byte_for_byte() {
     rows.push((
         "find_files page 2".to_string(),
         without_cursor(&rest),
-        r#"{"total":2,"files":["tools.py","worker.rb"]}"#.to_string(),
+        r#"{"files":["tools.py","worker.rb"]}"#.to_string(),
     ));
     let first: Value = serde_json::from_str(&answer(&client, json!({ "min_lines": 7, "limit": 1 })).await).unwrap();
     let cursor = first["next_cursor"]
@@ -113,7 +110,7 @@ async fn find_files_answers_byte_for_byte() {
     rows.push((
         "find_files min_lines page 2".to_string(),
         without_cursor(&rest),
-        r#"{"total":2,"files":[{"path":"src/callers.rs","lines":9,"bytes":182}],"next_cursor":"<cursor>"}"#.to_string(),
+        r#"{"total":2,"files":{"src/callers.rs":9},"next_cursor":"<cursor>"}"#.to_string(),
     ));
     assert_all(&rows);
 }

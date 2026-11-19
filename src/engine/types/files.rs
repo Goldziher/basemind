@@ -82,8 +82,10 @@ pub(crate) struct FindFilesParams {
 /// Response of `find_files`: a fuzzy search ranked best first, or a listing in path order.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct FilesResponse {
-    /// Files that match, from this page on: `next_cursor` continues past this one.
-    pub total: usize,
+    /// Files that match, from this page on. Written only beside a `next_cursor`, which continues
+    /// past this page: a page without one lists every match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
     /// True when the caller's requested `limit` exceeded the hard cap (`LIST_LIMIT_MAX`) and
     /// was clamped down to it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -92,8 +94,9 @@ pub(crate) struct FilesResponse {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     /// Repo-relative paths: by descending match quality for a query (ties by path), else by path.
-    /// With `min_lines`, rows carrying each file's size, largest first (ties by path).
-    pub files: Vec<FileHit>,
+    /// With `min_lines`, `{"<path>": <lines>}`, largest first (ties by path).
+    #[schemars(with = "serde_json::Value")]
+    pub files: FileList,
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
@@ -109,6 +112,37 @@ pub(crate) struct FilesResponse {
     pub scope_files: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
+}
+
+/// A `find_files` page: a list of paths, or with `min_lines` (`sized`) a map from each path to its
+/// line count, the way `wc -l` pairs them, empty or not.
+#[derive(Debug)]
+pub(crate) struct FileList {
+    pub rows: Vec<FileHit>,
+    pub sized: bool,
+}
+
+impl Serialize for FileList {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeMap, SerializeSeq};
+
+        if self.sized {
+            let mut map = serializer.serialize_map(Some(self.rows.len()))?;
+            for file in &self.rows {
+                match file {
+                    FileHit::Sized(sized) => map.serialize_entry(&sized.path.to_str_lossy(), &sized.lines)?,
+                    FileHit::Path(path) => map.serialize_entry(&path.to_str_lossy(), &serde_json::Value::Null)?,
+                }
+            }
+            map.end()
+        } else {
+            let mut seq = serializer.serialize_seq(Some(self.rows.len()))?;
+            for file in &self.rows {
+                seq.serialize_element(file)?;
+            }
+            seq.end()
+        }
+    }
 }
 
 /// One `find_files` row: a path, or with `min_lines` the path and its size.

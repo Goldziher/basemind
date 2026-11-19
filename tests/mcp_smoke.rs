@@ -792,10 +792,9 @@ async fn mcp_server_exercises_representative_tools() {
         Some("cyc1.rs"),
         "find_files('cy1') must rank cyc1.rs, listed by its path alone: {body}"
     );
-    assert_eq!(
-        body.get("total").and_then(Value::as_u64),
-        Some(1),
-        "find_files('cy1') total must be exactly 1: {body}"
+    assert!(
+        body.get("total").is_none(),
+        "find_files('cy1') lists every match, so there is no count: {body}"
     );
     assert!(
         body.get("truncated").is_none() && body.get("next_cursor").is_none(),
@@ -813,10 +812,9 @@ async fn mcp_server_exercises_representative_tools() {
         files.is_empty(),
         "a query with no subsequence match should return no files: {body}"
     );
-    assert_eq!(
-        body.get("total").and_then(Value::as_u64),
-        Some(0),
-        "find_files(no match) total must be 0: {body}"
+    assert!(
+        body.get("total").is_none(),
+        "find_files(no match) lists every match, so there is no count: {body}"
     );
 
     let body = decode_text(
@@ -3286,15 +3284,8 @@ async fn large_files_are_listed_by_size_and_counted_on_status() {
             .await
             .expect("find_files min_lines"),
     );
-    assert_eq!(
-        body["files"],
-        json!([
-            { "path": "big.rs", "lines": 2100, "bytes": big.len() },
-            { "path": "mid.rs", "lines": 300, "bytes": mid.len() },
-        ]),
-        "{body}"
-    );
-    assert_eq!(body["total"], 2, "{body}");
+    assert_eq!(body["files"], json!({ "big.rs": 2100, "mid.rs": 300 }), "{body}");
+    assert!(body.get("total").is_none(), "no `next_cursor`, so no count: {body}");
 
     let body = decode_text(
         &service
@@ -3504,14 +3495,20 @@ async fn changed_scopes_queries_to_the_files_a_change_touched() {
     let body = call("find_files", json!({ "query": "rs", "changed": "HEAD~1..HEAD" })).await;
     assert_eq!(body["files"], json!(["a.rs"]), "{body}");
     let body = call("find_files", json!({ "min_lines": 1, "changed": "HEAD~1.." })).await;
-    assert_eq!(body["files"][0]["path"], "a.rs", "{body}");
-    assert_eq!(body["total"], 1, "{body}");
+    assert_eq!(
+        body["files"]
+            .as_object()
+            .map(|files| files.keys().cloned().collect::<Vec<_>>()),
+        Some(vec!["a.rs".to_string()]),
+        "{body}"
+    );
+    assert!(body.get("total").is_none(), "no `next_cursor`, so no count: {body}");
 
     // A range that changed nothing is an empty scope, not an error.
     let body = call("code_grep", json!({ "pattern": "alpha", "changed": "HEAD..HEAD" })).await;
     assert_eq!(
-        (body["total"].clone(), body["scope_files"].clone()),
-        (json!(0), json!(0)),
+        (body["hits"].clone(), body["scope_files"].clone()),
+        (json!({}), json!(0)),
         "{body}"
     );
     let body = call("find_files", json!({ "changed": "HEAD..HEAD" })).await;
