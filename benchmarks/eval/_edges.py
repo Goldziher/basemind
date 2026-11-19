@@ -3,18 +3,29 @@
 An edge `importer -> target` says that `importer` names `target` in an import. The gold is built
 from the HEAD tree without basemind:
 
-Rust (from `rust_gold` records, parsed with syn):
+Rust (from `rust_gold` records, parsed with syn, and each package's `Cargo.toml`), runtime
+imports only, as the graph answers by default (ADR-0047 decision 4):
 
-- `mod name;` is an edge to the module's file: `name.rs` or `name/mod.rs` in the declaring
-  module's directory (the file's own directory for a crate root or `mod.rs`, else `<dir>/<stem>/`),
-  under any inline modules it sits in. `#[path = "..."]` is followed.
+- `mod name;` declares the module's file: `name.rs` or `name/mod.rs` in the declaring module's
+  directory (the file's own directory for a crate root or `mod.rs`, else `<dir>/<stem>/`), under
+  any inline modules it sits in; `#[path = "..."]` is followed. The declaration builds the module
+  tree but is containment, not use: it is an edge only with `module_decls` (the CLI's
+  `--include-module-decls`).
 - `use crate::a::b::C` is an edge to the file of the longest module prefix (`a/b.rs`, else `a.rs`,
   else the crate root). `self::` and `super::` are resolved from the module the `use` sits in, and
-  a path starting with a child module of that module (2018 uniform paths) likewise. Every other
-  path names another crate and is no edge, workspace siblings included.
-- The module tree is walked from every crate root of every package (`src/lib.rs`, `src/main.rs`,
-  `src/bin/*`, `build.rs`, `tests/*`, `examples/*`, `benches/*`); a file no root reaches has no
-  module path and its `use` lines resolve to nothing. A `[lib] path` override is not read.
+  a path starting with a child module of that module (2018 uniform paths) likewise.
+- A path starting at a crate name is classified by the importer's package manifest: `std`, `core`,
+  `alloc`, `proc_macro`, `test` and registry or git dependencies are external (no edge). The
+  package's own library (`use tokio::x` in `tokio/tests/*.rs`), a path dependency inside the
+  repository, a `workspace = true` dependency whose `[workspace.dependencies]` entry has a path,
+  and a dependency the workspace `[patch.*]`es to a path are crates of the repository: the path
+  resolves like `crate::` in that crate's library (`[lib] path`, else `src/lib.rs`). Dependencies
+  are keyed by the name code uses (the key, `-` read as `_`); the workspace is the nearest
+  `Cargo.toml` at or above the package with a `[workspace]` table. Any other name is no edge.
+- The module tree is walked from every crate root of every package (`src/lib.rs` or the
+  `[lib] path`, `src/main.rs`, `src/bin/*`, `build.rs`, `tests/*`, `examples/*`, `benches/*`, and
+  every target `path` the manifest declares); a file no root reaches has no module path and its
+  `use` lines resolve to nothing.
 
 Python (from `ast`):
 
@@ -32,12 +43,149 @@ from __future__ import annotations
 
 import ast
 import posixpath
+import tomllib
 from collections import defaultdict, deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 
 import _common as c
 
 Edges = dict[str, dict[str, int]]  # importer -> {target: first import line}
+
+STD_CRATES = ("std", "core", "alloc", "proc_macro", "test")
+DEP_SECTIONS = ("dependencies", "dev-dependencies", "build-dependencies")
+
+
+@dataclass
+class Dependency:
+    package: str
+    # `path`: the repo-relative package directory; `outside`: a path leaving the repository;
+    # `workspace`: `workspace = true`; `registry`: anything else.
+    source: str
+    path: str | None = None
+    key: str = ""
+
+
+@dataclass
+class Manifest:
+    is_package: bool = False
+    lib_name: str | None = None
+    lib_path: str | None = None
+    targets: list[str] = field(default_factory=list)
+    dependencies: dict[str, Dependency] = field(default_factory=dict)
+    is_workspace: bool = False
+    workspace_dependencies: dict[str, Dependency] = field(default_factory=dict)
+    patches: dict[str, str] = field(default_factory=dict)
+
+
+def _normalize(path: str) -> str | None:
+    out: list[str] = []
+    for seg in path.split("/"):
+        if seg in ("", "."):
+            continue
+        if seg == "..":
+            if not out:
+                return None
+            out.pop()
+        else:
+            out.append(seg)
+    return "/".join(out)
+
+
+def _dependency(key: str, spec: object, pkg_dir: str) -> Dependency:
+    spec = spec if isinstance(spec, dict) else {}
+    package = spec.get("package", key)
+    if isinstance(spec.get("path"), str):
+        target = _normalize(posixpath.join(pkg_dir, spec["path"]))
+        return Dependency(package, "outside" if target is None else "path", target, key)
+    if spec.get("workspace") is True:
+        return Dependency(package, "workspace", None, key)
+    return Dependency(package, "registry", None, key)
+
+
+def parse_manifest(text: str, pkg_dir: str) -> Manifest:
+    """What the gold reads from one `Cargo.toml` in `pkg_dir`; one that does not parse declares nothing."""
+    try:
+        doc = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return Manifest()
+
+    def resolve(path: object) -> str | None:
+        return _normalize(posixpath.join(pkg_dir, path)) if isinstance(path, str) else None
+
+    lib = doc.get("lib") if isinstance(doc.get("lib"), dict) else {}
+    package = doc.get("package") if isinstance(doc.get("package"), dict) else None
+    m = Manifest(is_package=package is not None, lib_path=resolve(lib.get("path")))
+    name = lib.get("name") or (package or {}).get("name")
+    m.lib_name = name.replace("-", "_") if isinstance(name, str) else None
+    m.targets = [t for t in [m.lib_path, resolve((package or {}).get("build"))] if t]
+    for kind in ("bin", "test", "example", "bench"):
+        for target in doc.get(kind) or []:
+            if isinstance(target, dict) and (t := resolve(target.get("path"))):
+                m.targets.append(t)
+    tables = [doc.get(s) for s in DEP_SECTIONS]
+    for platform in (doc.get("target") or {}).values():
+        if isinstance(platform, dict):
+            tables.extend(platform.get(s) for s in DEP_SECTIONS)
+    for table in tables:
+        for key, spec in (table if isinstance(table, dict) else {}).items():
+            m.dependencies[key.replace("-", "_")] = _dependency(key, spec, pkg_dir)
+    workspace = doc.get("workspace")
+    if isinstance(workspace, dict):
+        m.is_workspace = True
+        for key, spec in (workspace.get("dependencies") or {}).items():
+            m.workspace_dependencies[key] = _dependency(key, spec, pkg_dir)
+        for registry in (doc.get("patch") or {}).values():
+            for key, spec in (registry if isinstance(registry, dict) else {}).items():
+                dep = _dependency(key, spec, pkg_dir)
+                if dep.source == "path" and dep.path is not None:
+                    m.patches[dep.package] = dep.path
+    return m
+
+
+def cargo_manifests(repo: c.Repo) -> dict[str, str]:
+    """Every tracked `Cargo.toml` at HEAD: path -> text."""
+    return dict(repo.blobs([f for f in repo.all_files() if posixpath.basename(f) == "Cargo.toml"]))
+
+
+def lib_names(manifests: dict[str, str]) -> dict[str, str]:
+    """The library root file of every package with a library name -> that name as code uses it."""
+    parsed = {posixpath.dirname(p): parse_manifest(text, posixpath.dirname(p)) for p, text in manifests.items()}
+    return {_lib_root(d, parsed): m.lib_name for d, m in sorted(parsed.items()) if m.lib_name}
+
+
+def _local_crate(name: str, pkg_dir: str, manifests: dict[str, Manifest]) -> str | None:
+    """The package directory of the repository crate `name` names for code of `pkg_dir`, or None
+    when it is the standard library, an external dependency or no declared crate."""
+    m = manifests.get(pkg_dir)
+    if m is None or name in STD_CRATES:
+        return None
+    if m.lib_name == name:
+        return pkg_dir
+    dep = m.dependencies.get(name)
+    if dep is None:
+        return None
+    workspace = _workspace(pkg_dir, manifests)
+    source, path = dep.source, dep.path
+    declared = workspace.workspace_dependencies.get(dep.key) if workspace and source == "workspace" else None
+    if declared is not None:
+        source, path = declared.source, declared.path
+    if source == "path":
+        return path
+    if source in ("registry", "workspace") and workspace is not None:
+        return workspace.patches.get(dep.package)
+    return None
+
+
+def _workspace(pkg_dir: str, manifests: dict[str, Manifest]) -> Manifest | None:
+    d = pkg_dir
+    while True:
+        m = manifests.get(d)
+        if m is not None and m.is_workspace:
+            return m
+        if not d:
+            return None
+        d = posixpath.dirname(d)
 
 
 def _add(edges: Edges, src: str, dst: str | None, line: int) -> None:
@@ -48,13 +196,22 @@ def _add(edges: Edges, src: str, dst: str | None, line: int) -> None:
         targets[dst] = line
 
 
-def _crate_roots(files: set[str]) -> list[str]:
-    """Every crate root file of every package with a tracked `Cargo.toml`, sorted."""
-    packages = sorted({posixpath.dirname(f) for f in files if posixpath.basename(f) == "Cargo.toml"})
-    roots: set[str] = set()
+def _lib_root(pkg: str, manifests: dict[str, Manifest]) -> str:
+    m = manifests.get(pkg)
+    return (m.lib_path if m and m.lib_path else None) or posixpath.join(pkg, "src", "lib.rs")
+
+
+def _crate_roots(files: set[str], manifests: dict[str, Manifest]) -> dict[str, str]:
+    """Every crate root file of every package with a tracked `Cargo.toml` -> its package directory,
+    the nearest one when packages nest. A virtual manifest (no `[package]`) has no targets."""
+    packages = sorted(d for d, m in manifests.items() if m.is_package)
+    owner: dict[str, str] = {}
     for pkg in packages:
-        main_files = (posixpath.join(pkg, "src", "lib.rs"), posixpath.join(pkg, "src", "main.rs"))
+        roots: set[str] = set()
+        main_files = (_lib_root(pkg, manifests), posixpath.join(pkg, "src", "main.rs"))
         roots.update(f for f in (*main_files, posixpath.join(pkg, "build.rs")) if f in files)
+        m = manifests.get(pkg)
+        roots.update(t for t in (m.targets if m else []) if t in files)
         for d in (
             posixpath.join(pkg, "src", "bin"),
             *(posixpath.join(pkg, t) for t in ("tests", "examples", "benches")),
@@ -67,7 +224,10 @@ def _crate_roots(files: set[str]) -> list[str]:
                     and (rel.count("/") == 0 or (rel.endswith("/main.rs") and rel.count("/") == 1))
                 ):
                     roots.add(f)
-    return sorted(roots)
+        for root in roots:
+            if len(pkg) >= len(owner.get(root, "")):
+                owner[root] = pkg
+    return dict(sorted(owner.items()))
 
 
 def _mod_dir(path: str, is_root: bool) -> str:
@@ -77,14 +237,21 @@ def _mod_dir(path: str, is_root: bool) -> str:
     return posixpath.join(posixpath.dirname(path), base[: -len(".rs")])
 
 
-def rust_edges(files: Iterable[str], recs: list[dict]) -> Edges:
-    """Edges among the Rust files of `files` (every tracked path, `Cargo.toml` included)."""
-    return rust_graph(files, recs)[0]
+def rust_edges(
+    files: Iterable[str], recs: list[dict], manifests: dict[str, str], *, module_decls: bool = False
+) -> Edges:
+    """Edges among the Rust files of `files` (every tracked path, `Cargo.toml` included);
+    `manifests` maps each `Cargo.toml` path to its text."""
+    return rust_graph(files, recs, manifests, module_decls=module_decls)[0]
 
 
-def rust_graph(files: Iterable[str], recs: list[dict]) -> tuple[Edges, dict[str, dict[tuple[str, ...], str]]]:
+def rust_graph(
+    files: Iterable[str], recs: list[dict], manifests: dict[str, str], *, module_decls: bool = False
+) -> tuple[Edges, dict[str, dict[tuple[str, ...], str]]]:
     """The edges, and per crate root the file of every module path its module tree reaches."""
     files = set(files)
+    parsed = {posixpath.dirname(p): parse_manifest(text, posixpath.dirname(p)) for p, text in manifests.items()}
+    roots = _crate_roots(files, parsed)
     mods: dict[str, list[dict]] = defaultdict(list)
     uses: dict[str, list[dict]] = defaultdict(list)
     for rec in recs:
@@ -97,11 +264,15 @@ def rust_graph(files: Iterable[str], recs: list[dict]) -> tuple[Edges, dict[str,
     # Per crate root: module path -> file, and file -> its module paths.
     module_file: dict[str, dict[tuple[str, ...], str]] = {}
     owners: dict[str, list[tuple[str, tuple[str, ...]]]] = defaultdict(list)
-    for root in _crate_roots(files):
+    for root in roots:
         table = {(): root}
         module_file[root] = table
         owners[root].append((root, ()))
         queue = deque([(root, ())])
+        # A module path can have one file per `#[cfg]` (`#[cfg(unix)] #[path = "unix.rs"] mod imp;`
+        # beside a windows one): conditions are ignored, so every such file is walked; paths
+        # resolve to the first.
+        walked = {(root, ())}
         while queue:
             path, modpath = queue.popleft()
             for m in mods.get(path, []):
@@ -115,23 +286,36 @@ def rust_graph(files: Iterable[str], recs: list[dict]) -> tuple[Edges, dict[str,
                 child = next((f for f in candidates if f in files), None)
                 if child is None:
                     continue
-                _add(edges, path, child, m["line"])
+                if module_decls:
+                    _add(edges, path, child, m["line"])
                 child_path = (*modpath, *scope, m["name"])
-                if child_path not in table:
-                    table[child_path] = child
+                table.setdefault(child_path, child)
+                if (child, child_path) not in walked:
+                    walked.add((child, child_path))
                     owners[child].append((root, child_path))
                     queue.append((child, child_path))
 
     for path, recs_here in uses.items():
         for root, modpath in owners.get(path, []):
             table = module_file[root]
+            pkg = roots[root]
+
+            def crate_table(name: str, pkg: str = pkg) -> dict[tuple[str, ...], str] | None:
+                local = _local_crate(name, pkg, parsed)
+                return None if local is None else module_file.get(_lib_root(local, parsed))
+
             for u in recs_here:
-                target = _resolve_use(u, modpath, table)
+                target = _resolve_use(u, modpath, table, crate_table)
                 _add(edges, path, target, u["line"])
     return edges, module_file
 
 
-def _resolve_use(u: dict, modpath: tuple[str, ...], table: dict[tuple[str, ...], str]) -> str | None:
+def _resolve_use(
+    u: dict,
+    modpath: tuple[str, ...],
+    table: dict[tuple[str, ...], str],
+    crate_table: Callable[[str], dict[tuple[str, ...], str] | None],
+) -> str | None:
     base = (*modpath, *u["scope"].split("::")) if u["scope"] else modpath
     segs = [s for s in u["module"].split("::") if s]
     while segs and segs[-1] in ("self", "*"):
@@ -151,6 +335,8 @@ def _resolve_use(u: dict, modpath: tuple[str, ...], table: dict[tuple[str, ...],
         absolute = [*base[: len(base) - ups], *segs[ups:]]
     elif (*base, segs[0]) in table:
         absolute = [*base, *segs]
+    elif (other := crate_table(segs[0])) is not None:
+        table, absolute = other, segs[1:]
     else:
         return None
     for n in range(len(absolute), -1, -1):

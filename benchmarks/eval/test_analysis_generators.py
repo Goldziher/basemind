@@ -21,8 +21,11 @@ sys.path.insert(0, str(HERE))
 import _edges as e  # noqa: E402
 from gen_read_around import merged_ranges  # noqa: E402
 
-# Module graph: lib -> {a, b, c}; a <-> b; a -> a/inner; a/inner -> c; c -> c/extra (by #[path]);
-# c/extra -> a/inner. Cycles: {a, b} and {a/inner, c/mod, c/extra}.
+# Runtime import graph (ADR-0047 decision 4: `mod x;` is containment, not an edge): a <-> b;
+# a/inner -> c; c -> c/extra (`use d::D` through the `#[path]` module d); c/extra -> a/inner;
+# tests/it -> a (through the package's own name); crates/sib -> c (a path dependency). Cycles:
+# {a, b} and {a/inner, c/mod, c/extra}. The `mod` declarations lib -> {a, b, c}, a -> a/inner,
+# c -> c/extra and tests/it -> tests/common are edges only with `module_decls`.
 FILES = {
     "Cargo.toml": '[package]\nname = "fixture"\nversion = "0.1.0"\n',
     "src/lib.rs": "pub mod a;\npub mod b;\npub mod c;\n// Beacon_marker lives here too\n",
@@ -33,6 +36,8 @@ FILES = {
     "src/c/extra.rs": "use crate::a::inner::helper_fn;\n\npub struct D;\n",
     "tests/it.rs": "mod common;\nuse fixture::a::A;\n",
     "tests/common.rs": "pub fn shared() {}\n",
+    "crates/sib/Cargo.toml": '[package]\nname = "sib"\n\n[dependencies]\nfixture = { path = "../.." }\n',
+    "crates/sib/src/lib.rs": "use fixture::c::C;\nuse serde::Serialize;\n",
     "pkg/__init__.py": "",
     "pkg/x.py": "from . import y\n",
     "pkg/y.py": "from pkg import x\n",
@@ -118,21 +123,77 @@ class AnalysisGenerators(unittest.TestCase):
         import _rust as r
 
         repo = c.Repo(str(self.repo), exts="rs")
-        edges = e.rust_edges(repo.all_files(), r.records(repo.blobs(repo.files())))
+        recs = r.records(repo.blobs(repo.files()))
+        manifests = e.cargo_manifests(repo)
+        edges = e.rust_edges(repo.all_files(), recs, manifests)
         got = {src: sorted(t) for src, t in edges.items()}
         expected = {
-            "src/lib.rs": ["src/a.rs", "src/b.rs", "src/c/mod.rs"],
-            "src/a.rs": ["src/a/inner.rs", "src/b.rs"],
+            "src/a.rs": ["src/b.rs"],
             "src/a/inner.rs": ["src/c/mod.rs"],
-            # `use self::nested::N` names b.rs itself and `std::fmt` another crate: no edges.
+            # `use self::nested::N` names b.rs itself and `std::fmt` the standard library: no edges.
             "src/b.rs": ["src/a.rs"],
             "src/c/mod.rs": ["src/c/extra.rs"],
             "src/c/extra.rs": ["src/a/inner.rs"],
-            # `use fixture::a::A` names the package's library, another crate.
-            "tests/it.rs": ["tests/common.rs"],
+            # `use fixture::a::A` names the package's own library, a crate of the repository.
+            "tests/it.rs": ["src/a.rs"],
+            # A path dependency is internal; `serde`, a crate no manifest declares, is no edge.
+            "crates/sib/src/lib.rs": ["src/c/mod.rs"],
         }
         self.assertEqual(got, expected)
-        self.assertEqual(edges["src/a.rs"], {"src/b.rs": 1, "src/a/inner.rs": 2}, "first import line per target")
+        self.assertEqual(edges["src/a.rs"], {"src/b.rs": 1}, "first import line per target")
+        with_decls = e.rust_edges(repo.all_files(), recs, manifests, module_decls=True)
+        self.assertEqual(sorted(with_decls["src/lib.rs"]), ["src/a.rs", "src/b.rs", "src/c/mod.rs"])
+        self.assertEqual(with_decls["src/a.rs"], {"src/b.rs": 1, "src/a/inner.rs": 2})
+        self.assertEqual(sorted(with_decls["tests/it.rs"]), ["src/a.rs", "tests/common.rs"])
+
+    def test_rust_crate_names_resolve_through_the_manifest_and_the_workspace(self) -> None:
+        files = ["Cargo.toml", "a/Cargo.toml", "a/src/lib.rs", "a/src/x.rs", "a/src/x_win.rs", "b/Cargo.toml"]
+        files += ["b/src/lib.rs"]
+        files += ["c/Cargo.toml", "c/src/lib.rs", "c/src/z.rs", "examples/Cargo.toml", "examples/ex.rs"]
+        manifests = {
+            "Cargo.toml": '[workspace]\nmembers = ["a", "b", "c"]\n\n[workspace.dependencies]\n'
+            'cee = { path = "c", package = "c" }\n\n[patch.crates-io]\na = { path = "a" }\n',
+            "a/Cargo.toml": '[package]\nname = "a"\n',
+            "b/Cargo.toml": '[package]\nname = "b"\n\n[dependencies]\na = "1"\nserde = "1"\ncee.workspace = true\n',
+            "c/Cargo.toml": '[package]\nname = "c"\n\n[lib]\npath = "src/z.rs"\n',
+            # A member in the workspace root's `examples/`: its example belongs to it, not to the
+            # virtual root manifest, which has no targets.
+            "examples/Cargo.toml": '[package]\nname = "examples"\n\n[[example]]\nname = "ex"\npath = "ex.rs"\n\n'
+            '[dev-dependencies]\na = { path = "../a" }\n',
+        }
+
+        def rec(t: str, path: str, line: int, **kw: str) -> dict:
+            return {"t": t, "path": path, "line": line, "scope": "", **kw}
+
+        recs = [
+            rec("mod_file", "a/src/lib.rs", 1, name="x", path_attr=""),
+            # The same module under another `#[cfg]`: walked too, while `a::x` names the first.
+            rec("mod_file", "a/src/lib.rs", 3, name="x", path_attr="x_win.rs"),
+            rec("use", "a/src/x_win.rs", 1, module="super::*"),
+            rec("use", "b/src/lib.rs", 1, module="a::x::Thing"),
+            rec("use", "b/src/lib.rs", 2, module="serde::Serialize"),
+            rec("use", "b/src/lib.rs", 3, module="std::fmt"),
+            rec("use", "b/src/lib.rs", 4, module="undeclared::Thing"),
+            rec("use", "b/src/lib.rs", 5, module="cee::Item"),
+            rec("use", "examples/ex.rs", 2, module="a::x"),
+        ]
+        got = e.rust_edges(files, recs, manifests)
+        # `a` is a registry dependency the workspace patches to a path, `cee` a workspace path
+        # dependency renamed from `c`, whose `[lib] path` is its root.
+        self.assertEqual(
+            got,
+            {
+                "a/src/x_win.rs": {"a/src/lib.rs": 1},
+                "b/src/lib.rs": {"a/src/x.rs": 1, "c/src/z.rs": 5},
+                "examples/ex.rs": {"a/src/x.rs": 2},
+            },
+        )
+        alone = {k: v for k, v in manifests.items() if k != "Cargo.toml"}
+        self.assertEqual(
+            e.rust_edges(files, recs, alone),
+            {"a/src/x_win.rs": {"a/src/lib.rs": 1}, "examples/ex.rs": {"a/src/x.rs": 2}},
+            "no workspace, no patch",
+        )
 
     def test_python_edges_resolve_absolute_relative_and_submodule_imports(self) -> None:
         sources = [(p, t) for p, t in FILES.items() if p.endswith(".py")]
@@ -160,14 +221,19 @@ class AnalysisGenerators(unittest.TestCase):
     def test_graph_tasks(self) -> None:
         tasks = self.gen("gen_graph.py", "--n", "40")
         impact = {(t["args"]["path"], t["args"]["depth"]): t for t in tasks if t["mode"] == "impact"}
-        self.assertEqual(impact[("src/b.rs", 1)]["gold"], ["src/a.rs", "src/lib.rs"])
-        self.assertNotIn(("src/b.rs", 2), impact, "depth 2 adds nothing to b.rs, so no task")
+        self.assertEqual(impact[("src/b.rs", 1)]["gold"], ["src/a.rs"], "lib.rs only declares `mod b;`")
+        self.assertEqual(impact[("src/b.rs", 2)]["gold"], ["src/a.rs", "tests/it.rs"])
+        self.assertEqual(impact[("src/c/mod.rs", 1)]["gold"], ["crates/sib/src/lib.rs", "src/a/inner.rs"])
         inner2 = impact[("src/a/inner.rs", 2)]
-        self.assertEqual(inner2["gold"], ["src/a.rs", "src/b.rs", "src/c/extra.rs", "src/c/mod.rs", "src/lib.rs"])
+        self.assertEqual(inner2["gold"], ["src/c/extra.rs", "src/c/mod.rs"])
         self.assertEqual(inner2["args"]["relation"], "importers")
-        self.assertEqual(len(inner2["baseline"]["grep"]), 3, "the target and its two depth-1 importers")
+        self.assertEqual(len(inner2["baseline"]["grep"]), 2, "the target and its one depth-1 importer")
         got = {line.strip() for line in self.baseline_output(impact[("src/b.rs", 1)]).splitlines()}
-        self.assertEqual(got, {"src/a.rs", "src/lib.rs"})
+        self.assertEqual(got, {"src/a.rs"})
+        got = {line.strip() for line in self.baseline_output(impact[("src/a.rs", 1)]).splitlines()}
+        # The test names `a` through the crate's own name; c/extra.rs names `a` on its way to
+        # `a::inner`, which costs the grep precision. widget.rs's `crate::a::...` call is no `use`.
+        self.assertEqual(got, {"src/b.rs", "tests/it.rs", "src/c/extra.rs"})
 
         cycles = [t for t in tasks if t["mode"] == "cycles"]
         everything = next(t for t in cycles if "path" not in t["args"])
