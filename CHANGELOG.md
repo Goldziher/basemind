@@ -96,6 +96,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the files a change touched: a revision against the working tree (empty: `HEAD`) or `A..B`, with a
   `+importers` suffix adding the files that import a changed file directly. The answer carries
   `scope_files`, so a change that touched nothing reads apart from one without a hit.
+- `basemind sessions` (CLI only, #128, ADR-0049): per-session counts of basemind calls against shell
+  searches, reads and edits from the local Claude Code and Codex transcripts of this repository and its
+  worktrees, counts and repository paths only. Sessions started in a subdirectory count, and subagents
+  (Claude Code's `subagents/` transcripts, Codex's subagent rollouts) are reported on their own and
+  attributed to their parent session. Codex rollouts are read in the current format: namespaced MCP
+  calls, code-mode `exec` scripts and their nested tool calls, exit status from the output header, and
+  a subagent's inherited history skipped.
 
 ### Changed
 
