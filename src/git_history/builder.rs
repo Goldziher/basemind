@@ -206,6 +206,7 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
         writer.put_term_posting(&term_key, &encoding::encode_ords(&ords))?;
     }
     writer.finish_meta(&head20, &root20, total, interner.next_path_id, written)?;
+    index.local().compact()?;
     Ok(RebuildOutcome::FullRebuild {
         reason,
         commits: written,
@@ -617,5 +618,63 @@ mod tests {
                 .collect();
             assert_eq!(touching(&index, path), expected, "{path}'s history is its own");
         }
+    }
+
+    /// Every table file of the git-history database under `cache`, by path.
+    fn table_files(cache: &Path) -> Vec<std::path::PathBuf> {
+        fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read the index dir").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.parent().and_then(Path::file_name) == Some("tables".as_ref()) {
+                    out.push(path);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&cache.join(super::super::GIT_HISTORY_DIR), &mut out);
+        out.sort();
+        out
+    }
+
+    /// A one-commit append used to flush and major-compact all eight keyspaces, rewriting every
+    /// table of the history (seconds on a deep repository). It now leaves the tables as they were,
+    /// and the appended commit is still indexed after a reopen.
+    #[test]
+    fn a_one_commit_append_rewrites_no_table() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let root = repo_dir.path();
+        git(root, &["init", "-q"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        commit(root, "a.rs", "1", "c1");
+        commit(root, "b.rs", "1", "c2");
+        let cache = tempfile::tempdir().expect("cache dir");
+        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
+        sync(&index, &Repo::discover(root).expect("discover"), cache.path()).expect("first build");
+        let built = table_files(cache.path());
+        assert!(
+            built.len() >= 7,
+            "the build compacted each written keyspace to a table: {built:?}"
+        );
+
+        commit(root, "a.rs", "2", "c3");
+        let outcome = sync(&index, &Repo::discover(root).expect("rediscover"), cache.path()).expect("append");
+        assert_eq!(outcome, RebuildOutcome::Incremental { added: 1 });
+        assert_eq!(
+            table_files(cache.path()),
+            built,
+            "the append flushed or compacted a table"
+        );
+
+        drop(index);
+        let index = GitHistoryIndex::open(cache.path()).expect("reopen the index");
+        let head = git(root, &["rev-parse", "HEAD"]);
+        assert_eq!(index.last_indexed_head_hex().as_deref(), Some(head.trim()));
+        let expected: Vec<String> = git(root, &["log", "--format=%H", "--", "a.rs"])
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(touching(&index, "a.rs"), expected);
     }
 }
