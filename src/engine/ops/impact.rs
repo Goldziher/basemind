@@ -1,0 +1,192 @@
+//! `basemind code impact` (#121): the files that depend on a file, on the files defining a symbol,
+//! or on the files a change touches, walked through the file-level import graph by depth.
+
+use ahash::AHashSet;
+
+use crate::engine::error::EngineError;
+use crate::engine::import_graph::{DEPTH_MAX, Direction, ImportGraph, NodeId, Tiers, WalkLimits, import_graph};
+use crate::engine::scope::{ChangeSpec, change_scope};
+use crate::engine::timing::elapsed_us;
+use crate::engine::types::code::kind_to_str;
+use crate::engine::types::graph::{ImpactDefinition, ImpactHit, ImpactParams, ImpactResponse};
+use crate::engine::workspace::Workspace;
+use crate::path::RelPath;
+
+use super::graph_report::{coverage, notes, tiers};
+
+/// Definitions of one name a symbol target reads.
+const SYMBOL_DEFINITIONS_MAX: usize = 256;
+
+/// The files the walk starts from, and what named them.
+struct Targets {
+    kind: &'static str,
+    paths: Vec<RelPath>,
+    definitions: Vec<ImpactDefinition>,
+    scope_files: Option<usize>,
+}
+
+impl Workspace {
+    /// `basemind code impact`: the files that import the target files, transitively to `depth`.
+    pub(crate) fn code_impact(&self, p: ImpactParams) -> Result<ImpactResponse, EngineError> {
+        let started = std::time::Instant::now();
+        let named = usize::from(p.path.is_some()) + usize::from(p.symbol.is_some()) + usize::from(p.diff.is_some());
+        if named != 1 {
+            return Err(shape("name exactly one target"));
+        }
+        if p.depth.is_some_and(|depth| depth == 0 || depth > DEPTH_MAX) {
+            return Err(shape(&format!("`depth` is 1 to {DEPTH_MAX}")));
+        }
+        let limits = WalkLimits::new(p.depth);
+        let tiers = tiers(p.include_type_imports, p.include_module_decls);
+        let targets = if let Some(path) = p.path {
+            file_target(self, path)?
+        } else if let Some(name) = p.symbol {
+            symbol_target(self, &name)?
+        } else {
+            diff_target(self, p.diff.as_deref().unwrap_or_default())?
+        };
+        let graph = import_graph(self)?;
+        let mut response = answer(&graph, targets, limits, tiers);
+        response.notice = self.lifecycle_notice();
+        response.elapsed_us = elapsed_us(started);
+        Ok(response)
+    }
+}
+
+fn shape(problem: &str) -> EngineError {
+    EngineError::invalid_argument(format!(
+        "`code impact`: {problem}; pass a file `path`, a `symbol` name, or a `diff` (a revision, \"\" for HEAD, \
+         or `A..B`), with an optional `depth`"
+    ))
+}
+
+fn file_target(ws: &Workspace, path: RelPath) -> Result<Targets, EngineError> {
+    let store = ws.store_read();
+    if !store.index.files.contains_key(&path) {
+        return Err(crate::engine::files::not_indexed_in(
+            &store,
+            &ws.root,
+            "code impact",
+            &path,
+        ));
+    }
+    Ok(Targets {
+        kind: "file",
+        paths: vec![path],
+        definitions: Vec::new(),
+        scope_files: None,
+    })
+}
+
+/// Every file defining `name`, exactly.
+fn symbol_target(ws: &Workspace, name: &str) -> Result<Targets, EngineError> {
+    let store = ws.store_read();
+    let view = store.read_index_view().ok_or_else(|| {
+        EngineError::busy("the symbol lookup needs the index, which another basemind process holds: retry")
+    })?;
+    let mut definitions: Vec<ImpactDefinition> = view
+        .symbols_by_name_lookup(name, SYMBOL_DEFINITIONS_MAX)
+        .into_iter()
+        .filter(|(found, _, path, _)| found == name && store.index.files.contains_key(path))
+        .map(|(_, kind, path, _)| ImpactDefinition {
+            path,
+            kind: kind_to_str(kind),
+        })
+        .collect();
+    if definitions.is_empty() {
+        return Err(EngineError::invalid_argument(format!(
+            "`code impact`: no definition named `{name}` is indexed; find the exact name with `basemind code \
+             symbols {name} --fuzzy`, or pass a file path"
+        )));
+    }
+    definitions.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(b.kind)));
+    definitions.dedup();
+    let mut paths: Vec<RelPath> = definitions.iter().map(|definition| definition.path.clone()).collect();
+    paths.dedup();
+    Ok(Targets {
+        kind: "symbol",
+        paths,
+        definitions,
+        scope_files: None,
+    })
+}
+
+/// The indexed files a change touches.
+fn diff_target(ws: &Workspace, diff: &str) -> Result<Targets, EngineError> {
+    let spec = ChangeSpec::parse(diff)?;
+    if spec.importers {
+        return Err(shape(
+            "drop `+importers`: impact already walks the importers of the change",
+        ));
+    }
+    let repo = ws
+        .repo
+        .as_ref()
+        .ok_or_else(|| EngineError::unavailable("`code impact` with a diff needs a git repository"))?;
+    let scope = change_scope(repo, &spec.base)?;
+    let store = ws.store_read();
+    let mut paths: Vec<RelPath> = scope
+        .paths()
+        .iter()
+        .filter(|path| store.index.files.contains_key(*path))
+        .cloned()
+        .collect();
+    paths.sort_unstable();
+    Ok(Targets {
+        kind: "diff",
+        paths,
+        definitions: Vec::new(),
+        scope_files: Some(scope.len()),
+    })
+}
+
+/// The walk from `targets`, without the lifecycle notice and timing the caller adds.
+fn answer(graph: &ImportGraph, targets: Targets, limits: WalkLimits, tiers: Tiers) -> ImpactResponse {
+    let mut starts: Vec<NodeId> = Vec::new();
+    let mut not_in_graph: Vec<RelPath> = Vec::new();
+    for path in &targets.paths {
+        match graph.node(&path.to_str_lossy()) {
+            Some(node) => starts.push(node),
+            None => not_in_graph.push(path.clone()),
+        }
+    }
+    let walk = graph.walk(&starts, Direction::Importers, limits, tiers);
+    let in_cycle: AHashSet<NodeId> = graph.cycles(tiers).into_iter().flatten().collect();
+    let affected: Vec<ImpactHit> = walk
+        .reached
+        .iter()
+        .map(|hit| ImpactHit {
+            path: graph.path(hit.node).clone(),
+            depth: hit.depth,
+            via: graph.path(hit.via).clone(),
+            in_cycle: in_cycle.contains(&hit.node),
+        })
+        .collect();
+    let mut targets_in_cycles: Vec<RelPath> = starts
+        .iter()
+        .filter(|node| in_cycle.contains(node))
+        .map(|&node| graph.path(node).clone())
+        .collect();
+    targets_in_cycles.sort_unstable();
+    ImpactResponse {
+        target: targets.kind,
+        targets: targets.paths,
+        definitions: targets.definitions,
+        scope_files: targets.scope_files,
+        targets_in_cycles,
+        not_in_graph,
+        depth: limits.depth,
+        affected_files: affected.len(),
+        affected,
+        truncated: walk.truncated.is_some(),
+        truncated_reason: walk.truncated.map(|cut| cut.reason()),
+        coverage: coverage(graph),
+        notes: notes(graph),
+        notice: None,
+        elapsed_us: 0,
+    }
+}
+
+#[cfg(test)]
+#[path = "impact_tests.rs"]
+mod tests;

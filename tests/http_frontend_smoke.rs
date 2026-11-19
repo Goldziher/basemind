@@ -274,6 +274,8 @@ async fn streamable_http_serves_initialize_and_tools_list() {
         "git_churn",
         "git_by_path",
         "code_chunk",
+        "code_impact",
+        "code_cycles",
         "agent_launch",
         "agent_stop",
     ]

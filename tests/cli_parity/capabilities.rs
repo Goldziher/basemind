@@ -178,6 +178,14 @@ pub fn table() -> Vec<Row> {
             "code chunk",
             "fetches one semantic-search chunk by id; over MCP a hit's line span is read with `code_read`",
         ),
+        cli_only(
+            "code impact",
+            "an analysis answered by the daemon, no verb tool until an eval kind earns one (ADR-0047)",
+        ),
+        cli_only(
+            "code cycles",
+            "an analysis answered by the daemon, no verb tool until an eval kind earns one (ADR-0047)",
+        ),
         // ---- documents and memory ----
         tool("docs_search", "memory documents"),
         tool("memory_save", "memory put"),

@@ -193,12 +193,14 @@ async fn live_serve_sessions(root: &Path) -> u64 {
         .unwrap_or_else(|| panic!("no session count: {report}"))
 }
 
-/// The four CLI-only commands, which ADR-0018 keeps off the agent surface.
-const CLI_ONLY: [(&str, &str); 4] = [
+/// The CLI-only commands, which ADR-0018 keeps off the agent surface.
+const CLI_ONLY: [(&str, &str); 6] = [
     ("memory_delete", r#"{"key":"k"}"#),
     ("git_churn", "{}"),
     ("git_by_path", r#"{"pattern":"a"}"#),
     ("code_chunk", r#"{"path":"a.rs"}"#),
+    ("code_impact", r#"{"path":"a.rs"}"#),
+    ("code_cycles", "{}"),
 ];
 
 /// A relay session is an agent's unless its hello says it is a CLI command's. An agent session (a
@@ -276,6 +278,12 @@ async fn only_a_cli_session_reaches_the_cli_only_commands() {
         .expect("a CLI session runs `git churn`");
     assert_ne!(churn.is_error, Some(true), "{churn:?}");
     assert!(decode_text(&churn).get("files").is_some(), "{churn:?}");
+    let cycles = cli
+        .call_tool(call_params("code_cycles", serde_json::json!({})))
+        .await
+        .expect("a CLI session runs `code cycles`");
+    assert_ne!(cycles.is_error, Some(true), "{cycles:?}");
+    assert!(decode_text(&cycles).get("coverage").is_some(), "{cycles:?}");
 
     let refused = cli
         .call_tool(call_params("code_outline", serde_json::json!({ "path": "missing.rs" })))

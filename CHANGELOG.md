@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `basemind code impact <path|symbol>` / `--diff <rev|A..B>` / `--changed` (#121): the files that
+  import a file, the files defining a symbol or the files a change touches, transitively to `--depth`
+  (1-5) through the file-level import graph, each with its depth, the file it imports and whether it
+  is in a cycle. `basemind code cycles [--path --max-size]` (#135) lists the import cycles smallest
+  first, each with an import chain that closes it (`a.rs:12 -> b.rs:40 -> a.rs`) and a language note;
+  `--check FROM TO` says whether that import would close one. Both report the graph's coverage per
+  language and are answered by the daemon (ADR-0047).
 - `[documents.dependencies]` (off by default): a full scan indexes the README, CHANGELOG and `docs/**`
   of the dependencies `Cargo.toml` + `Cargo.lock`, `package.json`, `pyproject.toml` + `uv.lock` /
   `poetry.lock` and `go.mod` name, under `deps/<ecosystem>/<name>@<version>/<file>`, so
