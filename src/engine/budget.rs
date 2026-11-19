@@ -81,9 +81,11 @@ pub(crate) fn keep_prefix<T>(items: Vec<T>, max_tokens: Option<u32>, mut cost: i
 
 /// [`apply_budget`] for rows written under their file ([`super::by_path`]). A row costs what it
 /// writes: its own fields with its column, plus its file's key the first time a kept row is in that
-/// file, since the key is written once per file and not on the row.
+/// file, and its group's key the first time a kept row is in that file and group, since each key is
+/// written once and not on the row.
 pub(crate) fn apply_budget_by_path<T: super::by_path::Located>(items: Vec<T>, max_tokens: Option<u32>) -> Budgeted<T> {
     let mut files: ahash::AHashSet<crate::path::RelPath> = ahash::AHashSet::new();
+    let mut groups: ahash::AHashSet<(crate::path::RelPath, String)> = ahash::AHashSet::new();
     keep_prefix(items, max_tokens, |row| {
         let mut bytes = Vec::new();
         let row_bytes = match row.serialize_row(&mut serde_json::Serializer::new(&mut bytes), true) {
@@ -96,8 +98,15 @@ pub(crate) fn apply_budget_by_path<T: super::by_path::Located>(items: Vec<T>, ma
         } else {
             0
         };
+        let group_bytes = match row.group() {
+            // `"<group>":[` and `],`, as for a file.
+            Some(group) if groups.insert((row.located().clone(), group.to_owned())) => {
+                serde_json::to_vec(group).map_or(0, |key| key.len() as u64 + 4)
+            }
+            _ => 0,
+        };
         // Rounded up, so the costs of many small rows do not sum below what they write.
-        (row_bytes + key_bytes).div_ceil(4)
+        (row_bytes + key_bytes + group_bytes).div_ceil(4)
     })
 }
 
@@ -165,6 +174,45 @@ mod tests {
         assert_eq!(out.items[0].v, "aaaaaaaaaa");
         assert!(out.budgeted);
         assert_eq!(input_len - out.items.len(), 2, "dropped count");
+    }
+
+    /// A row under a file and a group, writing `"x"`.
+    struct Grouped(&'static str);
+
+    impl crate::engine::by_path::Located for Grouped {
+        fn located(&self) -> &crate::path::RelPath {
+            static PATH: std::sync::LazyLock<crate::path::RelPath> =
+                std::sync::LazyLock::new(|| crate::path::RelPath::from(b"a.rs".as_slice()));
+            &PATH
+        }
+
+        fn line(&self) -> u32 {
+            1
+        }
+
+        fn group(&self) -> Option<&str> {
+            Some(self.0)
+        }
+
+        fn serialize_row<S: serde::Serializer>(&self, serializer: S, _column: bool) -> Result<S::Ok, S::Error> {
+            serializer.serialize_str("x")
+        }
+    }
+
+    #[test]
+    fn a_group_key_is_charged_once_per_file_and_group() {
+        const GROUP: &str = "a_thirty_byte_function_name_xx";
+        const OTHER: &str = "another_thirty_byte_function_n";
+        // `"x",` 4 bytes; `"a.rs":[` + `],` 10; a 30-byte group key 36: the first row costs
+        // ceil(50 / 4) = 13 tokens, a row in a second group ceil(40 / 4) = 10, a row in a group
+        // already written ceil(4 / 4) = 1.
+        let rows = || vec![Grouped(GROUP), Grouped(OTHER), Grouped(GROUP)];
+        let out = apply_budget_by_path(rows(), Some(22));
+        assert_eq!(out.items.len(), 1, "the second group's key does not fit");
+        assert!(out.budgeted);
+        let out = apply_budget_by_path(rows(), Some(24));
+        assert_eq!(out.items.len(), 3, "the third row's group is already written");
+        assert!(!out.budgeted);
     }
 
     #[test]

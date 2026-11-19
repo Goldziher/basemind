@@ -24,6 +24,12 @@ pub(crate) trait Located {
     fn writes_column(&self) -> Option<bool> {
         None
     }
+    /// The group a row is written under inside its file, when rows are grouped again there
+    /// (`code_grep`: the enclosing symbol, `""` outside every symbol). Its key is written once per
+    /// file and group.
+    fn group(&self) -> Option<&str> {
+        None
+    }
     /// Write the row without its path, and with its 1-based column when `column` is set.
     fn serialize_row<S: Serializer>(&self, serializer: S, column: bool) -> Result<S::Ok, S::Error>;
 }

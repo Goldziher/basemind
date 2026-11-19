@@ -126,8 +126,12 @@ impl crate::engine::by_path::Located for GrepHit {
         self.line
     }
 
-    /// The row as the token budget costs it: its match row and context rows, without the symbol key
-    /// a run of rows shares.
+    fn group(&self) -> Option<&str> {
+        Some(self.symbol.as_deref().unwrap_or(""))
+    }
+
+    /// The row as the token budget costs it: its match row and context rows. The symbol key the
+    /// rows of a group share is costed once, by [`crate::engine::budget::apply_budget_by_path`].
     fn serialize_row<S: serde::Serializer>(&self, serializer: S, column: bool) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeSeq;
 
