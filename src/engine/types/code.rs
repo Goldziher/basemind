@@ -360,9 +360,11 @@ impl SearchHitView {
     }
 }
 
-/// Whether `text` holds `name` as a whole identifier: not inside a longer word.
+/// Whether `text` holds `name` as a whole identifier: not inside a longer word. `$` (JS, PHP) and
+/// every byte of a non-ASCII character continue a word, so `foo` is not held by `$foo` or `cafoo`
+/// written with a non-ASCII letter before it.
 fn holds_identifier(text: &str, name: &str) -> bool {
-    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || !b.is_ascii();
     let bytes = text.as_bytes();
     !name.is_empty()
         && memchr::memmem::find_iter(bytes, name.as_bytes()).any(|at| {
@@ -417,4 +419,19 @@ pub(crate) struct SearchResponse {
     pub scope_files: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::holds_identifier;
+
+    #[test]
+    fn an_identifier_is_held_only_as_a_whole_word() {
+        assert!(holds_identifier("fn foo(a: u8)", "foo"));
+        assert!(holds_identifier("function $foo()", "$foo"));
+        assert!(!holds_identifier("function $foo()", "foo"));
+        assert!(!holds_identifier("fn éfoo()", "foo"));
+        assert!(!holds_identifier("fn foo_bar()", "foo"));
+        assert!(!holds_identifier("fn foo()", ""));
+    }
 }
