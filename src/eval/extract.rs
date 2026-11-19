@@ -381,7 +381,7 @@ mod tests {
         let sym = extract_items(
             EvalMode::Symbols,
             &Value::Null,
-            &json!({"results":[{"path":"a.py","name":"f","line":1},{"path":"b.py","line":10}]}),
+            &json!({"results":["a.py:1: def f()","c:d.py:10: class g; x: int"]}),
         );
         assert_eq!(
             sym[0],
@@ -390,7 +390,8 @@ mod tests {
                 line: Some(1)
             }
         );
-        assert_eq!(sym[1].line, Some(10));
+        assert_eq!((sym[1].path.as_str(), sym[1].line), ("c:d.py", Some(10)));
+        assert_eq!(sym.len(), 2);
 
         let outline = extract_items(
             EvalMode::Outline,
@@ -457,10 +458,8 @@ mod tests {
     #[test]
     fn scores_the_symbol_attached_to_each_annotated_grep_hit() {
         let body = json!({"hits":{
-            "a.rs":[{"line":3,"text":"spin()","symbol":"spin"},
-                    {"line":9,"text":"w","symbol":"Wrong"},
-                    {"line":12,"text":"run"}],
-            "b.rs":[{"line":1,"text":"x","symbol":"x"}]
+            "a.rs":{"spin":["2- fn spin() {","3: spin()"],"Wrong":["9: w"],"":["12: run"]},
+            "b.rs":{"x":["1: x"]}
         }});
         let hits = grep_annotations(&body);
         let expected: std::collections::BTreeMap<String, String> =

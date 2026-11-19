@@ -221,7 +221,7 @@ async fn concurrent_search_and_rescan() {
             let body = decode_text(&result);
             assert!(
                 body.get("results").and_then(Value::as_array).is_some(),
-                "iteration {iteration}: expected results array, got: {body}"
+                "iteration {iteration}: expected results, got: {body}"
             );
         }
     });
@@ -531,17 +531,15 @@ async fn second_session_refuses_implementations_without_an_index() {
     let _ = serve2.cancel().await;
 }
 
-/// Extract symbol names from a `code_symbols` response body.
+/// The rows of a `code_symbols` response body (`"<path>:<line>: <signature>"`).
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn symbol_names(body: &Value) -> Vec<String> {
     body.get("results")
         .and_then(Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|r| r.get("name").and_then(Value::as_str).map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row.as_str().map(str::to_string))
+        .collect()
 }
 
 /// The isolated comms dir `init_isolated_cache` pointed this process — and every child it spawns —
@@ -636,7 +634,7 @@ async fn hosted_serve_rescans_through_the_daemon_and_sees_fresh_symbols() {
         .expect("search A");
     let names_a = symbol_names(&decode_text(&search_a));
     assert!(
-        names_a.iter().any(|n| n == "alpha"),
+        names_a.iter().any(|row| row.ends_with("fn alpha()")),
         "serve A sees 'alpha' after the daemon-forwarded scan: {names_a:?}"
     );
 
@@ -648,7 +646,7 @@ async fn hosted_serve_rescans_through_the_daemon_and_sees_fresh_symbols() {
         .expect("search B");
     let names_b = symbol_names(&decode_text(&search_b));
     assert!(
-        names_b.iter().any(|n| n == "Beta"),
+        names_b.iter().any(|row| row.contains("Beta")),
         "serve B reads 'Beta' from the shared index: {names_b:?}"
     );
     let rescan_b = peer_b

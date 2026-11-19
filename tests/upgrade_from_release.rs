@@ -349,7 +349,12 @@ fn assert_old_stores_survive(env: &Env, new: &Path, old: &Path) {
     let log = env.json(new, &["git", "log"]);
     let summaries: Vec<&str> = log["commits"]
         .as_array()
-        .map(|commits| commits.iter().filter_map(|c| c["summary"].as_str()).collect())
+        .map(|commits| {
+            commits
+                .iter()
+                .filter_map(|row| row.as_str()?.split_once(' ').map(|(_, summary)| summary))
+                .collect()
+        })
         .unwrap_or_default();
     assert!(
         summaries.iter().any(|s| s.contains("second upgrade fixture commit"))
@@ -434,7 +439,9 @@ fn upgrade_from(old: &Path) -> (bool, u32) {
     }
 
     let symbols = env.json(new, &["code", "symbols", "Svc"]);
-    let signature = symbols["results"][0]["signature"].as_str().expect("a signature");
+    let signature = symbols["results"][0]
+        .as_str()
+        .expect("a row: `<path>:<line>: <signature>`");
     assert!(
         !signature.contains("def run"),
         "signature must stop at the class header, not embed the body: {signature:?}"

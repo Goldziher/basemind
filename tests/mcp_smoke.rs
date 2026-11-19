@@ -352,16 +352,18 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("code_symbols", json!({ "name": "Greet", "limit": 10 })))
+            .call_tool(call_params(
+                "code_symbols",
+                json!({ "name": "Greet", "kind": "function", "limit": 10 }),
+            ))
             .await
             .expect("code_symbols"),
     );
-    let results = body.get("results").and_then(Value::as_array).expect("results");
-    assert_eq!(results.len(), 1, "one Greet hit: {results:?}");
+    let results = symbol_rows(&body);
     assert_eq!(
-        results[0].get("kind").and_then(Value::as_str),
-        Some("function"),
-        "Stage 2 arrow-fn const should be kind=function"
+        results.len(),
+        1,
+        "Stage 2 arrow-fn const should be kind=function: {body}"
     );
 
     let body = decode_text(
@@ -370,12 +372,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_symbols(draw)"),
     );
-    assert!(
-        body.get("results")
-            .and_then(Value::as_array)
-            .is_some_and(|results| !results.is_empty()),
-        "expected draw hits: {body:?}"
-    );
+    assert!(!symbol_rows(&body).is_empty(), "expected draw hits: {body:?}");
     assert!(
         body.get("truncated").is_none(),
         "no sweep hit its cap, and a false flag is left out: {body}"
@@ -404,9 +401,9 @@ async fn mcp_server_exercises_representative_tools() {
     assert_eq!(hits.len(), 1, "one commit summary contains 'tweak', got {hits:?}");
     assert!(
         hits[0]
-            .get("summary")
-            .and_then(Value::as_str)
-            .is_some_and(|s| s.contains("tweak")),
+            .as_str()
+            .and_then(|row| row.split_once(' '))
+            .is_some_and(|(_, summary)| summary.contains("tweak")),
         "hit summary should contain the query token"
     );
     let body = decode_text(
@@ -670,7 +667,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_symbols page1"),
     );
-    let page1_results = page1.get("results").and_then(Value::as_array).expect("page1 results");
+    let page1_results = symbol_rows(&page1);
     assert_eq!(page1_results.len(), 1, "code_symbols limit=1 → 1 result");
     let cursor1 = page1
         .get("next_cursor")
@@ -686,16 +683,10 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_symbols page2"),
     );
-    let page2_results = page2.get("results").and_then(Value::as_array).expect("page2 results");
+    let page2_results = symbol_rows(&page2);
     assert_eq!(page2_results.len(), 1, "page2 must also have 1 result");
-    let key1 = (
-        page1_results[0].get("path").and_then(Value::as_str).unwrap_or(""),
-        page1_results[0].get("name").and_then(Value::as_str).unwrap_or(""),
-    );
-    let key2 = (
-        page2_results[0].get("path").and_then(Value::as_str).unwrap_or(""),
-        page2_results[0].get("name").and_then(Value::as_str).unwrap_or(""),
-    );
+    let key1 = &page1_results[0];
+    let key2 = &page2_results[0];
     assert_ne!(key1, key2, "page2 must not repeat page1's entry");
 
     let unbudgeted = decode_text(
@@ -704,11 +695,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_symbols unbudgeted"),
     );
-    let unbudgeted_len = unbudgeted
-        .get("results")
-        .and_then(Value::as_array)
-        .expect("unbudgeted results")
-        .len();
+    let unbudgeted_len = symbol_rows(&unbudgeted).len();
     assert!(
         unbudgeted_len >= 2,
         "fixture must have ≥2 'a' symbols to exercise budgeting, got {unbudgeted_len}"
@@ -722,10 +709,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("code_symbols budgeted"),
     );
-    let budgeted_results = budgeted
-        .get("results")
-        .and_then(Value::as_array)
-        .expect("budgeted results");
+    let budgeted_results = symbol_rows(&budgeted);
     assert_eq!(
         budgeted_results.len(),
         1,
@@ -2639,7 +2623,7 @@ async fn latency_tools_report_microsecond_elapsed_us() {
             .expect("code_symbols"),
     );
     assert!(
-        search.get("total").and_then(Value::as_u64).unwrap_or(0) >= 1,
+        !symbol_rows(&search).is_empty(),
         "fixture should match the `paged` symbol: {search}"
     );
     assert!(search.get("elapsed_us").is_none(), "a locating tool: {search}");
@@ -2702,9 +2686,8 @@ async fn older_clients_still_read_the_lean_responses() {
     );
     let legacy: LegacySearchResponse =
         serde_json::from_value(search).expect("an older client must still deserialize the response");
-    assert!(legacy.total >= 1, "old client still reads `total`");
     assert!(!legacy.truncated, "old client still reads `truncated`");
-    assert_eq!(legacy.results.len(), legacy.total, "old client still reads `results`");
+    assert!(!legacy.results.is_empty(), "old client still reads `results`");
 
     let recent = decode_text(
         &service
@@ -2778,10 +2761,9 @@ async fn workspace_grep_finds_a_rare_token_past_the_old_scan_cap() {
         Some("zzz/rare.rs"),
         "hit must point at the far file: {body}"
     );
-    assert_eq!(
-        body.get("total").and_then(Value::as_u64),
-        Some(1),
-        "a full-corpus scan reports the exact match count: {body}"
+    assert!(
+        body.get("total").is_none() && body.get("next_cursor").is_none(),
+        "a full-corpus scan lists every match on one page: {body}"
     );
     assert!(
         body.get("truncated").is_none(),
@@ -3530,12 +3512,7 @@ async fn changed_scopes_queries_to_the_files_a_change_touched() {
     );
 
     let body = call("code_symbols", json!({ "name": "zed", "changed": "HEAD" })).await;
-    let paths: Vec<&str> = body["results"]
-        .as_array()
-        .expect("results")
-        .iter()
-        .map(|row| row["path"].as_str().expect("a path"))
-        .collect();
+    let paths: Vec<String> = symbol_rows(&body).into_iter().map(|(path, _)| path).collect();
     assert_eq!(paths, ["c.rs"], "{body}");
     assert_eq!(body["scope_files"], 2, "{body}");
 

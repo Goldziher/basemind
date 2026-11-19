@@ -49,20 +49,20 @@ async fn code_symbols_answers_byte_for_byte() {
     let cases = [
         (
             json!({ "name": "file_outline" }),
-            r#"{"total":3,"results":[{"path":"src/outline.rs","line":3,"kind":"function","name":"file_outline","signature":"pub fn file_outline() -> u32"},{"path":"src/outline.rs","line":7,"kind":"function","name":"file_outline_l2","signature":"pub fn file_outline_l2() -> u32"},{"path":"src/outline.rs","line":11,"kind":"function","name":"outline_file_outline_cached","signature":"pub fn outline_file_outline_cached() -> u32"}]}"#,
+            r#"{"results":["src/outline.rs:3: pub fn file_outline() -> u32","src/outline.rs:7: pub fn file_outline_l2() -> u32","src/outline.rs:11: pub fn outline_file_outline_cached() -> u32"]}"#,
         ),
         (
             json!({ "name": "render", "kind": "function" }),
-            r#"{"total":1,"results":[{"path":"src/outline.rs","line":18,"kind":"function","name":"render","signature":"pub fn render(&self) -> u32"}]}"#,
+            r#"{"results":["src/outline.rs:18: pub fn render(&self) -> u32"]}"#,
         ),
         (
             json!({ "name": "rendr", "fuzzy": true }),
-            r#"{"total":3,"results":[{"path":"src/outline.rs","line":15,"kind":"struct","name":"Renderer","signature":"pub struct Renderer"},{"path":"src/outline.rs","line":17,"kind":"impl","name":"Renderer","signature":"impl Renderer"},{"path":"src/outline.rs","line":18,"kind":"function","name":"render","signature":"pub fn render(&self) -> u32"}]}"#,
+            r#"{"results":["src/outline.rs:15: pub struct Renderer","src/outline.rs:17: impl Renderer","src/outline.rs:18: pub fn render(&self) -> u32"]}"#,
         ),
-        (json!({ "name": "zzz_none" }), r#"{"total":0,"results":[]}"#),
+        (json!({ "name": "zzz_none" }), r#"{"results":[]}"#),
         (
             json!({ "name": "outline", "limit": 2 }),
-            r#"{"total":3,"results":[{"path":"src/outline.rs","line":11,"kind":"function","name":"outline_file_outline_cached","signature":"pub fn outline_file_outline_cached() -> u32"},{"path":"src/outline.rs","line":3,"kind":"function","name":"file_outline","signature":"pub fn file_outline() -> u32"}],"next_cursor":"<cursor>"}"#,
+            r#"{"total":3,"results":["src/outline.rs:11: pub fn outline_file_outline_cached() -> u32","src/outline.rs:3: pub fn file_outline() -> u32"],"next_cursor":"<cursor>"}"#,
         ),
     ];
     let mut rows = Vec::new();
@@ -73,14 +73,22 @@ async fn code_symbols_answers_byte_for_byte() {
     let first: Value = serde_json::from_str(&answer(&client, json!({ "name": "outline", "limit": 2 })).await).unwrap();
     let cursor = first["next_cursor"].as_str().expect("a second page").to_string();
     let rest = answer(&client, json!({ "name": "outline", "limit": 2, "cursor": cursor })).await;
-    rows.push(("code_symbols page 2".to_string(), rest, r#"{"total":3,"results":[{"path":"src/outline.rs","line":7,"kind":"function","name":"file_outline_l2","signature":"pub fn file_outline_l2() -> u32"}]}"#.to_string()));
+    rows.push((
+        "code_symbols page 2".to_string(),
+        rest,
+        r#"{"results":["src/outline.rs:7: pub fn file_outline_l2() -> u32"]}"#.to_string(),
+    ));
     std::fs::write(
         dir.path().join("src/callers.rs"),
         "// moved\n\npub fn first() -> u32 {\n    7\n}\n",
     )
     .unwrap();
     let edited = answer(&client, json!({ "name": "first" })).await;
-    rows.push(("code_symbols edited".to_string(), edited, r#"{"total":1,"results":[{"path":"src/callers.rs","line":3,"kind":"function","name":"first","signature":"pub fn first() -> u32","stale":true}]}"#.to_string()));
+    rows.push((
+        "code_symbols edited".to_string(),
+        edited,
+        r#"{"results":["src/callers.rs:3: pub fn first() -> u32"],"stale":["src/callers.rs"]}"#.to_string(),
+    ));
     assert_all(&rows);
 }
 

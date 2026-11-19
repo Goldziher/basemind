@@ -93,11 +93,12 @@ fn search_symbols(
     let generation = ws.cache_generation.load(Ordering::Relaxed);
 
     let empty = |cursor_invalidated: bool| SearchResponse {
-        total: 0,
+        total: None,
         truncated: false,
         truncated_reason: None,
         budgeted: false,
         results: Vec::new(),
+        stale: Vec::new(),
         next_cursor: None,
         cursor_invalidated,
         scope_files: None,
@@ -213,12 +214,19 @@ fn search_symbols(
     let returned_through = resume_at(window_end, &offsets, results.len());
     let next_cursor = (total > returned_through && returned_through > skip)
         .then(|| Cursor::encode_in_memory(returned_through as u64, generation));
+    let mut stale: Vec<RelPath> = Vec::new();
+    for hit in results.iter().filter(|hit| hit.stale) {
+        if !stale.contains(&hit.path) {
+            stale.push(hit.path.clone());
+        }
+    }
     Ok(SearchResponse {
-        total,
+        total: next_cursor.is_some().then_some(total),
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(SCAN_CAP),
         budgeted: budget.budgeted,
         results,
+        stale,
         next_cursor,
         cursor_invalidated: false,
         scope_files: None,

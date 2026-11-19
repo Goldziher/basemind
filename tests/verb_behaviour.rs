@@ -389,38 +389,22 @@ async fn code_symbols_ranks_exact_then_prefix_then_substring() {
 
     let body = call(&client, "code_symbols", json!({ "name": "rank_target" })).await;
     assert_eq!(
-        names(&body["results"]),
-        ["rank_target", "rank_target_more", "pre_rank_target_post"],
-        "{body}"
+        symbol_rows(&body),
+        [
+            "src/c_exact.rs:3: pub fn rank_target()",
+            "src/b_prefix.rs:1: pub fn rank_target_more()",
+            "src/a_substring.rs:1: pub fn pre_rank_target_post()",
+        ],
+        "rank order is the reverse of path order here, and a row is its 1-based line and signature: {body}"
     );
-    let paths: Vec<&str> = body["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|row| row["path"].as_str().unwrap_or_default())
-        .collect();
-    assert_eq!(
-        paths,
-        ["src/c_exact.rs", "src/b_prefix.rs", "src/a_substring.rs"],
-        "rank order is the reverse of path order here: {body}"
-    );
-    assert_eq!(body["total"], 3, "{body}");
-
-    let exact = &body["results"][0];
-    assert_eq!(
-        exact,
-        &json!({
-            "path": "src/c_exact.rs",
-            "line": 3,
-            "kind": "function",
-            "name": "rank_target",
-            "signature": "pub fn rank_target()",
-        }),
-        "a row is where the definition is and what it is, with a 1-based `line`: {exact}"
-    );
+    assert!(body.get("total").is_none(), "no other page, so no `total`: {body}");
 
     let first_page = call(&client, "code_symbols", json!({ "name": "rank_target", "limit": 1 })).await;
-    assert_eq!(names(&first_page["results"]), ["rank_target"]);
+    assert_eq!(symbol_rows(&first_page), ["src/c_exact.rs:3: pub fn rank_target()"]);
+    assert_eq!(
+        first_page["total"], 3,
+        "a page with a `next_cursor` counts every match: {first_page}"
+    );
     let cursor = first_page["next_cursor"].clone();
     assert!(cursor.is_string(), "{first_page}");
     let rest = call(
@@ -430,8 +414,11 @@ async fn code_symbols_ranks_exact_then_prefix_then_substring() {
     )
     .await;
     assert_eq!(
-        names(&rest["results"]),
-        ["rank_target_more", "pre_rank_target_post"],
+        symbol_rows(&rest),
+        [
+            "src/b_prefix.rs:1: pub fn rank_target_more()",
+            "src/a_substring.rs:1: pub fn pre_rank_target_post()",
+        ],
         "the cursor continues in rank order: {rest}"
     );
 }
@@ -441,23 +428,27 @@ async fn code_symbols_fuzzy_adds_subsequence_matches_below_the_substring_ones() 
     let (_dir, client) = started().await;
 
     let strict = call(&client, "code_symbols", json!({ "name": "fileoutl2" })).await;
-    assert_eq!(strict["total"], 0, "not a substring of any name: {strict}");
+    assert_eq!(strict["results"], json!([]), "not a substring of any name: {strict}");
 
     let fuzzy = call(&client, "code_symbols", json!({ "name": "fileoutl2", "fuzzy": true })).await;
-    let found = names(&fuzzy["results"]);
-    assert_eq!(found.first().map(String::as_str), Some("file_outline_l2"), "{fuzzy}");
+    let found = symbol_rows(&fuzzy);
+    assert_eq!(
+        found.first().map(String::as_str),
+        Some("src/outline.rs:7: pub fn file_outline_l2() -> u32"),
+        "{fuzzy}"
+    );
 
     let ranked = call(&client, "code_symbols", json!({ "name": "render", "fuzzy": true })).await;
-    let found = names(&ranked["results"]);
+    let found = symbol_rows(&ranked);
     let first_fuzzy = found
         .iter()
-        .position(|name| !name.contains("render"))
+        .position(|row| !row.contains("render"))
         .unwrap_or(found.len());
     assert!(
-        found[first_fuzzy..].iter().all(|name| !name.contains("render")),
+        found[first_fuzzy..].iter().all(|row| !row.contains("render")),
         "fuzzy matches rank below every literal match: {ranked}"
     );
-    assert_eq!(found[0], "render", "{ranked}");
+    assert_eq!(found[0], "src/outline.rs:18: pub fn render(&self) -> u32", "{ranked}");
 }
 
 /// A hit is the whole matching line plus the symbol it sits in, so the agent does not have to open

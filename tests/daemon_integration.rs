@@ -1728,7 +1728,10 @@ async fn await_symbol(comms_dir: &Path, repo: &Path, name: &str, bound: Duration
             json!({ "name": name }),
         )
         .await;
-        if response["result"]["structuredContent"]["total"] == json!(1) {
+        if response["result"]["structuredContent"]["results"]
+            .as_array()
+            .is_some_and(|rows| rows.len() == 1)
+        {
             return;
         }
         assert!(

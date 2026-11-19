@@ -120,8 +120,8 @@ fn code_outline_reports_symbols() {
 fn code_symbols_finds_symbol() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(root, &["code", "symbols", "alpha"], &["total", "results"]);
-    assert_eq!(v["total"], 1);
+    let v = assert_json_fields(root, &["code", "symbols", "alpha"], &["results"]);
+    assert_eq!(v["results"], serde_json::json!(["a.rs:1: pub fn alpha()"]), "{v}");
     assert!(v.get("truncated").is_none(), "a false `truncated` is left out: {v}");
     assert_human_contains(root, &["code", "symbols", "alpha"], "alpha");
 }
@@ -194,8 +194,12 @@ fn rescan_without_paths_reindexes_a_new_file() {
     let (stdout, ok) = run(root, &["rescan", "--quiet"]);
     assert!(ok, "rescan exited non-zero; stdout: {stdout}");
 
-    let search = assert_json_fields(root, &["code", "symbols", "delta"], &["total", "results"]);
-    assert_eq!(search["total"], 1, "a rescan with no path must index the new symbol");
+    let search = assert_json_fields(root, &["code", "symbols", "delta"], &["results"]);
+    assert_eq!(
+        search["results"],
+        serde_json::json!(["d.rs:1: pub fn delta()"]),
+        "a rescan with no path must index the new symbol"
+    );
     let status = assert_json_fields(root, &["status"], &["file_count"]);
     assert_eq!(status["file_count"], 3, "a rescan with no path must index the new file");
 }
@@ -209,8 +213,12 @@ fn rescan_scoped_path_reindexes_only_that_path() {
     let (stdout, ok) = run(root, &["rescan", "d.rs", "--quiet"]);
     assert!(ok, "scoped rescan exited non-zero; stdout: {stdout}");
 
-    let search = assert_json_fields(root, &["code", "symbols", "delta"], &["total", "results"]);
-    assert_eq!(search["total"], 1, "scoped rescan must index the named path");
+    let search = assert_json_fields(root, &["code", "symbols", "delta"], &["results"]);
+    assert_eq!(
+        search["results"],
+        serde_json::json!(["d.rs:1: pub fn delta()"]),
+        "scoped rescan must index the named path"
+    );
 }
 
 #[test]

@@ -174,12 +174,13 @@ async fn corpus_tool_builds_the_map_on_demand_and_sees_every_file() {
 
     let names: Vec<&str> = payload["results"]
         .as_array()
-        .expect("results array")
+        .expect("results")
         .iter()
-        .filter_map(|hit| hit["name"].as_str())
+        .filter_map(Value::as_str)
         .collect();
+    let has = |name: &str| names.iter().any(|row| row.contains(name));
     assert!(
-        names.contains(&"alpha_marker") && names.contains(&"beta_marker"),
+        has("alpha_marker") && has("beta_marker"),
         "the on-demand map must cover EVERY indexed file, not just some: got {names:?}"
     );
 

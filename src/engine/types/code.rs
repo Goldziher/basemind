@@ -329,27 +329,61 @@ pub(crate) struct SearchSymbolsParams {
 }
 
 /// One `code_symbols` row: where a definition is and what it is. Rows are ranked: the exact name,
-/// then names it prefixes, then names holding it, then (with `fuzzy`) fuzzy matches; which of those
-/// a row is shows by comparing `name` with the query.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
+/// then names it prefixes, then names holding it, then (with `fuzzy`) fuzzy matches.
+///
+/// Written as one string, `"<path>:<line>: <signature>"`: the signature names the definition and
+/// shows its kind (`fn`, `struct`, `class`), as the line `git grep -n` prints would. A signature
+/// that does not hold the name, or a symbol without one, is written `"<path>:<line>: <kind> <name>"`,
+/// followed by `; <signature>` when there is one. Rows keep their rank, so they are not grouped by
+/// file.
+#[derive(Debug)]
 pub(crate) struct SearchHitView {
     pub path: RelPath,
     /// 1-based line of the definition.
     pub line: u32,
     pub kind: &'static str,
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     /// The file changed since it was indexed: `line` is where the definition is now, or where it
-    /// was when it can no longer be found. Absent when false.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    /// was when it can no longer be found. Listed in the response's `stale`, not on the row.
     pub stale: bool,
+}
+
+impl SearchHitView {
+    /// The row after its path: `"<line>: <signature>"`, or `"<line>: <kind> <name>[; <signature>]"`.
+    pub(crate) fn row_text(&self) -> String {
+        match self.signature.as_deref() {
+            Some(signature) if holds_identifier(signature, &self.name) => format!("{}: {signature}", self.line),
+            Some(signature) => format!("{}: {} {}; {signature}", self.line, self.kind, self.name),
+            None => format!("{}: {} {}", self.line, self.kind, self.name),
+        }
+    }
+}
+
+/// Whether `text` holds `name` as a whole identifier: not inside a longer word.
+fn holds_identifier(text: &str, name: &str) -> bool {
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let bytes = text.as_bytes();
+    !name.is_empty()
+        && memchr::memmem::find_iter(bytes, name.as_bytes()).any(|at| {
+            let end = at + name.len();
+            !(at > 0 && word(bytes[at - 1])) && !bytes.get(end).is_some_and(|&b| word(b))
+        })
+}
+
+/// The row as written: `"<path>:<line>: <signature>"`, the line `git grep -n` prints.
+impl Serialize for SearchHitView {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format!("{}:{}", self.path.to_str_lossy(), self.row_text()))
+    }
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct SearchResponse {
-    /// Matching symbols in the corpus, across every page.
-    pub total: usize,
+    /// Matching symbols in the corpus, across every page. Written only beside a `next_cursor`: a
+    /// page without one lists every match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
     /// True when a fuzzy sweep stopped at its candidate cap, so `total` is a lower bound. Never
     /// true because `limit` cut the page: that is paging, and `next_cursor` says it. Absent when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -361,7 +395,13 @@ pub(crate) struct SearchResponse {
     /// best-first; page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// The matches, best first: `"<path>:<line>: <signature>"`.
+    #[schemars(with = "Vec<String>")]
     pub results: Vec<SearchHitView>,
+    /// Files edited since the scan whose rows were re-read from disk: a row's line is where the
+    /// definition is now. Absent when none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stale: Vec<RelPath>,
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,

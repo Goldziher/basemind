@@ -220,17 +220,20 @@ async fn code_symbols_follows_a_definition_through_an_edit_made_after_the_scan()
     prepend(&dir.path().join("src/outline.rs"), "// one\n// two\n");
 
     let moved = call(&client, "code_symbols", json!({ "name": "file_outline_l2" })).await;
-    let row = &moved["results"][0];
     assert_eq!(
-        (row["line"].as_u64(), row["stale"].as_bool()),
-        (Some(9), Some(true)),
+        super::symbol_rows(&moved),
+        ["src/outline.rs:9: pub fn file_outline_l2() -> u32"],
         "{moved}"
     );
+    assert_eq!(moved["stale"], json!(["src/outline.rs"]), "{moved}");
 
     let unedited = call(&client, "code_symbols", json!({ "name": "first" })).await;
-    let row = &unedited["results"][0];
-    assert_eq!(row["path"], "src/callers.rs", "{unedited}");
-    assert!(row.get("stale").is_none(), "{unedited}");
+    assert_eq!(
+        super::symbol_rows(&unedited),
+        ["src/callers.rs:3: pub fn first() -> u32"],
+        "{unedited}"
+    );
+    assert!(unedited.get("stale").is_none(), "{unedited}");
 }
 
 #[cfg(feature = "code-intel-js")]

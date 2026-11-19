@@ -1,7 +1,7 @@
 //! A caller-supplied path never reads outside the repository, and `code_grep`'s filters mean what
 //! they say.
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::{call, call_err, started, started_with};
 

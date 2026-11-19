@@ -80,7 +80,7 @@ async fn an_empty_index_attaches_a_notice_to_every_list() {
     let server = server(tmp.path(), false);
 
     let found = json_of(&server.code_symbols_call(symbols("alpha")).await.expect("code_symbols"));
-    assert_eq!(found["total"], 0);
+    assert_eq!(found["results"], serde_json::json!([]), "{found}");
     assert_eq!(found["notice"]["state"], "empty_index", "{found}");
     assert!(
         found["notice"]["message"]
@@ -118,7 +118,11 @@ async fn a_populated_index_carries_no_empty_index_notice() {
     let server = server(tmp.path(), true);
 
     let found = json_of(&server.code_symbols_call(symbols("alpha")).await.expect("code_symbols"));
-    assert_eq!(found["total"], 1, "{found}");
+    assert_eq!(
+        found["results"],
+        serde_json::json!(["a.rs:1: pub fn alpha()"]),
+        "{found}"
+    );
     assert!(found.get("notice").is_none(), "{found}");
 }
 

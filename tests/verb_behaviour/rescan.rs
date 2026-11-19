@@ -3,7 +3,7 @@
 
 use serde_json::json;
 
-use super::{call, call_err, names, started};
+use super::{call, call_err, started, symbol_rows};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn index_rescan_of_a_directory_rescans_and_prunes_the_files_under_it() {
@@ -22,11 +22,15 @@ async fn index_rescan_of_a_directory_rescans_and_prunes_the_files_under_it() {
     assert_eq!(report["removed"], 1, "{report}");
 
     let found = call(&client, "code_symbols", json!({ "name": "added_after_scan" })).await;
-    assert_eq!(names(&found["results"]), ["added_after_scan"], "{found}");
+    assert_eq!(
+        symbol_rows(&found),
+        ["src/outline.rs:23: pub fn added_after_scan() -> u32"],
+        "{found}"
+    );
     let fresh = call(&client, "code_outline", json!({ "path": "src/outline.rs" })).await;
     assert!(fresh.get("stale").is_none(), "{fresh}");
     let gone = call(&client, "code_symbols", json!({ "name": "first" })).await;
-    assert_eq!(gone["total"], 0, "src/callers.rs left the index: {gone}");
+    assert_eq!(gone["results"], json!([]), "src/callers.rs left the index: {gone}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

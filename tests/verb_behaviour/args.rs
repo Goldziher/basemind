@@ -11,7 +11,7 @@ async fn stringified_integers_and_booleans_are_coerced() {
     let (_dir, client) = started().await;
 
     let limited = call(&client, "code_symbols", json!({ "name": "file_outline", "limit": "1" })).await;
-    assert_eq!(limited["results"].as_array().map(Vec::len), Some(1), "{limited}");
+    assert_eq!(super::symbol_rows(&limited).len(), 1, "{limited}");
     assert!(limited["next_cursor"].is_string(), "{limited}");
 
     let with_context = call(
@@ -73,7 +73,8 @@ async fn null_is_accepted_for_an_optional_field() {
         json!({ "name": "file_outline", "kind": null, "limit": null, "cursor": null }),
     )
     .await;
-    assert_eq!(body["total"], 3, "{body}");
+    assert_eq!(super::symbol_rows(&body).len(), 3, "{body}");
+    assert!(body.get("total").is_none(), "no `next_cursor`, so no count: {body}");
 
     let required = call_err(&client, "code_symbols", json!({ "name": null })).await;
     assert!(required.contains("`name` is required"), "{required}");
