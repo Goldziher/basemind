@@ -153,6 +153,7 @@ pub(crate) fn finish_page(
     filter: Option<ResolutionFilter>,
     name: &str,
     max_tokens: Option<u32>,
+    ranges: bool,
 ) -> FinishedPage {
     let before: Vec<Resolution> = page.hits.iter().map(|hit| hit.resolution).collect();
     // Index into `before` of each row the filter keeps, in scan order.
@@ -170,7 +171,7 @@ pub(crate) fn finish_page(
     for hit in &mut page.hits {
         hit.elide_resolution = Some(hit.resolution) == provisional;
     }
-    let mut budgeted = budget_call_page(page, name, max_tokens);
+    let mut budgeted = budget_call_page(page, name, max_tokens, ranges);
     let default = most_common(budgeted.hits.iter().map(|hit| hit.resolution));
     for hit in &mut budgeted.hits {
         hit.elide_resolution = Some(hit.resolution) == default;

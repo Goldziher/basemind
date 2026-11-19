@@ -1407,6 +1407,24 @@ async fn mcp_server_exercises_representative_tools() {
         "{read}"
     );
 
+    for args in [
+        json!({ "name": "alpha", "ranges": true }),
+        json!({ "name": "alpha", "path": "a.rs", "ranges": true }),
+    ] {
+        let refs = decode_text(
+            &service
+                .call_tool(call_params("code_refs", args.clone()))
+                .await
+                .expect("code_refs(ranges)"),
+        );
+        assert_eq!(
+            refs.pointer("/hits/c.rs"),
+            Some(&json!({ "ranges": [[1, 2]], "hits": 3 })),
+            "the three call sites on line 2 of c.rs are one read range: {args} -> {refs}"
+        );
+        assert_eq!(refs["total"], 3, "{refs}");
+    }
+
     let _ = service.cancel().await;
 }
 
@@ -3010,6 +3028,17 @@ async fn code_and_index_tools_reject_inexact_arguments() {
         "the filter applies to call sites only: {message}"
     );
 
+    for args in [
+        json!({ "name": "Drawable", "relation": "implementations", "ranges": true }),
+        json!({ "name": "alpha", "relation": "importers", "changed": "HEAD" }),
+    ] {
+        let message = refused(&service, "code_refs", args.clone()).await;
+        assert!(
+            message.contains("`changed` and `ranges` apply to call sites") && message.contains("accepted shapes:"),
+            "{args}: {message}"
+        );
+    }
+
     let message = refused(&service, "index_status", json!({ "mode": "status" })).await;
     assert!(
         message.contains("`index_status`: unknown field `mode`") && message.contains("Accepted fields: none"),
@@ -3408,6 +3437,30 @@ async fn changed_scopes_queries_to_the_files_a_change_touched() {
         "no `changed`, no `scope_files`: {body}"
     );
 
+    let body = call("code_refs", json!({ "name": "alpha", "changed": "HEAD" })).await;
+    assert_eq!(grep_files(&body), ["c.rs", "f.rs"], "{body}");
+    assert_eq!(
+        (body["total"].clone(), body["scope_files"].clone()),
+        (json!(2), json!(2)),
+        "{body}"
+    );
+    let body = call(
+        "code_refs",
+        json!({ "name": "alpha", "path": "a.rs", "changed": "HEAD~1..HEAD" }),
+    )
+    .await;
+    assert_eq!(
+        (body["total"].clone(), body["scope_files"].clone()),
+        (json!(0), json!(1)),
+        "the change touched only the definition's file, which calls nothing: {body}"
+    );
+    let body = call("code_refs", json!({ "name": "alpha", "path": "a.rs" })).await;
+    assert!(body.get("scope_files").is_none(), "{body}");
+    assert!(
+        grep_files(&body).contains(&"c.rs".to_string()),
+        "unscoped callers still list every file: {body}"
+    );
+
     let body = call("code_symbols", json!({ "name": "zed", "changed": "HEAD" })).await;
     let paths: Vec<&str> = body["results"]
         .as_array()
@@ -3504,5 +3557,122 @@ async fn changed_with_importers_is_refused_without_a_resolver() {
     let service = spawn_serve(root).await;
     let message = refused(&service, "find_files", json!({ "changed": "HEAD+importers" })).await;
     assert!(message.contains("`+importers` needs import resolution"), "{message}");
+    service.cancel().await.expect("shut down");
+}
+
+/// #126: HTTP calls with literal URLs are linked to the routes they reach by method and normalized
+/// path (ADR-0048). A route's callers are graded `path_match`, `ambiguous` when two services expose
+/// the path; a client call's `definition` is its route, or the tied routes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_refs_links_http_calls_to_routes_by_path() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("server.rs"),
+        b"pub fn app() -> Router {\n    Router::new()\n        .route(\"/users/{id}\", get(show_user))\n        \
+          .route(\"/orders\", post(create_order))\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("billing.rs"),
+        b"pub fn app() -> Router {\n    Router::new().route(\"/orders\", post(bill))\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("client.rs"),
+        b"pub async fn call(client: &reqwest::Client) {\n    \
+          reqwest::get(\"https://api.example.com/users/42\").await;\n    \
+          client.post(\"https://api.example.com/api/orders\").send().await;\n}\n",
+    )
+    .unwrap();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+    let call = |args: Value| {
+        let service = &service;
+        async move {
+            let result = service
+                .call_tool(call_params("code_refs", args.clone()))
+                .await
+                .unwrap_or_else(|error| panic!("{args}: {error}"));
+            assert_ne!(result.is_error, Some(true), "{args}: {result:?}");
+            decode_text(&result)
+        }
+    };
+
+    let users = call(json!({ "name": "GET /users/{id}" })).await;
+    assert_eq!(users["resolution_default"], "path_match", "{users}");
+    assert_eq!(
+        users["hits"],
+        json!({ "client.rs": [{ "line": 2, "callee": "GET /users/42" }] }),
+        "{users}"
+    );
+    let orders = call(json!({ "name": "POST /orders", "path": "server.rs", "line": 4 })).await;
+    assert_eq!(orders["definition"]["kind"], "route", "{orders}");
+    assert_eq!(
+        orders["hits"],
+        json!({ "client.rs": [{ "line": 3, "callee": "POST /api/orders", "ambiguous": true }] }),
+        "a suffix match that two services' routes tie on: {orders}"
+    );
+
+    let definition = call(json!({
+        "name": "GET /users/42", "relation": "definition", "path": "client.rs", "line": 2
+    }))
+    .await;
+    assert_eq!(
+        (
+            definition["resolution"].clone(),
+            definition["definition"]["path"].clone(),
+            definition["definition"]["line"].clone(),
+            definition["definition"]["name"].clone(),
+        ),
+        (
+            json!("path_match"),
+            json!("server.rs"),
+            json!(3),
+            json!("GET /users/:param")
+        ),
+        "{definition}"
+    );
+    let tied = call(json!({
+        "name": "POST /api/orders", "relation": "definition", "path": "client.rs", "line": 3
+    }))
+    .await;
+    assert!(tied.get("definition").is_none(), "{tied}");
+    let tied_paths: Vec<&str> = tied["ambiguous"]
+        .as_array()
+        .expect("the tied routes")
+        .iter()
+        .map(|route| route["path"].as_str().expect("a path"))
+        .collect();
+    assert_eq!(tied_paths, ["billing.rs", "server.rs"], "{tied}");
+
+    let message = refused(
+        &service,
+        "code_refs",
+        json!({ "name": "GET /users/7", "relation": "definition", "path": "client.rs", "line": 2 }),
+    )
+    .await;
+    assert!(
+        message.contains("is `GET /users/42`, not `GET /users/7`"),
+        "the call on the line is named: {message}"
+    );
+    let message = refused(
+        &service,
+        "code_refs",
+        json!({ "name": "GET /users/42", "relation": "definition", "path": "client.rs", "line": 1 }),
+    )
+    .await;
+    assert!(
+        message.contains("no HTTP call with a literal URL on line 1"),
+        "{message}"
+    );
+    let message = refused(
+        &service,
+        "code_refs",
+        json!({ "name": "GET /users/42", "relation": "definition", "path": "client.rs", "line": 2, "column": 5 }),
+    )
+    .await;
+    assert!(message.contains("drop `column`"), "{message}");
     service.cancel().await.expect("shut down");
 }

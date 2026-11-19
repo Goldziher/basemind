@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:78617e4acabd9f3e34e93a0b9dedb1b366df3d663ac053693928fac268589f31
-Source-Hash: blake3:8eae7d45979b1a1e9f665057714de14acca426bd066bbb0634e37832591b687f
+Content-Hash: blake3:3a75b7506271d4cecb9a6e64cb2ab4bd54577453e57d1e5480d93ab12e455154
+Source-Hash: blake3:8cd5c10f2fdff8441678d5c446180c8a0ddb1cc4537eb3570350f03f5c3ea14d
 Schema-Version: v1
 -->
 
@@ -141,6 +141,7 @@ Each call site carries `resolution`, one of:
 | `elsewhere` | Checked against the definition pinned with `path`, and binds to another one. |
 | `name_only` | No resolution facts for the site: matched by name alone. |
 | `external` | No resolution facts, and the index defines no symbol of the name. |
+| `path_match` | An HTTP call linked to a route by its method and normalized path. |
 
 A page names its most common grade once as `resolution_default`, and a row leaves its own out when
 it is that one; a page with no `resolution_default` is all `name_only`. `resolution_counts` gives
@@ -161,6 +162,19 @@ the rows per grade, before any filter.
   across files through imports; every other language gets tree-sitter scope binding.
 - **From a reference to its definition.** `relation: "definition"` returns the definition the
   reference at `path` / `line` binds to, or a `resolution_note` when there is none.
+- **HTTP routes.** A route is a `route` symbol named `METHOD /path`, parameters written `:param`;
+  a call with a literal URL is a call site of the same shape. The callers of a route (its name, or
+  `path` pinning it) are the calls it matches best, graded `path_match`: the methods agree (a route
+  of `ANY` takes every method) and the paths match segment for segment, else one is a suffix of the
+  other (a client base URL, or a router mounted in another file). A match through a literal segment
+  beats one through parameters and wildcards alone (a catch-all such as `GET /*` never takes a call
+  from the route naming its path), an exact match a suffix, a longer suffix a shorter one, and a
+  literal segment a parameter. A call that several routes match equally well carries `ambiguous`:
+  two services may expose the path. The callers of a handler (`path` pinning it) add the routes
+  naming it and their calls, `ambiguous` for a route in another file when more than one file
+  defines the name. `relation: "definition"` on a call returns its route with
+  `resolution: "path_match"`, or the tied routes under `ambiguous` and no `definition`. URLs built
+  from variables are out of reach.
 <!-- /manual:resolution -->
 
 ## Paging and budgets

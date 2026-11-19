@@ -14,13 +14,13 @@ use crate::path::RelPath;
 pub struct CodeOutlineParams {
     /// Repo-relative file path.
     pub path: RelPath,
-    /// Max symbols (default 500).
+    /// Default 500.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
+    /// A prior `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Token budget (default 6000).
+    /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
 }
@@ -287,19 +287,19 @@ pub(crate) enum CodeReadResult {
 pub struct CodeSymbolsParams {
     /// Symbol name or fragment (case-sensitive).
     pub name: String,
-    /// function, method, struct, enum, class, interface, trait, type, const, module, macro.
+    /// function, method, struct, enum, class, interface, trait, type, const, module, macro, route.
     #[serde(default)]
     pub kind: Option<String>,
     /// Also match the name as a fuzzy subsequence, ranked last.
     #[serde(default)]
     pub fuzzy: Option<bool>,
-    /// Max hits (default 100).
+    /// Default 100.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
+    /// A prior `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Token budget (default 6000).
+    /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.

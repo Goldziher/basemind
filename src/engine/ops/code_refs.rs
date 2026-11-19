@@ -13,10 +13,11 @@ use crate::engine::refs::graph::{GraphPage, run_cycles, run_graph_importers};
 use crate::engine::refs::impls::run_find_implementations;
 use crate::engine::refs::intel::run_goto_definition;
 use crate::engine::refs::matching::Matching;
+use crate::engine::refs::routes::{Endpoint, run_route_definition};
 use crate::engine::stale::flag_listed;
 use crate::engine::types::refs::{
     CodeRefsParams, CodeRefsResult, DependentsResponse, FindCallersParams, FindCallersResponse,
-    FindImplementationsParams, FindReferencesParams, GotoDefinitionParams, ResolutionFilter,
+    FindImplementationsParams, FindReferencesParams, GotoDefinitionParams, RefHits, ResolutionFilter,
 };
 use crate::engine::workspace::Workspace;
 
@@ -61,7 +62,9 @@ const REFS_SHAPES: &str = "accepted shapes: {name} (call sites of a name), {name
      that file; add `line` when several there share the name), {name, relation:\"implementations\"}, \
      {name, relation:\"importers\"} (files whose imports name it), {path, relation:\"importers\", depth?} (files \
      importing that file, `depth` hops deep), {name, relation:\"definition\", path, line} (the definition a \
-     reference binds to), {relation:\"cycles\", path?} (import cycles, or the one holding that file)";
+     reference binds to), {relation:\"cycles\", path?} (import cycles, or the one holding that file); a \
+     `METHOD /path` name is a route: its callers are the HTTP calls matching it, its `definition` the route an \
+     HTTP call on `line` reaches";
 
 impl Workspace {
     /// `code_refs`: usages of a name: call sites, implementations, importers, or the definition a
@@ -95,6 +98,11 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
     if relation != Relation::Callers && p.resolution.is_some() {
         return Err(shape_error(
             "`resolution` filters call sites and applies only to relation `callers`",
+        ));
+    }
+    if relation != Relation::Callers && (p.changed.is_some() || p.ranges == Some(true)) {
+        return Err(shape_error(
+            "`changed` and `ranges` apply to call sites, relation `callers`, only",
         ));
     }
     let resolution = p
@@ -132,43 +140,25 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
         return Err(shape_error(&format!("relation `{}` needs `name`", relation.as_str())));
     };
     match relation {
-        Relation::Callers => match p.path {
-            Some(path) => {
-                let callers = FindCallersParams {
-                    path,
-                    name,
-                    substring,
-                    kind: None,
-                    line: p.line,
-                    limit: p.limit,
-                    max_tokens: budget(p.max_tokens),
-                    cursor: p.cursor,
-                    resolution,
-                };
-                run_callers(ws, callers).map(CodeRefsResult::Callers)
-            }
-            None => {
-                ws.wait_map_ready();
-                let idx = index_for_refs(&ws.store_read())?;
-                let cache = ws.cache.load_full();
-                run_find_references(
-                    &*idx,
-                    IndexedFiles::of(ws),
-                    &cache,
-                    FindReferencesParams {
-                        name,
-                        substring,
-                        limit: p.limit,
-                        max_tokens: budget(p.max_tokens),
-                        cursor: p.cursor,
-                        resolution,
-                    },
-                    || ws.lifecycle_notice(),
-                    |hits| flag_listed(ws, &cache, hits),
-                )
-                .map(CodeRefsResult::References)
-            }
-        },
+        Relation::Callers => {
+            // Resolved before the map cache or the store lock is taken: `+importers` builds the
+            // import graph under the store read lock.
+            let scope = crate::engine::changed::resolve(ws, "code_refs", p.changed.as_deref())?;
+            let scope_files = scope.as_ref().map(|scope| scope.len());
+            let ranges = p.ranges.unwrap_or(false);
+            let call_sites = CallSites {
+                name,
+                path: p.path,
+                line: p.line,
+                substring,
+                limit: p.limit,
+                cursor: p.cursor,
+                max_tokens: budget(p.max_tokens),
+                resolution,
+                scope,
+            };
+            run_call_sites(ws, call_sites, scope_files, ranges)
+        }
         Relation::Implementations => {
             if p.path.is_some() {
                 return Err(shape_error("`path` does not apply to relation `implementations`"));
@@ -212,6 +202,14 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
                      `max_tokens`",
                 ));
             }
+            if let Some(call) = Endpoint::parse(&name) {
+                if p.column.is_some() {
+                    return Err(shape_error(
+                        "an HTTP call (`METHOD /path` name) is picked by `line` and `name`; drop `column`",
+                    ));
+                }
+                return run_route_definition(ws, path, line, &call).map(CodeRefsResult::Definition);
+            }
             let column = match p.column {
                 Some(0) => return Err(shape_error("`column` is 1-based")),
                 Some(column) => Some(column - 1),
@@ -229,6 +227,90 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
     }
 }
 
+/// The arguments of relation `callers`: the call sites of a name, or with `path` the callers of the
+/// definition there.
+struct CallSites {
+    name: String,
+    path: Option<crate::path::RelPath>,
+    line: Option<u32>,
+    substring: bool,
+    limit: Option<u32>,
+    cursor: Option<Cursor>,
+    max_tokens: Option<u32>,
+    resolution: Option<ResolutionFilter>,
+    scope: Option<crate::engine::scope::ChangeScope>,
+}
+
+/// Relation `callers`, with the `changed` scope's size and, with `ranges`, the call sites merged
+/// into read ranges per file.
+fn run_call_sites(
+    ws: &Workspace,
+    p: CallSites,
+    scope_files: Option<usize>,
+    ranges: bool,
+) -> Result<CodeRefsResult, EngineError> {
+    let mut answer = match p.path {
+        Some(path) => {
+            let callers = FindCallersParams {
+                path,
+                name: p.name,
+                substring: p.substring,
+                kind: None,
+                line: p.line,
+                limit: p.limit,
+                max_tokens: p.max_tokens,
+                cursor: p.cursor,
+                resolution: p.resolution,
+                scope: p.scope,
+                ranges,
+            };
+            CodeRefsResult::Callers(run_callers(ws, callers)?)
+        }
+        None => {
+            ws.wait_map_ready();
+            let idx = index_for_refs(&ws.store_read())?;
+            let cache = ws.cache.load_full();
+            let references = run_find_references(
+                &*idx,
+                IndexedFiles::of(ws),
+                &cache,
+                FindReferencesParams {
+                    name: p.name,
+                    substring: p.substring,
+                    limit: p.limit,
+                    max_tokens: p.max_tokens,
+                    cursor: p.cursor,
+                    resolution: p.resolution,
+                    scope: p.scope,
+                    ranges,
+                },
+                || ws.lifecycle_notice(),
+                |hits| flag_listed(ws, &cache, hits),
+            )?;
+            CodeRefsResult::References(references)
+        }
+    };
+    let (hits, scope_files_field, omitted) = match &mut answer {
+        CodeRefsResult::Callers(callers) => (&mut callers.hits, &mut callers.scope_files, &mut callers.omitted),
+        CodeRefsResult::References(references) => (
+            &mut references.hits,
+            &mut references.scope_files,
+            &mut references.omitted,
+        ),
+        _ => unreachable!("relation `callers` answers call sites"),
+    };
+    *scope_files_field = scope_files;
+    if ranges {
+        let cache = ws.cache.load_full();
+        let rows = std::mem::replace(hits, RefHits::Rows(Vec::new()));
+        let (merged, uncovered) =
+            rows.into_ranges(|path| cache.meta(path).map(|meta| meta.lines).filter(|lines| *lines > 0));
+        *hits = merged;
+        *omitted = (uncovered > 0).then_some(uncovered);
+    }
+    Ok(answer)
+}
+
 /// Body of the `callers` mode: the name scan and the resolved-reference join over this session's
 /// store ([`run_find_callers`]).
 fn run_callers(ws: &Workspace, params: FindCallersParams) -> Result<FindCallersResponse, EngineError> {
@@ -241,7 +323,7 @@ fn run_callers(ws: &Workspace, params: FindCallersParams) -> Result<FindCallersR
             ws.lifecycle_notice()
         })?
     };
-    flag_listed(ws, &cache, &mut callers.hits);
+    flag_listed(ws, &cache, callers.hits.rows_mut());
     Ok(callers)
 }
 

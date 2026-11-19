@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use super::LifecycleNotice;
 use crate::engine::cursor::Cursor;
+use crate::engine::ranges::FileRanges;
+use crate::engine::scope::ChangeScope;
 use crate::path::RelPath;
 
 /// Arguments of `code_refs`.
@@ -36,18 +38,24 @@ pub struct CodeRefsParams {
     #[serde(default, rename = "match")]
     #[schemars(extend("enum" = ["exact", "substring"]))]
     pub match_mode: Option<String>,
-    /// Max hits (default 100). Not with `definition`.
+    /// Default 100. Not with `definition`.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous page. Not with `definition`.
+    /// A prior `next_cursor`. Not with `definition`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Token budget (default 6000). Not with `definition`.
+    /// Default 6000. Not with `definition`.
     #[serde(default)]
     pub max_tokens: Option<u32>,
     /// `callers` only: keep rows of these resolutions, comma-separated.
     #[serde(default)]
     pub resolution: Option<String>,
+    /// `callers` only: merged ±5-line read spans per file, for `code_read`.
+    #[serde(default)]
+    pub ranges: Option<bool>,
+    /// `callers` only: files changed since rev (empty: HEAD) or in A..B; +importers adds importers.
+    #[serde(default)]
+    pub changed: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -75,6 +83,16 @@ pub struct FindReferencesParams {
     #[serde(skip)]
     #[schemars(skip)]
     pub resolution: Option<ResolutionFilter>,
+    /// The files a `changed` scope holds: call sites elsewhere are not listed. Every file when
+    /// `None`.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub scope: Option<ChangeScope>,
+    /// The page is answered as read ranges: the token budget costs each row as the span it adds,
+    /// not as the row it would have been.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub ranges: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -108,6 +126,16 @@ pub struct FindCallersParams {
     #[serde(skip)]
     #[schemars(skip)]
     pub resolution: Option<ResolutionFilter>,
+    /// The files a `changed` scope holds: call sites elsewhere are not listed. Every file when
+    /// `None`.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub scope: Option<ChangeScope>,
+    /// The page is answered as read ranges: the token budget costs each row as the span it adds,
+    /// not as the row it would have been.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub ranges: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -228,6 +256,8 @@ pub(crate) struct ReferenceHit {
     pub shared_line: bool,
     /// The file changed since it was indexed, so `line` is where the call was when it was scanned.
     pub stale: bool,
+    /// A `path_match` HTTP call that several routes match equally well (ADR-0048).
+    pub ambiguous: bool,
 }
 
 impl ReferenceHit {
@@ -271,6 +301,9 @@ impl crate::engine::by_path::Located for ReferenceHit {
         if !self.elide_resolution {
             map.serialize_entry("resolution", &self.resolution)?;
         }
+        if self.ambiguous {
+            map.serialize_entry("ambiguous", &true)?;
+        }
         if self.stale {
             map.serialize_entry("stale", &true)?;
         }
@@ -303,17 +336,20 @@ pub(crate) enum Resolution {
     NameOnly,
     /// No resolution facts for the site, and the index defines no symbol of the name.
     External,
+    /// An HTTP client call linked to a route by its method and normalized path (ADR-0048).
+    PathMatch,
 }
 
 impl Resolution {
     /// Every value, in [`Resolution`] order.
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 7] = [
         Self::SameFile,
         Self::Imported,
         Self::ScopeResolved,
         Self::Elsewhere,
         Self::NameOnly,
         Self::External,
+        Self::PathMatch,
     ];
 
     /// The value as it is written.
@@ -325,6 +361,7 @@ impl Resolution {
             Self::Elsewhere => "elsewhere",
             Self::NameOnly => "name_only",
             Self::External => "external",
+            Self::PathMatch => "path_match",
         }
     }
 
@@ -393,9 +430,17 @@ pub(crate) struct FindReferencesResponse {
     /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
-    /// The call sites under the file each is in.
-    #[serde(serialize_with = "crate::engine::by_path::serialize")]
-    pub hits: Vec<ReferenceHit>,
+    /// The call sites under the file each is in, or with `ranges` each file's read ranges.
+    #[schemars(with = "serde_json::Value")]
+    pub hits: RefHits,
+    /// Files the `changed` scope holds, when one was passed: `0` is a change that touched nothing,
+    /// told apart from a change with no call site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_files: Option<usize>,
+    /// With `ranges`: call sites on the page that no range covers, since the index holds no line
+    /// for them. Absent when every site is covered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted: Option<u32>,
     /// Opaque cursor to pass back on the next call when more results are available.
     /// Stable across rescans.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -434,9 +479,17 @@ pub(crate) struct FindCallersResponse {
     pub truncated_reason: Option<&'static str>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
-    /// The call sites under the file each is in.
-    #[serde(serialize_with = "crate::engine::by_path::serialize")]
-    pub hits: Vec<ReferenceHit>,
+    /// The call sites under the file each is in, or with `ranges` each file's read ranges.
+    #[schemars(with = "serde_json::Value")]
+    pub hits: RefHits,
+    /// Files the `changed` scope holds, when one was passed: `0` is a change that touched nothing,
+    /// told apart from a change with no call site.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_files: Option<usize>,
+    /// With `ranges`: call sites on the page that no range covers, since the index holds no line
+    /// for them. Absent when every site is covered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -482,6 +535,14 @@ pub(crate) struct GotoDefinitionResponse {
     /// `unsupported for <language>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution_note: Option<String>,
+    /// `path_match` when the reference is an HTTP call and `definition` the route its method and
+    /// path match (ADR-0048).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<Resolution>,
+    /// The routes an HTTP call matches equally well, when there are several: `definition` is then
+    /// absent, since the path alone cannot tell which service answers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ambiguous: Vec<DefinitionLocation>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -605,6 +666,59 @@ impl Serialize for ImplementationHit {
     }
 }
 
+/// The call sites of a `code_refs` page: rows under the file each is in, or with `ranges` each
+/// file's rows merged into read ranges ([`crate::engine::ranges::serialize_files`]).
+#[derive(Debug)]
+pub(crate) enum RefHits {
+    Rows(Vec<ReferenceHit>),
+    Ranges(Vec<FileRanges>),
+}
+
+impl RefHits {
+    /// The rows, or none once they are ranges.
+    pub(crate) fn rows_mut(&mut self) -> &mut [ReferenceHit] {
+        match self {
+            Self::Rows(rows) => rows,
+            Self::Ranges(_) => &mut [],
+        }
+    }
+
+    /// The rows merged into read ranges: each call site widened by
+    /// [`DEFAULT_CONTEXT`](crate::engine::ranges::DEFAULT_CONTEXT) lines, clamped to its file's
+    /// indexed length (`line_count`). A file holding a `stale` row is `stale`: its lines are where
+    /// the calls were when it was scanned. Also returns the rows no range covers (no position, or
+    /// past the file's end), which the caller reports.
+    pub(crate) fn into_ranges(self, line_count: impl Fn(&RelPath) -> Option<u32>) -> (Self, u32) {
+        let rows = match self {
+            Self::Rows(rows) => rows,
+            ranges => return (ranges, 0),
+        };
+        let stale: ahash::AHashSet<RelPath> = rows
+            .iter()
+            .filter(|row| row.stale)
+            .map(|row| row.path.clone())
+            .collect();
+        let mut merged = crate::engine::ranges::merge_hits(
+            rows.into_iter().map(|row| (row.path, row.line)),
+            line_count,
+            crate::engine::ranges::RangeOptions::default(),
+        );
+        for file in &mut merged.files {
+            file.stale = stale.contains(&file.path);
+        }
+        (Self::Ranges(merged.files), merged.out_of_file)
+    }
+}
+
+impl Serialize for RefHits {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Rows(rows) => crate::engine::by_path::serialize(rows, serializer),
+            Self::Ranges(files) => crate::engine::ranges::serialize_files(files, serializer),
+        }
+    }
+}
+
 /// Answer of `code_refs`, by relation: call sites of a name, the callers of one definition, the
 /// implementations of a trait, the importers of a module, or the definition a reference binds to.
 #[derive(Debug, Serialize)]
@@ -652,6 +766,7 @@ mod tests {
             elide_resolution: false,
             shared_line: false,
             stale: false,
+            ambiguous: false,
         };
         assert_eq!(
             serde_json::to_value(&call).unwrap(),
@@ -687,8 +802,38 @@ mod tests {
             elide_resolution: true,
             shared_line: false,
             stale: false,
+            ambiguous: false,
         };
         assert_eq!(serde_json::to_value(&call).unwrap(), json!({ "callee": "f" }));
+    }
+
+    #[test]
+    fn ranges_flag_a_stale_file_and_count_the_rows_they_cannot_place() {
+        let row = |path: &str, line: u32, stale: bool| ReferenceHit {
+            path: path.into(),
+            line,
+            column: 0,
+            callee: String::new(),
+            resolution: Resolution::NameOnly,
+            elide_resolution: true,
+            shared_line: false,
+            stale,
+            ambiguous: false,
+        };
+        let rows = RefHits::Rows(vec![
+            row("a.rs", 3, false),
+            row("b.rs", 20, true),
+            row("a.rs", 0, false),
+        ]);
+        let (ranges, uncovered) = rows.into_ranges(|_| Some(30));
+        assert_eq!(uncovered, 1, "the row with no line has no range");
+        assert_eq!(
+            serde_json::to_value(&ranges).unwrap(),
+            json!({
+                "a.rs": { "ranges": [[1, 8]], "hits": 1 },
+                "b.rs": { "ranges": [[15, 25]], "hits": 1, "stale": true }
+            })
+        );
     }
 
     #[test]

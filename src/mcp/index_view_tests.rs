@@ -194,7 +194,7 @@ async fn every_reference_read_answers_from_the_session_view() {
     let (view, log) = recording(&store);
     let view: std::sync::Arc<dyn crate::index::view::IndexView> = std::sync::Arc::new(view);
 
-    let (page, _) = scan_calls(&*view, "shared_helper", Matching::Substring, 50, None).expect("scan");
+    let (page, _) = scan_calls(&*view, "shared_helper", Matching::Substring, 50, None, None).expect("scan");
     assert_eq!(page.total, 2 * FILES as u32);
     assert_eq!(log.entries(), name_scan_reads(), "references/callers");
 

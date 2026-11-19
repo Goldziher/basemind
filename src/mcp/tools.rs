@@ -146,15 +146,16 @@ impl BasemindServer {
 
     #[tool(
         title = "Find call sites, implementations and importers",
-        description = "Use for \"what calls X\", \"what implements X\", \"what imports X\", \"which \
-        definition does this bind to\" (`relation`). Callers are call sites only, not type uses or \
-        `use` lines (`code_grep`). `match` `exact`: the name or a path ending in it; `substring`: \
-        any name holding it. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` \
-        if edited since the scan. `path` pins the definition there. Row `resolution` (omitted if \
-        `resolution_default`, else name_only): same_file, imported, scope_resolved (local binding), elsewhere \
-        (binds another definition), name_only (unchecked; see `resolution_note`), external (not \
-        defined in the index). `importers`+`path`, no `name`: its importers `by_depth`. `cycles`: \
-        import cycles (`path`: its own). \
+        description = "Use for what calls, implements or imports X, or which definition a use binds to \
+        (`relation`). Callers are call sites, not type uses or `use` lines (`code_grep`). `match` \
+        `exact`: the name or a path ending in it; `substring`: any name holding it. `hits` maps files \
+        to rows: `line`, `callee` if not `name`, `stale` if edited since. `path` pins the definition \
+        there. Row `resolution` (omitted if `resolution_default`, else name_only): \
+        same_file, imported, scope_resolved (local binding), elsewhere (binds another), name_only \
+        (unchecked: `resolution_note`), external (not indexed), path_match (HTTP call to route \
+        `name` like `GET /a/{id}`, or a pinned handler's routes and calls; literal URLs; \
+        `ambiguous`: routes tie; `definition` of a call: its route). `importers`+`path`, \
+        no `name`: its importers `by_depth`. `cycles`: import cycles (`path`: its own). \
         Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
         annotations(
             read_only_hint = true,

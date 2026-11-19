@@ -20,13 +20,13 @@ pub struct FindFilesToolParams {
     /// Language filter, e.g. `rust`, `markdown`.
     #[serde(default)]
     pub language: Option<String>,
-    /// Max files (default 200).
+    /// Default 200.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous page.
+    /// A prior `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Token budget (default 6000).
+    /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Only code files of at least this many lines, largest first.

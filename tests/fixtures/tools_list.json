@@ -30,15 +30,15 @@
           "type": "boolean"
         },
         "limit": {
-          "description": "Max hits (default 100).",
+          "description": "Default 100.",
           "type": "integer"
         },
         "cursor": {
-          "description": "`next_cursor` of the previous page.",
+          "description": "A prior `next_cursor`.",
           "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget (default 6000).",
+          "description": "Default 6000.",
           "type": "integer"
         },
         "changed": {
@@ -73,15 +73,15 @@
           "type": "string"
         },
         "limit": {
-          "description": "Max symbols (default 500).",
+          "description": "Default 500.",
           "type": "integer"
         },
         "cursor": {
-          "description": "`next_cursor` of the previous page.",
+          "description": "A prior `next_cursor`.",
           "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget (default 6000).",
+          "description": "Default 6000.",
           "type": "integer"
         }
       },
@@ -151,7 +151,7 @@
   {
     "name": "code_refs",
     "title": "Find call sites, implementations and importers",
-    "description": "Use for \"what calls X\", \"what implements X\", \"what imports X\", \"which definition does this bind to\" (`relation`). Callers are call sites only, not type uses or `use` lines (`code_grep`). `match` `exact`: the name or a path ending in it; `substring`: any name holding it. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` if edited since the scan. `path` pins the definition there. Row `resolution` (omitted if `resolution_default`, else name_only): same_file, imported, scope_resolved (local binding), elsewhere (binds another definition), name_only (unchecked; see `resolution_note`), external (not defined in the index). `importers`+`path`, no `name`: its importers `by_depth`. `cycles`: import cycles (`path`: its own). Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
+    "description": "Use for what calls, implements or imports X, or which definition a use binds to (`relation`). Callers are call sites, not type uses or `use` lines (`code_grep`). `match` `exact`: the name or a path ending in it; `substring`: any name holding it. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` if edited since. `path` pins the definition there. Row `resolution` (omitted if `resolution_default`, else name_only): same_file, imported, scope_resolved (local binding), elsewhere (binds another), name_only (unchecked: `resolution_note`), external (not indexed), path_match (HTTP call to route `name` like `GET /a/{id}`, or a pinned handler's routes and calls; literal URLs; `ambiguous`: routes tie; `definition` of a call: its route). `importers`+`path`, no `name`: its importers `by_depth`. `cycles`: import cycles (`path`: its own). Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -196,19 +196,27 @@
           ]
         },
         "limit": {
-          "description": "Max hits (default 100). Not with `definition`.",
+          "description": "Default 100. Not with `definition`.",
           "type": "integer"
         },
         "cursor": {
-          "description": "`next_cursor` of the previous page. Not with `definition`.",
+          "description": "A prior `next_cursor`. Not with `definition`.",
           "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget (default 6000). Not with `definition`.",
+          "description": "Default 6000. Not with `definition`.",
           "type": "integer"
         },
         "resolution": {
           "description": "`callers` only: keep rows of these resolutions, comma-separated.",
+          "type": "string"
+        },
+        "ranges": {
+          "description": "`callers` only: merged ±5-line read spans per file, for `code_read`.",
+          "type": "boolean"
+        },
+        "changed": {
+          "description": "`callers` only: files changed since rev (empty: HEAD) or in A..B; +importers adds importers.",
           "type": "string"
         }
       }
@@ -243,15 +251,15 @@
           ]
         },
         "limit": {
-          "description": "Max hits (default 10).",
+          "description": "Default 10.",
           "type": "integer"
         },
         "cursor": {
-          "description": "`next_cursor` of the previous page.",
+          "description": "A prior `next_cursor`.",
           "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget (default 6000).",
+          "description": "Default 6000.",
           "type": "integer"
         }
       },
@@ -282,7 +290,7 @@
           "type": "string"
         },
         "kind": {
-          "description": "function, method, struct, enum, class, interface, trait, type, const, module, macro.",
+          "description": "function, method, struct, enum, class, interface, trait, type, const, module, macro, route.",
           "type": "string"
         },
         "fuzzy": {
@@ -290,15 +298,15 @@
           "type": "boolean"
         },
         "limit": {
-          "description": "Max hits (default 100).",
+          "description": "Default 100.",
           "type": "integer"
         },
         "cursor": {
-          "description": "`next_cursor` of the previous page.",
+          "description": "A prior `next_cursor`.",
           "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget (default 6000).",
+          "description": "Default 6000.",
           "type": "integer"
         },
         "changed": {
@@ -353,15 +361,15 @@
           "type": "string"
         },
         "limit": {
-          "description": "Max hits (default 10).",
+          "description": "Default 10.",
           "type": "integer"
         },
         "cursor": {
-          "description": "`next_cursor` of the previous page.",
+          "description": "A prior `next_cursor`.",
           "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget (default 6000).",
+          "description": "Default 6000.",
           "type": "integer"
         }
       },
@@ -402,15 +410,15 @@
           "type": "string"
         },
         "limit": {
-          "description": "Max files (default 200).",
+          "description": "Default 200.",
           "type": "integer"
         },
         "cursor": {
-          "description": "`next_cursor` of the previous page.",
+          "description": "A prior `next_cursor`.",
           "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget (default 6000).",
+          "description": "Default 6000.",
           "type": "integer"
         },
         "min_lines": {
@@ -460,15 +468,15 @@
           "type": "string"
         },
         "limit": {
-          "description": "Max hunks (default 100).",
+          "description": "Default 100.",
           "type": "integer"
         },
         "cursor": {
-          "description": "`next_cursor` of the previous page.",
+          "description": "A prior `next_cursor`.",
           "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget (default 6000).",
+          "description": "Default 6000.",
           "type": "integer"
         }
       },
@@ -557,15 +565,15 @@
           "type": "string"
         },
         "limit": {
-          "description": "Max commits (default 20).",
+          "description": "Default 20.",
           "type": "integer"
         },
         "cursor": {
-          "description": "`next_cursor` of the previous page.",
+          "description": "A prior `next_cursor`.",
           "type": "string"
         },
         "max_tokens": {
-          "description": "Token budget (default 6000).",
+          "description": "Default 6000.",
           "type": "integer"
         }
       }

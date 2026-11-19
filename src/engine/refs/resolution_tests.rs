@@ -19,6 +19,7 @@ fn hit(path: &str, line: u32, resolution: Resolution) -> ReferenceHit {
         elide_resolution: false,
         shared_line: false,
         stale: false,
+        ambiguous: false,
     }
 }
 
@@ -54,6 +55,7 @@ fn a_row_equal_to_the_default_leaves_its_resolution_out() {
         None,
         "f",
         None,
+        false,
     );
     assert_eq!(mixed.default, Some(Resolution::NameOnly));
     assert_eq!(
@@ -77,11 +79,12 @@ fn a_row_equal_to_the_default_leaves_its_resolution_out() {
         None,
         "f",
         None,
+        false,
     );
     assert_eq!(uniform.default, Some(Resolution::NameOnly));
     assert!(uniform.counts.is_none(), "the default alone says it all");
 
-    let empty = finish_page(page(Vec::new()), None, "f", None);
+    let empty = finish_page(page(Vec::new()), None, "f", None, false);
     assert_eq!((empty.default, empty.counts), (None, None));
 }
 
@@ -100,6 +103,7 @@ fn the_filter_keeps_the_values_asked_for_and_counts_what_it_dropped() {
         Some(filter),
         "f",
         None,
+        false,
     );
     assert_eq!(finished.default, Some(Resolution::Imported));
     assert_eq!(
@@ -120,6 +124,7 @@ fn the_filter_keeps_the_values_asked_for_and_counts_what_it_dropped() {
         Some(filter),
         "f",
         None,
+        false,
     );
     assert!(emptied.page.hits.is_empty());
     assert_eq!(emptied.default, None);
@@ -140,7 +145,7 @@ fn counts_of_a_budgeted_page_stop_at_the_last_row_kept() {
             hit(&format!("file_{at:02}.rs"), at + 1, resolution)
         })
         .collect();
-    let finished = finish_page(page(hits), None, "f", Some(40));
+    let finished = finish_page(page(hits), None, "f", Some(40), false);
     assert!(finished.page.budgeted, "40 tokens hold only a few rows");
     let kept = finished.page.hits.len();
     assert!(kept > 0 && kept < 40, "{kept}");
@@ -151,6 +156,25 @@ fn counts_of_a_budgeted_page_stop_at_the_last_row_kept() {
         Some(crate::engine::cursor::Cursor::encode_fjall(&[kept as u8 - 1]).0),
         "the cursor resumes after the last row kept"
     );
+}
+
+/// A page answered as read ranges writes no row text, so the budget costs each hit as the span it
+/// adds: the same budget keeps every hit of one file that it cuts short as rows.
+#[test]
+fn a_ranges_page_is_budgeted_by_the_spans_it_writes() {
+    let hits = || -> Vec<ReferenceHit> {
+        (0..40u32)
+            .map(|at| ReferenceHit {
+                callee: format!("a_rather_long_qualified::callee_name_{at}"),
+                ..hit("src/one_file.rs", at + 1, Resolution::NameOnly)
+            })
+            .collect()
+    };
+    let as_rows = finish_page(page(hits()), None, "f", Some(200), false);
+    assert!(as_rows.page.budgeted, "{} rows", as_rows.page.hits.len());
+    let as_ranges = finish_page(page(hits()), None, "f", Some(200), true);
+    assert!(!as_ranges.page.budgeted);
+    assert_eq!(as_ranges.page.hits.len(), 40);
 }
 
 /// Grades against a scanned fixture: a call bound in its file to the function of that name is

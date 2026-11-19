@@ -18,6 +18,10 @@ pub(crate) struct MapCache {
     /// warm) and patched rather than rebuilt by [`with_delta`](Self::with_delta). Backs the
     /// substring sweeps of `symbols` and `dependents`.
     terms: std::sync::OnceLock<Arc<crate::engine::term_index::TermIndex>>,
+    /// Every indexed HTTP route, bucketed for `code_refs` route linking, built on first use from the
+    /// term index. Never patched: a snapshot derived by [`with_delta`](Self::with_delta) builds its
+    /// own, so each page and lookup reads the routes of the map it was answered from.
+    routes: std::sync::OnceLock<Arc<crate::engine::refs::routes::Routes>>,
     /// Every path of the document tier (markdown, config, data, PDFs ...), sorted. The code map
     /// holds code only, so decision records (`docs/adr/*.md`) and path citations to prose / config
     /// files resolve against this set instead of [`Self::files`]. Projected straight from the index
@@ -45,6 +49,7 @@ impl MapCache {
             files,
             l1,
             terms: Default::default(),
+            routes: Default::default(),
             doc_paths: doc_paths_of(store),
         }
     }
@@ -60,6 +65,7 @@ impl MapCache {
             files: l1_cache::FileIndexView::default(),
             l1: Arc::new(l1_cache::L1Cache::placeholder()),
             terms: Default::default(),
+            routes: Default::default(),
             doc_paths: Default::default(),
         }
     }
@@ -89,6 +95,7 @@ impl MapCache {
             files: l1_cache::FileIndexView::from_pairs(metas),
             l1,
             terms: Default::default(),
+            routes: Default::default(),
             doc_paths: Default::default(),
         }
     }
@@ -153,6 +160,14 @@ impl MapCache {
                 self.for_each(|path, l1| visit(path, l1));
             }))
         })
+    }
+
+    /// The route table ([`crate::engine::refs::routes::Routes`]), building it on first use.
+    pub(crate) fn routes(&self) -> Arc<crate::engine::refs::routes::Routes> {
+        Arc::clone(
+            self.routes
+                .get_or_init(|| Arc::new(crate::engine::refs::routes::Routes::of(self))),
+        )
     }
 
     /// Stream every `(path, outline)` in path order, stopping early when `f` returns `false`.
@@ -224,6 +239,7 @@ impl MapCache {
             files: self.files.with_delta(store, updated, removed),
             l1: Arc::clone(&self.l1),
             terms: Default::default(),
+            routes: Default::default(),
             doc_paths: doc_paths_of(store),
         };
         self.l1.forget_superseded(superseded, &next.files);
