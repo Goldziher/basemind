@@ -651,17 +651,49 @@ fn a_missing_root_is_reported_and_since_filters_by_day() {
     assert_eq!(report.subagents.len(), 2, "the Claude subagents of 2026-11-18");
 }
 
+/// ADR-0049 rule 5: the repository's `basemind.toml` names other transcript roots, and the command
+/// still reads only the ones under the home directory.
+#[cfg(unix)]
 #[test]
 fn a_repository_configuration_cannot_move_the_roots() {
     let env = setup();
-    std::fs::write(
-        env.repo.join("basemind.toml"),
-        "[sessions]\nclaude_projects = \"/\"\ncodex_sessions = \"/\"\n",
-    )
-    .expect("write config");
-    let report = report(&env, None);
-    assert!(report.roots.iter().all(|r| r.state == "present"));
-    assert_eq!(report.sessions.len(), 5);
+    let decoy = env.repo.join("decoy");
+    let claude = decoy.join("claude");
+    let codex = decoy.join("codex");
+    place(
+        &env,
+        &env.repo,
+        "claude/main.jsonl",
+        &claude.join(slug(&env.repo)).join("decoy-c.jsonl"),
+    );
+    place(
+        &env,
+        &env.repo,
+        "codex/subdir.jsonl",
+        &codex.join("2026/11/20/decoy-x.jsonl"),
+    );
+    let config = format!(
+        "[sessions]\nclaude_projects = \"{}\"\ncodex_sessions = \"{}\"\n",
+        claude.display(),
+        codex.display()
+    );
+    std::fs::write(env.repo.join("basemind.toml"), config).expect("write config");
+    let json: serde_json::Value = serde_json::from_str(&run_sessions(&env, true)).expect("JSON report");
+    let states: Vec<&str> = json["roots"]
+        .as_array()
+        .expect("roots")
+        .iter()
+        .filter_map(|r| r["state"].as_str())
+        .collect();
+    assert_eq!(states, vec!["present", "present"]);
+    let ids: Vec<&str> = json["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .filter_map(|s| s["id"].as_str())
+        .collect();
+    assert!(!ids.iter().any(|id| id.starts_with("decoy")), "{ids:?}");
+    assert_eq!(json["aggregate"]["sessions"], 5);
 }
 
 /// Run `basemind --root <repo> sessions [--json]` with the temporary home and fresh data and comms
