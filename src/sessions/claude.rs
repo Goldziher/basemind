@@ -118,6 +118,7 @@ impl TranscriptParser for Claude {
         let mut version_seen = false;
         let mut json_seen = false;
         let mut tokens: AHashMap<String, (u64, Vec<Family>)> = AHashMap::new();
+        let mut checkout_path: Option<std::path::PathBuf> = None;
         let mut line = String::new();
         loop {
             line.clear();
@@ -132,21 +133,29 @@ impl TranscriptParser for Claude {
                 continue;
             };
             json_seen = true;
-            if parsed.is_none()
-                && let Some(cwd) = &record.cwd
-            {
-                let Some(checkout) = scope.matching(cwd) else {
-                    return Outcome::OtherDirectory;
-                };
-                parsed = Some(Parsed {
-                    checkout: checkout.label.clone(),
-                    thread: None,
-                    parent: None,
-                    format_version: None,
-                    started: None,
-                    ended: None,
-                    tally: scope.tally_for(checkout),
-                });
+            if let Some(cwd) = &record.cwd {
+                if let Some(session) = parsed.as_mut() {
+                    // Every record carries the directory the session is in now (after a `cd`).
+                    if let Some(moved) = scope.locate(cwd)
+                        && Some(&moved.checkout.path) == checkout_path.as_ref()
+                    {
+                        session.tally.set_offset(moved.offset);
+                    }
+                } else {
+                    let Some(located) = scope.locate(cwd) else {
+                        return Outcome::OtherDirectory;
+                    };
+                    checkout_path = Some(located.checkout.path.clone());
+                    parsed = Some(Parsed {
+                        checkout: located.checkout.label.clone(),
+                        thread: None,
+                        parent: None,
+                        format_version: None,
+                        started: None,
+                        ended: None,
+                        tally: scope.tally_for(&located),
+                    });
+                }
             }
             let Some(session) = parsed.as_mut() else {
                 continue;
@@ -266,6 +275,7 @@ pub fn classify(name: &str, input: &Value) -> Call {
     if basemind_tool(name) {
         return Call {
             read: field("path").into_iter().collect(),
+            repo_relative: true,
             ..Call::of(Family::Basemind)
         };
     }

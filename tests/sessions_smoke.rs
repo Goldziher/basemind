@@ -386,6 +386,34 @@ fn subagents_are_reported_and_attributed_to_their_session() {
     );
 }
 
+fn session<'a>(report: &'a Report, id: &str) -> &'a basemind::sessions::SessionReport {
+    report
+        .sessions
+        .iter()
+        .find(|s| s.id == id)
+        .unwrap_or_else(|| panic!("session {id}"))
+}
+
+#[test]
+fn relative_paths_resolve_against_the_sessions_working_directory() {
+    let env = setup();
+    let day = env.home.join(".codex/sessions/2026/11/20");
+    place(&env, &env.repo, "codex/subdir.jsonl", &day.join("rollout-s.jsonl"));
+    let report = report(&env, None);
+    let s = session(&report, "rollout-s");
+    let repeated: Vec<(&str, u32)> = s.repeated_reads.iter().map(|r| (r.path.as_str(), r.reads)).collect();
+    assert_eq!(
+        repeated,
+        vec![("crates/core/src/lib.rs", 4)],
+        "`cat src/lib.rs` in crates/core is crates/core/src/lib.rs; basemind's `src/lib.rs` is the root one"
+    );
+    assert_eq!(
+        (s.counts.edits_without_read, s.counts.outside_paths),
+        (0, 1),
+        "`../../src/main.rs` is the src/main.rs basemind read; only the path above the checkout is outside"
+    );
+}
+
 #[test]
 fn unknown_formats_are_reported_not_skipped() {
     let env = setup();

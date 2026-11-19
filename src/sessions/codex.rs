@@ -108,9 +108,10 @@ impl TranscriptParser for Codex {
         let Some(cwd) = meta.cwd.as_deref() else {
             return unattributed("session_meta without cwd");
         };
-        let Some(checkout) = scope.matching(cwd) else {
+        let Some(located) = scope.locate(cwd) else {
             return Outcome::OtherDirectory;
         };
+        let checkout = located.checkout;
         let Some(version) = meta.cli_version.clone() else {
             return attributed("no cli_version".to_owned());
         };
@@ -125,7 +126,7 @@ impl TranscriptParser for Codex {
             format_version: Some(version),
             started: None,
             ended: None,
-            tally: scope.tally_for(checkout),
+            tally: scope.tally_for(&located),
         };
         if let Some(timestamp) = &first.timestamp {
             widen(&mut session.started, &mut session.ended, timestamp);
@@ -149,6 +150,13 @@ impl TranscriptParser for Codex {
                 widen(&mut session.started, &mut session.ended, timestamp);
             }
             if let Some(payload) = envelope.payload {
+                // A turn records the directory it ran in, which shell paths are relative to.
+                if envelope.kind.as_deref() == Some("turn_context")
+                    && let Some(moved) = payload.cwd.as_deref().and_then(|cwd| scope.locate(cwd))
+                    && moved.checkout.path == checkout.path
+                {
+                    session.tally.set_offset(moved.offset);
+                }
                 record(&mut session, envelope.kind.as_deref(), payload, &mut turn);
             }
         }
@@ -326,6 +334,7 @@ fn basemind_call(args: &dyn Fn(&str) -> Option<Arg>) -> Call {
     };
     Call {
         read: path.into_iter().collect(),
+        repo_relative: true,
         ..Call::of(Family::Basemind)
     }
 }

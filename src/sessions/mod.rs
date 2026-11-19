@@ -137,31 +137,53 @@ impl Scope {
     /// deepest checkout when one is nested in another. A `cwd` with a `..` component is matched only
     /// by what it resolves to.
     pub fn matching(&self, cwd: &str) -> Option<&Checkout> {
+        self.locate(cwd).map(|located| located.checkout)
+    }
+
+    /// [`Scope::matching`], with where `cwd` is inside that checkout.
+    pub fn locate(&self, cwd: &str) -> Option<Located<'_>> {
         let cwd = Path::new(cwd);
         let lexical = !cwd.components().any(|c| c == std::path::Component::ParentDir);
         let canonical = cwd.canonicalize().ok();
         self.checkouts
             .iter()
-            .filter(|c| {
-                let under = |base: &Path| lexical && cwd.starts_with(base);
-                under(&c.path)
-                    || c.alias.as_deref().is_some_and(under)
-                    || canonical
-                        .as_deref()
-                        .is_some_and(|resolved| resolved.starts_with(&c.path))
+            .filter_map(|c| {
+                let under = |base: &Path| {
+                    lexical
+                        .then(|| cwd.strip_prefix(base).ok())
+                        .flatten()
+                        .map(Path::to_path_buf)
+                };
+                let offset = under(&c.path)
+                    .or_else(|| c.alias.as_deref().and_then(under))
+                    .or_else(|| {
+                        canonical
+                            .as_deref()
+                            .and_then(|resolved| resolved.strip_prefix(&c.path).ok())
+                            .map(Path::to_path_buf)
+                    })?;
+                Some(Located { checkout: c, offset })
             })
-            .max_by_key(|c| c.path.components().count())
+            .max_by_key(|located| located.checkout.path.components().count())
     }
 
-    /// A tally whose paths are made relative to `checkout` first, then to every other checkout.
-    pub fn tally_for(&self, checkout: &Checkout) -> Tally {
+    /// A tally whose paths are made relative to `located`'s checkout first, then to every other
+    /// checkout; a relative path is taken from `located`'s directory.
+    pub fn tally_for(&self, located: &Located<'_>) -> Tally {
         let mut paths = Vec::new();
-        for c in std::iter::once(checkout).chain(self.checkouts.iter()) {
+        for c in std::iter::once(located.checkout).chain(self.checkouts.iter()) {
             paths.push(c.path.clone());
             paths.extend(c.alias.clone());
         }
-        Tally::new(paths)
+        Tally::new(paths, located.offset.clone())
     }
+}
+
+/// A working directory inside a checkout.
+pub struct Located<'a> {
+    pub checkout: &'a Checkout,
+    /// The directory below the checkout, empty for the checkout itself.
+    pub offset: PathBuf,
 }
 
 /// What a parser made of one transcript.

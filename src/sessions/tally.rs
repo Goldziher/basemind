@@ -59,6 +59,9 @@ pub struct Call {
     pub edited: Vec<String>,
     /// Files written whole; no prior read is expected.
     pub written: Vec<String>,
+    /// A relative path names a file from the repository root (a basemind `path` argument), not
+    /// from the session's working directory (a shell command, a host tool, a patch).
+    pub repo_relative: bool,
 }
 
 impl Call {
@@ -68,6 +71,7 @@ impl Call {
             read: Vec::new(),
             edited: Vec::new(),
             written: Vec::new(),
+            repo_relative: false,
         }
     }
 }
@@ -161,6 +165,8 @@ enum PathKey {
 /// Accumulates one session.
 pub struct Tally {
     checkouts: Vec<PathBuf>,
+    /// The session's working directory below its checkout.
+    offset: PathBuf,
     counts: Counts,
     reads: AHashMap<PathKey, u32>,
     known: AHashSet<PathKey>,
@@ -171,9 +177,11 @@ pub struct Tally {
 
 impl Tally {
     /// `checkouts` are the directories a path is made relative to: the session's own first.
-    pub fn new(checkouts: Vec<PathBuf>) -> Self {
+    /// `offset` is the working directory below it, which a relative path is taken from.
+    pub fn new(checkouts: Vec<PathBuf>, offset: PathBuf) -> Self {
         Self {
             checkouts,
+            offset,
             counts: Counts::default(),
             reads: AHashMap::new(),
             known: AHashSet::new(),
@@ -183,14 +191,20 @@ impl Tally {
         }
     }
 
+    /// The working directory moved to `offset` below the session's checkout.
+    pub fn set_offset(&mut self, offset: PathBuf) {
+        self.offset = offset;
+    }
+
     /// Record one call. `id` ties a later [`Tally::result`] to it.
     pub fn call(&mut self, id: Option<&str>, call: Call) {
         self.counts.count_family(call.family);
         if let Some(id) = id {
             self.calls.insert(id.to_owned(), call.family);
         }
+        let from_root = call.repo_relative;
         for raw in &call.read {
-            let key = self.key(raw);
+            let key = self.key(raw, from_root);
             *self.reads.entry(key.clone()).or_insert(0) += 1;
             self.known.insert(key);
         }
@@ -198,14 +212,14 @@ impl Tally {
             self.counts.writes_without_search += 1;
         }
         for raw in &call.edited {
-            let key = self.key(raw);
+            let key = self.key(raw, from_root);
             if !self.known.contains(&key) {
                 self.counts.edits_without_read += 1;
             }
             self.known.insert(key);
         }
         for raw in &call.written {
-            let key = self.key(raw);
+            let key = self.key(raw, from_root);
             self.known.insert(key);
         }
         if call.family.is_search() {
@@ -257,8 +271,13 @@ impl Tally {
         (self.counts, repeated)
     }
 
-    fn key(&mut self, raw: &str) -> PathKey {
-        let key = repo_key(&self.checkouts, raw);
+    fn key(&mut self, raw: &str, from_root: bool) -> PathKey {
+        let offset = if from_root {
+            Path::new("")
+        } else {
+            self.offset.as_path()
+        };
+        let key = repo_key(&self.checkouts, offset, raw);
         if let PathKey::Outside(path) = &key {
             self.outside.insert(path.clone());
         }
@@ -274,36 +293,48 @@ pub struct RepeatedRead {
 }
 
 /// Key `raw` against the checkouts: an absolute path under one becomes relative to it, a relative
-/// path without `..` stays as named (relative to the session's working directory), anything else is
-/// outside.
-fn repo_key(checkouts: &[PathBuf], raw: &str) -> PathKey {
+/// path is taken from `offset` below the session's checkout. `..` is resolved lexically; a path that
+/// climbs above its checkout, or is under none, is outside.
+fn repo_key(checkouts: &[PathBuf], offset: &Path, raw: &str) -> PathKey {
     let path = Path::new(raw);
     if path.is_absolute() {
         for checkout in checkouts {
             if let Ok(rel) = path.strip_prefix(checkout)
-                && let Some(clean) = clean_relative(rel)
+                && let Some(clean) = resolve(Path::new(""), rel)
             {
                 return PathKey::Repo(clean);
             }
         }
         return PathKey::Outside(raw.to_owned());
     }
-    match clean_relative(path) {
+    match resolve(offset, path) {
         Some(clean) => PathKey::Repo(clean),
-        None => PathKey::Outside(raw.to_owned()),
+        None => {
+            let base = checkouts.first().map(|c| c.join(offset)).unwrap_or_default();
+            PathKey::Outside(base.join(path).to_string_lossy().into_owned())
+        }
     }
 }
 
-fn clean_relative(path: &Path) -> Option<String> {
+/// `path` taken from the directory `base`, both below one checkout, as a forward-slash path from the
+/// checkout (`.` for the checkout itself); `None` when it climbs above the checkout.
+fn resolve(base: &Path, path: &Path) -> Option<String> {
     let mut parts: Vec<&str> = Vec::new();
-    for component in path.components() {
+    for component in base.components().chain(path.components()) {
         match component {
             Component::Normal(part) => parts.push(part.to_str()?),
             Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+            Component::ParentDir => {
+                parts.pop()?;
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
         }
     }
-    (!parts.is_empty()).then(|| parts.join("/"))
+    Some(if parts.is_empty() {
+        ".".to_owned()
+    } else {
+        parts.join("/")
+    })
 }
 
 #[cfg(test)]
@@ -311,7 +342,10 @@ mod tests {
     use super::*;
 
     fn tally() -> Tally {
-        Tally::new(vec![PathBuf::from("/repo"), PathBuf::from("/wt/feature")])
+        Tally::new(
+            vec![PathBuf::from("/repo"), PathBuf::from("/wt/feature")],
+            PathBuf::new(),
+        )
     }
 
     fn read(path: &str) -> Call {
@@ -394,5 +428,36 @@ mod tests {
                 other: 5
             }
         );
+    }
+
+    #[test]
+    fn a_relative_path_is_taken_from_the_working_directory() {
+        let mut t = Tally::new(vec![PathBuf::from("/repo")], PathBuf::from("crates/core"));
+        for path in [
+            "src/lib.rs",
+            "./src/lib.rs",
+            "../core/src/lib.rs",
+            "/repo/crates/core/src/lib.rs",
+        ] {
+            t.call(None, read(path));
+        }
+        t.call(
+            None,
+            Call {
+                repo_relative: true,
+                ..read("src/main.rs")
+            },
+        );
+        t.call(None, edit("../../src/main.rs"));
+        t.call(None, read("../../../etc/hosts"));
+        let (counts, repeated) = t.finish();
+        assert_eq!(
+            repeated,
+            vec![RepeatedRead {
+                path: "crates/core/src/lib.rs".into(),
+                reads: 4
+            }]
+        );
+        assert_eq!((counts.edits_without_read, counts.outside_paths), (0, 1));
     }
 }
