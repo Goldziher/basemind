@@ -142,6 +142,10 @@ pub enum CodeCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
+        /// Call sites only: keep rows of these resolutions, comma-separated (`same_file`,
+        /// `imported`, `scope_resolved`, `elsewhere`, `name_only`, `external`).
+        #[arg(long)]
+        resolution: Option<String>,
     },
     /// Callers of the definition of `name` in `path`. Shorthand for `refs <name> --path <path>`.
     Callers {
@@ -379,6 +383,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             limit,
             cursor,
             max_tokens,
+            resolution,
         } => {
             let refs = CodeRefsParams {
                 name,
@@ -390,6 +395,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                 limit,
                 cursor: cursor.map(Cursor),
                 max_tokens,
+                resolution,
             };
             (
                 "code_refs",
@@ -566,5 +572,6 @@ fn refs(name: String, relation: RefsRelation) -> CodeRefsParams {
         limit: None,
         cursor: None,
         max_tokens: None,
+        resolution: None,
     }
 }

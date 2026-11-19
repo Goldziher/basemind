@@ -24,6 +24,7 @@ fn goto(ws: &Workspace) -> serde_json::Value {
         limit: None,
         cursor: None,
         max_tokens: None,
+        resolution: None,
     };
     serde_json::to_value(ws.code_refs(params).expect("goto")).expect("the answer serializes")
 }
@@ -75,5 +76,5 @@ async fn a_hosted_cross_file_definition_is_refused_while_the_resolve_pass_is_uns
         unsettled["definition"]["path"], "b.ts",
         "only the import binding is served: {unsettled}"
     );
-    assert_eq!(unsettled["resolution"], SNAPSHOT_REFUSED, "{unsettled}");
+    assert_eq!(unsettled["resolution_note"], SNAPSHOT_REFUSED, "{unsettled}");
 }

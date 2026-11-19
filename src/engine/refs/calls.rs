@@ -2,10 +2,9 @@
 //! definition. Both share the same `calls_by_callee` range scan; the second resolves the
 //! definition first.
 
-use super::calls_scan::{
-    CallRef, CallScanPage, budget_call_page, calls_in_files, content_keys, mark_shared_lines, scan_calls,
-};
+use super::calls_scan::{CallRef, CallScanPage, calls_in_files, content_keys, mark_shared_lines, scan_calls};
 use super::matching::Matching;
+use super::resolution::{UseSources, classify_references, confirm_elsewhere, finish_page};
 use crate::engine::MapCache;
 use crate::engine::cursor::{Cursor, stale_cursor};
 use crate::engine::error::EngineError;
@@ -14,8 +13,8 @@ use crate::engine::freshness;
 use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use crate::engine::types::code::{kind_to_str, parse_kind};
 use crate::engine::types::refs::{
-    DefinitionView, FindCallersParams, FindCallersResponse, FindReferencesParams, FindReferencesResponse, NAME_ONLY,
-    ReferenceHit,
+    DefinitionView, FindCallersParams, FindCallersResponse, FindReferencesParams, FindReferencesResponse, ReferenceHit,
+    Resolution,
 };
 use crate::engine::types::{LifecycleNotice, SCAN_CAP};
 use crate::index::view::IndexView;
@@ -71,9 +70,13 @@ pub(crate) fn resolve_call_line_col(
     (call.start_row + 1, call.start_col)
 }
 
-/// Call sites of a name (`code_refs` without `path`): the `calls_by_callee` scan over `idx`.
+/// Call sites of a name (`code_refs` without `path`): the `calls_by_callee` scan over `idx`, each
+/// hit graded by how it resolves ([`classify_references`]) against `cache`'s outlines and the
+/// indexed bytes of `files`.
 pub(crate) fn run_find_references(
     idx: &dyn IndexView,
+    files: IndexedFiles<'_>,
+    cache: &MapCache,
     params: FindReferencesParams,
     notice: impl FnOnce() -> Option<LifecycleNotice>,
     flag_stale: impl FnOnce(&mut [ReferenceHit]),
@@ -83,19 +86,26 @@ pub(crate) fn run_find_references(
     let matching = Matching::from_substring(params.substring);
     let (mut scan, generation) = scan_calls(idx, &params.name, matching, limit, cursor_bytes.as_deref())?;
     refuse_stale(stamped, generation)?;
+    classify_references(
+        idx,
+        &mut UseSources::new(files, cache),
+        &mut scan.hits,
+        &scan.hit_starts,
+    );
     mark_shared_lines(idx, &mut scan.hits, &scan.hit_keys);
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
-    let mut budgeted = budget_call_page(scan, &params.name, params.max_tokens);
-    flag_stale(&mut budgeted.hits);
+    let mut finished = finish_page(scan, params.resolution, &params.name, params.max_tokens);
+    flag_stale(&mut finished.page.hits);
     Ok(FindReferencesResponse {
-        resolution: NAME_ONLY,
+        resolution_default: finished.default,
+        resolution_counts: finished.counts,
         total,
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(SCAN_CAP),
-        budgeted: budgeted.budgeted,
-        hits: budgeted.hits,
-        next_cursor: stamp(budgeted.next_cursor, generation),
+        budgeted: finished.page.budgeted,
+        hits: finished.page.hits,
+        next_cursor: stamp(finished.page.next_cursor, generation),
         notice: notice(),
     })
 }
@@ -106,7 +116,7 @@ pub(crate) fn run_find_references(
 ///
 /// The name-based `calls_by_callee` scan — the exact scan `find_references` runs — is ALWAYS
 /// executed and always defines `total` and `hits`. Scope/import resolution then *refines* that set:
-/// it annotates each hit with [`ReferenceHit::resolved`] and contributes `resolved_total`, and it
+/// it grades each hit's [`ReferenceHit::resolution`] and contributes `resolved_total`, and it
 /// can ADD call sites the name scan structurally cannot see (a renamed local binding —
 /// `import { f as g }` then `g()`). It can never remove one.
 ///
@@ -120,7 +130,7 @@ pub(crate) fn run_find_references(
 /// more dangerous than an error, and resolution cannot prove the negative it was being trusted for.
 ///
 /// Precision is not lost, only moved: the same-name call sites resolution *disproves* are still
-/// reported, but flagged `resolved: false`, so a caller that wants precision filters on the flag
+/// reported, but graded `elsewhere`, so a caller that wants precision filters on the grade
 /// instead of being silently handed a subset.
 ///
 /// Holds the store read guard for the call (like `goto_definition`): the resolution layer reads the
@@ -181,7 +191,7 @@ pub(crate) fn run_find_callers(
         None
     };
     let resolved_total = resolved.as_ref().map(|r| r.total);
-    let resolution = if resolved.is_some() {
+    let resolution_note = if resolved.is_some() {
         None
     } else if resolution_ran {
         Some(super::intel::NO_DEFINITION_FACTS.to_string())
@@ -192,21 +202,29 @@ pub(crate) fn run_find_callers(
         )
     };
 
-    let mut page = merge_resolved(scan, resolved, limit, cursor_bytes.as_deref());
+    let mut page = merge_resolved(scan, resolved, &params.path, limit, cursor_bytes.as_deref());
+    confirm_elsewhere(
+        idx,
+        &mut UseSources::new(files, cache),
+        &mut page.hits,
+        &page.hit_starts,
+    );
     mark_shared_lines(idx, &mut page.hits, &page.hit_keys);
     let total = page.total;
     let total_is_partial = page.total_is_partial;
-    let budgeted = budget_call_page(page, &params.name, params.max_tokens);
+    let finished = finish_page(page, params.resolution, &params.name, params.max_tokens);
     Ok(FindCallersResponse {
         definition,
-        resolution,
+        resolution_note,
+        resolution_default: finished.default,
+        resolution_counts: finished.counts,
         resolved_total,
         total,
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(SCAN_CAP),
-        budgeted: budgeted.budgeted,
-        hits: budgeted.hits,
-        next_cursor: stamp(budgeted.next_cursor, generation),
+        budgeted: finished.page.budgeted,
+        hits: finished.page.hits,
+        next_cursor: stamp(finished.page.next_cursor, generation),
         notice: notice(),
     })
 }
@@ -256,12 +274,12 @@ fn refuse_stale(stamped: Option<[u8; GENERATION_LEN]>, generation: u64) -> Resul
 /// subset of the truth whose gap resolution cannot measure. See [`run_find_callers`].
 #[derive(Default)]
 pub(crate) struct ResolvedCallers {
-    /// `path` → proven call-site start bytes. Probed per name-scan hit to set `resolved`.
+    /// `path` → proven call-site start bytes. Probed per name-scan hit to set its `resolution`.
     /// A map-of-sets rather than a set of `(RelPath, u32)` so probing borrows the hit's path
     /// instead of cloning it per hit on the scan's inner loop.
     pub(crate) sites: ahash::AHashMap<crate::path::RelPath, ahash::AHashSet<u32>>,
     /// Files holding resolved uses that were past the probe cap: nothing is known about their call
-    /// sites, so hits there stay unannotated.
+    /// sites, so hits there stay `name_only`.
     pub(crate) unprobed: ahash::AHashSet<crate::path::RelPath>,
     /// Proven call sites the name scan structurally cannot reach: the callee identifier does not
     /// contain `name`, because the local binding was renamed at the import (`import { f as g }` →
@@ -304,9 +322,9 @@ const CALL_SITE_BATCH: usize = 128;
 
 /// Build the resolved refinement for the definition `symbol` in `def_path`, whose indexed bytes
 /// are `def_source`. `None` when resolution has nothing to say about that definition (its facts do
-/// not name it, or the call sites could not be fetched): no hit is then marked either way. A
-/// definition resolution knows and found no use of yields an empty refinement, which marks every
-/// hit unproven. Cross-file uses come from the index when it is open, else the intra-file `.rref`
+/// not name it, or the call sites could not be fetched): every hit then stays `name_only`. A
+/// definition resolution knows and found no use of yields an empty refinement, which grades every
+/// hit `elsewhere` until [`confirm_elsewhere`] finds it binds to nothing. Cross-file uses come from the index when it is open, else the intra-file `.rref`
 /// blobs.
 ///
 /// Offset alignment (verified empirically, see the unit test): the resolver records `def_start` as
@@ -317,8 +335,8 @@ const CALL_SITE_BATCH: usize = 128;
 /// offset gap and disambiguates same-named definitions living in other scopes.
 ///
 /// Work is bounded by `probe_cap` use-files, mirroring the scan's `scan_cap` convention. Past the
-/// cap the refinement simply stops proving things — hits stay unannotated and the floor stays
-/// complete. Degrading toward "unproven" is always safe; degrading toward "no callers" is what this
+/// cap the refinement simply stops proving things — hits stay `name_only` and the floor stays
+/// complete. Degrading toward "unchecked" is always safe; degrading toward "no callers" is what this
 /// function exists to prevent.
 fn resolved_callers(
     store: &crate::store::Store,
@@ -418,7 +436,8 @@ fn resolved_callers(
                             line: site.line,
                             column: site.column,
                             callee: site.callee.clone(),
-                            resolved: Some(true),
+                            resolution: proven(use_path, def_path),
+                            elide_resolution: false,
                             shared_line: false,
                             stale: false,
                         },
@@ -435,8 +454,19 @@ fn resolved_callers(
     })
 }
 
-/// Fold the resolved refinement into the name-scan page: annotate each scan hit with whether
-/// resolution proved it, and merge in the aliased call sites the scan cannot see.
+/// The resolution of a call site proven to bind to a definition in `def_path`.
+fn proven(use_path: &crate::path::RelPath, def_path: &crate::path::RelPath) -> Resolution {
+    if use_path == def_path {
+        Resolution::SameFile
+    } else {
+        Resolution::Imported
+    }
+}
+
+/// Fold the resolved refinement into the name-scan page: grade each scan hit `same_file` or
+/// `imported` when resolution proved it binds to the definition in `def_path`, `elsewhere` when it
+/// did not, and `name_only` when its file lay past the probe cap; then merge in the aliased call
+/// sites the scan cannot see.
 ///
 /// The merge is by `calls_by_callee` key — the same total order the scan iterates — so the emitted
 /// page stays a contiguous prefix of one key-ordered stream and the cursor contract is unchanged:
@@ -445,6 +475,7 @@ fn resolved_callers(
 pub(crate) fn merge_resolved(
     mut page: CallScanPage,
     resolved: Option<ResolvedCallers>,
+    def_path: &crate::path::RelPath,
     limit: usize,
     cursor_after: Option<&[u8]>,
 ) -> CallScanPage {
@@ -456,8 +487,11 @@ pub(crate) fn merge_resolved(
         if resolved.unprobed.contains(&hit.path) {
             continue;
         }
-        let proven = resolved.sites.get(&hit.path).is_some_and(|s| s.contains(start));
-        hit.resolved = Some(proven);
+        hit.resolution = if resolved.sites.get(&hit.path).is_some_and(|s| s.contains(start)) {
+            proven(&hit.path, def_path)
+        } else {
+            Resolution::Elsewhere
+        };
     }
 
     if resolved.aliased.is_empty() {

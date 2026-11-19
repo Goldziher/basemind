@@ -453,14 +453,17 @@ LSP server.
 
 Resolution **refines, but never shrinks, a result set.** `code_refs` with a `path` (callers of the
 definition in that file) reports every call site whose callee is exactly that name — the same sound
-floor a `code_refs` call without `path` uses — and gives each hit it checked a `resolved` flag: `true`
-when resolution proved it binds to that definition (`resolved_total` counts them), `false` when it
-checked and could not, and no flag at all for a hit it did not check (`resolution` says why when that
-holds for the whole definition). Matching is on the whole identifier, so
+floor a `code_refs` call without `path` uses — and grades each hit with a `resolution`:
+`same_file` or `imported` when resolution proved it binds to that definition (`resolved_total` counts
+them), `elsewhere` when it binds to another one, and `name_only` for a hit nothing checked
+(`resolution_note` says why when that holds for the whole definition). Without `path` a hit is graded
+by what it binds to, and `external` when the index defines no symbol of the name. A row leaves out the
+page's `resolution_default`. Matching is on the whole identifier, so
 `open` no longer counts `open_store`; pass `match: "substring"` for the looser match. It deliberately
 does *not* return only the resolved subset: resolution cannot see through a module-object import
 (`from pkg import mod` then `mod.f()`) or an unresolvable path alias, so filtering to it would drop
-real callers and report the remainder as complete. Filter on `resolved` when you want precision; trust
+real callers and report the remainder as complete. Pass `resolution: "same_file,imported"` when you
+want precision; trust
 `total` when you need completeness.
 
 The code map is **code only**. Prose, data and config files — Markdown, reStructuredText, AsciiDoc,

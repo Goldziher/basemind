@@ -150,9 +150,10 @@ impl BasemindServer {
         definition does this bind to\" (`relation`). Callers are call sites only, not type uses or \
         `use` lines (`code_grep`). `match` `exact`: the name or a path ending in it; `substring`: \
         any name holding it. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` \
-        if edited since the scan. Without `path` hits match by name only; \
-        `path` pins the definition there and sets `resolved` true (proven), false (not proven) or \
-        absent (`resolution` says why). \
+        if edited since the scan. `path` pins the definition there. Row `resolution` (omitted if \
+        `resolution_default`, else name_only): same_file, imported, scope_resolved (local binding), elsewhere \
+        (binds another definition), name_only (unchecked; see `resolution_note`), external (not \
+        defined in the index). \
         Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
         annotations(
             read_only_hint = true,

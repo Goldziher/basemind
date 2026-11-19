@@ -200,9 +200,12 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   source of a move as `deleted` beside its destination as `renamed`, so a directory's history holds
   the commit that moved its last file out. A git-history index built by an earlier version keeps
   the old file lists for the commits it already holds.
-- **`code_refs` leaves `resolved` absent where nothing was checked.** With `path`, a hit has
-  `resolved: true` (proven to bind to the definition), `resolved: false` (checked and not proven)
-  or no `resolved` at all; `resolution` gains `no resolution facts for this definition`.
+- **`code_refs` says how each call site was resolved.** The `resolved` flag is replaced by a
+  `resolution` on every row: `same_file`, `imported`, `scope_resolved`, `elsewhere` (checked, binds
+  to another definition), `name_only` (not checked) or `external` (no indexed definition). A row
+  leaves out the page's `resolution_default`, and `resolution_counts` gives the rows per value. The
+  free-text `resolution` is now `resolution_note`, and gains `no resolution facts for this
+  definition`. Filter with `resolution`, e.g. `"same_file,imported"` for proven callers only.
 - **Ranked searches are paged from one retrieval.** `code_search` and `docs_search` cut every page
   from one retrieval of 101 hits (100 can be paged), so a reranker scores up to 101 candidates,
   and a cursor issued before a rescan is refused. The ranked list is kept for up to two minutes, so

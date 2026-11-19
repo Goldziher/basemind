@@ -78,7 +78,7 @@ pub(crate) fn run_goto_definition(
     };
 
     let (line, column) = offset_to_line_col(&source, pos);
-    let resolution = match &definition {
+    let resolution_note = match &definition {
         _ if refused => Some(SNAPSHOT_REFUSED.to_string()),
         Some(_) => None,
         None if !resolution_ran => resolution_gap(Some(&entry.language), pass_complete),
@@ -89,7 +89,7 @@ pub(crate) fn run_goto_definition(
         line,
         column: column + 1,
         definition,
-        resolution,
+        resolution_note,
     })
 }
 
@@ -112,14 +112,14 @@ pub(crate) fn resolution_gap(language: Option<&str>, pass_complete: bool) -> Opt
     }
 }
 
-/// `resolution` value for a file of a supported language that produced no resolution facts.
+/// `resolution_note` for a file of a supported language that produced no resolution facts.
 pub(crate) const NO_RESOLUTION_FACTS: &str = "no resolution facts for this file";
 
-/// `resolution` value when the file has resolution facts and none of them names the pinned
+/// `resolution_note` when the file has resolution facts and none of them names the pinned
 /// definition (nothing in the file refers to it and it is not exported).
 pub(crate) const NO_DEFINITION_FACTS: &str = "no resolution facts for this definition";
 
-/// `resolution` value when the index's resolve pass did not run to completion.
+/// `resolution_note` when the index's resolve pass did not run to completion.
 pub(crate) const RESOLUTION_NOT_RUN: &str =
     "resolution has not finished for this index; a running scan will complete it, otherwise run `index_rescan`";
 

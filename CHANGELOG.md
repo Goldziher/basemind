@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `budgeted`, `truncated_reason: "window"` and a `next_cursor` that continues past the window on
   `git_log {path, symbol}` and on `git_log` with a directory `path`. An empty page of either carries
   `unmatched` while nothing inspected so far defines the symbol or touches the directory.
-- `resolution: "no resolution facts for this definition"` on `code_refs` with `path`.
+- `resolution_note: "no resolution facts for this definition"` on `code_refs` with `path`.
 - `truncated` / `truncated_reason` on `code_search` (`stale_chunks`) and `docs_search` (`depth`,
   `liveness_depth`), and `truncated_reason` wherever `truncated` stood alone (`code_read`: `size_cap`).
 - `git_diff` with a `path` ending in `/` returns the working-tree status under that directory, with
@@ -54,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** every `code_refs` call site carries a `resolution` (#125, ADR-0047): `same_file`,
+  `imported`, `scope_resolved`, `elsewhere`, `name_only` or `external`, in place of the `resolved`
+  flag. A row leaves out the page's `resolution_default`; `resolution_counts` gives the rows per
+  value when they differ, and the `resolution` argument keeps the values asked for. The free-text
+  `resolution` on callers and on relation `definition` is now `resolution_note`.
 - `code_symbols {"name":""}` is refused, as an empty `code_grep` pattern is, instead of answering an
   empty list.
 - **BREAKING (library):** `basemind::scanner::scan`, `scan_paths` and the other public scan entries

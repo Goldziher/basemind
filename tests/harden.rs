@@ -1034,9 +1034,14 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             {
                 let resolved_total = body.get("resolved_total").and_then(Value::as_u64).unwrap_or(0);
                 // Cross-file AND proven: a hit is only evidence of precise resolution when the
-                // resolver bound it to this definition. `resolved: false` still names a real call
-                // site of this name, so counting it here would let the name-only floor alone keep
-                // the canary green after a resolution regression.
+                // resolver bound it to this definition (`imported`). Any other grade still names a
+                // real call site of this name, so counting it here would let the name-only floor
+                // alone keep the canary green after a resolution regression. A row leaves out the
+                // page's `resolution_default`, itself unwritten when it is `name_only`.
+                let default = body
+                    .get("resolution_default")
+                    .and_then(Value::as_str)
+                    .or(Some("name_only"));
                 let cross_file_hits = body
                     .get("hits")
                     .and_then(Value::as_object)
@@ -1045,7 +1050,7 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                             .iter()
                             .filter(|(path, _)| path.as_str() != "django/utils/encoding.py")
                             .flat_map(|(_, hits)| hits.as_array().into_iter().flatten())
-                            .filter(|h| h.get("resolved").and_then(Value::as_bool) == Some(true))
+                            .filter(|h| h.get("resolution").and_then(Value::as_str).or(default) == Some("imported"))
                             .count() as u64
                     })
                     .unwrap_or(0);

@@ -1,8 +1,8 @@
-//! How the resolved refinement marks the hits of a name scan.
+//! How the resolved refinement grades the hits of a name scan.
 
 use super::{ResolvedCallers, merge_resolved};
 use crate::engine::refs::calls_scan::CallScanPage;
-use crate::engine::types::refs::ReferenceHit;
+use crate::engine::types::refs::{ReferenceHit, Resolution};
 use crate::path::RelPath;
 
 fn page_of(paths: &[&str]) -> CallScanPage {
@@ -16,7 +16,8 @@ fn page_of(paths: &[&str]) -> CallScanPage {
                 line: 1,
                 column: 0,
                 callee: "f".to_string(),
-                resolved: None,
+                resolution: Resolution::NameOnly,
+                elide_resolution: false,
                 shared_line: false,
                 stale: false,
             })
@@ -28,26 +29,36 @@ fn page_of(paths: &[&str]) -> CallScanPage {
     }
 }
 
-/// A hit is proven, unproven, or in a file whose resolved uses were never probed. The last kind
-/// carries no mark: `false` there would claim a check that did not happen.
+/// A hit is proven, checked and not proven, or in a file whose resolved uses were never probed. The
+/// last stays `name_only`: `elsewhere` there would claim a check that did not happen.
 #[test]
-fn a_hit_in_a_file_past_the_probe_cap_stays_unannotated() {
+fn a_hit_in_a_file_past_the_probe_cap_stays_name_only() {
     let mut resolved = ResolvedCallers::default();
     resolved.sites.entry(RelPath::from("proven.rs")).or_default().insert(7);
+    resolved.sites.entry(RelPath::from("def.rs")).or_default().insert(7);
     resolved.unprobed.insert(RelPath::from("unprobed.rs"));
 
     let merged = merge_resolved(
-        page_of(&["other.rs", "proven.rs", "unprobed.rs"]),
+        page_of(&["def.rs", "other.rs", "proven.rs", "unprobed.rs"]),
         Some(resolved),
+        &RelPath::from("def.rs"),
         10,
         None,
     );
-    let marks: Vec<Option<bool>> = merged.hits.iter().map(|hit| hit.resolved).collect();
-    assert_eq!(marks, [Some(false), Some(true), None]);
+    let marks: Vec<Resolution> = merged.hits.iter().map(|hit| hit.resolution).collect();
+    assert_eq!(
+        marks,
+        [
+            Resolution::SameFile,
+            Resolution::Elsewhere,
+            Resolution::Imported,
+            Resolution::NameOnly
+        ]
+    );
 }
 
 #[test]
-fn without_a_refinement_no_hit_is_marked() {
-    let merged = merge_resolved(page_of(&["a.rs"]), None, 10, None);
-    assert_eq!(merged.hits[0].resolved, None);
+fn without_a_refinement_every_hit_stays_name_only() {
+    let merged = merge_resolved(page_of(&["a.rs"]), None, &RelPath::from("a.rs"), 10, None);
+    assert_eq!(merged.hits[0].resolution, Resolution::NameOnly);
 }
