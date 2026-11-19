@@ -20,6 +20,10 @@ pub struct ExplainParams {
     /// Rows per list section (default 20, at most 200).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// Symbol targets: caller hops, 1 (direct callers, the default) to 3; hops past the first
+    /// follow only call sites proven to bind (`same_file` / `imported`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<u32>,
     /// Leave the symbol's body out.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_code: bool,
@@ -39,7 +43,7 @@ pub(crate) struct ExplainDefinition {
     pub end_line: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
-    /// The doc comment directly above the definition.
+    /// The doc comment directly above the definition (attributes and decorators may sit between).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
     /// The file changed since the scan; the definition is read from the working tree.
@@ -72,6 +76,32 @@ pub(crate) struct ExplainOwner {
     pub commits: u32,
 }
 
+/// A caller found past the first hop: the call site, and the definition it calls.
+#[derive(Debug, Serialize)]
+pub(crate) struct ExplainIndirectCaller {
+    /// Hops from the briefed definition: 2 or 3.
+    pub depth: u32,
+    pub path: RelPath,
+    pub line: u32,
+    /// The definition the site calls, which (directly or through further hops) calls the briefed one.
+    pub callee: String,
+    /// That definition, as `path:line`.
+    pub callee_at: String,
+}
+
+/// The calls between a file briefing's file and one other file.
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct ExplainFileCalls {
+    pub path: RelPath,
+    /// Call sites.
+    pub calls: u32,
+    /// The part of `calls` proven to bind by resolution facts; the rest matched by name (callers of
+    /// the file's definitions, or the one file defining a callee's name).
+    pub resolved: u32,
+    /// The names called, in order of first call.
+    pub names: Vec<String>,
+}
+
 /// A section the answer cut, and the call that returns the rest of it.
 #[derive(Debug, Serialize)]
 pub(crate) struct TruncatedSection {
@@ -80,7 +110,8 @@ pub(crate) struct TruncatedSection {
     pub shown: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<usize>,
-    /// `limit` (the per-section row limit) or `budget` (the whole answer's token budget).
+    /// `limit` (the per-section row limit, or the source's own cut) or `budget` (the token budget).
+    /// Section `all` (every section dropped) names the call with the budget the whole answer needs.
     pub reason: &'static str,
     /// The tool call that continues the section, as `tool {"arg": ...}`.
     pub next: String,
@@ -96,7 +127,7 @@ pub(crate) struct ExplainResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub definition: Option<ExplainDefinition>,
     /// Symbol: other definitions of the name, as `path:line`, when it named several and one callable
-    /// was chosen.
+    /// was chosen; cut at `limit` like every list.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub also_defined: Vec<String>,
     /// Symbol: its source, when it spans at most 60 lines.
@@ -112,10 +143,15 @@ pub(crate) struct ExplainResponse {
     /// Symbol: call sites proven to bind to this definition; absent when resolution did not run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callers_resolved: Option<u64>,
-    /// Symbol: the resolution of a caller row that writes none.
+    /// Symbol: the resolution of a caller row that writes none (`name_only` when no row was resolved).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub callers_resolution_default: Option<Value>,
-    /// Symbol: names the body calls, in order of first call, without the symbol itself.
+    pub callers_resolution_default: Option<&'static str>,
+    /// Symbol, with `depth` above 1: callers of the callers over call sites proven to bind, nearest
+    /// first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indirect_callers: Option<Vec<ExplainIndirectCaller>>,
+    /// Symbol: names the body calls, in order of first call, without the symbol itself or macro
+    /// invocations (`name!`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub callees: Option<Vec<String>>,
     /// File: the file briefed, its language, lines and definitions.
@@ -136,21 +172,34 @@ pub(crate) struct ExplainResponse {
     /// The files importing the file (of the definition, for a symbol): runtime imports, one hop.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub importers: Option<Vec<RelPath>>,
-    /// File: the file's row of `git hotspots` over the last 90 days (empty `signals` when it is
-    /// no hotspot).
+    /// File: per other file, the call sites there of this file's functions, most first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calls_in: Option<Vec<ExplainFileCalls>>,
+    /// File: per other file, this file's call sites bound to a definition there, most first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calls_out: Option<Vec<ExplainFileCalls>>,
+    /// File: this file's call sites matched to no file: no binding, and a callee name defined in
+    /// several files or none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calls_out_unresolved: Option<u32>,
+    /// File: the file's row of `git hotspots` over the last 90 days, with its `rank` among `of`
+    /// hotspots (empty `signals` when it is no hotspot).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hotspot: Option<Value>,
-    /// Recent commits that changed the symbol's body, or touched the file; newest first.
+    /// The last 5 commits that changed the symbol's body, or touched the file; newest first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history: Option<Vec<ExplainCommit>>,
-    /// File: the authors of its last 20 commits, most commits first.
+    /// File: the authors of its last `owners_commits` commits, most commits first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owners: Option<Vec<ExplainOwner>>,
+    /// File: the commits `owners` counts, the file's most recent (at most 20).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owners_commits: Option<usize>,
     /// Sections cut by `limit` or the token budget, each with the call that continues it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub truncated_sections: Vec<TruncatedSection>,
     /// What a section could not see: no git repository, no import resolver for the language, a
-    /// resolution note.
+    /// resolution note, a definition skipped because its file could not be read.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

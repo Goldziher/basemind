@@ -16,12 +16,16 @@ pub struct ExplainArgs {
     /// definition holding that line.
     target: String,
     /// Sections to report, comma-separated. Symbol: body, callers, callees, importers, history.
-    /// File: outline, imports, importers, hotspot, history, owners. Default: all.
+    /// File: outline, imports, importers, calls_in, calls_out, hotspot, history, owners. Default: all.
     #[arg(long, value_delimiter = ',')]
     sections: Vec<String>,
     /// Rows per list section, 1 to 200 (default 20).
     #[arg(long)]
     limit: Option<u32>,
+    /// Symbol targets: caller hops, 1 to 3 (default 1); hops past the first follow only call
+    /// sites proven to bind to the definition.
+    #[arg(long)]
+    depth: Option<u32>,
     /// Leave the symbol's body out.
     #[arg(long)]
     no_code: bool,
@@ -35,6 +39,7 @@ pub(super) async fn call(tools: &Tools, args: ExplainArgs) -> Result<CallToolRes
         target: normalized(tools.root(), &args.target),
         sections: (!args.sections.is_empty()).then(|| args.sections.join(",")),
         limit: args.limit,
+        depth: args.depth,
         no_code: args.no_code,
         max_tokens: args.max_tokens,
     };

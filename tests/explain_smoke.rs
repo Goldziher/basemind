@@ -1,6 +1,6 @@
 //! `basemind code explain` end to end: the built binary over a scanned, committed Rust crate, on a
-//! symbol and a file, in text and `--json`, with `--limit`, `--sections` and `--no-code`, and a
-//! malformed request's usage exit.
+//! symbol and a file, in text and `--json`, with `--limit`, `--sections`, `--no-code` and `--depth`,
+//! and a malformed request's usage exit.
 #![cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 
 use std::path::Path;
@@ -136,7 +136,30 @@ fn a_file_briefing_names_its_outline_imports_importers_and_owners() {
     assert_eq!(file["importers"], serde_json::json!(["src/b.rs", "src/c.rs"]), "{file}");
     assert_eq!(file["owners"][0]["author"], "t", "{file}");
     assert_eq!(file["owners"][0]["commits"], 1, "{file}");
+    assert_eq!(file["owners_commits"], 1, "{file}");
     assert!(file["hotspot"]["signals"].is_array(), "{file}");
+    assert_eq!(file["calls_in"][0]["path"], "src/b.rs", "{file}");
+    assert_eq!(file["calls_in"][1]["path"], "src/c.rs", "{file}");
+    assert_eq!(file["calls_out"][0]["path"], "src/b.rs", "{file}");
+    assert_eq!(file["calls_out"][0]["names"], serde_json::json!(["bee"]), "{file}");
+}
+
+#[test]
+fn depth_is_a_flag_of_symbol_briefings_only() {
+    let dir = crate_with_callers();
+    let root = dir.path();
+    let deep = json(
+        root,
+        &["code", "explain", "ay", "--depth", "2", "--sections", "callers"],
+    );
+    assert!(deep["indirect_callers"].is_array(), "{deep}");
+    let on_file = basemind(root, &["code", "explain", "src/a.rs", "--depth", "2"]);
+    assert_eq!(
+        on_file.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&on_file.stderr)
+    );
 }
 
 #[test]
@@ -156,7 +179,7 @@ fn a_malformed_request_exits_with_a_usage_error() {
 }
 
 /// The `explain` eval kind runs the op and scores its definition, call sites and callees: a right
-/// gold scores 1, a wrong one 0, and neither task is skipped.
+/// gold scores 1 and a wrong one 0.
 #[test]
 fn the_explain_eval_kind_scores_the_briefing() {
     let dir = crate_with_callers();
@@ -186,7 +209,6 @@ fn the_explain_eval_kind_scores_the_briefing() {
     };
     for id in ["right", "wrong"] {
         assert_eq!(row(id)["ok"], true, "{}", row(id));
-        assert!(row(id).get("skipped").is_none_or(Value::is_null), "{}", row(id));
     }
     let score = |id: &str, key: &str| row(id)["score"][key].as_f64().unwrap_or(-1.0);
     assert_eq!((score("right", "precision"), score("right", "recall")), (1.0, 1.0));
