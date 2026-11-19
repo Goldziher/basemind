@@ -98,14 +98,14 @@ code_outline {"path":"src/mcp/tools.rs"}
 - `code_grep`: `pattern` is literal text unless `"regex":true`, and a regex anchors `^` / `$` at
   every line. `path` is a substring of the repo-relative path, never a glob; a `path` or `language`
   that no indexed code file has is an error (it names `docs_search` when only documents match).
-  `skipped_files` counts files that could not be searched. `hits` is
-  `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, grouped by the innermost enclosing symbol
-  (`""` outside every symbol); matches sharing a line are one row `"<line>:<col>,<col>: <text>"`, and
-  a clipped line (over 400 bytes, cut to a window around the match) writes its column
-  `"<line>:<col>: ..."`. `"context":N` (0-10) adds the N lines around each hit as rows
-  `"<line>- <text>"`, each written once. `stale`
-  lists files edited since they were indexed (their rows sit under `""`). `total` appears only
-  beside `next_cursor`.
+  `skipped_files` counts files that could not be searched. The answer is `key: value` lines, then
+  each file as `# <path>` and each innermost enclosing symbol as `## <symbol>` over its rows
+  `<line>: <text>` (rows before any symbol header, or under a bare `##`, are outside every
+  symbol); matches sharing a line are one row `<line>:<col>,<col>: <text>`, and a clipped line
+  (over 400 bytes, cut to a window around the match) writes its column `<line>:<col>: ...`.
+  `"context":N` (0-10) adds the N lines around each hit as rows `<line>- <text>`, each written
+  once. `stale` lists files edited since they were indexed (their rows are outside every symbol).
+  `total` appears only beside `next_cursor`.
 - `find_files` lists each file by its path alone: the code map, the documents, and every other
   file git tracks (images, fonts, data). A query no path holds as typed may be a typo: a file it
   names up to one swapped, missing, extra or wrong character comes first.
@@ -208,8 +208,17 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
   `cursor`. No tool answers a stale cursor with an empty page.
 - **Notices.** An empty or partial answer carrying a `notice` (`empty_index`, `warming_up`,
   `building_index`, `rescanning`) means "retry shortly", not "no matches".
+- **Text answers.** The text a model reads is written per tool, in the form that measured fewest
+  tokens (ADR-0053). `code_grep` writes its other fields as `key: value` lines, then each file as
+  `# <path>` and each enclosing symbol as `## <symbol>` over its rows; rows before any symbol
+  header, or under a bare `##`, are outside every symbol. `code_outline`, `git_diff` and a
+  `find_files` list are [TOON](https://toonformat.dev): `key: value` lines, and a list of objects
+  as one table, `symbols[N]{name,kind,...}:` and a comma-separated row per object, a value quoted
+  only where it would be misread. Every other tool answers in compact JSON. A header naming a path
+  or symbol that starts with `"`, has leading or trailing whitespace or holds a control character
+  is a JSON string. MCP `structuredContent` is JSON for every tool.
 - **CLI output.** Human output prints bodies and diffs in full and cuts only table cells, with a
-  note on stderr. `--json` prints the response the MCP tool returns.
+  note on stderr. `--json` prints the response as JSON, as MCP `structuredContent` carries it.
 <!-- /manual:paging -->
 
 For git history, blame and diffs see `basemind-git-history`; for document search see
