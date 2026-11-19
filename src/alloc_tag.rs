@@ -54,8 +54,31 @@ mod tests {
         Some(size.unwrap_or(0))
     }
 
+    /// Set in the child process [`retagged_heap_pages_do_not_show_up_as_ioaccelerator`] spawns.
+    const CHILD_ENV: &str = "BASEMIND_ALLOC_TAG_TEST_CHILD";
+
+    /// mimalloc reserves a 1 GiB arena under the tag set at its first allocation and serves later
+    /// blocks from it, so in a process where another test (`allocator::tests`) allocated first the
+    /// block below sits in an arena tagged 100 whatever the option says. The check therefore runs
+    /// in a fresh copy of this test binary that retags before mimalloc's first allocation, as
+    /// `main` does.
     #[test]
     fn retagged_heap_pages_do_not_show_up_as_ioaccelerator() {
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let name = "alloc_tag::tests::retagged_heap_pages_do_not_show_up_as_ioaccelerator";
+            let out = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+                .args([name, "--exact", "--nocapture", "--test-threads=1"])
+                .env(CHILD_ENV, "1")
+                .output()
+                .expect("spawn the child test");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && stdout.contains("1 passed"),
+                "the child check failed:\n{stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
         retag_heap_pages();
         assert_eq!(
             // SAFETY: reads an integer from mimalloc's option table.
