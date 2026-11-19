@@ -29,6 +29,9 @@ pub struct FindFilesToolParams {
     /// Token budget (default 6000).
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Only code files of at least this many lines, largest first.
+    #[serde(default)]
+    pub min_lines: Option<u32>,
 }
 
 /// `find_files` without a `query`: the listing's own arguments.
@@ -86,7 +89,8 @@ pub(crate) struct FilesResponse {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     /// Repo-relative paths: by descending match quality for a query (ties by path), else by path.
-    pub files: Vec<RelPath>,
+    /// With `min_lines`, rows carrying each file's size, largest first (ties by path).
+    pub files: Vec<FileHit>,
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
@@ -98,4 +102,22 @@ pub(crate) struct FilesResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
+}
+
+/// One `find_files` row: a path, or with `min_lines` the path and its size.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub(crate) enum FileHit {
+    Path(RelPath),
+    Sized(SizedFile),
+}
+
+/// A code file and its size as indexed: a `find_files` row under `min_lines`, and a row of
+/// `index_status`'s `large_files`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub(crate) struct SizedFile {
+    pub path: RelPath,
+    /// Lines as scanned: every `\n` ends one, and a final unterminated line counts.
+    pub lines: u32,
+    pub bytes: u64,
 }

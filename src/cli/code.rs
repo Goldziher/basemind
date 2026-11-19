@@ -229,6 +229,9 @@ pub enum CodeCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
+        /// Only code files of at least this many lines, largest first, with their line and byte counts.
+        #[arg(long)]
+        min_lines: Option<u32>,
     },
     /// List indexed files. Shorthand for `find` with no query.
     Files {
@@ -505,6 +508,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             limit,
             cursor,
             max_tokens,
+            min_lines,
         } => (
             "find_files",
             tools
@@ -517,6 +521,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         limit,
                         cursor: cursor.map(Cursor),
                         max_tokens,
+                        min_lines,
                     },
                     async |s, p| s.op(p, Workspace::find_files).await,
                 )
@@ -540,6 +545,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         limit,
                         cursor: cursor.map(Cursor),
                         max_tokens,
+                        min_lines: None,
                     },
                     async |s, p| s.op(p, Workspace::find_files).await,
                 )

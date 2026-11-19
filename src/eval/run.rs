@@ -31,7 +31,6 @@ pub fn unavailable(mode: EvalMode) -> Option<&'static str> {
         EvalMode::Impact => Some("not implemented: `code_refs` `importers` with `path` and `depth` (#121)"),
         EvalMode::Cycles => Some("not implemented: `code_refs` relation `cycles` (#135)"),
         EvalMode::GrepChanged => Some("not implemented: `code_grep` `changed` (#122)"),
-        EvalMode::FindLarge => Some("not implemented: `find_files` `min_lines` (#127)"),
         EvalMode::Explain => Some("not implemented: the `code explain` engine op (#120)"),
         _ => None,
     }
@@ -285,11 +284,10 @@ mod tests {
     use super::*;
     use crate::eval::task::parse_tasks;
 
-    const ANALYSIS: [EvalMode; 5] = [
+    const ANALYSIS: [EvalMode; 4] = [
         EvalMode::Impact,
         EvalMode::Cycles,
         EvalMode::GrepChanged,
-        EvalMode::FindLarge,
         EvalMode::Explain,
     ];
 
@@ -302,6 +300,7 @@ mod tests {
         assert!(unavailable(EvalMode::Grep).is_none());
         assert!(unavailable(EvalMode::ReadAround).is_none());
         assert!(unavailable(EvalMode::DiffStructural).is_none());
+        assert!(unavailable(EvalMode::FindLarge).is_none());
     }
 
     #[test]

@@ -73,6 +73,23 @@ async fn find_files_answers_byte_for_byte() {
             json!({ "limit": 999999 }),
             r#"{"total":4,"limit_clamped":true,"files":["src/callers.rs","src/outline.rs","tools.py","worker.rb"]}"#,
         ),
+        (
+            json!({ "min_lines": 7 }),
+            r#"{"total":3,"files":[{"path":"src/outline.rs","lines":21,"bytes":281},{"path":"src/callers.rs","lines":9,"bytes":182},{"path":"worker.rb","lines":7,"bytes":41}]}"#,
+        ),
+        (
+            json!({ "min_lines": 7, "query": "callers" }),
+            r#"{"total":1,"files":[{"path":"src/callers.rs","lines":9,"bytes":182}]}"#,
+        ),
+        (
+            json!({ "min_lines": 7, "language": "ruby" }),
+            r#"{"total":1,"files":[{"path":"worker.rb","lines":7,"bytes":41}]}"#,
+        ),
+        (json!({ "min_lines": 1000 }), r#"{"total":0,"files":[]}"#),
+        (
+            json!({ "min_lines": 7, "limit": 1 }),
+            r#"{"total":3,"files":[{"path":"src/outline.rs","lines":21,"bytes":281}],"next_cursor":"<cursor>"}"#,
+        ),
     ];
     let mut rows = Vec::new();
     for (arguments, expected) in cases {
@@ -87,6 +104,17 @@ async fn find_files_answers_byte_for_byte() {
         without_cursor(&rest),
         r#"{"total":2,"files":["tools.py","worker.rb"]}"#.to_string(),
     ));
+    let first: Value = serde_json::from_str(&answer(&client, json!({ "min_lines": 7, "limit": 1 })).await).unwrap();
+    let cursor = first["next_cursor"]
+        .as_str()
+        .expect("a second page by size")
+        .to_string();
+    let rest = answer(&client, json!({ "min_lines": 7, "limit": 1, "cursor": cursor })).await;
+    rows.push((
+        "find_files min_lines page 2".to_string(),
+        without_cursor(&rest),
+        r#"{"total":2,"files":[{"path":"src/callers.rs","lines":9,"bytes":182}],"next_cursor":"<cursor>"}"#.to_string(),
+    ));
     assert_all(&rows);
 }
 
@@ -97,6 +125,14 @@ async fn every_find_files_refusal_keeps_its_exact_words() {
         (
             json!({ "limit": 0 }),
             r#"`find_files`: `limit` must be at least 1; omit it for the default page size."#,
+        ),
+        (
+            json!({ "min_lines": 0 }),
+            r#"`find_files`: `min_lines` must be at least 1; omit it to list files of any size."#,
+        ),
+        (
+            json!({ "min_lines": 7, "path_prefix": "nope/" }),
+            r#"`find_files`: no indexed path starts with `nope/`. The filter is literal text, not a glob; list what is indexed with `find_files`."#,
         ),
         (
             json!({ "cursor": "not-bound" }),
