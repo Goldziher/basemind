@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.14.0'
 scope = 'all'
-tree = 'sha256:3fe6313e2012bbf88368ef98da5ba6a25f3b880da14fa1433032e2a41c09e8d1'
+tree = 'sha256:ef96ac2a3217a2d1ffecc77aea54c867afd3eb139bf95d57aa74a2da60b9602c'
 
 [[served]]
 name = 'adr-workflow'
@@ -46,7 +46,7 @@ digest = 'sha256:fbc7d452c7171e71341578b6c7a56fc2c87031c0ce15d35884bc3260e04ff68
 name = 'harden'
 source = ''
 commit = ''
-digest = 'sha256:e799ec02d769aa6adbd54efb6397fa8a5cd130cc3ff322b926452e868edd05d3'
+digest = 'sha256:d3e6762e324fae3da9e5db98a21f4e3fd50c90f2d82306f7f45d718a90db674d'
 
 [[served]]
 name = 'harness-canary-authoring'
@@ -118,13 +118,13 @@ digest = 'sha256:dabcff852805a54326738de59f6a5bd6aa77092aefbfc3f67586dd762a1fcdb
 name = 'scan'
 source = ''
 commit = ''
-digest = 'sha256:f9e25f9d9efaa6d960f3cba304e56ba40269315ca74619321d55f63683150b15'
+digest = 'sha256:23601a97e2171715333c2e7ae688eb171c603f44db778416975ba6f1c4753c77'
 
 [[served]]
 name = 'serve'
 source = ''
 commit = ''
-digest = 'sha256:c25a161c9c3df4660b0c5290faf6bab9c0f4e17651ba7e1828921183a9808b03'
+digest = 'sha256:e57681a72bedd114b57b8508511faaa3941b6022a7c8be590bd595e24636555e'
 
 [[served]]
 name = 'skill-authoring'
@@ -190,19 +190,19 @@ digest = 'sha256:c55d32001084b14f2913f346f7441d8816904eb38392d4ae674534313215d08
 kind = 'command'
 id = 'harden'
 path = 'commands/harden.md'
-digest = 'sha256:496e83d2bcece983d4f57b73f200eb714b57d078c19e8b140e818159a0f6ad81'
+digest = 'sha256:b95f02bc07dc0b5f6850c35fb6a327050bc041c880c436d161440b9c54610ea5'
 
 [[item]]
 kind = 'command'
 id = 'scan'
 path = 'commands/scan.md'
-digest = 'sha256:a57a7d0a2122ab03ff3adcb6e78c6a6af67e80b497694ae0ef64ac3d452afde3'
+digest = 'sha256:23d643dd422ff5d8f0ceb5000c2fa31007dc8a1515aff64d2ad82c673b5be1bb'
 
 [[item]]
 kind = 'command'
 id = 'serve'
 path = 'commands/serve.md'
-digest = 'sha256:f9a074aa5dc1be25cebb0bbf868273fb044e041decb823db6e28c44e19920730'
+digest = 'sha256:f9c602c11e7afc91e2e4a398c6920c7e8844dc7daac3cad7dc60b6eacfe3a98c'
 
 [[item]]
 kind = 'context'
@@ -214,25 +214,25 @@ digest = 'sha256:22d45349602ce68e3588264925ca68027d873afa6b2878b75d44055023a722b
 kind = 'context'
 id = 'crate-layout'
 path = 'context/crate-layout.md'
-digest = 'sha256:e0fa1a05ba7943a04d825bc72f106b3380d8451708f5ad7c90f2f9066ef0d5dc'
+digest = 'sha256:16293d64969ec69308d82f46c5f3f09ffbf38b47c1323d1a3c722c8b7baa01e0'
 
 [[item]]
 kind = 'context'
 id = 'harden-harness'
 path = 'context/harden-harness.md'
-digest = 'sha256:ac461e60c8bcbc32236f3042de314491ed90529dbebeb87e64680f1cac4fdf30'
+digest = 'sha256:177b668e20ba2fc87d7634bd08d7c11828384e63ce7bc0b5ef4fcde915af2e36'
 
 [[item]]
 kind = 'context'
 id = 'inverted-index'
 path = 'context/inverted-index.md'
-digest = 'sha256:ae65cee566caddb5b56a5354343b71ff87168a6e0209ba289076400c90fe374b'
+digest = 'sha256:a403f2754ff781dd8f5e8e80077ee141564fd59774194de0b4d78b15c89453c0'
 
 [[item]]
 kind = 'context'
 id = 'mcp-surface'
 path = 'context/mcp-surface.md'
-digest = 'sha256:a0b54419df6a1291b2e8170c66678d7c7d2c8dc739d9a06140d5552ebc76c703'
+digest = 'sha256:cbe89e4fd8f213f59f16665d8a1ec4633bd8c9964b923e5e5b56f1413b1be590'
 
 [[item]]
 kind = 'context'
@@ -262,7 +262,7 @@ digest = 'sha256:d43a23e2f32d56826ce1b59534711227d58024fa861745c184accb836e2c00d
 kind = 'rule'
 id = 'basemind-usage'
 path = 'rules/basemind-usage.md'
-digest = 'sha256:02a1e534676f3e971c847b45b201123141cdea39638443f9422ae8b811eb87dc'
+digest = 'sha256:12df76e675515988ac7ac7fddfd3f57155409af426680eea2fd39c14caa2a77d'
 
 [[item]]
 kind = 'rule'
@@ -286,7 +286,7 @@ digest = 'sha256:5e0ed0dee235edf9a76bdf834049ce0e50cd08cbc99ab6b986c8e06b3b68dcf
 kind = 'rule'
 id = 'release-versioning'
 path = 'rules/release-versioning.md'
-digest = 'sha256:571be06e447ab52ffc4969ab159f8b62908c5a7d9224824915268619653c531c'
+digest = 'sha256:5b73b0a46ff2314be74bbe40127ba287302331b85d38de806ca04c68a9129398'
 
 [[item]]
 kind = 'rule'

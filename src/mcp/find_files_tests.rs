@@ -204,11 +204,10 @@ async fn files_lists_documents_alongside_code() {
         .expect("files");
     let payload = json_of(&result);
     assert_eq!(paths(&payload), ["README.md"]);
-    assert_eq!(payload["total"], 1, "{payload}");
     let keys: Vec<&String> = payload.as_object().unwrap().keys().collect();
     assert_eq!(
         keys,
-        ["total", "files"],
-        "a whole listing carries nothing else: {payload}"
+        ["files"],
+        "a whole listing carries nothing else (no `total` without `next_cursor`): {payload}"
     );
 }
