@@ -11,6 +11,9 @@
 # its version goes into `run.tsv`.
 # Both cache directories must be set, exist and be empty: a run against the default cache could
 # take over a live daemon and index. RESULTS_DIR defaults to `benchmarks/eval/results`.
+# Run it from the checkout BASEMIND_BIN was built from: `run.tsv` records that checkout's commit
+# (`-dirty` with uncommitted tracked changes) as the binary's source, beside the build hash and the
+# features the binary reports, because the version string does not tell builds apart.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -69,8 +72,13 @@ done <"${here}/corpus.tsv"
 corpus="$(cd "${corpus}" && pwd -P)"
 mkdir -p "${results}"
 version="$("${bin}" --version)"
+source_commit="$(git -C "${here}" rev-parse HEAD)"
+if [ -n "$(git -C "${here}" status --porcelain --untracked-files=no)" ]; then
+  source_commit="${source_commit}-dirty"
+fi
 run_log="${results}/run.tsv"
-printf 'corpus\tcommit\ttasks\tscan_s\teval_s\tload_before\tload_after\tbinary\trg\n' >"${run_log}"
+printf 'corpus\tcommit\ttasks\tscan_s\teval_s\tload_before\tload_after\tbinary\tsource_commit\tbuild_id\tfeatures\trg\n' \
+  >"${run_log}"
 
 while IFS=$'\t' read -r name _ commit _; do
   case "${name}" in '' | '#'*) continue ;; esac
@@ -109,8 +117,14 @@ for f in map(Path, files):
     f.write_text(f.read_text().replace(corpus.rstrip("/") + "/", "$CORPUS/").replace(here + "/", "benchmarks/eval/"))
 PY
   load_after="$(uptime | sed 's/.*load averages*: *//')"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${name}" "${commit}" "$(grep -vc '^#' "${tasks}")" \
-    "$((t1 - t0))" "$((t2 - t1))" "${load_before}" "${load_after}" "${version}" "${rg_version}" >>"${run_log}"
+  build="$(python3 -c '
+import json, sys
+b = json.load(open(sys.argv[1])).get("build", {})
+print(b.get("build_id", "unknown") + "\t" + (",".join(b.get("features", [])) or "none"))
+' "${results}/${name}.report.json")"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${name}" "${commit}" "$(grep -vc '^#' "${tasks}")" \
+    "$((t1 - t0))" "$((t2 - t1))" "${load_before}" "${load_after}" "${version}" "${source_commit}" "${build}" \
+    "${rg_version}" >>"${run_log}"
   echo "${name}: scan $((t1 - t0))s, eval $((t2 - t1))s (load ${load_before} -> ${load_after})"
 done <"${here}/corpus.tsv"
 

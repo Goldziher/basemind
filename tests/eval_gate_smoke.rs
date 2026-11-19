@@ -339,4 +339,6 @@ fn a_failed_baseline_scores_recall_0_and_a_tool_error_still_runs_its_baseline() 
     let mean = refs["baseline_recall"].as_f64().unwrap();
     assert!((mean - 1.0 / 3.0).abs() < 1e-9, "two of three baselines failed: {refs}");
     assert_eq!(rep["gate"]["explain"]["job"], "reducing");
+    assert!(rep["build"]["build_id"].is_string(), "{}", rep["build"]);
+    assert!(rep["build"]["features"].is_array(), "{}", rep["build"]);
 }

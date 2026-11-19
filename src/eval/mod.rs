@@ -32,7 +32,7 @@ pub use gate::{
     GATE_MIN_CREDITED, GREP_MIN_SYMBOL_ACCURACY, GateVerdict, Job, LOCATING_MAX_RECALL_DEFICIT, LOCATING_MIN_RATIO,
     REDUCING_MIN_RATIO, job,
 };
-pub use report::{Regression, Report, TaskResult, aggregate, compare, markdown};
+pub use report::{BuildInfo, Regression, Report, TaskResult, aggregate, compare, markdown};
 pub use score::{Item, Score, score};
 pub use task::{EvalMode, Scoring, Task, parse_tasks};
 
