@@ -1059,6 +1059,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   makes `memory_search` and `code_search` unavailable, not an internal error.
 - `docs_search` no longer wipes a document store of another model or version it cannot read: it
   refuses it, and the scan that holds the store rebuilds it.
+- A git-history sync that appends commits no longer flushes and major-compacts all eight keyspaces:
+  it syncs the journal, flushes only once 8 MiB of rows sit unflushed, and merges only a small
+  keyspace holding more than one table. A one-commit append on a 2.7k-commit history went from
+  about 530 ms to 23 ms (debug build); a full rebuild still compacts every keyspace.
 
 ## [0.33.0] - 2026-11-14
 

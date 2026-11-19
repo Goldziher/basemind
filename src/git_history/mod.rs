@@ -51,6 +51,7 @@ pub mod builder;
 pub mod encoding;
 pub mod fts;
 pub mod keys;
+mod maintenance;
 pub mod proto;
 pub mod reader;
 
@@ -543,27 +544,6 @@ impl LocalDb {
         Ok(())
     }
 
-    /// Flush every keyspace's memtable to a disk segment and major-compact it. After a bulk build
-    /// the data otherwise lingers in the write-ahead journal (hundreds of MB on a deep repo); this
-    /// reclaims it into minimal, query-ready segments. One-time cost on a full rebuild; cheap on an
-    /// incremental append.
-    fn compact(&self) -> Result<(), GitHistoryError> {
-        for keyspace in [
-            &self.meta,
-            &self.commit_by_ord,
-            &self.ord_by_sha,
-            &self.path_id_by_path,
-            &self.path_by_id,
-            &self.path_to_ords,
-            &self.commit_text_by_ord,
-            &self.term_to_ords,
-        ] {
-            keyspace.rotate_memtable_and_wait()?;
-            keyspace.major_compact()?;
-        }
-        Ok(())
-    }
-
     fn meta_u32(&self, key: &[u8]) -> u32 {
         self.meta
             .get(key)
@@ -761,9 +741,11 @@ impl GitHistoryWriter {
         Ok(())
     }
 
-    /// Write the meta fingerprint + counters and flush everything. Call LAST: `last_indexed_head`
-    /// becoming visible is the commit point — a crash before this leaves the index looking unbuilt,
-    /// so the next revalidate triggers an idempotent full rebuild.
+    /// Write the meta fingerprint + counters, commit everything and sync the journal. Call LAST:
+    /// `last_indexed_head` becoming visible is the commit point — a crash before this leaves the
+    /// index looking unbuilt, so the next revalidate triggers an idempotent full rebuild. Compacts
+    /// nothing unless the write buffer or a small keyspace's tables have grown; a full rebuild
+    /// compacts afterwards.
     pub fn finish_meta(
         mut self,
         head: &[u8; 20],
@@ -782,7 +764,7 @@ impl GitHistoryWriter {
         meta.remove(&self.db.meta, keys::META_BUILD_IN_PROGRESS);
         meta.remove(&self.db.meta, keys::META_FAILED_BUILD);
         meta.commit()?;
-        self.db.compact()?;
+        self.db.settle_append(maintenance::APPEND_WRITE_BUFFER_BYTES);
         Ok(())
     }
 }
