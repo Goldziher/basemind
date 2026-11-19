@@ -265,6 +265,7 @@ pub enum CodeCmd {
 
 /// Dispatch a `code` subcommand through the in-process server.
 pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
+    let mut gate = None;
     let (tool, result) = match cmd {
         CodeCmd::Outline {
             path,
@@ -569,11 +570,15 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                 )
                 .await,
         ),
-        CodeCmd::Analysis(cmd) => analysis::call(tools, cmd).await,
+        CodeCmd::Analysis(cmd) => {
+            gate = analysis::gate(&cmd);
+            analysis::call(tools, cmd).await
+        }
     };
 
     let r = run_tool(tool, result)?;
-    emit(tool, &r, opts, out)
+    emit(tool, &r, opts, out)?;
+    gate.map_or(Ok(()), |gate| gate(&r))
 }
 
 /// A `code_refs` call for `name` with only its relation set.

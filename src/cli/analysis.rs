@@ -1,17 +1,34 @@
 //! `basemind code` analysis commands: reports with no verb tool, answered by the daemon by name
 //! through `src/mcp/cli_only.rs` (ADR-0018, ADR-0039 rule 4). [`AnalysisCmd`] is flattened into
-//! [`super::code::CodeCmd`], so each command is `basemind code <name>`; it has none yet.
+//! [`super::code::CodeCmd`], so each command is `basemind code <name>`.
 
 use clap::Subcommand;
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
+use super::analysis_migration::{self, MigrationCmd};
 use super::context::Tools;
 
 #[derive(Subcommand, Debug)]
-pub enum AnalysisCmd {}
+pub enum AnalysisCmd {
+    /// Track a migration away from old forms (`check`).
+    #[command(subcommand)]
+    Migration(MigrationCmd),
+}
+
+/// A check run on a command's result after it is printed, which may fail the process.
+pub(super) type Gate = fn(&CallToolResult) -> anyhow::Result<()>;
 
 /// Run an analysis command, returning its tool name and result for `code::run` to render.
-pub(super) async fn call(_tools: &Tools, cmd: AnalysisCmd) -> (&'static str, Result<CallToolResult, McpError>) {
-    match cmd {}
+pub(super) async fn call(tools: &Tools, cmd: AnalysisCmd) -> (&'static str, Result<CallToolResult, McpError>) {
+    match cmd {
+        AnalysisCmd::Migration(cmd) => analysis_migration::call(tools, cmd).await,
+    }
+}
+
+/// The exit check `code::run` applies after printing `cmd`'s result, if it has one.
+pub(super) fn gate(cmd: &AnalysisCmd) -> Option<Gate> {
+    match cmd {
+        AnalysisCmd::Migration(cmd) => analysis_migration::gate(cmd),
+    }
 }

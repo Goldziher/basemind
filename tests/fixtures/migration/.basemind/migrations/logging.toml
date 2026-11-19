@@ -1,0 +1,15 @@
+description = "old_log to tracing"
+
+[[rule]]
+name = "calls"
+guidance = "Call tracing::info instead"
+include = ["src/**"]
+exclude = ["src/legacy/**"]
+match = [{ call = "old_log::info" }]
+expect = [{ call = "tracing::info" }]
+
+[[rule]]
+name = "imports"
+guidance = "Import tracing"
+match = [{ import = "old_log" }]
+expect = [{ import = "tracing" }]

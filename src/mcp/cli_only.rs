@@ -10,12 +10,19 @@ use super::BasemindServer;
 use crate::engine::Workspace;
 use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams};
 use crate::engine::types::memory::MemoryDeleteParams;
+use crate::engine::types::migration::MigrationCheckParams;
 use crate::engine::types::search::GetChunkParams;
 
 /// The CLI-only commands (`git churn`, `git by-path`, `code chunk`, `memory delete`), which ADR-0018
 /// keeps off the agent surface. A CLI session ([`BasemindServer::for_cli`]) answers them by name,
 /// off `tools/list`; any other session answers them as unknown tools.
-pub(super) const CLI_ONLY: &[&str] = &["git_churn", "git_by_path", "code_chunk", "memory_delete"];
+pub(super) const CLI_ONLY: &[&str] = &[
+    "git_churn",
+    "git_by_path",
+    "code_chunk",
+    "memory_delete",
+    "code_migration_check",
+];
 
 /// `arguments` as the command's params; a mismatch is a usage error, as a verb tool's is.
 fn params<P: DeserializeOwned>(name: &str, arguments: Option<JsonObject>) -> Result<P, McpError> {
@@ -47,6 +54,10 @@ impl BasemindServer {
             },
             "memory_delete" => match params::<MemoryDeleteParams>(name, arguments) {
                 Ok(p) => self.memory_delete_call(p).await,
+                Err(error) => Err(error),
+            },
+            "code_migration_check" => match params::<MigrationCheckParams>(name, arguments) {
+                Ok(p) => self.cli_op(p, Workspace::code_migration_check).await,
                 Err(error) => Err(error),
             },
             _ => Err(McpError::invalid_params(

@@ -1202,6 +1202,7 @@ degrading to a truncated in-memory view.
 | `definition <path> <line> <name> [--column]` | Shorthand for `refs <name> --relation definition`: the definition a reference binds to. |
 | `find [query] [--path-prefix --language --min-lines]` / `files [--path-prefix --language]` | Locate a file by a fuzzy fragment of its name or path, or list indexed files (`find_files`); `--min-lines N` lists code files of at least N lines, largest first, with line and byte counts. |
 | `chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (CLI only). |
+| `migration check [name] [--fail-on-remaining --ranges]` | Remaining uses of the old forms named in `.basemind/migrations/<name>.toml`, per rule and file, with the share migrated and the progress across runs (history kept in the cache dir). `--fail-on-remaining` exits 1 for CI (CLI only). |
 
 **Git (`basemind git`)**
 

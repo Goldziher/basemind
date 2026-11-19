@@ -178,6 +178,10 @@ pub fn table() -> Vec<Row> {
             "code chunk",
             "fetches one semantic-search chunk by id; over MCP a hit's line span is read with `code_read`",
         ),
+        cli_only(
+            "code migration check",
+            "a report over repository rule files with a CI exit gate; no tool until an eval kind measures it (ADR-0047)",
+        ),
         // ---- documents and memory ----
         tool("docs_search", "memory documents"),
         tool("memory_save", "memory put"),
