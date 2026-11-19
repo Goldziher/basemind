@@ -144,6 +144,12 @@
             "eng"
           ]
         },
+        "dependencies": {
+          "enabled": false,
+          "direct_only": true,
+          "max_packages": 200,
+          "max_bytes_per_package": 2097152
+        },
         "embed_max_threads": 0
       }
     },
@@ -647,6 +653,16 @@
             ]
           }
         },
+        "dependencies": {
+          "description": "Documentation of the repository's dependencies (ADR-0049). Off by default.",
+          "$ref": "#/$defs/DependenciesConfig",
+          "default": {
+            "enabled": false,
+            "direct_only": true,
+            "max_packages": 200,
+            "max_bytes_per_package": 2097152
+          }
+        },
         "output": {
           "description": "Deprecated and ignored: the verb tools answer in JSON whatever this table says. Accepted so\nfiles that still carry a `[documents.output]` table keep loading; one with content logs a\nwarning.",
           "$ref": "#/$defs/DeprecatedSection"
@@ -884,6 +900,37 @@
         "paddle",
         "vlm"
       ]
+    },
+    "DependenciesConfig": {
+      "description": "`[documents.dependencies]`: index the README, CHANGELOG and `docs/**` of the repository's\ndependencies under `deps/<ecosystem>/<name>@<version>/<file>`, so `docs_search` can filter by\npackage with its `path` glob (ADR-0049). Ecosystems: Cargo (`Cargo.toml` + `Cargo.lock`), npm\n(`package.json`), Python (`pyproject.toml` + `uv.lock` / `poetry.lock`) and Go (`go.mod`). A\npackage root inside the repository (`node_modules/`, `.venv/`, `vendor/`) is read when this is\non; one outside it (the cargo registry, the Go module cache, `$VIRTUAL_ENV`) only under the\noperator grant `BASEMIND_ALLOW_DEPENDENCY_ROOTS`. Packages that are not installed or not granted\nare listed under `deps_unavailable` by `index_status`. The virtual paths are matched by\n`[documents] include` / `exclude` like any other document path.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch; off by default. Needs `[documents] enabled`.",
+          "type": "boolean",
+          "default": false
+        },
+        "direct_only": {
+          "description": "Index only the dependencies the manifests name directly; `false` adds every package the\nlockfiles resolve.",
+          "type": "boolean",
+          "default": true
+        },
+        "max_packages": {
+          "description": "Most packages indexed per scan; the rest are listed as unavailable (`over_max_packages`).",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "default": 200
+        },
+        "max_bytes_per_package": {
+          "description": "Most bytes of documentation read from one package: its README, then its CHANGELOG, then\n`docs/**` in path order; a file that would overrun the budget is skipped.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1024,
+          "default": 2097152
+        }
+      },
+      "additionalProperties": false
     },
     "DeprecatedSection": {
       "description": "A table that configured a removed feature. Any content is accepted and nothing is read from it,\nso a `basemind.toml` written for an older version keeps loading under the strict schema.",

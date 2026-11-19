@@ -160,6 +160,9 @@ pub struct DocumentsConfig {
     /// OCR backend selection for image / scanned-PDF inputs.
     #[serde(default)]
     pub ocr: OcrConfig,
+    /// Documentation of the repository's dependencies (ADR-0049). Off by default.
+    #[serde(default)]
+    pub dependencies: DependenciesConfig,
     /// Deprecated and ignored: the verb tools answer in JSON whatever this table says. Accepted so
     /// files that still carry a `[documents.output]` table keep loading; one with content logs a
     /// warning.
@@ -274,8 +277,62 @@ impl Default for DocumentsConfig {
             ner: NerConfig::default(),
             summarization: SummarizationConfig::default(),
             ocr: OcrConfig::default(),
+            dependencies: DependenciesConfig::default(),
             output: DeprecatedSection::default(),
             embed_max_threads: 0,
+        }
+    }
+}
+
+/// `[documents.dependencies]`: index the README, CHANGELOG and `docs/**` of the repository's
+/// dependencies under `deps/<ecosystem>/<name>@<version>/<file>`, so `docs_search` can filter by
+/// package with its `path` glob (ADR-0049). Ecosystems: Cargo (`Cargo.toml` + `Cargo.lock`), npm
+/// (`package.json`), Python (`pyproject.toml` + `uv.lock` / `poetry.lock`) and Go (`go.mod`). A
+/// package root inside the repository (`node_modules/`, `.venv/`, `vendor/`) is read when this is
+/// on; one outside it (the cargo registry, the Go module cache, `$VIRTUAL_ENV`) only under the
+/// operator grant `BASEMIND_ALLOW_DEPENDENCY_ROOTS`. Packages that are not installed or not granted
+/// are listed under `deps_unavailable` by `index_status`. The virtual paths are matched by
+/// `[documents] include` / `exclude` like any other document path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DependenciesConfig {
+    /// Master switch; off by default. Needs `[documents] enabled`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Index only the dependencies the manifests name directly; `false` adds every package the
+    /// lockfiles resolve.
+    #[serde(default = "DependenciesConfig::default_direct_only")]
+    pub direct_only: bool,
+    /// Most packages indexed per scan; the rest are listed as unavailable (`over_max_packages`).
+    #[serde(default = "DependenciesConfig::default_max_packages")]
+    #[schemars(range(min = 1))]
+    pub max_packages: usize,
+    /// Most bytes of documentation read from one package: its README, then its CHANGELOG, then
+    /// `docs/**` in path order; a file that would overrun the budget is skipped.
+    #[serde(default = "DependenciesConfig::default_max_bytes_per_package")]
+    #[schemars(range(min = 1024))]
+    pub max_bytes_per_package: u64,
+}
+
+impl DependenciesConfig {
+    fn default_direct_only() -> bool {
+        true
+    }
+    fn default_max_packages() -> usize {
+        200
+    }
+    fn default_max_bytes_per_package() -> u64 {
+        2 * 1024 * 1024
+    }
+}
+
+impl Default for DependenciesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            direct_only: Self::default_direct_only(),
+            max_packages: Self::default_max_packages(),
+            max_bytes_per_package: Self::default_max_bytes_per_package(),
         }
     }
 }

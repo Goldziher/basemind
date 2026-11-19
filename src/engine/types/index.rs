@@ -98,6 +98,11 @@ pub(crate) struct StatusResponse {
     /// submodules and for non-repo serves.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub submodules: Vec<RelPath>,
+    /// Dependencies `[documents.dependencies]` names whose documentation the last full scan did
+    /// not index, each with its reason (`not_installed`, `not_granted`, `escapes_root`,
+    /// `unsupported_source`, `no_version`, `over_max_packages`). Absent when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deps_unavailable: Vec<crate::deps_docs::DepUnavailable>,
     /// Size and modification time (`<bytes>B@<unix secs>`, or `absent`) of the workspace's
     /// `basemind.toml` on disk right now. A changed value between two calls means the file was
     /// edited; a long-lived daemon reloads it on the next request for that workspace.

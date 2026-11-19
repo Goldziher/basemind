@@ -10,9 +10,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::config::daemon::DaemonCaps;
+use crate::config::engine::DependencyHomes;
 use crate::config::engine::{ExtraRootsGrant, is_truthy};
 use crate::config::root_guard::ALLOW_ANY_ROOT_ENV;
-use crate::config::trust::ALLOW_FOLLOW_SYMLINKS_ENV;
+use crate::config::trust::{ALLOW_DEPENDENCY_ROOTS_ENV, ALLOW_FOLLOW_SYMLINKS_ENV};
 use crate::daemon_lock::{MAX_LIVE_DAEMONS_ENV, max_live_daemons_from};
 use crate::disk_space::{MIN_FREE_ENV, headroom_bytes};
 use crate::engine::{DataRoot, Engine, EngineConfig, EngineError};
@@ -34,6 +35,14 @@ pub const BLAME_MAX_BYTES_ENV: &str = "BASEMIND_BLAME_MAX_BYTES";
 pub const BLAME_MAX_LINES_ENV: &str = "BASEMIND_BLAME_MAX_LINES";
 pub const GIT_CACHE_MAX_BYTES_ENV: &str = "BASEMIND_GIT_CACHE_LOG_MAX_BYTES";
 pub const GREP_BLOOM_ENV: &str = "BASEMIND_GREP_BLOOM";
+/// Cargo's home; `~/.cargo` when unset.
+pub const CARGO_HOME_ENV: &str = "CARGO_HOME";
+/// The Go module cache; `$GOPATH/pkg/mod` when unset.
+pub const GOMODCACHE_ENV: &str = "GOMODCACHE";
+/// Go's workspace path list; its first entry holds `pkg/mod`. `~/go` when unset.
+pub const GOPATH_ENV: &str = "GOPATH";
+/// The active Python virtual environment.
+pub const VIRTUAL_ENV_ENV: &str = "VIRTUAL_ENV";
 
 /// `lookup` with `std::env::var`'s reading: a value that is not Unicode counts as unset.
 fn text(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Option<String> {
@@ -62,6 +71,10 @@ pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineCo
     if let Some(value) = text(&lookup, ALLOW_EXTRA_ROOTS_ENV) {
         config.trust.extra_roots = ExtraRootsGrant::parse(&value, ALLOW_EXTRA_ROOTS_ENV);
     }
+    if let Some(value) = text(&lookup, ALLOW_DEPENDENCY_ROOTS_ENV) {
+        config.trust.dependency_roots = ExtraRootsGrant::parse(&value, ALLOW_DEPENDENCY_ROOTS_ENV);
+    }
+    config.dependency_homes = dependency_homes(&lookup);
     if let Some(millis) = text(&lookup, PARSE_TIMEOUT_MS_ENV).and_then(|raw| raw.parse::<u64>().ok()) {
         config.parse_timeout = Duration::from_millis(millis);
     }
@@ -98,6 +111,27 @@ fn git(lookup: &impl Fn(&str) -> Option<OsString>, config: &mut EngineConfig) {
     }
     git.discover_parents = lookup(DISCOVER_PARENTS_ENV).is_some_and(|value| value != "0");
     git.history_index = text(lookup, HISTORY_INDEX_ENV).is_none_or(|value| value != "0");
+}
+
+/// The package caches `[documents.dependencies]` may read, each from its tool's own variable and
+/// else its tool's default under the home directory. A relative value is resolved once, here.
+fn dependency_homes(lookup: &impl Fn(&str) -> Option<OsString>) -> DependencyHomes {
+    let set = |name: &str| lookup(name).filter(|value| !value.is_empty());
+    #[cfg(windows)]
+    let home = set("USERPROFILE").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let home = set("HOME").map(PathBuf::from);
+    let gopath = set(GOPATH_ENV).and_then(|value| std::env::split_paths(&value).next());
+    DependencyHomes {
+        cargo_home: set(CARGO_HOME_ENV)
+            .map(absolute)
+            .or_else(|| home.as_ref().map(|home| home.join(".cargo"))),
+        go_mod_cache: set(GOMODCACHE_ENV)
+            .map(absolute)
+            .or_else(|| gopath.map(|path| absolute(path.into_os_string()).join("pkg").join("mod")))
+            .or_else(|| home.as_ref().map(|home| home.join("go").join("pkg").join("mod"))),
+        virtual_env: set(VIRTUAL_ENV_ENV).map(absolute),
+    }
 }
 
 /// `BASEMIND_DATA_HOME`'s value as a data home. A relative value is resolved against the current
@@ -341,6 +375,63 @@ mod tests {
         assert_eq!(caps.footprint_mb, defaults.footprint_mb, "zero keeps the default");
         assert_eq!(caps.min_debounce_ms, 500);
         assert_eq!(caps.embed_threads, defaults.embed_threads);
+    }
+
+    #[test]
+    fn the_dependency_roots_variable_grants_every_workspace_or_a_list() {
+        assert_eq!(config_of(&[]).trust.dependency_roots, ExtraRootsGrant::Denied);
+        assert_eq!(
+            config_of(&[(ALLOW_DEPENDENCY_ROOTS_ENV, "true")])
+                .trust
+                .dependency_roots,
+            ExtraRootsGrant::Every
+        );
+        assert_eq!(
+            config_of(&[(ALLOW_DEPENDENCY_ROOTS_ENV, "0")]).trust.dependency_roots,
+            ExtraRootsGrant::Workspaces(Vec::new()),
+            "a word that is not a grant covers no workspace"
+        );
+        // An absolute path is spelled differently on Windows. ~keep
+        #[cfg(unix)]
+        assert_eq!(
+            config_of(&[(ALLOW_DEPENDENCY_ROOTS_ENV, "/work/a")])
+                .trust
+                .dependency_roots,
+            ExtraRootsGrant::Workspaces(vec!["/work/a".into()])
+        );
+    }
+
+    // The home variable and absolute paths are spelled differently on Windows. ~keep
+    #[cfg(unix)]
+    #[test]
+    fn the_package_cache_variables_reach_the_dependency_homes() {
+        let homes = config_of(&[("HOME", "/home/op")]).dependency_homes;
+        assert_eq!(homes.cargo_home, Some("/home/op/.cargo".into()));
+        assert_eq!(homes.go_mod_cache, Some("/home/op/go/pkg/mod".into()));
+        assert_eq!(homes.virtual_env, None);
+
+        let homes = config_of(&[
+            ("HOME", "/home/op"),
+            (CARGO_HOME_ENV, "/opt/cargo"),
+            (GOPATH_ENV, "/opt/go:/srv/go"),
+            (VIRTUAL_ENV_ENV, "/srv/venv"),
+        ])
+        .dependency_homes;
+        assert_eq!(homes.cargo_home, Some("/opt/cargo".into()));
+        assert_eq!(
+            homes.go_mod_cache,
+            Some("/opt/go/pkg/mod".into()),
+            "the first GOPATH entry"
+        );
+        assert_eq!(homes.virtual_env, Some("/srv/venv".into()));
+
+        let homes = config_of(&[(GOMODCACHE_ENV, "/cache/mod"), (GOPATH_ENV, "/opt/go")]).dependency_homes;
+        assert_eq!(
+            homes.go_mod_cache,
+            Some("/cache/mod".into()),
+            "GOMODCACHE wins over GOPATH"
+        );
+        assert_eq!(homes.cargo_home, None, "no home and no CARGO_HOME: no cargo cache");
     }
 
     #[test]

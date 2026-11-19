@@ -19,8 +19,8 @@ use lancedb::query::{ExecutableQuery, QueryBase, Select};
 use lancedb::table::{OptimizeAction, OptimizeOptions, Table};
 
 use super::docs_schema::{
-    DOC_CHUNKS_TABLE, DOCS_TABLE, DocChunkHit, DocMeta, DocRows, HIT_COLUMNS, chunks_batch, decode_chunk_hits,
-    decode_doc_meta, decode_keys, doc_chunks_schema, docs_schema,
+    DOC_CHUNKS_TABLE, DOCS_TABLE, DocChunkHit, DocMeta, DocRows, HIT_COLUMNS, META_COLUMNS, chunks_batch,
+    decode_chunk_hits, decode_doc_meta, decode_keys, doc_chunks_schema, docs_schema,
 };
 use super::{LanceStore, escape_sql_literal};
 
@@ -587,7 +587,7 @@ impl DocStore {
                 let mut stream = table
                     .query()
                     .only_if_expr(is_in(col("doc_key"), list))
-                    .select(Select::columns(&["doc_key", "title", "n_chunks", "embedded"]))
+                    .select(Select::columns(META_COLUMNS))
                     .execute()
                     .await
                     .context("read documents")?;

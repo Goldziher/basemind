@@ -68,7 +68,9 @@ pub fn doc_chunks_schema(dim: u16) -> SchemaRef {
 }
 
 /// `docs`. `keywords` are lower-cased whole keywords; `embedded` says whether the chunk rows
-/// carry vectors, so a later scan that has them replaces rows written without.
+/// carry vectors, so a later scan that has them replaces rows written without. `package` and
+/// `package_version` name the dependency a document is the documentation of (ADR-0049), null for
+/// the repository's own documents.
 pub fn docs_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("doc_key", DataType::Utf8, false),
@@ -77,8 +79,13 @@ pub fn docs_schema() -> SchemaRef {
         Field::new("keywords", utf8_list(), false),
         Field::new("n_chunks", DataType::UInt32, false),
         Field::new("embedded", DataType::Boolean, false),
+        Field::new("package", DataType::Utf8, true),
+        Field::new("package_version", DataType::Utf8, true),
     ]))
 }
+
+/// The `docs` columns a document lookup reads back.
+pub const META_COLUMNS: &[&str] = &["doc_key", "title", "n_chunks", "embedded", "package", "package_version"];
 
 /// One chunk of a document, as stored.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -108,6 +115,9 @@ pub struct DocRows {
     pub title: Option<String>,
     pub keywords: Vec<String>,
     pub chunks: Vec<DocChunkRow>,
+    /// The dependency this document documents, and its version (ADR-0049).
+    pub package: Option<String>,
+    pub package_version: Option<String>,
 }
 
 impl DocRows {
@@ -141,6 +151,9 @@ pub struct DocMeta {
     pub title: Option<String>,
     pub n_chunks: u32,
     pub embedded: bool,
+    /// Read only when the lookup selected [`META_COLUMNS`].
+    pub package: Option<String>,
+    pub package_version: Option<String>,
 }
 
 /// The `doc_chunks` batch of `docs`. A vector of another dimension is an error: it would fail the
@@ -233,6 +246,8 @@ pub fn docs_batch(docs: &[DocRows]) -> Result<RecordBatch> {
     let mut keywords = ListBuilder::new(StringBuilder::new());
     let mut n_chunks = UInt32Builder::new();
     let mut embedded = BooleanBuilder::new();
+    let mut package = StringBuilder::new();
+    let mut package_version = StringBuilder::new();
     for doc in docs {
         doc_key.append_value(&doc.doc_key);
         mime_type.append_value(&doc.mime_type);
@@ -243,6 +258,8 @@ pub fn docs_batch(docs: &[DocRows]) -> Result<RecordBatch> {
         keywords.append(true);
         n_chunks.append_value(u32::try_from(doc.chunks.len()).unwrap_or(u32::MAX));
         embedded.append_value(doc.embedded());
+        package.append_option(doc.package.as_deref());
+        package_version.append_option(doc.package_version.as_deref());
     }
     RecordBatch::try_new(
         docs_schema(),
@@ -253,6 +270,8 @@ pub fn docs_batch(docs: &[DocRows]) -> Result<RecordBatch> {
             Arc::new(keywords.finish()),
             Arc::new(n_chunks.finish()),
             Arc::new(embedded.finish()),
+            Arc::new(package.finish()),
+            Arc::new(package_version.finish()),
         ],
     )
     .context("assemble docs batch")
@@ -308,12 +327,19 @@ pub fn decode_doc_meta(batch: &RecordBatch, out: &mut Vec<DocMeta>) -> Result<()
     let title = column::<StringArray>(batch, "title")?;
     let n_chunks = column::<UInt32Array>(batch, "n_chunks")?;
     let embedded = column::<BooleanArray>(batch, "embedded")?;
+    let package = column::<StringArray>(batch, "package").ok();
+    let package_version = column::<StringArray>(batch, "package_version").ok();
+    let text = |array: Option<&StringArray>, i: usize| {
+        array.and_then(|array| array.is_valid(i).then(|| array.value(i).to_string()))
+    };
     for i in 0..batch.num_rows() {
         out.push(DocMeta {
             doc_key: doc_key.value(i).to_string(),
             title: title.is_valid(i).then(|| title.value(i).to_string()),
             n_chunks: n_chunks.value(i),
             embedded: embedded.value(i),
+            package: text(package, i),
+            package_version: text(package_version, i),
         });
     }
     Ok(())

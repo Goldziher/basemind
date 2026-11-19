@@ -68,6 +68,7 @@ pub(super) fn cmd_rescan(
     }
     render::render_summary(&mut out, &report.stats, verbosity);
     render::render_phase_peaks(&mut out, &report.phase_peaks, verbosity);
+    render::render_deps_unavailable(&mut out, &report.deps_unavailable, verbosity);
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     Ok(())

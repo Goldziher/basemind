@@ -255,6 +255,23 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
     }
 }
 
+/// The dependencies whose documentation was not indexed (`[documents.dependencies]`), one line
+/// each under a `deps_unavailable` heading. Silent under `--quiet` and when there are none.
+pub fn render_deps_unavailable(
+    w: &mut AutoStream<std::io::Stdout>,
+    unavailable: &[crate::deps_docs::DepUnavailable],
+    verbosity: Verbosity,
+) {
+    if unavailable.is_empty() || verbosity == Verbosity::Quiet {
+        return;
+    }
+    let _ = writeln!(w, "deps_unavailable {}", unavailable.len());
+    for dep in unavailable {
+        let version = dep.version.as_deref().map(|v| format!("@{v}")).unwrap_or_default();
+        let _ = writeln!(w, "  {} {}{version}: {}", dep.ecosystem, dep.name, dep.reason);
+    }
+}
+
 /// Peak footprint per scan phase, one dimmed line (`peak memory  extract 512.0MB  resolve 5.5GB`).
 /// Silent under `--quiet` and when the scan recorded none.
 pub fn render_phase_peaks(w: &mut AutoStream<std::io::Stdout>, peaks: &[PhasePeak], verbosity: Verbosity) {

@@ -722,6 +722,7 @@ fn cmd_scan(
     }
     render::render_summary(&mut out, &report.stats, verbosity);
     render::render_phase_peaks(&mut out, &report.phase_peaks, verbosity);
+    render::render_deps_unavailable(&mut out, &report.deps_unavailable, verbosity);
     // This process exits next: flushed, the rows open as tables instead of a journal the next
     // writer (usually the daemon) replays into memtables and holds in its heap until they fill.
     if let Some(db) = store.index_db.as_ref() {

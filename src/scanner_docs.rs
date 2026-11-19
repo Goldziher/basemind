@@ -191,17 +191,21 @@ fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfi
     !crate::extract::doc_tiers::ocr_compiled() && crate::extract::doc_tiers::is_ocr_only_mime(mime_type)
 }
 
-/// Quick filter run before any xberg work happens. Returns the detected
-/// MIME type when the file should be document-extracted, or `None` when it
-/// should be skipped (configured-off, archive/binary, MIME unknown, MIME outside the allowlist).
+/// Quick filter run before any xberg work happens. Returns the MIME type when the file should be
+/// document-extracted, or `None` when it should be skipped (configured-off, archive/binary, MIME
+/// unknown, MIME outside the allowlist). The type is `given` when the caller knows it (a
+/// dependency's extension-less `README`), else detected from the name.
 ///
 /// The MIME allowlist is treated as "match this exact MIME OR a prefix ending
 /// in `/`" so callers can say `"image/"` to whitelist every image type.
-pub(crate) fn should_extract_document(abs: &Path, cfg: &DocumentsConfig) -> Option<String> {
+pub(crate) fn should_extract_document_as(abs: &Path, cfg: &DocumentsConfig, given: Option<&str>) -> Option<String> {
     if !cfg.enabled {
         return None;
     }
-    let mime_type = mime::detect_mime_type(abs, false).ok()?;
+    let mime_type = match given {
+        Some(mime_type) => mime_type.to_string(),
+        None => mime::detect_mime_type(abs, false).ok()?,
+    };
     if is_denied_binary_or_archive(abs, &mime_type, cfg) {
         return None;
     }
@@ -210,6 +214,12 @@ pub(crate) fn should_extract_document(abs: &Path, cfg: &DocumentsConfig) -> Opti
     }
     let allowed = cfg.mime_allowlist.iter().any(|entry| matches_mime(entry, &mime_type));
     if allowed { Some(mime_type) } else { None }
+}
+
+/// [`should_extract_document_as`] with the type detected from the name.
+#[cfg(test)]
+pub(crate) fn should_extract_document(abs: &Path, cfg: &DocumentsConfig) -> Option<String> {
+    should_extract_document_as(abs, cfg, None)
 }
 
 fn matches_mime(entry: &str, mime_type: &str) -> bool {

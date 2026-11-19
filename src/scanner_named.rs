@@ -105,7 +105,9 @@ fn indexed_under<'k>(index: &'k Index, dirs: &AHashMap<String, bool>) -> AHashMa
         .keys()
         .chain(index.doc_files.keys())
         .chain(index.doc_tombstones.keys())
-        .filter_map(|key| key.as_str());
+        .filter_map(|key| key.as_str())
+        // A dependency's documentation has no file under the tree, so no directory holds it.
+        .filter(|key| !crate::deps_docs::is_virtual(key));
     for key in keys {
         let mut end = key.len();
         while let Some(slash) = key[..end].rfind('/') {

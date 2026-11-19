@@ -15,6 +15,18 @@ use super::v1::ConfigV1;
 /// point anywhere (`~/.ssh`), so following links is an operator decision, not a repo one.
 pub const ALLOW_FOLLOW_SYMLINKS_ENV: &str = "BASEMIND_ALLOW_FOLLOW_SYMLINKS";
 
+/// Operator grant to read `[documents.dependencies]` package roots outside the repository (the
+/// cargo registry, the Go module cache, a virtual environment elsewhere): `1` / `true` / `yes` for
+/// every workspace, or a list of absolute workspace roots (ADR-0049).
+pub const ALLOW_DEPENDENCY_ROOTS_ENV: &str = "BASEMIND_ALLOW_DEPENDENCY_ROOTS";
+
+/// Whether the operator granted the workspace at `repo_root` reads of dependency package roots
+/// outside its tree. A repository's own `basemind.toml` can never grant this: it has no setting
+/// that names a root.
+pub fn dependency_roots_granted(repo_root: &std::path::Path) -> bool {
+    super::engine::with(|config| config.trust.dependency_roots.covers(repo_root))
+}
+
 /// Operator-side grants, from the engine configuration's trust policy.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Grants {

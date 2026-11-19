@@ -16,6 +16,7 @@ pub mod config;
 /// ceiling, shared by every daemon family.
 pub mod daemon_lock;
 pub mod data_root;
+pub mod deps_docs;
 pub mod disk_space;
 #[cfg(feature = "intelligence")]
 pub mod embeddings;

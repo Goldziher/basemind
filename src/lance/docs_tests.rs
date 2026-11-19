@@ -31,6 +31,7 @@ fn doc(key: &str, mime: &str, keywords: &[&str], chunks: Vec<DocChunkRow>) -> Do
         title: Some(format!("{key} title")),
         keywords: keywords.iter().map(|k| k.to_string()).collect(),
         chunks,
+        ..DocRows::default()
     }
 }
 

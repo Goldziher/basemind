@@ -5,7 +5,7 @@
 use ahash::AHashMap;
 
 use super::docs::DocStore;
-use super::docs_schema::DocChunkHit;
+use super::docs_schema::{DocChunkHit, DocMeta};
 use super::docs_types::{DocChunkRef, DocCite, DocContext, DocHit, DocsPage, DocsRanking, RankedChunk};
 
 /// Hits of a ranking that can be paged through.
@@ -146,6 +146,8 @@ fn hit_of(group: &Merged, title: Option<String>, of: Option<u32>) -> DocHit {
         also_at: group.first.paths.iter().skip(1).cloned().collect(),
         mime_type: group.first.mime_type.clone(),
         title,
+        package: None,
+        package_version: None,
         chunk: DocChunkRef {
             doc: group.first.doc.clone(),
             ord,
@@ -197,7 +199,15 @@ pub fn page(
         .iter()
         .map(|group| {
             let meta = metas.get(&group.first.doc);
-            hit_of(group, meta.and_then(|m| m.0.clone()), meta.map(|m| m.1))
+            let mut hit = hit_of(group, meta.and_then(|m| m.title.clone()), meta.map(|m| m.n_chunks));
+            // A content shared with a repository file cites a package only from a dependency path.
+            if let Some(meta) = meta
+                && group.first.paths.iter().any(|path| crate::deps_docs::is_virtual(path))
+            {
+                hit.package.clone_from(&meta.package);
+                hit.package_version.clone_from(&meta.package_version);
+            }
+            hit
         })
         .collect();
     let budget = max_tokens.map(u64::from);
@@ -259,7 +269,7 @@ pub fn page(
     }
 }
 
-type Metas = AHashMap<String, (Option<String>, u32)>;
+type Metas = AHashMap<String, DocMeta>;
 type Neighbours = AHashMap<(String, u32), DocChunkHit>;
 
 /// Titles and chunk counts of the page's documents, and the chunks on either side of each group.
@@ -283,10 +293,7 @@ fn context_of(store: &DocStore, groups: &[Merged]) -> (Metas, Neighbours) {
         .and_then(|metas| store.chunks(&wanted).map(|chunks| (metas, chunks)));
     match fetched {
         Ok((metas, chunks)) => (
-            metas
-                .into_iter()
-                .map(|meta| (meta.doc_key, (meta.title, meta.n_chunks)))
-                .collect(),
+            metas.into_iter().map(|meta| (meta.doc_key.clone(), meta)).collect(),
             chunks
                 .into_iter()
                 .map(|chunk| ((chunk.doc_key.clone(), chunk.chunk_ord), chunk))
