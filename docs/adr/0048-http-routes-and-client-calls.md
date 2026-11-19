@@ -54,15 +54,29 @@ answer it today. What exists:
    Other frameworks and clients go to a follow-up issue.
 5. **No new keyspace and no new tool.** The symbol and call row families carry both. Queries:
    - `code_symbols {kind:"route"}` lists routes; `find_files` is unchanged.
-   - `code_refs` callers of a handler definition add the route rows naming it in `signature` and
-     the client calls whose path matches, exact first, then the longest suffix. These rows carry
-     the #125 value `resolution: "path_match"`, and `ambiguous` when several routes match.
+   - `code_refs` callers of a route, named `METHOD /path` in any parameter syntax or pinned by
+     `path`, are the client calls it matches best. A request belongs to the routes that match it
+     best: a match through a literal segment before one through parameters and wildcards alone (so
+     a catch-all such as `GET /*` never takes a request from the route naming its path), then exact
+     before suffix, the longest suffix, more literal segments, and the method itself before `ANY`.
+   - `code_refs` callers of a handler definition add the route rows naming it in `signature` (by
+     the handler's last component: `users.show` names `show`) and the client calls linked to those
+     routes. A route in another file than the definition is `ambiguous` when more than one file
+     defines the name.
+   - `code_refs` relation `definition` on a client call, named by its own `METHOD /path` and its
+     `line`, returns the route it reaches, or the tied routes under `ambiguous`. The line is a line
+     of the indexed file, so an edited file is refused, as for any other reference.
+   - These rows carry the #125 value `resolution: "path_match"`, and `ambiguous` when several
+     routes match. Under exact matching a client call is not a call of a name its path ends in.
    - The `code_refs` description says that URLs built from variables are out of reach.
+   - Linking reads a route table built once per in-RAM map snapshot and bucketed by each route's
+     last literal segment, so a request is scored only against the routes that can match it.
 
 ## Consequences
 
 - Routes and endpoint callers are found with the tools agents already have; the schema grows by
-  about 70 bytes (`route` in `code_symbols.kind` and one clause on `code_refs`).
+  about 70 bytes (`route` in `code_symbols.kind` and one clause on `code_refs`), paid for by
+  shortening the shared `limit`, `cursor` and `max_tokens` field docs.
 - `path_match` rows add tokens to `code_refs` `callers`, which is near the 0.67 floor on tokio
   (ADR-0031). The per-row elision of ADR-0047 decision 6 applies; `callers` and `references` are
   re-measured after the linking lands.

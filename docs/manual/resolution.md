@@ -39,8 +39,12 @@ the rows per grade, before any filter.
   a call with a literal URL is a call site of the same shape. The callers of a route (its name, or
   `path` pinning it) are the calls it matches best, graded `path_match`: the methods agree (a route
   of `ANY` takes every method) and the paths match segment for segment, else one is a suffix of the
-  other (a client base URL, or a router mounted in another file). An exact match beats a suffix, a
-  longer suffix a shorter one, and a literal segment a parameter. A call that several routes match
-  equally well carries `ambiguous`: two services may expose the path. `relation: "definition"` on a
-  call returns its route with `resolution: "path_match"`, or the tied routes under `ambiguous` and
-  no `definition`. URLs built from variables are out of reach.
+  other (a client base URL, or a router mounted in another file). A match through a literal segment
+  beats one through parameters and wildcards alone (a catch-all such as `GET /*` never takes a call
+  from the route naming its path), an exact match a suffix, a longer suffix a shorter one, and a
+  literal segment a parameter. A call that several routes match equally well carries `ambiguous`:
+  two services may expose the path. The callers of a handler (`path` pinning it) add the routes
+  naming it and their calls, `ambiguous` for a route in another file when more than one file
+  defines the name. `relation: "definition"` on a call returns its route with
+  `resolution: "path_match"`, or the tied routes under `ambiguous` and no `definition`. URLs built
+  from variables are out of reach.

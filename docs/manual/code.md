@@ -48,9 +48,13 @@ symbol or span you need. Paths are repository-relative with forward slashes.
   to `code_read` `ranges`.
 - `code_refs` with a `METHOD /path` name (`GET /users/:param`, any parameter syntax) lists the
   HTTP calls with a literal URL that reach that route, graded `path_match`; with `path` pinning a
-  route symbol it lists that route's calls. `relation: "definition"` with the call's own
-  `METHOD /path` (its row's `callee`) and its `line` returns the route it reaches. A URL built from
-  variables is out of reach.
+  route symbol (again in any parameter syntax) it lists that route's calls. With `path` pinning a
+  handler, its callers add the routes naming it and the calls reaching them; a route in another
+  file is `ambiguous` when more than one file defines the handler's name. `relation: "definition"`
+  with the call's own `METHOD /path` (its row's `callee`) and its `line` returns the route it
+  reaches; the file must be unchanged since the scan. A URL built from variables is out of reach.
+- `ranges` flags a file edited since the scan `stale` (its spans are lines of the indexed file) and
+  counts call sites with no indexed line in `omitted`.
 - `code_refs` `importers` with `path` and no `name` walks the file-level import graph: the files
   importing that file, grouped `by_depth`, `depth` hops out (default 1, at most 5). `cycles` lists
   the import cycles, smallest first; with `path`, only that file's own. Both report per-language

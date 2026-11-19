@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:c753aae63257fc383448bf525dee2a38a98af6dcdb5520d5285d64252f6a7824
-Source-Hash: blake3:ba1568b79eb18d34f8988b6c0a1b6a55ad29aaadb8130db1d8fe5f659b2923e6
+Content-Hash: blake3:3a75b7506271d4cecb9a6e64cb2ab4bd54577453e57d1e5480d93ab12e455154
+Source-Hash: blake3:8cd5c10f2fdff8441678d5c446180c8a0ddb1cc4537eb3570350f03f5c3ea14d
 Schema-Version: v1
 -->
 
@@ -166,11 +166,15 @@ the rows per grade, before any filter.
   a call with a literal URL is a call site of the same shape. The callers of a route (its name, or
   `path` pinning it) are the calls it matches best, graded `path_match`: the methods agree (a route
   of `ANY` takes every method) and the paths match segment for segment, else one is a suffix of the
-  other (a client base URL, or a router mounted in another file). An exact match beats a suffix, a
-  longer suffix a shorter one, and a literal segment a parameter. A call that several routes match
-  equally well carries `ambiguous`: two services may expose the path. `relation: "definition"` on a
-  call returns its route with `resolution: "path_match"`, or the tied routes under `ambiguous` and
-  no `definition`. URLs built from variables are out of reach.
+  other (a client base URL, or a router mounted in another file). A match through a literal segment
+  beats one through parameters and wildcards alone (a catch-all such as `GET /*` never takes a call
+  from the route naming its path), an exact match a suffix, a longer suffix a shorter one, and a
+  literal segment a parameter. A call that several routes match equally well carries `ambiguous`:
+  two services may expose the path. The callers of a handler (`path` pinning it) add the routes
+  naming it and their calls, `ambiguous` for a route in another file when more than one file
+  defines the name. `relation: "definition"` on a call returns its route with
+  `resolution: "path_match"`, or the tied routes under `ambiguous` and no `definition`. URLs built
+  from variables are out of reach.
 <!-- /manual:resolution -->
 
 ## Paging and budgets
