@@ -272,12 +272,26 @@ beside `next_cursor`. The CLI's `--json` output has the same shapes.
 | `code_grep` | `pattern`, `regex`, `total_files_matched`; a hit's `path`, `column` and `symbol.kind`; `context_before` / `context_after` | `hits` is `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, grouped by innermost enclosing symbol (`""` outside every symbol); matches on one line are a row `"<line>:<col>,<col>: <text>"` (a clipped line writes its column `"<line>:<col>: ..."`); `context: true` adds rows `"<line>- <text>"`, each written once; `stale` lists edited files, their rows under `""`; `total` (was `total_matches`) only beside `next_cursor`; `ranges` mode unchanged |
 | `code_refs` | `name` and `match` echoes; a hit's `path`, and its `column` unless another call of the same callee is on its line; `callee` equal to `name`; `trait_name` equal to `name` | `hits` is `{"<path>": [hit, ...]}`; `importers` drops its `module` echo |
 | `find_files` | `returned`; a file's `language`, `size_bytes`, `score`; `total` without `next_cursor` | `files` is a list of paths (with `min_lines`, `{"<path>": <lines>}`); files git tracks that are not indexed (images, fonts) are listed too |
-| `git_log` lists | `short_sha`; `path` and `pattern` echoes; a search hit's `body`, `author_email`, `body_truncated`, `body_bytes`; a commit's `author` and `author_time_unix` | each commit is a string `"<sha12> <summary>"`; the recent list (`{}`) and a directory history put their files in a top-level `files: {"<sha>": {"<path>": "<change>"}}`; `rev` still shows the whole commit with `author`, `author_email`, time, `body` and `files` |
-| `git_log {path, symbol}` | `path` and `name` echoes; an entry's `short_sha`; `hash_mode`; `kind` when unset; `commits_inspected` without `next_cursor` | `history` rows are `"<sha> <summary>"`, with `[introduced]` or `[removed]` after the sha for those changes; `kind` only when set |
-| `git_blame` | `path`, `suspect_sha`, `name`, `kind`; a hunk's `commit_sha`, `short_sha`, `source_line` and per-hunk `author`, `time`, `summary` | `hunks` is `["<line>[-<end_line>] <sha12>[ <source_path>]", ...]`, adjacent hunks of one commit (and source path) merged; `commits` maps each sha to `{author, time, summary}` once (`time` is unix seconds); a symbol blame keeps `line` / `end_line`; `elapsed_us` kept |
-| `code_refs` importers | `in_cycle` as a per-file flag; `truncated` on a walk stopped at `depth`; `total` without `next_cursor` | with `path`, `in_cycle` counts the listed importers sharing an import cycle with the file (`relation: "cycles"` with `path` lists it); only `scan_cap` truncates; by name (`paths`), `total` only beside `next_cursor` |
+| `git_log` lists | `short_sha`; `path` and `pattern` echoes; a search hit's `body`, `author_email`, `body_truncated`, `body_bytes`; a commit's `author` and `author_time_unix` | each commit is a string `"<sha12> <summary>"`, or `"<sha12> <author>: <summary>"` in a search by `author`; the recent list (`{}`) and a directory history put their files in a top-level `files: {"<sha>": {"<path>": "<change>"}}`; `rev` still shows the whole commit with `author`, `author_email`, time, `body` and `files` |
+| `git_log {path, symbol}` | `path` and `name` echoes; an entry's `short_sha`; `hash_mode`; `kind` when unset; `commits_inspected` without `next_cursor` | `history` rows are `"<sha> <summary>"`, with `[introduced]` or `[removed]` after the sha for those changes (`[modified]` when a changed commit's summary starts with `[`); no date (`git_log {rev}` has it); `kind` only when set |
+| `git_blame` | `path`, `suspect_sha`, `name`, `kind`; a hunk's `commit_sha`, `short_sha`, `source_line` and per-hunk `author`, `time`, `summary` | `hunks` is `["<line>[-<end_line>] <sha12>[ <source_path>]", ...]`, adjacent hunks of one commit (and source path) merged, `limit` counting merged hunks; `source_path` is the rest of the row and may hold spaces; `commits` maps each sha to `{author, time, summary}` once (`time` is unix seconds); a symbol blame keeps `line` / `end_line`; `elapsed_us` kept |
+| `code_refs` importers | `in_cycle` as a per-file flag; `truncated` on a walk stopped at `depth`; `total` without `next_cursor` | with `path`, `in_cycle` counts the listed importers sharing an import cycle with the file (`relation: "cycles"` with `path` lists it); only `scan_cap` truncates, and `deeper: true` says importers lie past `depth`; by name (`paths`), `total` only beside `next_cursor` |
 | `git_diff {path}` | a hunk's `kind`; `present_at_from` / `present_at_to` when true | `present_at_from: false` (added) or `present_at_to: false` (deleted) only |
 | `git_diff {}` | empty status lists | a list is present only when it holds a path |
+
+Reading the rows:
+
+- A `code_symbols` row splits at the first `:<digits>: `. A path that itself holds `:<digits>:`
+  (legal on Unix) makes that split ambiguous, as it does for `git grep -n`; take the path from a
+  listing (`find_files`) when one does.
+- A `git_blame` row's `source_path` is everything after the sha, spaces included. The line the
+  moved lines had in that file (`source_line`) is gone: read the file at that commit to see them.
+- Rank order is carried by key order in `find_files` with `min_lines` (largest first) and by file
+  order in `code_grep` `hits`. serde and Python keep JSON key order; a consumer that does not (a Go
+  map, or JavaScript, which puts integer-like keys first) must read the raw text in order.
+- Human CLI output (without `--json`) prints a string row per line and a nested map as an indented
+  tree: `code grep` hits under their file and symbol, `git log` files under their sha, and
+  `git blame` `commits` as a table.
 
 A commit's file list no longer names directories, and a merge lists only the files it changed
 against every parent, as `git log --cc` does; so `git_log {path}` no longer lists a merge that took

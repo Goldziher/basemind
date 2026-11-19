@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:d9399e33af18f43fd722a0b5a31f4a736ab980eadec1973e14f6ee06aa4d8222
-Source-Hash: blake3:66691182e583645b10c005157bd90106686d9a14eac0deb0d0e10e6971bc83be
+Content-Hash: blake3:25be92ef06e8df5c2b0ed487061d9937e57277f7e5e20811df3de81805393740
+Source-Hash: blake3:c85d912de0ec93b88abc5ffe7cb4b0515710852a633cffd5932ed908b143d786
 Schema-Version: v1
 -->
 
@@ -119,7 +119,8 @@ code_outline {"path":"src/mcp/tools.rs"}
   `relation:"importers"` matches whole segments of recorded imports (`os` finds `import os.path`,
   not `import posixpath`) and takes no `match`. With `path`, `in_cycle` counts the listed importers
   that share an import cycle with the file, and only `scan_cap` truncates (a walk stopped at `depth`
-  does not). `total` appears only beside `next_cursor`.
+  does not); `deeper: true` says more importers lie past `depth` (default 1, at most 5).
+  `total` appears only beside `next_cursor`.
 - `code_search` returns pointers (path, `line` / `end_line`, symbol), not bodies; read a hit with
   `code_read`. `lane` picks `hybrid` (default), `semantic` or `keyword`. The response lists
   `lanes_ran` (`vector`, `keyword`, `exact`) and `lanes_unavailable` (`lane`, `reason`), so a hybrid

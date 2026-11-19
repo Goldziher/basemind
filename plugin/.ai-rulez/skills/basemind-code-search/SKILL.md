@@ -122,7 +122,8 @@ code_outline {"path":"src/mcp/tools.rs"}
   `relation:"importers"` matches whole segments of recorded imports (`os` finds `import os.path`,
   not `import posixpath`) and takes no `match`. With `path`, `in_cycle` counts the listed importers
   that share an import cycle with the file, and only `scan_cap` truncates (a walk stopped at `depth`
-  does not). `total` appears only beside `next_cursor`.
+  does not); `deeper: true` says more importers lie past `depth` (default 1, at most 5).
+  `total` appears only beside `next_cursor`.
 - `code_search` returns pointers (path, `line` / `end_line`, symbol), not bodies; read a hit with
   `code_read`. `lane` picks `hybrid` (default), `semantic` or `keyword`. The response lists
   `lanes_ran` (`vector`, `keyword`, `exact`) and `lanes_unavailable` (`lane`, `reason`), so a hybrid

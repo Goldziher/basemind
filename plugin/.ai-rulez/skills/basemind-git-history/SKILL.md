@@ -76,7 +76,11 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
 - History queries are indexed: commits touching a path resolve in tens of microseconds vs a live
   walk. The index auto-builds on first use and is a fraction of the size of `.git`.
 - A `git_log` list commit is the string `"<sha12> <summary>"` (the sha's first 12 hex digits, which
-  every tool taking a revision resolves), with no author or time. The recent list (no arguments)
+  every tool taking a revision resolves), with no author or time. A search by `author` writes
+  `"<sha12> <author>: <summary>"`, since `author` matches part of a name or email and may select
+  several people. A symbol's history writes `[introduced]` or `[removed]` after the sha, and
+  `[modified]` only when a changed commit's summary itself starts with `[`. A list carries no date:
+  `rev` gives a commit's time. The recent list (no arguments)
   and a directory list put the files in a top-level `files: {"<sha>": {"<path>": "<change>"}}`, where a merge lists only what it changed
   against every parent. `rev` shows one commit with its full `sha`, `author`, `author_email`, time,
   message `body` and `files`.
@@ -101,9 +105,13 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
 - `git_blame`: `line` and `end_line` are 1-based and inclusive, and `end_line` defaults to `line`.
   `rev` blames at a revision other than HEAD. A `symbol` is located in the file as it is at `rev`,
   not in the working tree, so its lines (and a `line` passed to pick one of several) are that
-  revision's; a symbol that exists only uncommitted is "no symbol ... at HEAD". `limit` defaults to 100 hunks and the list is trimmed
-  to `max_tokens` (default 6000), then sets `budgeted`. `hunks` is `["<line>[-<end_line>] <sha12>[ <source_path>]", ...]`, adjacent hunks of one commit
-  merged; `commits` maps each sha to `{author, time, summary}` once (`time` is unix seconds). A
+  revision's; a symbol that exists only uncommitted is "no symbol ... at HEAD". `limit` defaults to 100 hunks, counted after merging,
+  and the list is trimmed to `max_tokens` (default 6000), then sets `budgeted`. `hunks` is
+  `["<line>[-<end_line>] <sha12>[ <source_path>]", ...]`, adjacent hunks of one commit merged;
+  `source_path`, the rest of the row (it may hold spaces), names the file the lines came from when
+  they moved there from another; the line they had there is not given (`git_log {rev}` and
+  `code_read` at that path read the old code). `commits` maps each sha to `{author, time, summary}`
+  once (`time` is unix seconds). A
   symbol blame also carries the symbol's `line` / `end_line`.
 - `git_diff`: `path` alone is that file's working-tree diff against HEAD; `from` defaults to HEAD
   and `to` to the working tree. The response has `from`, `to` (a sha, or `"working tree"`) and
