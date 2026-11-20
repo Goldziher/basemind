@@ -85,12 +85,14 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, Gi
         Err(_) => return Ok(RebuildOutcome::Fresh),
     };
 
-    if index.last_indexed_head_hex().as_deref() == Some(head.as_str()) {
+    let deepened = root_deepened(index, repo);
+    if !deepened && index.last_indexed_head_hex().as_deref() == Some(head.as_str()) {
         return Ok(RebuildOutcome::Fresh);
     }
 
     // A descendant of the indexed head is always safe to append, from any worktree.
-    if let Some(last_hex) = index.last_indexed_head_hex()
+    if !deepened
+        && let Some(last_hex) = index.last_indexed_head_hex()
         && repo.has_commit(&last_hex)
         && repo.is_ancestor(&last_hex, &head)
         && fingerprint_ok(index, repo, &head)
@@ -166,6 +168,15 @@ fn fingerprint_ok(index: &GitHistoryIndex, repo: &Repo, head: &str) -> bool {
             repo.has_commit(&root_hex) && repo.is_ancestor(&root_hex, head)
         }
     }
+}
+
+/// Whether the oldest indexed commit now has a parent: the index was built in a shallow clone that
+/// has since been deepened or unshallowed (`git fetch --unshallow` moves no ref), so it lacks the
+/// history past its old boundary.
+fn root_deepened(index: &GitHistoryIndex, repo: &Repo) -> bool {
+    index
+        .root_sha()
+        .is_some_and(|root_raw| repo.has_readable_parent(&keys::sha_raw_to_hex(&root_raw)))
 }
 
 /// Full rebuild over all commits reachable from HEAD.

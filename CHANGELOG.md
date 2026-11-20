@@ -843,6 +843,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changed, and an LFS file diffed its pointer against the payload. A filter that fails is an error
   naming the file instead of a whole-file hunk. A `changed` scope against a revision compares a
   restored file the same way.
+- Unshallowing or deepening a clone changes the next `git_blame`, `git_log` and `git hotspots` answer
+  without a cache clear (#298). Answers computed while the clone was shallow (a blame cut at the
+  graft, a walk that ends at the boundary) were cached by commit sha and outlived `git fetch
+  --unshallow`; they are no longer cached, and a daemon re-reads whether the clone is shallow on
+  every call instead of once at open. A git-history index built in a shallow clone is rebuilt once
+  its oldest commit has a parent. `GIT_CACHE_SCHEMA` moves, so payloads of earlier builds are misses.
 - The watcher no longer discards the OS's "events were dropped" signal (FSEvents `MustScanSubDirs`,
   inotify queue overflow). A signal naming a subdirectory rescans that subtree; one naming the root,
   or none, runs the whole-tree stat-and-hash pass of `index_rescan {}`; a burst of signals is one

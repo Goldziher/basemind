@@ -39,7 +39,8 @@ repository.
   tree is compared in the form git stores, as `git diff` does: line endings per `core.autocrlf` and
   `.gitattributes`, clean filters such as Git LFS run. A filter that fails is an error.
 - A shallow clone sets `truncated` with `truncated_reason: "shallow_clone"`: an absent commit is
-  then inconclusive.
+  then inconclusive. Answers taken while the clone is shallow are not cached, so the call after a
+  `git fetch --unshallow` answers from the full history.
 
 ## CLI shorthands and CLI-only commands
 
