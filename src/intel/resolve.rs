@@ -107,6 +107,7 @@ fn resolve_js(lang: LangId, path: &Path, source: &[u8]) -> Option<FileResolvedRe
             name_start: e.name_start,
         })
         .collect();
+    out.reexports = analysis.reexports;
     Some(out)
 }
 

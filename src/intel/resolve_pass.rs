@@ -382,7 +382,7 @@ fn harvest_cross_file_facts(
     out: &mut ahash::AHashMap<String, crate::intel::xfile::FileFacts>,
 ) {
     for (rel, refs) in facts {
-        if refs.imports.is_empty() && refs.exports.is_empty() {
+        if refs.imports.is_empty() && refs.exports.is_empty() && refs.reexports.is_empty() {
             continue;
         }
         let import_uses = import_bound_edges(&refs);
@@ -391,6 +391,7 @@ fn harvest_cross_file_facts(
             crate::intel::xfile::FileFacts {
                 imports: refs.imports,
                 exports: refs.exports,
+                reexports: refs.reexports,
                 import_uses,
             },
         );
@@ -612,10 +613,12 @@ mod tests {
         let crate::intel::xfile::FileFacts {
             imports,
             exports,
+            reexports,
             import_uses,
         } = facts;
         assert_eq!(imports.len(), 1);
         assert!(exports.is_empty());
+        assert!(reexports.is_empty());
         assert_eq!(import_uses.len(), 1);
     }
 }

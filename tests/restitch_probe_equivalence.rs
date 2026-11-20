@@ -216,7 +216,31 @@ mod js {
             ],
             edits: &[Edit::Write("impl.ts", HELPER_MOVED)],
             grammar_probe: "impl.ts",
-            expect: &[],
+            expect: &[Expect {
+                def_file: "impl.ts",
+                needle: "function helper",
+                name: "helper",
+                use_file: "app.ts",
+            }],
+        });
+    }
+
+    #[test]
+    fn star_reexport_barrel_target_moves() {
+        assert_incremental_equals_full(&Case {
+            before: &[
+                ("impl.ts", HELPER),
+                ("index.ts", "export * from './impl';\n"),
+                ("app.ts", APP),
+            ],
+            edits: &[Edit::Write("impl.ts", HELPER_MOVED)],
+            grammar_probe: "impl.ts",
+            expect: &[Expect {
+                def_file: "impl.ts",
+                needle: "function helper",
+                name: "helper",
+                use_file: "app.ts",
+            }],
         });
     }
 
