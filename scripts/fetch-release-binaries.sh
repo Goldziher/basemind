@@ -3,7 +3,8 @@
 #
 # usage: scripts/fetch-release-binaries.sh <out-dir> <target-triple> <version|latest>...
 #
-# Prints the extracted binaries as one path list (the platform's PATH separator) on stdout, ready for
+# A version requested twice (for example 0.33.0 and a `latest` that resolves to it) is fetched and
+# listed once. Prints the extracted binaries as one path list (the platform's PATH separator) on stdout, ready for
 # BASEMIND_UPGRADE_FROM_BIN; progress goes to stderr. Fails on any missing asset, missing checksum
 # entry or checksum mismatch, never installs an unverified binary.
 #
@@ -56,6 +57,9 @@ pinned_sha256() {
   "0.28.0 basemind-x86_64-unknown-linux-gnu.tar.gz") echo 1916727846e88fad80aee2af68141e63389fecca8f791c2c2defb95f81e6b5f1 ;;
   "0.28.0 basemind-aarch64-unknown-linux-gnu.tar.gz") echo c2e2000c3905eaf8ced7c1ff8707a903080c720e13367b0327bc8f43a62c8029 ;;
   "0.28.0 basemind-aarch64-apple-darwin.tar.gz") echo 420faad446d2712440df42fccb60ac05ee8523ea9eaf6a5a17a92e0a8fcd4b2a ;;
+  "0.33.0 basemind-x86_64-unknown-linux-gnu.tar.gz") echo 4ba262286e7696a23ebdf4652dafebfa76a14420f9a60c5e78e82e0538d07d89 ;;
+  "0.33.0 basemind-aarch64-unknown-linux-gnu.tar.gz") echo 38389ab6aef27d3573f91992d88ec631949784a1b9f0c1a0f30ed3344a9bf1fb ;;
+  "0.33.0 basemind-aarch64-apple-darwin.tar.gz") echo dfaa14ff0d5a6950a7730cdab40483620fd5b609c6595e485efb5795a8d29cfb ;;
   esac
 }
 
@@ -73,10 +77,18 @@ trap 'rm -rf "$SANDBOX" "$stage"' EXIT
 
 mkdir -p "$OUT"
 paths=()
+seen=" "
 for requested in "$@"; do
   version="$requested"
   [ "$requested" = "latest" ] && version="$(latest_version)"
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || die "not a release version: $version"
+  case "$seen" in
+  *" $version "*)
+    log "$version already listed"
+    continue
+    ;;
+  esac
+  seen="$seen$version "
   dir="$OUT/$version"
   pinned="$(pinned_sha256 "$version" "$ASSET")"
   if [ -f "$dir/.archive-sha256" ] && [ -x "$dir/basemind" ] && [ ! -L "$dir/basemind" ]; then
