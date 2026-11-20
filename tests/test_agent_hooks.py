@@ -275,7 +275,13 @@ class StatusLineCommsTests(unittest.TestCase):
             "basemind": f"""printf '%s\\n' "$@" >> "$HOME/basemind-args"
 case "$1 $2 $3" in
 "agent hook name") cat >/dev/null; printf '%s' session-1a2b3c4d ;;
-"agent inbox --peek") printf '%s' '{{"messages":[{{"id":"t-abcdef.1"}},{{"id":"t-abcdef.2"}}],"more":false}}' ;;
+"agent inbox --peek")
+  limit=20 previous="" ids="" more=false
+  for argument in "$@"; do [ "$previous" = --limit ] && limit="$argument"; previous="$argument"; done
+  unread="${{INBOX_UNREAD:-2}}"
+  [ "$unread" -gt "$limit" ] && more=true && unread="$limit"
+  for ((i = 1; i <= unread; i++)); do ids="$ids${{ids:+,}}{{\\"id\\":\\"t-abcdef.$i\\"}}"; done
+  printf '{{"messages":[%s],"more":%s}}' "$ids" "$more" ;;
 "statusline --root "*) sleep "${{STATUSLINE_SLEEP:-0}}"; printf '%s\\n' '{DELEGATED}' ;;
 esac""",
         }
@@ -317,6 +323,22 @@ esac""",
         private = self.root / f"basemind-{os.getuid()}"
         self.assertEqual(private.stat().st_mode & 0o777, 0o700)
         self.assertEqual([path.name.startswith("sl-comms-") for path in private.iterdir()], [True])
+
+    def test_the_unread_count_is_every_unread_message_not_one_page(self) -> None:
+        cases = (
+            ("3", "compact", f"  {SEP}\u2502{RESET}  {BOLD}{GREEN}\u2709 3{RESET}"),
+            ("100", "compact", f"  {SEP}\u2502{RESET}  {BOLD}{GREEN}\u2709 100{RESET}"),
+            ("150", "compact", f"  {SEP}\u2502{RESET}  {BOLD}{GREEN}\u2709 100+{RESET}"),
+            ("150", "minimal", f" {SEP}\u00b7{RESET} {BOLD}{GREEN}\u2709100+{RESET}"),
+        )
+        private = self.root / f"basemind-{os.getuid()}"
+        for unread, tier, segment in cases:
+            with self.subTest(unread=unread, tier=tier):
+                for cached in private.glob("sl-comms-*"):
+                    cached.unlink()
+                self.assertEqual(self.status_line(BASEMIND_STATUSLINE=tier, INBOX_UNREAD=unread), DELEGATED + segment)
+        args = (self.root / "basemind-args").read_text().splitlines()
+        self.assertEqual(args[args.index("--limit") + 1], "100")
 
     def test_the_cache_never_follows_a_planted_link(self) -> None:
         elsewhere = self.root / "elsewhere"

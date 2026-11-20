@@ -81,11 +81,20 @@ class StatusLineShippingTests(unittest.TestCase):
             self.skipTest("jq is required to read the manifest")
         mark = "\033[38;2;249;115;22m\u25c6\033[0m \033[1m\033[38;2;249;115;22mbasemind\033[0m"
         version = "  \033[1m\033[38;5;244mv7.8.9\033[0m  \033[38;5;240m\u2502\033[0m"
+        hint = " \033[38;5;255mno index \u2014 run:\033[0m \033[1m\033[38;5;51mbasemind scan\033[0m"
+        sep = " \033[38;5;240m\u2502\033[0m"
         cases = {
             "full": ({"BASEMIND_STATUSLINE": "full"}, f"{mark}{version}  3 files"),
             "compact": ({"BASEMIND_STATUSLINE": "compact"}, f"{mark}{version}  3 files"),
             "minimal": ({"BASEMIND_STATUSLINE": "minimal"}, f"{mark}  3 files"),
             "hidden": ({"BASEMIND_STATUSLINE": "full", "BASEMIND_STATUSLINE_VERSION": "0"}, f"{mark}  3 files"),
+            "fallback full": ({"BASEMIND_STATUSLINE": "full", "STUB_SILENT": "1"}, f"{mark}{version}{hint}"),
+            "fallback compact": ({"BASEMIND_STATUSLINE": "compact", "STUB_SILENT": "1"}, f"{mark}{version}{hint}"),
+            "fallback minimal": ({"BASEMIND_STATUSLINE": "minimal", "STUB_SILENT": "1"}, f"{mark}{sep}{hint}"),
+            "fallback hidden": (
+                {"BASEMIND_STATUSLINE": "full", "BASEMIND_STATUSLINE_VERSION": "0", "STUB_SILENT": "1"},
+                f"{mark}{sep}{hint}",
+            ),
         }
         with tempfile.TemporaryDirectory() as temporary:
             plugin = Path(temporary) / "plugin"
@@ -96,7 +105,9 @@ class StatusLineShippingTests(unittest.TestCase):
             script.write_bytes((ROOT / "plugin/.ai-rulez/scripts/statusline.sh").read_bytes())
             stub = Path(temporary) / "bin"
             stub.mkdir()
-            (stub / "basemind").write_text(f"#!/bin/bash\n[ \"$1\" = statusline ] && printf '%s\\n' '{mark}  3 files'\n")
+            (stub / "basemind").write_text(
+                f"#!/bin/bash\n[ -z \"$STUB_SILENT\" ] && [ \"$1\" = statusline ] && printf '%s\\n' '{mark}  3 files'\nexit 0\n"
+            )
             (stub / "basemind").chmod(0o755)
             work = Path(temporary) / "work"
             work.mkdir()
