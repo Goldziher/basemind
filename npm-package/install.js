@@ -1,11 +1,17 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const http = require("node:http");
 const https = require("node:https");
+const tls = require("node:tls");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 
 const { version } = require("./package.json");
+
+const REQUEST_TIMEOUT_MS = 30000;
+const USER_AGENT = "basemind-npm-wrapper";
+const DEFAULT_PORTS = { "http:": 80, "https:": 443 };
 
 function isAppleSilicon() {
   if (os.type() !== "Darwin") return false;
@@ -76,49 +82,191 @@ function nextUrl(url, maxRedirects, reject) {
   }
 }
 
+function envValue(env, name) {
+  return (env[name.toLowerCase()] || env[name] || "").trim();
+}
+
+// The variable naming the proxy for an https: request, read as undici's EnvHttpProxyAgent reads it:
+// the lowercase name before the uppercase one, and HTTP_PROXY when HTTPS_PROXY is unset.
+function proxySetting(env) {
+  for (const name of ["HTTPS_PROXY", "HTTP_PROXY"]) {
+    const value = envValue(env, name);
+    if (value) return { name, value };
+  }
+  return null;
+}
+
+// A proxy value without a scheme (`proxy.internal:3128`) is an http:// proxy, as curl reads it.
+function proxyUrl(value) {
+  return new URL(value.includes("://") ? value : `http://${value}`);
+}
+
+function parseProxy({ name, value }) {
+  let url;
+  try {
+    url = proxyUrl(value);
+  } catch (error) {
+    throw new Error(`${name} is not a valid proxy URL`, { cause: error });
+  }
+  if (url.protocol !== "http:") {
+    throw new Error(`${name} uses ${url.protocol} — only http:// proxies are supported`);
+  }
+  return url;
+}
+
+function unbracketed(host) {
+  return host.replace(/^\[(.*)\]$/u, "$1");
+}
+
+function splitHostPort(entry) {
+  const bracketed = entry.match(/^\[([^\]]+)\](?::(\d+))?$/u);
+  if (bracketed) return { host: bracketed[1], port: bracketed[2] ? Number(bracketed[2]) : null };
+  const parts = entry.split(":");
+  if (parts.length === 2 && /^\d+$/u.test(parts[1])) return { host: parts[0], port: Number(parts[1]) };
+  return { host: entry, port: null };
+}
+
+// A NO_PROXY entry is `*`, or a host that also covers its subdomains, written bare, with a leading
+// `.` or with a leading `*.`, and optionally with a `:port` it is limited to.
+function noProxyEntryMatches(entry, host, port) {
+  if (entry === "*") return true;
+  const target = splitHostPort(entry);
+  if (target.port !== null && target.port !== port) return false;
+  const suffix = target.host.replace(/^\*?\./u, "");
+  return suffix !== "" && (host === suffix || host.endsWith(`.${suffix}`));
+}
+
+function bypassesProxy(url, env) {
+  const host = unbracketed(url.hostname).toLowerCase();
+  const port = Number(url.port) || DEFAULT_PORTS[url.protocol];
+  return envValue(env, "NO_PROXY")
+    .toLowerCase()
+    .split(/[\s,]+/u)
+    .filter(Boolean)
+    .some((entry) => noProxyEntryMatches(entry, host, port));
+}
+
+// The proxy a request to `url` goes through, or null when no proxy is set or NO_PROXY names the host.
+function proxyFor(url, env = process.env) {
+  const setting = proxySetting(env);
+  if (!setting || bypassesProxy(url, env)) return null;
+  return parseProxy(setting);
+}
+
+function proxyAddress(proxy) {
+  return `${proxy.hostname}:${Number(proxy.port) || DEFAULT_PORTS[proxy.protocol]}`;
+}
+
+function proxyAuthorization(proxy) {
+  if (!proxy.username && !proxy.password) return {};
+  const credentials = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`;
+  return { "Proxy-Authorization": `Basic ${Buffer.from(credentials).toString("base64")}` };
+}
+
+// A socket to `host:port` through the proxy's CONNECT tunnel; TLS to the origin runs inside it, so
+// the proxy sees neither the archive nor the checksums in the clear.
+function openTunnel(proxy, host, port) {
+  const authority = `${host.includes(":") ? `[${host}]` : host}:${port}`;
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: unbracketed(proxy.hostname),
+      port: Number(proxy.port) || DEFAULT_PORTS[proxy.protocol],
+      method: "CONNECT",
+      path: authority,
+      agent: false,
+      headers: { Host: authority, "User-Agent": USER_AGENT, ...proxyAuthorization(proxy) },
+    });
+    req.once("connect", (res, socket) => {
+      if (res.statusCode === 200) {
+        resolve(socket);
+        return;
+      }
+      socket.destroy();
+      reject(new Error(`proxy ${proxyAddress(proxy)} refused CONNECT ${authority}: HTTP ${res.statusCode}`));
+    });
+    req.once("error", (error) => {
+      reject(new Error(`proxy ${proxyAddress(proxy)} failed: ${error.message}`, { cause: error }));
+    });
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error("Download timeout"));
+    });
+    req.end();
+  });
+}
+
+function tunnelAgent(proxy) {
+  const agent = new https.Agent();
+  agent.createConnection = (options, callback) => {
+    openTunnel(proxy, options.host, options.port).then(
+      (socket) => callback(null, tls.connect({ ...options, socket })),
+      callback,
+    );
+  };
+  return agent;
+}
+
+function requestOptions(url) {
+  const headers = { "User-Agent": USER_AGENT };
+  const proxy = proxyFor(url);
+  return proxy ? { headers, agent: tunnelAgent(proxy) } : { headers };
+}
+
+function redactedProxy(value) {
+  try {
+    const url = proxyUrl(value);
+    url.username = "";
+    url.password = "";
+    return url.href;
+  } catch {
+    return "(not a valid URL)";
+  }
+}
+
+// The proxy settings line printed with an install failure, credentials removed.
+function proxyHint(env = process.env) {
+  const setting = proxySetting(env);
+  if (!setting) {
+    return "No proxy is set. Behind a proxy, set HTTPS_PROXY (or HTTP_PROXY) to its http:// URL and NO_PROXY to the hosts to reach directly.";
+  }
+  const noProxy = envValue(env, "NO_PROXY") || "(unset)";
+  return `Proxy: ${setting.name}=${redactedProxy(setting.value)}, NO_PROXY=${noProxy}.`;
+}
+
 function downloadWithRedirects(url, dest, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
     const urlObj = nextUrl(url, maxRedirects, reject);
     if (!urlObj) return;
 
-    const req = https.get(
-      urlObj,
-      {
-        headers: {
-          "User-Agent": "basemind-npm-wrapper",
-        },
-      },
-      (res) => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          res.resume();
-          downloadWithRedirects(new URL(res.headers.location, urlObj).href, dest, maxRedirects - 1)
-            .then(resolve)
-            .catch(reject);
-          return;
-        }
+    const req = https.get(urlObj, requestOptions(urlObj), (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        downloadWithRedirects(new URL(res.headers.location, urlObj).href, dest, maxRedirects - 1)
+          .then(resolve)
+          .catch(reject);
+        return;
+      }
 
-        if (res.statusCode !== 200) {
-          reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
-          return;
-        }
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
+        return;
+      }
 
-        const file = fs.createWriteStream(dest);
-        res.pipe(file);
+      const file = fs.createWriteStream(dest);
+      res.pipe(file);
 
-        file.on("finish", () => {
-          file.close();
-          resolve();
-        });
+      file.on("finish", () => {
+        file.close();
+        resolve();
+      });
 
-        file.on("error", (err) => {
-          fs.unlink(dest, () => {});
-          reject(err);
-        });
-      },
-    );
+      file.on("error", (err) => {
+        fs.unlink(dest, () => {});
+        reject(err);
+      });
+    });
 
     req.on("error", reject);
-    req.setTimeout(30000, () => {
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
       req.destroy();
       reject(new Error("Download timeout"));
     });
@@ -159,36 +307,28 @@ function fetchTextWithRedirects(url, maxRedirects = 5) {
     const urlObj = nextUrl(url, maxRedirects, reject);
     if (!urlObj) return;
 
-    const req = https.get(
-      urlObj,
-      {
-        headers: {
-          "User-Agent": "basemind-npm-wrapper",
-        },
-      },
-      (res) => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          res.resume();
-          fetchTextWithRedirects(new URL(res.headers.location, urlObj).href, maxRedirects - 1)
-            .then(resolve)
-            .catch(reject);
-          return;
-        }
+    const req = https.get(urlObj, requestOptions(urlObj), (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        fetchTextWithRedirects(new URL(res.headers.location, urlObj).href, maxRedirects - 1)
+          .then(resolve)
+          .catch(reject);
+        return;
+      }
 
-        if (res.statusCode !== 200) {
-          reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
-          return;
-        }
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
+        return;
+      }
 
-        const chunks = [];
-        res.on("data", (chunk) => chunks.push(chunk));
-        res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-        res.on("error", reject);
-      },
-    );
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      res.on("error", reject);
+    });
 
     req.on("error", reject);
-    req.setTimeout(30000, () => {
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
       req.destroy();
       reject(new Error("Download timeout"));
     });
@@ -321,6 +461,7 @@ async function installBinary() {
     console.log("basemind binary installed successfully!");
   } catch (error) {
     console.error("Error installing basemind binary:", error.message);
+    console.error(proxyHint());
     process.exitCode = 1;
   } finally {
     if (staging) fs.rmSync(staging, { recursive: true, force: true });
@@ -331,4 +472,11 @@ if (require.main === module) {
   installBinary();
 }
 
-module.exports = { downloadWithRedirects, fetchTextWithRedirects, getPlatformTriple, installFromArchive };
+module.exports = {
+  downloadWithRedirects,
+  fetchTextWithRedirects,
+  getPlatformTriple,
+  installFromArchive,
+  proxyFor,
+  proxyHint,
+};

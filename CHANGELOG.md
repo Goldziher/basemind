@@ -840,6 +840,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   link another local user planted in the shared temporary directory.
 - The npm wrapper downloads over HTTPS only, a redirect included, and reports a binary killed by a
   signal as a failure.
+- The npm wrapper's binary download honours `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` (#325): behind a
+  proxy, `npm i -g basemind`, `pnpm add -g basemind` and the first-run install in `bin/basemind.js`
+  timed out, since Node does not read these variables by default. Requests to a host `NO_PROXY` does
+  not list go through an HTTP `CONNECT` tunnel to the proxy, a redirect's target included, with TLS
+  to GitHub inside it; a failed install prints the proxy settings in effect, credentials removed.
 - A `code_search`, `docs_search` or `code_outline` cursor issued right after the server started is
   no longer refused as stale on the next page: the background warm of the in-RAM map counted as an
   index change, though none of the three lists is read from that map.
