@@ -6,6 +6,13 @@ import unittest
 from pathlib import Path
 from types import ModuleType
 
+LINKED = (
+    "licenses/onnxruntime.txt",
+    "licenses/onnxruntime-ThirdPartyNotices.txt",
+    "licenses/tesseract.txt",
+    "licenses/leptonica.txt",
+)
+
 
 def load_smoke() -> ModuleType:
     path = Path(__file__).resolve().parents[1] / "smoke_release_archive.py"
@@ -42,17 +49,11 @@ class MissingNoticesTests(unittest.TestCase):
 
     def test_an_archive_with_every_notice_lacks_none(self) -> None:
         smoke = load_smoke()
+        notices = ("LICENSE", "ATTRIBUTIONS.md", "THIRD_PARTY_LICENSES", *LINKED)
         cases = (
-            ("basemind", "LICENSE", "ATTRIBUTIONS.md", "THIRD_PARTY_LICENSES"),
-            (
-                "basemind",
-                "LICENSE",
-                "ATTRIBUTIONS.md",
-                "THIRD_PARTY_LICENSES",
-                "lib/libstdc++.so.6",
-                "licenses/libstdc++.so.6.txt",
-            ),
-            ("basemind.exe", "LICENSE", "ATTRIBUTIONS.md", "THIRD_PARTY_LICENSES", "x.dll", "licenses/x.dll.txt"),
+            ("basemind", *notices),
+            ("basemind", *notices, "lib/libstdc++.so.6", "licenses/libstdc++.so.6.txt"),
+            ("basemind.exe", *notices, "x.dll", "licenses/x.dll.txt"),
         )
         for files in cases:
             with self.subTest(files=files), tempfile.TemporaryDirectory() as root:
@@ -61,14 +62,25 @@ class MissingNoticesTests(unittest.TestCase):
     def test_missing_notices_are_named_in_order(self) -> None:
         smoke = load_smoke()
         cases = (
-            (("basemind", "LICENSE", "ATTRIBUTIONS.md"), ["THIRD_PARTY_LICENSES"]),
+            (("basemind", "LICENSE", "ATTRIBUTIONS.md", *LINKED), ["THIRD_PARTY_LICENSES"]),
             (
-                ("basemind", "THIRD_PARTY_LICENSES", "lib/libstdc++.so.6", "lib/libz.so.1", "licenses/libz.so.1.txt"),
+                (
+                    "basemind",
+                    "THIRD_PARTY_LICENSES",
+                    *LINKED,
+                    "lib/libstdc++.so.6",
+                    "lib/libz.so.1",
+                    "licenses/libz.so.1.txt",
+                ),
                 ["LICENSE", "ATTRIBUTIONS.md", "licenses/libstdc++.so.6.txt"],
             ),
             (
-                ("basemind.exe", "LICENSE", "ATTRIBUTIONS.md", "THIRD_PARTY_LICENSES", "x.dll"),
+                ("basemind.exe", "LICENSE", "ATTRIBUTIONS.md", "THIRD_PARTY_LICENSES", *LINKED, "x.dll"),
                 ["licenses/x.dll.txt"],
+            ),
+            (
+                ("basemind", "LICENSE", "ATTRIBUTIONS.md", "THIRD_PARTY_LICENSES", "licenses/onnxruntime.txt"),
+                ["licenses/onnxruntime-ThirdPartyNotices.txt", "licenses/tesseract.txt", "licenses/leptonica.txt"],
             ),
         )
         for files, missing in cases:

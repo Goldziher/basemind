@@ -56,13 +56,24 @@ mkdir -p "$STAGING_DIR/lib"
 # The licence and the third-party notices travel with the binary and its bundled libraries.
 cp LICENSE ATTRIBUTIONS.md THIRD_PARTY_LICENSES "$STAGING_DIR/"
 
+# Native code linked statically into every release binary, which cargo metadata does not see:
+# ONNX Runtime (through ort-sys) and Tesseract with Leptonica (through xberg-tesseract). ATTRIBUTIONS.md
+# names each file; scripts/smoke_release_archive.py holds the same list as LINKED_NOTICES.
+LINKED_NOTICES=(
+  licenses/onnxruntime.txt
+  licenses/onnxruntime-ThirdPartyNotices.txt
+  licenses/tesseract.txt
+  licenses/leptonica.txt
+)
+mkdir -p "$STAGING_DIR/licenses"
+cp "${LINKED_NOTICES[@]}" "$STAGING_DIR/licenses/"
+
 # Copies licenses/<basename>.txt into the archive for each bundled library given. Run after
 # check-bundled-libs.sh, which guarantees every allowlisted library has one.
 ship_library_licenses() {
   local lib
   for lib in "$@"; do
     [ -e "$lib" ] || continue
-    mkdir -p "$STAGING_DIR/licenses"
     cp "licenses/$(basename "$lib").txt" "$STAGING_DIR/licenses/"
   done
 }

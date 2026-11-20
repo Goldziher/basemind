@@ -41,6 +41,9 @@ jobs:
         with:
           install-args: github:EmbarkStudios/cargo-about
 
+      - name: Native-code notices match Cargo.lock
+        run: python3 scripts/check_native_notices.py
+
       - name: Generate THIRD_PARTY_LICENSES
         run: mise run release:licenses
 

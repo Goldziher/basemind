@@ -283,6 +283,24 @@ jobs:
         with:
           command: check
 
+  # ~keep The release renders THIRD_PARTY_LICENSES from Cargo.lock; rendering it here fails a change
+  # ~keep that adds a licence about.toml does not accept before a release does. The native-notice
+  # ~keep check fails a lock bump of a crate whose hand-written ATTRIBUTIONS.md entry needs re-checking.
+  third-party-licenses:
+    name: third-party licences
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+      - uses: xberg-io/actions/setup-mise@v1
+        with:
+          install-args: github:EmbarkStudios/cargo-about
+      - name: Native-code notices match Cargo.lock
+        run: python3 scripts/check_native_notices.py
+      - name: Render THIRD_PARTY_LICENSES
+        run: mise run release:licenses
+
   # ~keep The test legs compile four feature sets; a feature built alone or in another documented
   # ~keep combination can carry dead code or a missing import that none of them sees (`comms memory`
   # ~keep did). Clippy, not `cargo check`: on dependencies it costs the same, and the lints are what
