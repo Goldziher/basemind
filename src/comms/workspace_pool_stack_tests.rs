@@ -82,6 +82,11 @@ fn writer_group(pool: &WorkspacePool, root: &std::path::Path) -> std::sync::Weak
 /// A poisoned writer handle is replaced by a NEW database even while a hosted stack serves the
 /// workspace. The hosted store used to own a clone of the handle, so the reopen found the poisoned
 /// database still open, got it back from the process registry, and every later commit failed.
+///
+/// The stack settles before the poisoning: its boot catch-up is a whole-tree pass through the same
+/// writer, so a catch-up still pending would meet the poison first and reopen the database before
+/// the test's own pass ran (issue #202). Its watcher scans only on a file event, and nothing in the
+/// tree changes until the database has been replaced.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_poisoned_index_is_reopened_while_a_hosted_stack_serves_the_workspace() {
     crate::store::init_isolated_cache();
@@ -91,6 +96,7 @@ async fn a_poisoned_index_is_reopened_while_a_hosted_stack_serves_the_workspace(
     pool.rescan(root, None, true, false, &crate::scanner::ScanCancel::default())
         .expect("scan");
     let (shared, conn) = pool.serve_conn(root, no_history()).await.expect("hosted stack");
+    settled(&shared).await;
     assert!(
         shared.workspace.store_read().read_index_view().is_some(),
         "the hosted store reads the writer's index"
@@ -110,7 +116,14 @@ async fn a_poisoned_index_is_reopened_while_a_hosted_stack_serves_the_workspace(
             .await
             .expect("join")
     };
-    assert!(rescan.is_err(), "the poisoned pass fails: {rescan:?}");
+    assert!(
+        matches!(
+            &rescan,
+            Err(super::super::WorkspacePoolError::Scan(crate::scanner::ScanError::IndexFault(reason)))
+                if reason.starts_with("index handle poisoned")
+        ),
+        "the test's own pass meets the poisoned handle: {rescan:?}"
+    );
 
     let reopened = writer_group(&pool, root);
     assert!(
@@ -119,7 +132,9 @@ async fn a_poisoned_index_is_reopened_while_a_hosted_stack_serves_the_workspace(
     );
     assert!(!std::sync::Weak::ptr_eq(&poisoned, &reopened), "a different database");
     std::fs::write(root.join("gamma.rs"), "pub fn gamma() -> u32 { 3 }\n").expect("write gamma");
-    let (stats, cancelled) = {
+    // ~keep The watcher may commit gamma.rs before this pass takes the writer, so the pass's counts
+    // ~keep say nothing; the row the hosted store reads afterwards is the proof either way.
+    let (_, cancelled) = {
         let (pool, root) = (Arc::clone(&pool), root.to_path_buf());
         tokio::task::spawn_blocking(move || pool.rescan(&root, None, true, false, &Default::default()))
             .await
@@ -127,12 +142,12 @@ async fn a_poisoned_index_is_reopened_while_a_hosted_stack_serves_the_workspace(
             .expect("the reopened handle commits")
     };
     assert!(!cancelled);
-    assert!(stats.updated >= 1, "gamma.rs is committed: {stats:?}");
     let hosted = shared.workspace.store_read().read_index_view();
     let hosted = hosted.expect("the hosted store reads the reopened index");
-    assert!(
-        !hosted.symbols_by_name_lookup("gamma", 8).is_empty(),
-        "the hosted store reads the new database"
+    assert_eq!(
+        hosted.symbols_by_name_lookup("gamma", 8).len(),
+        1,
+        "the hosted store reads gamma.rs from the new database"
     );
     drop((shared, conn));
 }
