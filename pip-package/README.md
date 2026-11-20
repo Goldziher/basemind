@@ -42,6 +42,9 @@ terminal, `basemind serve` only waits on stdio):
 }
 ```
 
+`basemind serve` serves the project of the directory the client starts it in. A client that starts
+it elsewhere needs the project named: `"args": ["serve", "--root", "/path/to/your/repo"]`.
+
 The [MCP server guide](https://github.com/Goldziher/basemind#2-as-an-mcp-server) has the command or
 file for each client, and [Get started](https://github.com/Goldziher/basemind#get-started) covers
 `basemind init`.

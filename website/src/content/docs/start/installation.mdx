@@ -11,8 +11,8 @@ Three ways to run basemind, easiest first. All three share the same local index
 and are safe to run side by side.
 
 <Aside type="tip">
-The MCP plugin downloads the basemind program for you on first use. Pi, the MCP server,
-and CLI paths need it installed yourself — see [Install the program](#install-the-program).
+The MCP plugin downloads the basemind program for you on first use. Pi, OpenCode, the MCP
+server and CLI paths need it installed yourself — see [Install the program](#install-the-program).
 </Aside>
 
 ## 1. As a plugin (recommended)
@@ -61,7 +61,8 @@ agent-comms features, and the slash commands. Pick your coding tool.
   </TabItem>
 
   <TabItem label="OpenCode">
-    Add to `opencode.json` (project) or `~/.config/opencode/opencode.json`
+    [Install the program](#install-the-program) first: the plugin starts
+    `basemind serve` from your `PATH` and does not download it. Then add to `opencode.json` (project) or `~/.config/opencode/opencode.json`
     (global):
 
     <Code code={`{ "plugins": ["basemind-opencode@latest"] }`} lang="json" />
