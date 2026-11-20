@@ -87,6 +87,31 @@ async fn one_shot_server_does_not_preload_the_code_map() {
     );
 }
 
+/// `index_status` carries the server's admission lanes, with the limits the installed engine
+/// configuration sets and nothing running.
+#[tokio::test]
+async fn index_status_reports_the_servers_admission_lanes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let server = oneshot_server(tmp.path());
+    let limits = crate::config::engine::with(|engine| engine.admission);
+
+    let result = server
+        .index_status_call(IndexStatusParams {})
+        .await
+        .expect("index_status");
+
+    let admission = &json_of(&result)["admission"];
+    assert_eq!(
+        *admission,
+        serde_json::json!({
+            "heavy": {"limit": limits.heavy_concurrency, "in_use": 0, "queued": 0},
+            "medium": {"limit": limits.medium_concurrency, "in_use": 0, "queued": 0},
+            "queue_wait_ms": u64::try_from(limits.queue_wait.as_millis()).expect("a queue wait in u64 ms"),
+        }),
+        "index_status itself takes no slot"
+    );
+}
+
 /// `outline` is PATH-KEYED: it needs one file's L1, and it already falls back to a single blob read
 /// when the in-RAM map misses. So it must answer from the store rather than force a whole-corpus
 /// build — otherwise the commonest navigation call pays the full corpus cost to read one file.

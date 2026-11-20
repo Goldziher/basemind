@@ -15,7 +15,9 @@ unchanged file is never extracted twice, across worktrees and repositories alike
 
 Besides the counts per language, `index_status` lists `large_files` (code files too long to read
 whole) and `most_imported` (the five files most others import at runtime, absent when no import
-resolver placed an edge).
+resolver placed an edge). Its `admission` block shows how many heavy and whole-corpus calls the
+server runs at once, how many run now and how many wait; a call that waits too long is answered
+`server_busy` and should be retried (`basemind manual environment` sets the limits).
 
 ## Keeping it fresh
 

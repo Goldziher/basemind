@@ -31,6 +31,13 @@ repository. A truthy value is `1`, `true` or `yes`.
 | `BASEMIND_AGENT_ID` | This checkout's agent id for messaging. |
 | `BASEMIND_RELAY_REQUEST_TIMEOUT_SECS` | Deadline for one request through the stdio relay (default 180, `0` disables). |
 | `BASEMIND_COMMS_REQUEST_TIMEOUT_SECS` | Deadline for one daemon request (default 10). |
+| `BASEMIND_DAEMON_HEAVY_CONCURRENCY` | Heavy calls (`index_rescan`, `code_search`, `docs_search`) run at once (default: a quarter of the cores, 2 to 4). |
+| `BASEMIND_DAEMON_MEDIUM_CONCURRENCY` | Whole-corpus reads (`code_grep`, `code_refs` importers and cycles, the CLI's impact, cycles, deadcode and overview) run at once (default: half the cores, 2 to 8). |
+| `BASEMIND_DAEMON_QUEUE_WAIT_MS` | How long a heavy or whole-corpus call waits for a slot before it is answered `server_busy` (default 2000). |
+
+The three admission settings apply to the whole daemon, which serves every workspace on the
+machine, so they have no `basemind.toml` key. `index_status` reports each class's `limit`, `in_use`
+and `queued` under `admission`.
 
 ## Indexing and cache
 

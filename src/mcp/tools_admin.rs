@@ -15,6 +15,7 @@ use super::types::TelemetrySummaryParams;
 use super::types_tools::{IndexRescanParams, IndexStatusParams};
 use crate::engine::Workspace;
 use crate::engine::ops::index::RescanProgress;
+use crate::engine::types::index::StatusResponse;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_admin")]
 impl BasemindServer {
@@ -63,9 +64,17 @@ impl BasemindServer {
 }
 
 impl BasemindServer {
-    /// Body of `index_status`, shared with `basemind status`.
+    /// Body of `index_status`, shared with `basemind status`: the engine's report with this server's
+    /// admission lanes, read before the call (which takes no slot) runs.
     pub(crate) async fn index_status_call(&self, p: IndexStatusParams) -> Result<CallToolResult, McpError> {
-        self.op_unpaged(p, Workspace::index_status).await
+        let admission = self.heavy_admission.status();
+        super::adapter::call_unpaged(&self.state, p, move |ws: &Workspace, p| {
+            ws.index_status(p).map(|status| StatusResponse {
+                admission: Some(admission),
+                ..status
+            })
+        })
+        .await
     }
 
     /// Body of `index_rescan`: [`Workspace::index_rescan`], whose scan runs in the daemon's pool for

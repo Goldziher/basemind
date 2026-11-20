@@ -48,6 +48,8 @@ pub struct EngineConfig {
     pub grep_bloom: bool,
     /// Ceilings the daemon applies to every workspace's `basemind.toml`.
     pub daemon_caps: super::daemon::DaemonCaps,
+    /// How many heavy and medium MCP calls a server runs at once, and how long one waits for a slot.
+    pub admission: super::daemon::AdmissionLimits,
     /// Package caches outside the repository that `[documents.dependencies]` reads from.
     pub dependency_homes: DependencyHomes,
 }
@@ -66,6 +68,7 @@ impl Default for EngineConfig {
             index_cache_bytes: None,
             grep_bloom: true,
             daemon_caps: super::daemon::DaemonCaps::default(),
+            admission: super::daemon::AdmissionLimits::default(),
             dependency_homes: DependencyHomes::default(),
         }
     }

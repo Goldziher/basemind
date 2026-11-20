@@ -47,11 +47,7 @@ impl ServerHandler for BasemindServer {
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
-        let work_class = if tasks::is_slow_tool(&request.name, request.arguments.as_ref()) {
-            super::admission::WorkClass::Heavy
-        } else {
-            super::admission::WorkClass::Control
-        };
+        let work_class = super::admission::WorkClass::of(&request.name, request.arguments.as_ref());
         let admission = match self.heavy_admission.admit(work_class).await {
             Ok(admission) => admission,
             Err(busy) if self.cli => return Err(busy.into_cli_error()),

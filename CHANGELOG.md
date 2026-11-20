@@ -140,6 +140,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- Configurable admission of expensive calls (#255): `BASEMIND_DAEMON_HEAVY_CONCURRENCY` (default a
+  quarter of the cores, 2 to 4; previously a fixed 2) and `BASEMIND_DAEMON_QUEUE_WAIT_MS` (default
+  2000) set how many heavy calls the daemon runs at once and how long a call waits before it is
+  answered `server_busy`. Whole-corpus reads (`code_grep`, `code_refs` importers and cycles, and the
+  CLI's impact, cycles, deadcode and overview) are a new medium class with their own slots,
+  `BASEMIND_DAEMON_MEDIUM_CONCURRENCY` (default half the cores, 2 to 8), so a rescan no longer
+  holds them back and they no longer run unbounded. `index_status` reports each class's `limit`,
+  `in_use` and `queued` under `admission`.
 
 ### Changed
 
