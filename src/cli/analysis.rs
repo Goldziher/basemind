@@ -22,15 +22,19 @@ mod impact;
 pub enum AnalysisCmd {
     /// Files that depend on a file, on a symbol's definitions, or on a change, through the
     /// file-level import graph (CLI only).
+    #[command(after_long_help = crate::cli::help_code::CODE_IMPACT)]
     Impact(impact::ImpactArgs),
     /// Import cycles, smallest first, each with an import chain that closes it; or whether a new
     /// import would close one (CLI only).
+    #[command(after_long_help = crate::cli::help_code::CODE_CYCLES)]
     Cycles(cycles::CyclesArgs),
     /// One briefing on a symbol, a file, or the definition at `path:line`: definition, callers,
     /// callees, importers and history, or outline, imports, importers, hotspot and owners (CLI only).
+    #[command(after_long_help = crate::cli::help_code::CODE_EXPLAIN)]
     Explain(explain::ExplainArgs),
     /// Files no entry point reaches, symbols nothing else names and imports that resolve to
     /// nothing, each with a confidence tier and its reason (CLI only).
+    #[command(after_long_help = crate::cli::help_code::CODE_DEADCODE)]
     Deadcode(deadcode::DeadcodeArgs),
     /// Track a migration away from old forms (`check`).
     #[command(subcommand)]

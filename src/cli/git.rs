@@ -36,6 +36,7 @@ pub(crate) fn reads_only_the_repository(cmd: &GitCmd) -> bool {
 pub enum GitCmd {
     /// Commit history: recent commits, a path's history, a commit search, a symbol's history, or
     /// one commit in full.
+    #[command(after_long_help = crate::cli::help_code::GIT_LOG)]
     Log {
         /// Only commits touching this file (or directory, when it ends with `/`).
         #[arg(long)]
@@ -65,6 +66,7 @@ pub enum GitCmd {
         max_tokens: Option<u32>,
     },
     /// Who last changed each line of a file, a 1-based line span, or one symbol.
+    #[command(after_long_help = crate::cli::help_code::GIT_BLAME)]
     Blame {
         path: String,
         /// First line, 1-based. With `--symbol`: a line inside the definition meant.
@@ -88,6 +90,7 @@ pub enum GitCmd {
         max_tokens: Option<u32>,
     },
     /// The working-tree status (no path), a file's text diff, or its symbol-level diff.
+    #[command(after_long_help = crate::cli::help_code::GIT_DIFF)]
     Diff {
         path: Option<String>,
         /// Old revision (default HEAD).
@@ -101,8 +104,10 @@ pub enum GitCmd {
         structural: bool,
     },
     /// Working-tree status: staged / modified / untracked. Shorthand for `diff` with no arguments.
+    #[command(after_long_help = crate::cli::help_code::GIT_STATUS)]
     Status,
     /// Recent commits. Shorthand for `log` with no filter.
+    #[command(after_long_help = crate::cli::help_code::GIT_RECENT)]
     Recent {
         #[arg(long)]
         limit: Option<u32>,
@@ -114,6 +119,7 @@ pub enum GitCmd {
         max_tokens: Option<u32>,
     },
     /// Commits touching a path. Shorthand for `log --path <path>`.
+    #[command(after_long_help = crate::cli::help_code::GIT_TOUCHING)]
     Touching {
         path: String,
         #[arg(long)]
@@ -126,6 +132,7 @@ pub enum GitCmd {
         max_tokens: Option<u32>,
     },
     /// Full-text search over commit messages. Shorthand for `log --query <query>`.
+    #[command(after_long_help = crate::cli::help_code::GIT_SEARCH)]
     Search {
         query: String,
         /// Only commits whose author name or email holds every one of these terms. Matched against
@@ -142,8 +149,10 @@ pub enum GitCmd {
         max_tokens: Option<u32>,
     },
     /// One commit with its full message and changed files. Shorthand for `log --rev <rev>`.
+    #[command(after_long_help = crate::cli::help_code::GIT_SHOW)]
     Show { rev: String },
     /// Commits where a symbol's body changed. Shorthand for `log --path <path> --symbol <name>`.
+    #[command(after_long_help = crate::cli::help_code::GIT_SYMBOL_HISTORY)]
     SymbolHistory {
         path: String,
         name: String,
@@ -157,6 +166,7 @@ pub enum GitCmd {
         cursor: Option<String>,
     },
     /// Blame for one symbol's line span. Shorthand for `blame <path> --symbol <name>`.
+    #[command(after_long_help = crate::cli::help_code::GIT_BLAME_SYMBOL)]
     BlameSymbol {
         path: String,
         name: String,
@@ -176,12 +186,14 @@ pub enum GitCmd {
     },
     /// Symbols a file gained or lost since a revision. Shorthand for
     /// `diff <path> --structural --from <rev>`.
+    #[command(after_long_help = crate::cli::help_code::GIT_DIFF_OUTLINE)]
     DiffOutline {
         path: String,
         #[arg(long)]
         rev: Option<String>,
     },
     /// Top-K hot files by commit count over a recent window (CLI only).
+    #[command(after_long_help = crate::cli::help_code::GIT_CHURN)]
     Churn {
         #[arg(long)]
         window: Option<u32>,
@@ -192,6 +204,7 @@ pub enum GitCmd {
     /// longest function and importers, listing files with two or more signals in the top 10% of
     /// the files changed in the window. Raw numbers, no score; branch and nesting counts are not
     /// measured (CLI only).
+    #[command(after_long_help = crate::cli::help_code::GIT_HOTSPOTS)]
     Hotspots {
         /// Window ending at HEAD's commit time: `<N>d`, `<N>w` or `<N>y` (default `90d`).
         #[arg(long)]
@@ -204,6 +217,7 @@ pub enum GitCmd {
         limit: Option<u32>,
     },
     /// Commits whose changed paths match a regex (CLI only).
+    #[command(after_long_help = crate::cli::help_code::GIT_BY_PATH)]
     ByPath {
         pattern: String,
         #[arg(long)]

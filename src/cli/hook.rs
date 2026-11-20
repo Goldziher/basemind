@@ -27,6 +27,7 @@ exit 0
 pub enum HookCmd {
     /// Write a pre-commit hook that runs `basemind scan --staged`. Honours `core.hooksPath`, works
     /// in linked worktrees, and never blocks a commit.
+    #[command(after_long_help = crate::cli::help::HOOK_INSTALL)]
     Install {
         /// Replace an existing pre-commit hook that basemind did not write (the old one is kept as
         /// `pre-commit.bak`, or `pre-commit.bak.1`, `.bak.2`, ... when earlier backups exist).

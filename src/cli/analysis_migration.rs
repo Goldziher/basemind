@@ -19,6 +19,7 @@ pub enum MigrationCmd {
     /// Remaining uses of the old forms a migration's rules name, per rule and file, and its
     /// progress across checks (CLI only). Rules live in `.basemind/migrations/<name>.toml`; each
     /// run is recorded in the workspace cache directory, never the repository.
+    #[command(after_long_help = crate::cli::help_code::CODE_MIGRATION_CHECK)]
     Check {
         /// The migration (`.basemind/migrations/<name>.toml`); every rule file when omitted.
         name: Option<String>,

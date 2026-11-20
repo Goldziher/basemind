@@ -10,15 +10,20 @@ use clap::{Args, Subcommand};
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
 pub enum AgentCmd {
     /// Post a message: into a thread, as a reply, or as the first message of a new thread.
+    #[command(after_long_help = crate::cli::help::AGENT_POST)]
     Post(PostArgs),
     /// Read messages, bodies inline. Marks what it returns as read unless `--peek` or
     /// `--announce` is set.
+    #[command(after_long_help = crate::cli::help::AGENT_INBOX)]
     Inbox(InboxArgs),
     /// List, discover or describe threads, or make one change to a thread.
+    #[command(after_long_help = crate::cli::help::AGENT_THREADS)]
     Threads(ThreadsArgs),
     /// Report who this checkout acts as and the state of the daemon's agent store (CLI only).
+    #[command(after_long_help = crate::cli::help::AGENT_STATUS)]
     Status,
     /// Archive threads whoever created them, then run one retention sweep (CLI only).
+    #[command(after_long_help = crate::cli::help::AGENT_CLEANUP)]
     Cleanup(CleanupArgs),
     /// Answer a plugin hook event read on stdin (CLI only; for the hooks).
     Hook {

@@ -35,7 +35,7 @@ mod stdio_relay;
 #[command(
     name = "basemind",
     version,
-    about = "File-watcher and code-map generator using tree-sitter",
+    about = "Code map, document search, git history, memory and agent messaging for coding agents",
     long_about = None,
     arg = basemind::cli::help_json::flag()
 )]
@@ -76,16 +76,21 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Initialize (or refresh) basemind onboarding: write basemind.toml, gitignore the cache, and
-    /// inject a "prefer basemind over grep/read/git" rules block. Re-runnable and idempotent.
+    /// Initialize (or refresh) basemind onboarding: write basemind.toml, inject a "prefer basemind
+    /// over grep/read/git" rules block, and gitignore the `.local` files it writes. Re-runnable and
+    /// idempotent.
+    #[command(after_long_help = basemind::cli::help::INIT)]
     Init(basemind::cli::init::InitArgs),
     /// Run a one-shot scan over the repository and write the code map. With a basemind daemon
     /// running, a working-tree scan is forwarded to it, the workspace's writer.
+    #[command(after_long_help = basemind::cli::help::SCAN)]
     Scan(ScanArgs),
     /// Re-index the working tree (full) or only the given paths (incremental). Use after
     /// edits, or to rebuild a stale/empty index without starting the server.
+    #[command(after_long_help = basemind::cli::help::RESCAN)]
     Rescan(RescanArgs),
     /// Long-running watcher; keeps the code map current as files change.
+    #[command(after_long_help = basemind::cli::help::WATCH)]
     Watch,
     /// Read the code map: outline, symbols, read, grep, search, refs, find (plus shorthands).
     #[command(subcommand)]
@@ -110,20 +115,26 @@ enum Cmd {
     },
     /// Check this installation and workspace: root, config, index, grammars, hook, daemon. Exits 1
     /// when a check fails.
+    #[command(after_long_help = basemind::cli::help::DOCTOR)]
     Doctor,
     /// Index health for this workspace: file counts, languages, scan age.
+    #[command(after_long_help = basemind::cli::help::STATUS)]
     Status,
     /// The repository's shape in one call: languages, top-level layout, build manifests and entry
     /// points, the largest and most-imported files, HTTP routes, naming conventions, recent commits.
+    #[command(after_long_help = basemind::cli::help::OVERVIEW)]
     Overview(basemind::cli::overview::OverviewArgs),
     /// Print a shell completion script to stdout (`basemind completions zsh > _basemind`).
+    #[command(after_long_help = basemind::cli::help::COMPLETIONS)]
     Completions {
         /// Shell to generate completions for.
         shell: clap_complete::Shell,
     },
     /// Print the man page (roff) to stdout (`basemind man > basemind.1`).
+    #[command(after_long_help = basemind::cli::help::MAN)]
     Man,
     /// Print the offline manual: the overview and topic list, or one topic's page. Needs no index.
+    #[command(after_long_help = basemind::cli::help::MANUAL)]
     Manual(basemind::cli::manual::ManualArgs),
     /// Manage downloaded tree-sitter grammars.
     Lang {
@@ -133,6 +144,7 @@ enum Cmd {
     /// Run an MCP server for a stdio client: ensure the daemon (the real server) is up, then relay
     /// this process's stdin/stdout to it. HTTP-native clients skip this and dial the daemon URL
     /// directly (see `daemon ensure`).
+    #[command(after_long_help = basemind::cli::help::SERVE)]
     Serve {
         /// Host the agent-launch supervisor in this process (ADR-0040): answer `agent_launch` and
         /// `agent_stop` on this stdio, as the operator's user-level agents.toml allows. Without
@@ -142,13 +154,16 @@ enum Cmd {
     },
     /// Print a compact one-line summary of the daemon's currently-hot workspaces, for a shell
     /// statusline. Fast and silent: prints nothing and exits 0 when no daemon is running.
+    #[command(after_long_help = basemind::cli::help::STATUSLINE)]
     Statusline,
     /// Tool-use counts from the local Claude Code and Codex transcripts of this repository and its
     /// worktrees, subagents listed with their parent session: basemind calls against shell searches
     /// and whole-file reads. Counts and paths only. Sessions of a worktree that has been removed
     /// are not counted.
+    #[command(after_long_help = basemind::cli::help::SESSIONS)]
     Sessions(basemind::cli::sessions::SessionsArgs),
-    /// Manage the machine-global caches (gc / stats / clear). Offline path.
+    /// Manage the machine-global caches (gc / stats / clear). Runs in this process, never through
+    /// the daemon.
     #[command(subcommand)]
     Cache(basemind::cli::admin::CacheCmd),
     /// Before a release-minor rebuild: `--plan` prints, per repository group and workspace, what
@@ -189,6 +204,7 @@ enum Cmd {
 enum DaemonCmd {
     /// Ensure the daemon is running and its HTTP transport is ready, then print the base MCP URL.
     /// Idempotent — a no-op when a current daemon already answers.
+    #[command(after_long_help = basemind::cli::help::DAEMON_ENSURE)]
     Ensure,
 }
 
@@ -200,21 +216,26 @@ enum DaemonCmd {
 #[derive(Subcommand, Debug)]
 enum CommsLifecycleCmd {
     /// Run the broker loop: bind the singleton socket, serve front-ends, block until shutdown.
+    #[command(after_long_help = basemind::cli::help::COMMS_DAEMON)]
     Daemon,
     /// Ensure the daemon is running (spawn if needed); noop when already alive.
+    #[command(after_long_help = basemind::cli::help::COMMS_START)]
     Start,
     /// Ask the running daemon to drain and stop. With `--all`, stop EVERY live daemon of this
     /// version's protocol generation on this machine, not just the one for the current comms dir.
+    #[command(after_long_help = basemind::cli::help::COMMS_STOP)]
     Stop {
         /// Stop every live daemon of this protocol generation on this machine, not just the current one.
         #[arg(long)]
         all: bool,
     },
-    /// Report the daemon's pid / version / uptime / room + subscriber counts.
+    /// Report the daemon's pid, version, build, protocol generation, uptime and agent-store state.
+    #[command(after_long_help = basemind::cli::help::COMMS_STATUS)]
     Status,
     /// List every live daemon of this version's protocol generation on this machine (pid / comms
     /// dir / version / uptime) and flag any pile-up over the ceiling. Prunes dead registry entries
     /// as a side effect. Reports process liveness only unless --probe is given.
+    #[command(after_long_help = basemind::cli::help::COMMS_DOCTOR)]
     Doctor {
         /// Also ask each comms daemon whether it can actually serve, and report the verdict per
         /// row. Off by default so the plain report stays RPC-free and safe on a wedged machine.
@@ -226,6 +247,7 @@ enum CommsLifecycleCmd {
     },
     /// Remove rendezvous directories no daemon uses: other protocol generations' and the files
     /// releases up to 0.33 left in the comms directory, when unlocked and idle for 30 days.
+    #[command(after_long_help = basemind::cli::help::COMMS_CLEANUP)]
     Cleanup {
         /// List what would be removed, with sizes, and remove nothing.
         #[arg(long)]
@@ -280,11 +302,14 @@ struct RescanArgs {
 #[derive(Subcommand, Debug)]
 enum LangCmd {
     /// Show installed grammars and where they live.
+    #[command(after_long_help = basemind::cli::help::LANG_LIST)]
     List,
     /// Force-download all supported grammars, plus any `[languages.<name>] preload = true` from
     /// basemind.toml (no-op if already cached).
+    #[command(after_long_help = basemind::cli::help::LANG_INSTALL)]
     Install,
     /// Delete the grammar cache. Next run will redownload.
+    #[command(after_long_help = basemind::cli::help::LANG_CLEAN)]
     Clean,
 }
 
