@@ -177,6 +177,22 @@ class PreToolGuardTests(unittest.TestCase):
         call = self.grep_call({"pattern": "x", "path": "mcp"}, repo / "src", "toplevel")
         self.assertEqual(call, {"pattern": "x", "regex": True, "path": "src/mcp/"})
 
+    def test_grep_tool_without_a_path_is_scoped_to_its_working_directory(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is required")
+        repo = Path(self.tmp) / "repo"
+        (repo / "package" / "src").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        cases = (
+            ({}, "package/"),
+            ({"glob": "src/*.rs"}, "package/src/*.rs"),
+            ({"glob": "*.rs"}, "package/**/*.rs"),
+        )
+        for index, (scope, path) in enumerate(cases):
+            with self.subTest(scope=scope):
+                call = self.grep_call({"pattern": "x", **scope}, repo / "package", f"cwd-{index}")
+                self.assertEqual(call, {"pattern": "x", "regex": True, "path": path})
+
     def test_other_bash_commands_are_ignored(self) -> None:
         commands = (
             "ls -la",
