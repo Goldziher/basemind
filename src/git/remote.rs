@@ -6,10 +6,8 @@
 use super::Repo;
 
 impl Repo {
-    /// URL of the `origin` remote, or `None` when no `origin` is configured.
-    ///
-    /// Used to derive a stable "scope" key for shared agent memory: two clones of the
-    /// same repo into different workdirs should share memory entries.
+    /// URL of the `origin` remote, or `None` when no `origin` is configured. [`scope_key`]
+    /// derives the repository's scope from it.
     pub fn remote_url(&self) -> Option<String> {
         let local = self.local();
         let remote = local.try_find_remote("origin")?.ok()?;
@@ -18,11 +16,14 @@ impl Repo {
     }
 }
 
-/// Derive the per-repo "scope" key used by the LanceDB tables and shared agent memory.
+/// Derive the per-repo "scope" key used by the LanceDB tables, the registry and agent memory.
 ///
-/// Prefers the normalised `origin` remote URL — stable across clones, machines, and
-/// directory moves. Falls back to `path:<workdir-realpath>` when no remote is configured
-/// (e.g. local-only experiments).
+/// The normalised `origin` remote URL, else `path:<workdir>` (this worktree's directory, so the
+/// worktrees of a repository without `origin` get distinct keys). For memory it is only a key
+/// prefix inside the store, and the store itself is per repository group
+/// (`crate::store_layout::repo_group_key`, the main worktree's path): two clones at different
+/// paths share a scope but not their notes, and changing `origin` hides the notes filed under the
+/// old one.
 pub fn scope_key(repo: &Repo) -> String {
     match repo.remote_url() {
         Some(url) => normalize_remote_url(&url),

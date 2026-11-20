@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:fe427a1bf267bc1c8811e278c57d6ec884b738c881289fa7c7892ecb530267c3
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:717c9d9fbe2f97784a5947f6eddd389459b8000805be995750be93e96b3aafcd
+Source-Hash: blake3:951eafac5643b83de7bb272f00a1fa31360a17418c51549c404cf6e95e391204
 Schema-Version: v1
 -->
 
@@ -220,5 +220,6 @@ the caller can fix is a tool result with `isError` whose text names the fix.
 - Git commands require basemind to be running inside a git repository.
 - `code search` needs the `code-search` Cargo feature and the `memory` commands need `documents` /
   `memory` (all in `--features full` and in the release binary).
-- Memory is scoped by the normalized `origin` remote URL — clones of the same repo share memory;
-  unrelated repos do not see each other's entries.
+- Memory is one store per repository, keyed by the path of its main worktree: its worktrees
+  share notes (per worktree when it has no `origin`); another clone, a moved repository or a
+  changed `origin` does not see them.

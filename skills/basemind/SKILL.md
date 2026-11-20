@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:963975b86c644b84228ad38dab363b6fdb52d3326d3bab8ba9905d0556674e52
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:f1990003ec56766b2937f987acdf509216cc175551b6be945328f5a8c89987a1
+Source-Hash: blake3:951eafac5643b83de7bb272f00a1fa31360a17418c51549c404cf6e95e391204
 Schema-Version: v1
 -->
 
@@ -208,9 +208,9 @@ A 1000-line file becomes a 30-line table of contents.
 - `code_search` needs the `code-search` Cargo feature, `docs_search` needs `documents`, and the
   memory tools need `memory` (all in `--features full` and in the release binary). Without the
   feature the tool answers with an error naming it.
-- Memory is scoped by the normalised `origin` remote URL (`git@github.com:Foo/bar.git` and
-  `https://github.com/Foo/bar/` collapse to the same scope key): clones of the same repo share
-  memory; unrelated repos do not see each other's entries.
+- Memory is one store per repository, keyed by the path of its main worktree: its worktrees
+  share notes (per worktree when it has no `origin`); another clone, a moved repository or a
+  changed `origin` does not see them.
 - `docs_search` searches this repo's scope by default. Pages an older version ingested from the web
   stay under scope `web:<host>` and are no longer refreshed; pass `"scope":"web:<host>"` to search
   one host's pages.
