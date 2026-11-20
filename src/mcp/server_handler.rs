@@ -58,9 +58,12 @@ impl ServerHandler for BasemindServer {
             Err(busy) => return Ok(rmcp::model::CallToolResponse::Complete(busy.into_tool_result())),
         };
         if self.cli && CLI_ONLY.contains(&request.name.as_ref()) {
-            return super::admission::holding(admission, self.cli_only_call(&request.name, request.arguments))
-                .await
-                .map(rmcp::model::CallToolResponse::Complete);
+            return super::admission::holding(
+                std::sync::Arc::new(admission),
+                self.cli_only_call(&request.name, request.arguments),
+            )
+            .await
+            .map(rmcp::model::CallToolResponse::Complete);
         }
         let client_supports_tasks = context.client_capabilities().is_some_and(|caps| caps.supports_tasks());
         if client_supports_tasks && tasks::is_slow_tool(&request.name, request.arguments.as_ref()) {
@@ -68,18 +71,22 @@ impl ServerHandler for BasemindServer {
         }
         let cancel_aware = tasks::is_cancel_aware_read(&request.name, request.arguments.as_ref());
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        // Pure read-only heavy calls race the client's cancellation: the handler future is dropped
-        // the moment the request is cancelled. The admission permit is held by the call's blocking
-        // work too, so it is released only once that work has ended.
+        // Pure read-only calls race the client's cancellation and the admission deadline: the handler
+        // future is dropped the moment either fires, and the call's admission is abandoned so blocking
+        // work it left running no longer holds the heavy lane.
         // Mutating calls never take this branch — see `tasks::CANCEL_AWARE_READS`.
-        let ct = tcc.request_context.ct.clone();
-        let call = super::admission::holding(admission, self.tool_router.call(tcc));
-        let response = if cancel_aware {
-            tasks::run_until_cancelled(ct.cancelled(), call).await?
-        } else {
-            call.await?
-        };
-        Ok(response)
+        if cancel_aware {
+            let ct = tcc.request_context.ct.clone();
+            let deadline = self.heavy_admission.deadline();
+            return match tasks::run_bounded_read(admission, ct, deadline, self.tool_router.call(tcc)).await {
+                // ~keep Like `server_busy`: the agent reads a stop it can act on; a CLI keeps the error.
+                Err(stopped) if !self.cli && tasks::is_deadline_exceeded(&stopped) => Ok(
+                    rmcp::model::CallToolResponse::Complete(super::tool_contract::tool_error(stopped.message)),
+                ),
+                answered => answered,
+            };
+        }
+        super::admission::holding(std::sync::Arc::new(admission), self.tool_router.call(tcc)).await
     }
 
     /// SEP-2663 `tasks/get`: report the current state of a spawned task. Thin delegation to the

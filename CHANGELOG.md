@@ -726,6 +726,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current limit (`limit`) and a `note` naming the sysctl to raise. The daemon log warns once per
   pass that leaves more directories unwatched instead of once per directory. A refused directory is
   retried whenever its subtree is armed again.
+- A `code_search`, `docs_search` or `code_grep` that runs past 150 s is stopped (#217): it answers
+  `deadline_exceeded` (`-32004` for a CLI), its cancellation token fires, and its heavy-admission
+  permit moves to an overflow pool as large as the heavy lane, so the next heavy call is admitted.
+  A hung read used to keep its permit until the daemon restarted, and every later heavy call
+  (`docs_search`, `index_rescan`, CLI `code_search`) was refused with `server_busy`. A client that
+  cancels such a read frees the lane the same way. Abandoned reads beyond the overflow pool keep
+  their lane permit, so hung work stays bounded.
+
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

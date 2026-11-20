@@ -196,9 +196,9 @@ mod tests {
         assert_eq!(answered.is_error, Some(false));
     }
 
-    /// A cancelled `code_search` drops its handler future, but the body keeps running on the
-    /// blocking pool. Its heavy permit must stay taken until the body ends, or each retry of a
-    /// timed-out call would start one more concurrent model run.
+    /// An aborted handler future leaves its body running on the blocking pool. Unless the call is
+    /// abandoned ([`super::super::admission::Admission::abandon`]), its heavy permit stays taken
+    /// until the body ends, or each retry of a dropped call would start one more concurrent run.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_dropped_call_keeps_its_heavy_permit_until_its_blocking_body_ends() {
         use super::super::admission::{HeavyAdmission, WorkClass, holding};
@@ -208,7 +208,7 @@ mod tests {
         let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let call = tokio::spawn(holding(
-            permit,
+            Arc::new(permit),
             blocking_answer(move || {
                 let _ = started_tx.send(());
                 let _ = release_rx.recv();
@@ -228,6 +228,56 @@ mod tests {
         while admission.admit(WorkClass::Heavy).await.is_err() {
             assert!(std::time::Instant::now() < deadline, "the permit was never released");
         }
+    }
+
+    /// A `docs_search` that hangs past its deadline must not hold the heavy lane: the next heavy
+    /// call is admitted while the expired body still runs, and the body was told to stop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_heavy_read_past_its_deadline_lets_the_next_heavy_call_in() {
+        use super::super::admission::{Admission, HeavyAdmission, WorkClass};
+        use super::super::tasks::run_bounded_read;
+
+        let deadline = std::time::Duration::from_millis(100);
+        let admission = HeavyAdmission::new(1, std::time::Duration::from_millis(50)).with_deadline(deadline);
+        let permit = admission.admit(WorkClass::Heavy).await.expect("the one permit");
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let ct = tokio_util::sync::CancellationToken::new();
+
+        let expired = run_bounded_read(
+            permit,
+            ct.clone(),
+            admission.deadline(),
+            blocking_answer(move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                Ok(CallToolResult::success(Vec::new()))
+            }),
+        )
+        .await
+        .expect_err("the call outlived its deadline");
+
+        assert!(
+            expired.message.starts_with("deadline_exceeded: "),
+            "{}",
+            expired.message
+        );
+        assert!(super::super::tasks::is_deadline_exceeded(&expired));
+        assert_eq!(expired.code, ErrorCode(-32004));
+        assert_eq!(
+            expired.data,
+            Some(serde_json::json!({ "deadline_secs": 0, "retryable": true }))
+        );
+        assert!(ct.is_cancelled(), "the expired work was told to stop");
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the body is still running");
+        let next = admission
+            .admit(WorkClass::Heavy)
+            .await
+            .expect("the next heavy call is admitted while the expired body still runs");
+        assert!(matches!(next, Admission::Heavy(_)));
+        release_tx.send(()).expect("release the body");
     }
 
     #[test]
