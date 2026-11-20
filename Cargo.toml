@@ -50,6 +50,12 @@ homepage = "https://basemind.ai"
 keywords = ["mcp", "agent-context", "rag", "code-map", "tree-sitter"]
 categories = ["command-line-utilities", "development-tools"]
 
+# docs.rs builds without network access. tree-sitter-language-pack's build script downloads its
+# parser sources unless TSLP_OFFLINE is set, and the documentation needs none of them. CI's
+# `docs.rs build` job runs `cargo doc` offline with these arguments.
+[package.metadata.docs.rs]
+cargo-args = ["--config", 'env.TSLP_OFFLINE="1"']
+
 [workspace]
 members = [
   "crates/basemind-agents",
