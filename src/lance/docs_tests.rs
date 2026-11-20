@@ -43,6 +43,12 @@ fn store() -> (tempfile::TempDir, DocStore) {
 
 fn seeded() -> (tempfile::TempDir, DocStore) {
     let (dir, store) = store();
+    seed(&store);
+    (dir, store)
+}
+
+/// Write the shared fixture's documents to `store` and build their indexes.
+fn seed(store: &DocStore) {
     // The nearest rows to [1,0,0,0] are all markdown; the one PDF row is the farthest.
     let mut docs: Vec<DocRows> = (0..30)
         .map(|i| {
@@ -76,7 +82,6 @@ fn seeded() -> (tempfile::TempDir, DocStore) {
     ));
     store.write(&docs).unwrap();
     store.maintain_indexes().unwrap();
-    (dir, store)
 }
 
 #[test]
@@ -318,4 +323,83 @@ fn a_search_side_open_of_a_mismatched_store_refuses_and_wipes_nothing() {
         .unwrap()
         .expect("store exists");
     assert!(reopened.present(&["kept".to_string()]).unwrap().contains_key("kept"));
+}
+
+/// A writer's open of the store a search opened first keeps the search's handle. Lance caches an
+/// index with the IO loop of the store runtime that loaded it; a second store on the directory read
+/// that cached index (the posting lists of terms the first search never asked for) through a loop
+/// nobody drove once the search's store was dropped, and the search hung for ever.
+#[test]
+fn a_writer_open_after_a_search_open_keeps_its_store_and_later_searches_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("docs");
+    // Seeded through a session of its own, so nothing this process caches comes from its runtime.
+    let seeding = DocStore {
+        lance: LanceStore::open_with(
+            &path,
+            DIM,
+            "test-model",
+            crate::lance::OPEN_LOCK_WAIT,
+            &tables(DIM),
+            crate::lance::session::bounded(1 << 20, 1 << 20),
+        )
+        .unwrap(),
+        gate: sweep_gate(&path),
+        created: true,
+    };
+    seed(&seeding);
+    drop(seeding);
+
+    let searched = DocStore::shared_existing(&path, DIM, "test-model")
+        .unwrap()
+        .expect("store exists");
+    assert_eq!(
+        searched
+            .lexical("harbour", &DocPredicate::default(), 10, false)
+            .unwrap()
+            .len(),
+        10
+    );
+    let written = DocStore::shared(&path, DIM, "test-model").unwrap();
+    assert!(
+        std::sync::Arc::ptr_eq(&searched.lance.inner, &written.lance.inner),
+        "the writer opened a second store beside the search's"
+    );
+    drop(searched);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let hits = written
+            .lexical("barrier", &DocPredicate::default(), 10, false)
+            .map(|hits| {
+                let mut found: Vec<(String, u32)> = hits.into_iter().map(|h| (h.doc_key, h.chunk_ord)).collect();
+                found.sort_unstable();
+                found
+            })
+            .map_err(|error| format!("{error:#}"));
+        tx.send(hits).ok();
+    });
+    let hits = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("a search after the writer's open hung");
+    assert_eq!(hits, Ok(vec![("pdf".to_string(), 0), ("pdf".to_string(), 1)]));
+}
+
+/// A handle a search opened is not adopted once its directory was rebuilt for another dimension:
+/// the writer opens the store again.
+#[test]
+fn a_writer_open_reopens_a_store_rebuilt_since_the_search_opened_it() {
+    let (dir, store) = store();
+    seed(&store);
+    drop(store);
+    let path = dir.path().join("docs");
+    let searched = DocStore::shared_existing(&path, DIM, "test-model")
+        .unwrap()
+        .expect("store exists");
+    let meta = path.join(crate::lance::META_FILE);
+    let before = std::fs::read_to_string(&meta).unwrap();
+    let rebuilt = before.replace("\"dim\": 4", "\"dim\": 8");
+    assert_ne!(rebuilt, before, "the fixture rewrites the recorded dimension");
+    std::fs::write(&meta, rebuilt).unwrap();
+    assert!(!searched.lance.adopt_tables(&tables(DIM)).unwrap());
 }

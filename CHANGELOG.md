@@ -716,6 +716,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `docs_search` no longer hangs in the daemon after a scan writes to the document store a search
+  opened first (#217). The writer opened a second store on the directory, and a later query read the
+  full-text index cached by the first through that store's dropped runtime, waiting for ever on a
+  posting list for a term no earlier query had used. The writer now adopts the search's store.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
