@@ -20,7 +20,8 @@ fn every_known_variant() -> Vec<CommsError> {
         CommsError::NotMember { thread: id.clone() },
         CommsError::ThreadClosed { thread: id.clone() },
         CommsError::NotCreator { thread: id.clone() },
-        CommsError::ThreadArchived { thread: id },
+        CommsError::ThreadArchived { thread: id.clone() },
+        CommsError::ThreadArchivedByCap { thread: id, cap: 256 },
         CommsError::MultipleUpdates {
             fields: vec!["join".to_string(), "archive".to_string()],
         },
@@ -99,7 +100,7 @@ fn error_carries_its_code_fields_and_rendered_message() {
 #[test]
 fn every_variant_round_trips_through_json_and_msgpack() {
     let variants = every_known_variant();
-    assert_eq!(variants.len(), 27, "a new variant belongs in this list");
+    assert_eq!(variants.len(), 28, "a new variant belongs in this list");
     for error in variants {
         let json = serde_json::to_value(&error).expect("json");
         assert_eq!(json["message"], error.to_string(), "{error:?}");
@@ -254,6 +255,20 @@ fn refusals_say_what_to_do_next() {
                 cap: 256,
             },
             "more than 256 members: invite fewer",
+        ),
+        (
+            CommsError::ThreadArchivedByCap {
+                thread: thread("t-aaaaab"),
+                cap: 256,
+            },
+            "limit of 256 active threads",
+        ),
+        (
+            CommsError::ThreadArchivedByCap {
+                thread: thread("t-aaaaab"),
+                cap: 256,
+            },
+            "posting with `subject`, naming its members in `to`",
         ),
         (
             CommsError::from(InvalidId::new(IdKind::Thread, "backend")),

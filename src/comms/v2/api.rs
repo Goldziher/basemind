@@ -439,8 +439,9 @@ pub struct InboxReply {
     /// Set with `more` on a read that marks nothing; pass it back as `cursor` to continue.
     #[serde(default)]
     pub next_cursor: Option<Cursor>,
-    /// Things the agent should know that are not about this request. Appended by the daemon and
-    /// the tool layer; an [`AgentOps`] implementation leaves it empty.
+    /// Things the agent should know that are not about this request. An [`AgentOps`]
+    /// implementation puts [`cap_archived_member_notice`] and [`swept_notice`] here and nothing
+    /// else; the daemon and the tool layer append theirs.
     #[serde(default)]
     pub notices: Vec<String>,
     /// How the wait ended.
@@ -507,7 +508,8 @@ pub struct ThreadsReply {
 ///
 /// Every operation takes the [`Caller`] the daemon derived. An actor counts as seen once any of
 /// these returns `Ok` for it; nothing is recorded, seen included, on a store newer than the
-/// binary. No operation fills `notices`, except a post with [`cap_archive_notice`].
+/// binary. No operation fills `notices`, except a post with [`cap_archive_notice`] and an inbox
+/// read with [`cap_archived_member_notice`] and [`swept_notice`].
 ///
 /// No operation removes a record or hides one for its age: that is an implementation's sweep.
 pub trait AgentOps: Send + Sync {
@@ -727,11 +729,39 @@ pub fn shared_identity_notice(caller: &Actor, sessions: usize) -> Option<String>
 }
 
 /// The notice a creating post carries when it archived `thread` to stay within
-/// [`MAX_ACTIVE_THREADS_PER_REPO`]. Only the poster is told.
+/// [`MAX_ACTIVE_THREADS_PER_REPO`]. The members of `thread` are told by
+/// [`cap_archived_member_notice`].
 pub fn cap_archive_notice(thread: &ThreadId) -> String {
     format!(
         "this repository was at its limit of {MAX_ACTIVE_THREADS_PER_REPO} active threads, so the least recently \
          active one, {thread}, was archived: it stays readable with agent_inbox `thread` and takes no more posts."
+    )
+}
+
+/// The notice an inbox read over all the caller's threads carries for `thread`, which the thread
+/// cap archived and in which `unread` stored messages from other agents are unread by the caller.
+/// A read over all threads does not return them, so the notice says how to.
+pub fn cap_archived_member_notice(thread: &ThreadId, unread: u64) -> String {
+    format!(
+        "thread {thread} was archived because its repository reached its limit of {MAX_ACTIVE_THREADS_PER_REPO} \
+         active threads; {unread} of its messages are unread by you. A read over all your threads leaves it out: \
+         read it with agent_inbox `thread`. It takes no more posts: continue in a new thread by posting with \
+         `subject`."
+    )
+}
+
+/// Seconds in a day, for saying how long a message is kept.
+const DAY_SECS: u64 = 24 * 60 * 60;
+
+/// The notice an inbox read carries for `thread` when a sweep removed `swept` messages of it past
+/// where the caller stood, before it read them. The sweep cannot tell whose they were, so the
+/// count includes any the caller posted itself.
+pub fn swept_notice(thread: &ThreadId, swept: u64) -> String {
+    format!(
+        "{swept} messages of thread {thread} past your read position were removed by retention before you read \
+         them (messages are kept {} days, the newest {MAX_MESSAGES_PER_THREAD} per thread); any of your own \
+         posts among them count too. They cannot be read.",
+        MESSAGE_TTL.as_secs() / DAY_SECS
     )
 }
 

@@ -9,6 +9,14 @@
 //! What the budget mostly pays for is the caller's own posts, which no read returns. A read that
 //! writes records how far it walked over nothing else (`Position::pass_own`), so the next read
 //! starts past them; a peek continues past them with its cursor.
+//!
+//! A read over all the caller's threads leaves out the archived ones, but tells the caller about
+//! each one the thread cap archived, with how many of its messages are unread
+//! ([`rules::tells_cap_archive`]). A marking read records that it told, in the caller's marks.
+//!
+//! A read also says how many messages a sweep removed from a thread past where the caller
+//! stood in it ([`rules::reports_swept`]). The first row a thread's walk finds gives that away,
+//! so it costs no row of its own; the notice holds until a read takes the caller past the gap.
 
 use ahash::AHashSet;
 
@@ -16,7 +24,7 @@ use super::records::{MessageMeta, Reader, ThreadRecord};
 use super::{Txn, keys};
 use crate::comms::v2::api::{
     Actor, Caller, CommsError, Cursor, InboxBody, InboxMessage, InboxReply, InboxSelect, MAX_LIMIT, MessageId,
-    ReadKind, ThreadId,
+    ReadKind, ThreadId, cap_archived_member_notice, swept_notice,
 };
 use crate::comms::v2::rules::{self, BodyForm, Delivered, DeliveredRange, Position};
 
@@ -51,7 +59,14 @@ pub(super) fn read(
     }
     let only = body.thread();
     let after = rules::cursor_position(kind, body.cursor.as_ref(), actor, only)?;
-    let covered = covered(reader, caller, only)?;
+    let tells = rules::tells_cap_archive(kind, after.is_some());
+    let Scope { covered, untold } = scope(reader, caller, only, tells)?;
+    let mut notices = Vec::with_capacity(untold.len());
+    for thread in &untold {
+        let floor = thread.position.floor(ReadKind::Marking);
+        let unread = reader.unread(&thread.id, floor, thread.record.head, actor)?;
+        notices.push(cap_archived_member_notice(&thread.id, unread));
+    }
     let mut merge = Merge::new(reader, &covered, kind, actor, after)?;
     let rendered = std::iter::from_fn(|| match merge.next() {
         Ok(Some((lane, seq, meta))) => {
@@ -75,6 +90,11 @@ pub(super) fn read(
         _ => None,
     };
     let messages: Vec<InboxMessage> = page.into_iter().map(|(_, message)| message).collect();
+    for (thread, lane) in covered.iter().zip(&merge.lanes) {
+        if let Some(swept) = lane.swept(thread.record.head) {
+            notices.push(swept_notice(&thread.id, swept));
+        }
+    }
     let mut read_to = Vec::new();
     let mut ranges = Vec::new();
     if kind.writes() {
@@ -106,11 +126,21 @@ pub(super) fn read(
                 txn.set_position(reader.ks, &thread.id, actor, position)?;
             }
         }
+        for thread in &untold {
+            let told = Position {
+                told_cap_archive: true,
+                ..thread.position
+            };
+            txn.set_position(reader.ks, &thread.id, actor, told)?;
+        }
     }
-    if let (Some(key), Some(delivered)) = (replay_key, Delivered::of(ranges, more)) {
+    if let (Some(key), Some(delivered)) = (replay_key, Delivered::of(ranges, more, notices.clone())) {
         txn.remember(reader.ks, key, &delivered)?;
     }
-    Ok(rules::inbox_reply(messages, read_to, more, next_cursor))
+    Ok(InboxReply {
+        notices,
+        ..rules::inbox_reply(messages, read_to, more, next_cursor)
+    })
 }
 
 /// The rows of one covered thread a read walks, in sequence order.
@@ -126,6 +156,9 @@ struct Lane {
     lower: Option<u64>,
     /// The rows walked, in order, and whether each is one the read returns.
     walked: Vec<(u64, bool)>,
+    /// The sequence number the walk started at, when it started where the caller stands and
+    /// the read reports what a sweep removed there.
+    start: Option<u64>,
 }
 
 impl Lane {
@@ -145,6 +178,20 @@ impl Lane {
             passed = Some(*seq);
         }
         Ok(passed)
+    }
+
+    /// How many sequence numbers from where the walk started, up to `head`, hold no message
+    /// because a sweep removed it: those below the first row walked, or all of them when the walk
+    /// found none. `None` when there are none, the walk did not report them, or it was not
+    /// walked.
+    fn swept(&self, head: u64) -> Option<u64> {
+        let start = self.start?;
+        let first = match self.walked.first() {
+            Some((seq, _)) => *seq,
+            None if self.rows.is_none() => head + 1,
+            None => return None,
+        };
+        Some(first - start).filter(|swept| *swept > 0)
     }
 }
 
@@ -174,11 +221,13 @@ impl Merge {
                 first = first_past(reader, &thread.id, first, last, after)?;
             }
             let rows: Option<Rows> = (first <= last).then(|| Box::new(reader.metas(&thread.id, first..=last)) as Rows);
+            let start = (rows.is_some() && rules::reports_swept(kind, after.is_some())).then_some(first);
             lanes.push(Lane {
                 rows,
                 front: None,
                 lower: None,
                 walked: Vec::new(),
+                start,
             });
         }
         Ok(Self {
@@ -258,39 +307,64 @@ struct Covered {
     stored: bool,
 }
 
-/// The threads a read covers, in id order: the one thread named, or every active thread the
-/// caller's principal is a member of. An archived thread is passed over before its marks are read.
-fn covered(reader: &Reader<'_>, caller: &Caller, only: Option<&ThreadId>) -> Result<Vec<Covered>, CommsError> {
+/// What a read looks at, each list in id order.
+#[derive(Default)]
+struct Scope {
+    /// The threads whose messages it returns: the one thread named, or every active thread the
+    /// caller's principal is a member of.
+    covered: Vec<Covered>,
+    /// The threads the thread cap archived that a read over all threads tells the caller about.
+    untold: Vec<Covered>,
+}
+
+/// The threads a read looks at. A read over all threads passes over an archived thread before its
+/// marks are read, unless the thread cap archived it and the read `tells` of that.
+fn scope(reader: &Reader<'_>, caller: &Caller, only: Option<&ThreadId>, tells: bool) -> Result<Scope, CommsError> {
     let actor = &caller.actor;
-    let ids = match only {
-        Some(id) => vec![id.clone()],
-        None => reader.member_threads(actor.principal())?,
-    };
-    let mut covered = Vec::with_capacity(ids.len());
-    for id in ids {
-        let record = reader.thread(&id)?;
-        if only.is_none() && record.as_ref().is_none_or(|record| record.archived) {
-            continue;
-        }
+    let mut scope = Scope::default();
+    if let Some(id) = only {
+        let record = reader.thread(id)?;
         let position = match &record {
-            Some(_) => reader.position(&id, actor)?,
+            Some(_) => reader.position(id, actor)?,
             None => None,
         };
-        if only.is_some() {
-            let access = record.as_ref().map(|record| record.access(caller, position.is_some()));
-            rules::authorize_read(&id, access.as_ref())?;
-        }
+        let access = record.as_ref().map(|record| record.access(caller, position.is_some()));
+        rules::authorize_read(id, access.as_ref())?;
         if let (Some(record), Some((position, stored))) = (record, position) {
-            covered.push(Covered {
-                id,
+            scope.covered.push(Covered {
+                id: id.clone(),
                 record,
                 position,
                 stored,
             });
         }
+        return Ok(scope);
     }
-    covered.sort_by(|one, other| one.id.cmp(&other.id));
-    Ok(covered)
+    for id in reader.member_threads(actor.principal())? {
+        let Some(record) = reader.thread(&id)? else {
+            continue;
+        };
+        if record.archived && !(record.archived_by_cap && tells) {
+            continue;
+        }
+        let Some((position, stored)) = reader.position(&id, actor)? else {
+            continue;
+        };
+        let thread = Covered {
+            id,
+            record,
+            position,
+            stored,
+        };
+        if !thread.record.archived {
+            scope.covered.push(thread);
+        } else if !position.told_cap_archive {
+            scope.untold.push(thread);
+        }
+    }
+    scope.covered.sort_by(|one, other| one.id.cmp(&other.id));
+    scope.untold.sort_by(|one, other| one.id.cmp(&other.id));
+    Ok(scope)
 }
 
 /// Rebuild a reply from the ranges a read delivered. A message swept since is left out.

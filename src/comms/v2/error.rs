@@ -71,6 +71,16 @@ pub enum CommsError {
         /// The archived thread.
         thread: ThreadId,
     },
+    /// The thread cap archived the thread to make room for a new one in its repository.
+    #[error(
+        "thread {thread} was archived because its repository reached its limit of {cap} active threads, and it takes no more posts: read what is left with agent_inbox `thread`, and continue in a new thread by posting with `subject`, naming its members in `to` (agent_threads `thread` lists them)"
+    )]
+    ThreadArchivedByCap {
+        /// The archived thread.
+        thread: ThreadId,
+        /// The cap.
+        cap: usize,
+    },
     /// More than one of `join`, `leave`, `invite`, `archive` in one call.
     #[error("pass at most one of join, leave, invite, archive; this call set [{}]: make one call per change", .fields.join(", "))]
     MultipleUpdates {
