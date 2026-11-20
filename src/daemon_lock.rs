@@ -322,34 +322,60 @@ fn count_recorded_in(dir: &Path, kind: DaemonKind) -> usize {
         .count()
 }
 
-/// The registry record of the live daemon running as `pid`, whatever its generation or kind: the
-/// releases up to 0.33 record directly in the registry root, later ones in a `g<N>/` below it.
-/// Read-only. For naming the process that holds something this daemon wants; a pid alone does not
-/// say which basemind version it is. A record that does not name the process now under its pid
-/// ([`crate::process_start::can_have_written`]) is passed over: a daemon that was killed left it,
-/// and the number now belongs to something else.
+/// The registry record of the live daemon running as `pid`, whatever its generation or kind (see
+/// [`registered_daemons`]). For naming the process that holds something this daemon wants; a pid
+/// alone does not say which basemind version it is.
 pub fn registered_daemon(pid: u32) -> Option<DaemonRecord> {
     registered_daemon_in(&daemons_root(), pid)
 }
 
 /// [`registered_daemon`] over an explicit registry root.
 fn registered_daemon_in(root: &Path, pid: u32) -> Option<DaemonRecord> {
-    let recorded_in = |dir: &Path| {
+    registered_daemons_in(root)
+        .into_iter()
+        .map(|daemon| daemon.record)
+        .find(|record| record.pid == pid)
+}
+
+/// A live daemon's registry record and where it was found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredDaemon {
+    /// The daemon's record.
+    pub record: DaemonRecord,
+    /// Whether the record sits directly in the registry root, where only releases up to 0.33
+    /// record; a later release records under its generation's `g<N>/`.
+    pub pre_generation: bool,
+}
+
+/// Every live daemon registered under the data home, of every generation and kind: the records in
+/// the registry root first, then those of each `g<N>/`. Read-only. A record that does not name the
+/// process now under its pid ([`crate::process_start::can_have_written`]) is passed over: a daemon
+/// that was killed left it, and the number now belongs to something else.
+pub fn registered_daemons() -> Vec<RegisteredDaemon> {
+    registered_daemons_in(&daemons_root())
+}
+
+/// [`registered_daemons`] over an explicit registry root.
+fn registered_daemons_in(root: &Path) -> Vec<RegisteredDaemon> {
+    let live_in = |dir: &Path, pre_generation: bool| -> Vec<RegisteredDaemon> {
         std::fs::read_dir(dir)
-            .ok()?
+            .into_iter()
+            .flatten()
             .flatten()
             .map(|entry| entry.path())
             .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("pid"))
             .filter_map(|path| read_record(&path))
-            .find(|record| record.pid == pid && pid_is_live(pid) && crate::process_start::can_have_written(record))
+            .filter(|record| pid_is_live(record.pid) && crate::process_start::can_have_written(record))
+            .map(|record| RegisteredDaemon { record, pre_generation })
+            .collect()
     };
-    recorded_in(root).or_else(|| {
-        std::fs::read_dir(root)
-            .ok()?
-            .flatten()
-            .filter(|entry| entry.file_name().to_str().is_some_and(is_generation_name))
-            .find_map(|entry| recorded_in(&entry.path()))
-    })
+    let mut daemons = live_in(root, true);
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        if entry.file_name().to_str().is_some_and(is_generation_name) {
+            daemons.extend(live_in(&entry.path(), false));
+        }
+    }
+    daemons
 }
 
 /// What `<dir>/daemon.lock` says about a daemon in `dir`.

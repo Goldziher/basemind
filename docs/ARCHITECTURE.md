@@ -551,8 +551,8 @@ on-disk component, is in [UPGRADING.md](UPGRADING.md).
 
 Extraction results live in a content-addressed blob store shared by every workspace on the machine
 (`<cache>/cache/blobs/v<schema>/`, one namespace per blob schema, so two installed versions never read
-or overwrite each other's blobs; the sweep also removes un-namespaced blobs and older namespaces once
-past the grace period, and leaves a newer namespace alone); a workspace's `files` (code lane) and `doc_files` (document lane) entries
+or overwrite each other's blobs; the sweep also removes un-namespaced blobs and older namespaces,
+and leaves a newer namespace alone); a workspace's `files` (code lane) and `doc_files` (document lane) entries
 reference blobs by hash. The sweep (`src/store_gc.rs`, `src/store_gc_live.rs`) is tier-aware: a `.doc`
 blob is live only if some workspace's `doc_files` references the hash, and `.fm` / `.chunk` / `.rref`
 blobs only if a `files` entry does. That matters when a path changes tier (a markdown file that used
@@ -570,8 +570,11 @@ Budget eviction never touches a locked, most-recently-used or recently built wor
 budget, which is reported instead); the rules live in `src/store_gc_protect.rs`. The collector heals
 nothing: a view of an older schema or blob layout, or one whose file map does not decode, has no vote
 in the sweep and is passed over without the workspace lock, never removed, and its next writer open
-rebuilds it. An older install may still use such a view, but the view outlives its blobs: the sweep of
-superseded namespaces reaps that install's blobs by age, so it re-extracts them on its next scan.
+rebuilds it. An older install may still use such a view, but the view can outlive its blobs. The sweep
+of superseded namespaces (`src/store_gc_namespaces.rs`) leaves an older version's namespace while a
+live process of that version is registered under the data home (`daemons/`, `hosting/<pid>`) and
+until nothing was written into it for `BASEMIND_PRUNE_AFTER_DAYS` days (14 by default, the launcher's
+retention of an unused version); once it is reaped, that install re-extracts on its next scan.
 
 Before eviction or the orphan reaper removes a workspace, each view whose index still holds the notes
 keyspace of a release before 0.30 has its notes moved to the group store by a writer open under the
