@@ -1,5 +1,14 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Barrier, mpsc};
+use std::time::Duration;
+
 use super::*;
 use crate::index::view::IndexView;
+
+/// How long an open that must not wait for another is given before the test calls it blocked.
+const UNBLOCKED_OPEN_WAIT: Duration = Duration::from_secs(10);
+/// How long the open of a group is held in flight while other opens of the group arrive.
+const IN_FLIGHT_OPEN: Duration = Duration::from_millis(50);
 
 fn no_lock() -> Result<GroupLock, IndexError> {
     Ok(Box::new(()))
@@ -56,6 +65,82 @@ fn one_process_holds_one_handle_per_group() {
         GroupDb::shared(dir.path()).is_none(),
         "the registry holds no strong handle"
     );
+}
+
+#[test]
+fn a_slow_open_of_one_group_does_not_block_an_open_of_another() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (slow_dir, fast_dir) = (dir.path().join("slow"), dir.path().join("fast"));
+    let (slow_dir, fast_dir) = (slow_dir.as_path(), fast_dir.as_path());
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        let slow = scope.spawn(move || {
+            GroupDb::open_shared(slow_dir, move || {
+                entered_tx.send(()).expect("signal the slow open");
+                release_rx.recv().expect("release the slow open");
+                no_lock()
+            })
+            .expect("slow open")
+        });
+        entered.recv().expect("the slow open is in flight");
+        let (opened_tx, opened) = mpsc::channel();
+        let fast = scope.spawn(move || {
+            opened_tx
+                .send(GroupDb::open_shared(fast_dir, no_lock).expect("fast open"))
+                .expect("report the fast open");
+        });
+        let fast_open = opened.recv_timeout(UNBLOCKED_OPEN_WAIT);
+        release.send(()).expect("release the slow open");
+        let slow = slow.join().expect("slow opener");
+        fast.join().expect("fast opener");
+        let fast_open = fast_open.expect("the open of another group waited for the slow open");
+        assert!(!Arc::ptr_eq(&slow, &fast_open), "each group has a handle of its own");
+        assert!(GroupDb::shared(slow_dir).is_some_and(|held| Arc::ptr_eq(&held, &slow)));
+        assert!(GroupDb::shared(fast_dir).is_some_and(|held| Arc::ptr_eq(&held, &fast_open)));
+    });
+}
+
+#[test]
+fn concurrent_opens_of_one_group_open_it_once_and_share_the_handle() {
+    const OPENERS: usize = 8;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (dir, opens, start) = (dir.path(), &AtomicUsize::new(0), &Barrier::new(OPENERS));
+    let handles: Vec<Arc<GroupDb>> = std::thread::scope(|scope| {
+        let openers: Vec<_> = (0..OPENERS)
+            .map(|_| {
+                scope.spawn(move || {
+                    start.wait();
+                    GroupDb::open_shared(dir, move || {
+                        opens.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(IN_FLIGHT_OPEN);
+                        no_lock()
+                    })
+                    .expect("open group")
+                })
+            })
+            .collect();
+        openers
+            .into_iter()
+            .map(|opener| opener.join().expect("opener"))
+            .collect()
+    });
+    assert_eq!(opens.load(Ordering::SeqCst), 1, "the group is opened once");
+    assert_eq!(handles.len(), OPENERS);
+    assert!(handles.iter().all(|handle| Arc::ptr_eq(handle, &handles[0])));
+}
+
+#[test]
+fn a_panic_during_an_open_leaves_the_group_openable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Held so no other test's registry prune drops the slot before it is inspected. ~keep
+    let slot = slot(dir.path());
+    let panicked = std::panic::catch_unwind(|| GroupDb::open_shared(dir.path(), || panic!("the group lock panics")));
+    assert!(panicked.is_err());
+    assert!(slot.is_poisoned(), "the panic poisoned the group's slot");
+
+    let group = open(dir.path());
+    assert!(GroupDb::shared(dir.path()).is_some_and(|held| Arc::ptr_eq(&held, &group)));
 }
 
 #[test]
