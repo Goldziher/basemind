@@ -1,7 +1,9 @@
 //! The blob a scan reuses and the blob sweep's grace.
 
 use super::tests::{full_scan, one_file_repo};
-use crate::store::{Store, VIEW_WORKING, init_isolated_cache};
+use crate::config::ConfigV1;
+use crate::scanner::{EmbedMode, ScanError, ScanSource, scan};
+use crate::store::{Store, VIEW_WORKING, init_isolated_cache, read_status_sidecar};
 
 fn age(blob: &std::path::Path) -> std::time::SystemTime {
     let aged = std::time::SystemTime::now() - std::time::Duration::from_secs(7 * 3600);
@@ -68,5 +70,45 @@ fn a_blob_the_file_map_already_references_is_not_touched_on_reuse() {
     assert!(
         mtime(&blob) < aged + std::time::Duration::from_secs(3600),
         "a referenced blob is left as it was"
+    );
+}
+
+/// A blob write that finds the disk full stops the scan as an index commit that finds it full does:
+/// the scan fails with the fault and its status reads partial. It used to count the file as one
+/// failed extraction and finish a scan that read complete over blobs it never wrote.
+#[test]
+fn a_full_disk_under_a_blob_write_aborts_the_scan_and_its_status_reads_partial() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    // Content of its own: a blob another test already wrote would not be written again. ~keep
+    std::fs::write(
+        root.join("alpha.rs"),
+        b"pub fn blob_write_finds_the_disk_full() -> u32 { 1 }\n",
+    )
+    .expect("write");
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    store.index_db.as_ref().expect("index").fault.inject_blob_write_full(1);
+    crate::disk_space::fake_free_bytes(Some(u64::MAX));
+
+    let outcome = scan(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+        crate::scan_retrieval::Retrieval::inert(),
+    );
+    crate::disk_space::fake_free_bytes(None);
+
+    match outcome {
+        Err(ScanError::IndexFault(reason)) => assert!(reason.starts_with("disk full: "), "{reason}"),
+        other => panic!("expected the full disk to abort the scan, got {other:?}"),
+    }
+    let status = read_status_sidecar(&store.basemind_dir).expect("an aborted scan records its status");
+    assert!(status.partial, "{status:?}");
+    assert!(
+        store.lookup("alpha.rs").is_none(),
+        "a file whose blob was not written is not indexed"
     );
 }
