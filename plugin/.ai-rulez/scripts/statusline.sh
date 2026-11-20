@@ -34,13 +34,13 @@ read_flag() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   case "$value" in
-    "") REPLY="$2" ;;
-    1 | true | yes | on) REPLY=1 ;;
-    0 | false | no | off) REPLY=0 ;;
-    *)
-      REPLY="$2"
-      flag_error="$1=\"$raw\" is not a boolean: use 1, true, yes, on or 0, false, no, off"
-      ;;
+  "") REPLY="$2" ;;
+  1 | true | yes | on) REPLY=1 ;;
+  0 | false | no | off) REPLY=0 ;;
+  *)
+    REPLY="$2"
+    flag_error="$1=\"$raw\" is not a boolean: use 1, true, yes, on or 0, false, no, off"
+    ;;
   esac
 }
 

@@ -248,6 +248,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BASEMIND_STATUSLINE_CONTEXT` / `BASEMIND_STATUSLINE_VERSION`. A misspelt grant such as
   `BASEMIND_ALLOW_HTTP=enabled` used to read silently as false. `BASEMIND_ALLOW_EXTRA_ROOTS` and
   `BASEMIND_ALLOW_DEPENDENCY_ROOTS` still take a list of workspace roots in place of a boolean.
+
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields
   as `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`
