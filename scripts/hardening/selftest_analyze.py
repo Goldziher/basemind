@@ -152,15 +152,36 @@ def healthy(rng: random.Random, load: float = LOAD) -> list[dict[str, Any]]:
     return recs
 
 
-def rss_climb(rng: random.Random) -> list[dict[str, Any]]:
-    """The daemon gains 3 MiB/min for the whole run: a slow linear leak."""
-    recs = healthy(rng)
+def climb(recs: list[dict[str, Any]], pid: int, mib_per_min: float) -> list[dict[str, Any]]:
+    """Grow one process's memory linearly by `mib_per_min` for the whole run."""
     for r in recs:
-        if r.get("kind") == "proc" and r["pid"] == DAEMON:
-            extra = 3 * MIB * r["t"] / 60
+        if r.get("kind") == "proc" and r["pid"] == pid:
+            extra = mib_per_min * MIB * r["t"] / 60
             r["footprint"] += int(extra)
             r["rss"] += int(extra)
     return recs
+
+
+def rss_climb(rng: random.Random) -> list[dict[str, Any]]:
+    """The daemon gains 3 MiB/min for the whole run: a slow linear leak, judged with the #164 waiver
+    lifted (it is inside the block-cache bound)."""
+    return climb(healthy(rng), DAEMON, 3.0)
+
+
+def lsm_cache_fill(rng: random.Random) -> list[dict[str, Any]]:
+    """The daemon gains 20 MiB/min through load: 145 MiB over the 7.25 judged minutes, inside the
+    296 MiB the lsm-tree block caches may fill with dead blocks (#164), so R2 is waived."""
+    return climb(healthy(rng), DAEMON, 20.0)
+
+
+def lsm_past_bound(rng: random.Random) -> list[dict[str, Any]]:
+    """The daemon gains 60 MiB/min: 435 MiB over load, more than its block caches can hold."""
+    return climb(healthy(rng), DAEMON, 60.0)
+
+
+def serve_climb(rng: random.Random) -> list[dict[str, Any]]:
+    """The main serve gains 3 MiB/min: it holds no Fjall database, so no waiver applies."""
+    return climb(healthy(rng), MAIN, 3.0)
 
 
 def late_plateau(rng: random.Random) -> list[dict[str, Any]]:
@@ -189,14 +210,9 @@ def long_plateau(rng: random.Random) -> list[dict[str, Any]]:
 
 
 def slow_leak(rng: random.Random) -> list[dict[str, Any]]:
-    """An hour of load gaining 0.5 MiB/min: under the slope rule's 1 MiB/min, caught by the floor."""
-    recs = healthy(rng, LONG_LOAD)
-    for r in recs:
-        if r.get("kind") == "proc" and r["pid"] == DAEMON:
-            extra = 0.5 * MIB * r["t"] / 60
-            r["footprint"] += int(extra)
-            r["rss"] += int(extra)
-    return recs
+    """An hour of load gaining 0.5 MiB/min: under the slope rule's 1 MiB/min, caught by the floor
+    with the #164 waiver lifted."""
+    return climb(healthy(rng, LONG_LOAD), DAEMON, 0.5)
 
 
 def _add_threads(r: dict[str, Any], n: int, name: str) -> None:
@@ -371,6 +387,9 @@ CASES: list[tuple[str, Callable[[random.Random], list[dict[str, Any]]], int, set
     ("long-plateau", long_plateau, 0, set()),
     ("slow-leak", slow_leak, 1, {"R2f"}),
     ("rss-climb", rss_climb, 1, {"R2"}),
+    ("lsm-cache-fill", lsm_cache_fill, 0, set()),
+    ("lsm-past-bound", lsm_past_bound, 1, {"R2"}),
+    ("serve-climb", serve_climb, 1, {"R2"}),
     ("pool-step", pool_step, 0, set()),
     ("thread-leak", thread_leak, 1, {"R4"}),
     ("journal-fill", journal_fill, 0, set()),
@@ -390,6 +409,12 @@ CASES: list[tuple[str, Callable[[random.Random], list[dict[str, Any]]], int, set
 ]
 
 
+# The cases that model a leak inside the #164 block-cache bound, judged as they will be once the
+# waiver is lifted.
+NO_WAIVER = ["--lsm-cache-mib", "0"]
+CASE_ARGS: dict[str, list[str]] = {"rss-climb": NO_WAIVER, "slow-leak": NO_WAIVER}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path)
@@ -402,7 +427,14 @@ def main() -> int:
         path.write_text("".join(json.dumps(r) + "\n" for r in make(random.Random(11))))
         verdict_path = out / f"{name}.verdict.json"
         proc = subprocess.run(  # noqa: S603
-            [sys.executable, str(HERE / "analyze.py"), str(path), "--json", str(verdict_path)],
+            [
+                sys.executable,
+                str(HERE / "analyze.py"),
+                str(path),
+                "--json",
+                str(verdict_path),
+                *CASE_ARGS.get(name, []),
+            ],
             capture_output=True,
             text=True,
             check=False,

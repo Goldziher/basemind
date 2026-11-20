@@ -22,6 +22,12 @@ from typing import Any
 
 MIB = 1024 * 1024
 
+# The block caches of the Fjall databases the daemon holds for one workspace, in MiB: the group
+# index (`INDEX_CACHE_CEILING_BYTES`, src/index/mod.rs), the memory store (`MEMORY_CACHE_BYTES`,
+# src/index/memory_store.rs), the git history (`CACHE_BYTES`, src/git_history/mod.rs) and the comms
+# store (`CACHE_BYTES`, src/comms/v2/store/open.rs).
+LSM_BLOCK_CACHE_MIB = 256 + 8 + 16 + 16
+
 
 @dataclass
 class Fit:
@@ -58,6 +64,7 @@ class Rule:
     detail: str
     value: str = ""
     threshold: str = ""
+    waived: bool = False
 
 
 @dataclass
@@ -81,6 +88,48 @@ def load(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+@dataclass
+class Growth:
+    whole: Fit
+    half: Fit
+    tol: float
+    first: float
+    last: float
+    minutes: float
+
+    @property
+    def plateaued(self) -> bool:
+        """The second half levelled off: its slope plus two standard errors is under tolerance."""
+        return self.half.slope + 2 * self.half.se < self.tol
+
+    @property
+    def climbing(self) -> bool:
+        return self.whole.slope > self.tol and self.whole.significant and not self.plateaued
+
+    def detail(self, unit: str) -> str:
+        return (
+            f"slope {self.whole.slope:+.3f} {unit}/min (±{2 * self.whole.se:.3f}), second half {self.half.slope:+.3f} "
+            f"(±{2 * self.half.se:.3f}) {unit}/min{' (levelled off)' if self.plateaued else ''}, tolerance {self.tol} "
+            f"{unit}/min; {self.first:.1f} -> {self.last:.1f} {unit} over {self.minutes:.1f} min, n={self.whole.n}"
+        )
+
+    def value(self, unit: str) -> str:
+        return f"{self.whole.slope:+.3f} {unit}/min (2SE {2 * self.whole.se:.3f}; 2nd half {self.half.slope:+.3f})"
+
+
+def measure_growth(points: list[tuple[float, float]], tol: float, scale: float = 1.0) -> Growth | str:
+    """The whole-window and second-half slopes of a series, per minute; a string says why there are none."""
+    if len(points) < 6:  # noqa: PLR2004
+        return f"only {len(points)} samples: nothing to fit"
+    t0 = points[0][0]
+    pts = [((t - t0) / 60.0, y / scale) for t, y in points]
+    whole = fit(pts)
+    half = fit(pts[len(pts) // 2 :])
+    if whole is None or half is None:
+        return "degenerate series"
+    return Growth(whole, half, tol, pts[0][1], pts[-1][1], pts[-1][0])
+
+
 def growth_rule(
     v: Verdict,
     label: str,
@@ -92,27 +141,51 @@ def growth_rule(
     """Fail when the series climbs: the whole-window slope is over tolerance and statistically
     positive, unless the second half demonstrably levelled off (its slope plus two standard errors
     is under tolerance), which is how a cache that filled after warm-up is told from a leak."""
-    if len(points) < 6:  # noqa: PLR2004
-        v.add(label, False, f"only {len(points)} samples: nothing to fit")
+    growth = measure_growth(points, tol, scale)
+    if isinstance(growth, str):
+        v.add(label, False, growth)
         return
-    t0 = points[0][0]
-    pts = [((t - t0) / 60.0, y / scale) for t, y in points]
-    whole = fit(pts)
-    half = fit(pts[len(pts) // 2 :])
-    if whole is None or half is None:
-        v.add(label, False, "degenerate series")
-        return
-    plateaued = half.slope + 2 * half.se < tol
-    climbing = whole.slope > tol and whole.significant and not plateaued
-    first, last = pts[0][1], pts[-1][1]
-    v.add(
-        label,
-        not climbing,
-        f"slope {whole.slope:+.3f} {unit}/min (±{2 * whole.se:.3f}), second half {half.slope:+.3f} "
-        f"(±{2 * half.se:.3f}) {unit}/min{' (levelled off)' if plateaued else ''}, tolerance {tol} {unit}/min; {first:.1f} -> {last:.1f} {unit} over {pts[-1][0]:.1f} min, n={whole.n}",
-        f"{whole.slope:+.3f} {unit}/min (2SE {2 * whole.se:.3f}; 2nd half {half.slope:+.3f})",
-        f"{tol} {unit}/min",
+    v.add(label, not growth.climbing, growth.detail(unit), growth.value(unit), f"{tol} {unit}/min")
+
+
+def lsm_waiver_bound(minutes: float, args: argparse.Namespace) -> float:
+    """The daemon memory slope, in MiB/min, waived as the lsm-tree block cache filling (#164).
+
+    Until lsm-tree evicts the blocks of deleted tables, each Fjall database's block cache fills
+    with dead blocks up to its capacity, so the daemon may grow by at most the sum of its block
+    caches (`--lsm-cache-mib`) over the window judged. A slope above that capacity spread over the
+    window is more than the caches can hold and is not waived. `--lsm-cache-mib 0` lifts the waiver.
+    """
+    return args.lsm_cache_mib / minutes if minutes > 0 else 0.0
+
+
+def _waiver(rate: float, minutes: float, args: argparse.Namespace) -> tuple[bool, str, str]:
+    """Whether a daemon memory `rate` (MiB/min) over `minutes` is waived, the note for its detail and
+    the suffix for its threshold."""
+    if args.lsm_cache_mib <= 0:
+        return False, "; no lsm-tree block-cache waiver (--lsm-cache-mib 0)", ""
+    bound = lsm_waiver_bound(minutes, args)
+    waived = rate <= bound
+    note = (
+        f"; {'waived until #164' if waived else 'over the #164 waiver bound'}: lsm-tree block-cache bound "
+        f"{bound:.3f} MiB/min ({args.lsm_cache_mib:g} MiB of block cache over {minutes:.1f} min)"
     )
+    return waived, note, f"; waived to {bound:.3f} MiB/min until #164"
+
+
+def daemon_memory_rule(v: Verdict, label: str, points: list[tuple[float, float]], args: argparse.Namespace) -> None:
+    """R2 for the daemon: the slope rule, with a climb waived while it stays within the lsm-tree
+    block-cache bound (`lsm_waiver_bound`) and failed above it."""
+    growth = measure_growth(points, args.mem_tol, MIB)
+    if isinstance(growth, str):
+        v.add(label, False, growth)
+        return
+    threshold = f"{args.mem_tol} MiB/min"
+    if not growth.climbing:
+        v.add(label, True, growth.detail("MiB"), growth.value("MiB"), threshold)
+        return
+    waived, note, suffix = _waiver(growth.whole.slope, growth.minutes, args)
+    v.rules.append(Rule(label, waived, growth.detail("MiB") + note, growth.value("MiB"), threshold + suffix, waived))
 
 
 def tables_rule(v: Verdict, role: str, pid: int, series: list[dict[str, Any]], args: argparse.Namespace) -> None:
@@ -213,7 +286,8 @@ def floor_rule(v: Verdict, label: str, points: list[tuple[float, float]], args: 
     window 2 to window 4, per minute between their centres, must stay under `--floor-tol`. Window
     1 is left out because a cache may still be filling there. Runs shorter than
     `--floor-min-minutes` are not judged: over ten minutes a 0.25 MiB/min leak is a few MiB, under
-    the sampling noise.
+    the sampling noise. A rise within the lsm-tree block-cache bound (`lsm_waiver_bound`) is
+    waived until #164.
     """
     if len(points) < 40:  # noqa: PLR2004 - ten samples per window at least
         v.add(label, True, f"not judged: {len(points)} samples")
@@ -228,14 +302,16 @@ def floor_rule(v: Verdict, label: str, points: list[tuple[float, float]], args: 
     centres = [statistics.fmean(t for t, _ in w) / 60.0 for w in windows]
     rate = (floors[3] - floors[1]) / (centres[3] - centres[1])
     rising = floors[1] <= floors[2] <= floors[3] and rate > args.floor_tol
-    v.add(
-        label,
-        not rising,
+    detail = (
         f"window floors {' / '.join(f'{f:.1f}' for f in floors)} MiB, windows 2-4 rise {rate:+.3f} MiB/min "
-        f"(tolerance {args.floor_tol}) over {minutes:.1f} min",
-        f"{rate:+.3f} MiB/min (floors {floors[1]:.1f} / {floors[2]:.1f} / {floors[3]:.1f} MiB)",
-        f"{args.floor_tol} MiB/min",
+        f"(tolerance {args.floor_tol}) over {minutes:.1f} min"
     )
+    value = f"{rate:+.3f} MiB/min (floors {floors[1]:.1f} / {floors[2]:.1f} / {floors[3]:.1f} MiB)"
+    if not rising:
+        v.add(label, True, detail, value, f"{args.floor_tol} MiB/min")
+        return
+    waived, note, suffix = _waiver(rate, minutes, args)
+    v.rules.append(Rule(label, waived, detail + note, value, f"{args.floor_tol} MiB/min{suffix}", waived))
 
 
 def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:  # noqa: C901, PLR0912, PLR0915
@@ -284,15 +360,14 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
         role = "daemon" if pid in daemon_pids else "main serve"
         series = [r for r in by_pid[pid] if r["phase"] == "load"]
         mem_key = "footprint" if series and series[0].get("footprint") is not None else "rss"
-        growth_rule(
-            v, f"R2 {role} {pid} memory ({mem_key})", [(r["t"], r[mem_key]) for r in series], args.mem_tol, "MiB", MIB
-        )
-        if role == "daemon":
-            floor_rule(v, f"R2f daemon {pid} memory floor ({mem_key})", [(r["t"], r[mem_key]) for r in series], args)
-        if mem_key != "rss":
-            growth_rule(
-                v, f"R2 {role} {pid} memory (rss)", [(r["t"], r["rss"]) for r in series], args.mem_tol, "MiB", MIB
-            )
+        for key in dict.fromkeys((mem_key, "rss")):
+            points = [(r["t"], r[key]) for r in series]
+            if role == "daemon":
+                daemon_memory_rule(v, f"R2 daemon {pid} memory ({key})", points, args)
+            else:
+                growth_rule(v, f"R2 {role} {pid} memory ({key})", points, args.mem_tol, "MiB", MIB)
+            if role == "daemon" and key == mem_key:
+                floor_rule(v, f"R2f daemon {pid} memory floor ({key})", points, args)
         if windows:
             # A Windows handle count includes one handle per live thread, so a pool that grows at a
             # concurrency peak and is reaped at idle reads as handle growth (R4 judges threads). The
@@ -537,6 +612,13 @@ def call_table(calls: list[dict[str, Any]], records: list[dict[str, Any]]) -> st
     return "\n".join(lines)
 
 
+def rule_verdict(r: Rule) -> str:
+    """A rule's verdict cell: a waived pass says so, so the waiver stays visible until it is lifted."""
+    if not r.passed:
+        return "**FAIL**"
+    return "waived" if r.waived else "pass"
+
+
 def render(v: Verdict, records: list[dict[str, Any]], source: Path) -> str:
     meta = next((r for r in records if r.get("kind") == "meta"), {})
     end_t = max((r.get("t", 0) for r in records), default=0)
@@ -554,13 +636,14 @@ def render(v: Verdict, records: list[dict[str, Any]], source: Path) -> str:
         "|---|---|---|",
     ]
     for r in v.rules:
-        lines.append(f"| {r.name} | {'pass' if r.passed else '**FAIL**'} | {r.detail.replace('|', '/')} |")
+        lines.append(f"| {r.name} | {rule_verdict(r)} | {r.detail.replace('|', '/')} |")
     for section in v.sections:
         lines += ["", section]
     return "\n".join(lines) + "\n"
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The command line: the input, the report paths and every threshold with its default."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("ndjson", type=Path)
     ap.add_argument("--report", type=Path, help="markdown report path (default: next to the input)")
@@ -573,6 +656,13 @@ def main() -> int:
     )
     ap.add_argument(
         "--floor-min-minutes", type=float, default=30.0, help="load minutes before the floor rule judges (default 30)"
+    )
+    ap.add_argument(
+        "--lsm-cache-mib",
+        type=float,
+        default=LSM_BLOCK_CACHE_MIB,
+        help="daemon block-cache MiB whose filling R2 and R2f waive until #164; 0 lifts the waiver "
+        f"(default {LSM_BLOCK_CACHE_MIB:g})",
     )
     ap.add_argument("--fd-tol", type=float, default=0.2, help="fds/min (default 0.2)")
     ap.add_argument(
@@ -614,7 +704,11 @@ def main() -> int:
     ap.add_argument(
         "--fd-slack", type=int, default=2, help="daemon fds allowed above the pre-session count after a killed serve"
     )
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     try:
         records = load(args.ndjson)
     except (OSError, json.JSONDecodeError) as exc:

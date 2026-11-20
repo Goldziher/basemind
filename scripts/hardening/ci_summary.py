@@ -78,7 +78,8 @@ def soak_rows(reports: Path) -> list[Row]:
     rows = []
     for r in data["rules"]:
         value = r.get("value") or r["detail"][:160]
-        rows.append((f"soak {r['name']}", value, r.get("threshold") or "-", verdict(r["passed"])))
+        cell_verdict = "waived" if r["passed"] and r.get("waived") else verdict(r["passed"])
+        rows.append((f"soak {r['name']}", value, r.get("threshold") or "-", cell_verdict))
     return rows
 
 

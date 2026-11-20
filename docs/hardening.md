@@ -103,8 +103,8 @@ phase only (the first `--warmup` seconds of load are excluded), in units per min
 |---|---|---|---|
 | R0 | fewer than 20 post-warm-up samples for every long-lived process, fewer than 10 idle samples, no tool calls | 20 / 10 | a run that measured nothing must not pass |
 | R1 | more than one daemon pid seen before shutdown | 1 | a replaced daemon is a crash or a takeover; it also resets every slope |
-| R2 memory | slope > 1 MiB/min **and** slope − 2·SE > 0 **and not** (second-half slope + 2·SE < 1 MiB/min) | `--mem-tol 1.0` | 1 MiB/min is 1.4 GiB/day for an always-on daemon: the smallest growth that would matter in practice and still clears sampling noise over a 10-minute window. The significance and plateau clauses let a cache that fills after warm-up and then levels off pass, while a noisy but steady climb still fails. On macOS the gate is the physical footprint (what Activity Monitor and jetsam count); RSS is judged too |
-| R2f memory floor (daemon) | on a load phase of at least `--floor-min-minutes` (30): the 10th-percentile footprint of the last of four equal windows exceeds the second's, the floors rise monotonically, and the rise is over `--floor-tol` per minute between the window centres | `--floor-tol 0.25` MiB/min | a leak under 1 MiB/min is a few MiB over ten minutes, inside the sampling noise, so R2 cannot see it; a percentile floor ignores memtable sawtooth and scan peaks, and leaving out the first window lets a cache that fills and stops pass. 0.25 MiB/min is 360 MiB/day. Measured: a 45-minute soak of the daemon at c121971a had floors 235 / 252 / 275 / 282 MiB (+1.5 MiB/min) |
+| R2 memory | slope > 1 MiB/min **and** slope − 2·SE > 0 **and not** (second-half slope + 2·SE < 1 MiB/min) | `--mem-tol 1.0` | 1 MiB/min is 1.4 GiB/day for an always-on daemon: the smallest growth that would matter in practice and still clears sampling noise over a 10-minute window. The significance and plateau clauses let a cache that fills after warm-up and then levels off pass, while a noisy but steady climb still fails. On macOS the gate is the physical footprint (what Activity Monitor and jetsam count); RSS is judged too. For the daemon a climb is waived until #164 while its slope stays within the lsm-tree block-cache bound (below) and fails above it; the report and the CI summary mark it `waived` |
+| R2f memory floor (daemon) | on a load phase of at least `--floor-min-minutes` (30): the 10th-percentile footprint of the last of four equal windows exceeds the second's, the floors rise monotonically, and the rise is over `--floor-tol` per minute between the window centres | `--floor-tol 0.25` MiB/min | a leak under 1 MiB/min is a few MiB over ten minutes, inside the sampling noise, so R2 cannot see it; a percentile floor ignores memtable sawtooth and scan peaks, and leaving out the first window lets a cache that fills and stops pass. 0.25 MiB/min is 360 MiB/day. Measured: a 45-minute soak of the daemon at c121971a had floors 235 / 252 / 275 / 282 MiB (+1.5 MiB/min); a rise within the lsm-tree block-cache bound is waived until #164, as for R2 |
 | R3 fds | same shape; for the daemon on Linux and macOS the count net of its live Fjall table descriptors (R3t reports those); on Windows the handle count net of the thread count | `--fd-tol 0.2` fds/min | one descriptor lost per five minutes; a per-call or per-session leak under this workload is several per minute. Each Fjall database keeps a descriptor per table it opened and closes it when a compaction deletes the table, so the count follows the tables on disk (R8 judges their growth): a local macOS soak at 2e23216a held 51 -> 54 descriptors, every added one a table file still on disk, while CI soaks counted 56 -> 65 under twice the load. A descriptor on a deleted table is not live and stays judged. A Windows handle count includes one handle per live thread, so a pool step reads as handle growth (soak run 44175503432: handles 234 -> 253 -> 233 beside threads 40 -> 61 -> 39 at baseline, load and idle, handles net of threads 192-196 throughout); R4 judges the threads |
 | R4 threads | the minimum thread count over the idle phase (after the 30 s settle) exceeds the minimum over the quiescent baseline (after the same settle) | `--thread-slack 0` | a leaked thread never exits, while a pool thread (tokio's blocking pool, a reaped worker) exits after its keep-alive once nothing is asked of it; both windows have the same sessions connected and every pool already created, so any thread left over is one load started and never ended. The load slope is reported, not judged: a demand-sized pool steps up at a concurrency peak, and a line fitted through a step reads as growth however bounded the pool is (soak run 44164201786: the daemon stepped 56 -> 61 once at minute 2.3 of load and fell to 38 within 10 s of idle) |
 | R5 | max live processes of the run in the second half of load > max in the first half | 0 extra | sessions and one-shots are sequential, so the census is flat unless something accumulates |
@@ -118,6 +118,27 @@ phase only (the first `--warmup` seconds of load are excluded), in units per min
 | R9 | any transport error (no answer, dead server), any `isError` on a call expected to succeed, an edit not visible after `index_rescan`, a CLI one-shot exiting non-zero | 0 | the workload must have done what it claims |
 
 Every threshold is a flag on `analyze.py`; a rerun with a different value must say so.
+
+#### The lsm-tree block-cache waiver (#164)
+
+Until lsm-tree evicts the blocks of tables a compaction deleted (#164), each Fjall database's block
+cache fills with dead blocks up to its capacity, and the daemon's memory climbs with it however
+little live data it reads. The owner waived that climb until #164 lands, within a stated bound: the
+daemon may grow by no more than the block caches it holds for the soaked workspace, 296 MiB
+(`--lsm-cache-mib`): the group index's 256 MiB (`INDEX_CACHE_CEILING_BYTES`), the memory store's
+8 MiB (`MEMORY_CACHE_BYTES`), the git history's 16 MiB and the comms store's 16 MiB (`CACHE_BYTES`
+in `src/git_history/mod.rs` and `src/comms/v2/store/open.rs`). R2 and R2f turn that capacity into a
+slope bound over the window they judge: 296 MiB divided by the load minutes (16.5 MiB/min over the
+18 judged minutes of a 20-minute soak, 6.9 MiB/min over the 43 of a 45-minute one). A daemon climb
+at or under it passes as `waived`; one above it is more than the caches can hold and fails. The
+waiver covers the daemon only (a `serve` holds no database), and over a short soak the bound is
+loose, since the caches can fill within minutes. `--lsm-cache-mib 0` lifts it, which is how the
+selftest's leak cases are judged and how #164 is closed.
+
+Measured on the soak fixture before the waiver (hardening run 44748515889, 18 judged minutes): the
+daemon's RSS climbed +4.7 MiB/min on Linux (913 -> 992 MiB), its footprint +4.8 MiB/min on macOS
+(levelled off in the second half) and +4.1 MiB/min on Windows (616 -> 793 MiB), each rise inside
+the 296 MiB the caches can hold, while the whole data dir, journals aside, is 31-42 MiB on disk.
 
 ### Reading a failure
 
@@ -148,7 +169,7 @@ latencies.
   records with `ok: false` in the NDJSON.
 
 `selftest_analyze.py` writes synthetic NDJSON for a healthy run, a cache that levels off after
-warm-up, an hour-long run whose cache fills and holds, an hour-long 0.5 MiB/min climb (fails R2f only), a 3 MiB/min climb, a thread pool that steps up mid-load and is reaped at idle (passes), a thread leaked per minute (fails R4), a journal and telemetry log filling under their bounds (passes), a journal past its bound, a comms journal past it, a store climbing outside them and a comms dir climbing (each fails R8), a busy idle, an fd leak, live table descriptors climbing (passes), a daemon pid reused by a process that counts no tables (passes) and an fd leak beside flat tables (fails R3), a leaked child and an empty run, and checks
+warm-up, an hour-long run whose cache fills and holds, an hour-long 0.5 MiB/min climb (fails R2f only) and a 3 MiB/min climb (both judged with the #164 waiver lifted), a daemon climb inside the block-cache bound (passes, waived), one past it and a climbing `serve` (each fails R2), a thread pool that steps up mid-load and is reaped at idle (passes), a thread leaked per minute (fails R4), a journal and telemetry log filling under their bounds (passes), a journal past its bound, a comms journal past it, a store climbing outside them and a comms dir climbing (each fails R8), a busy idle, an fd leak, live table descriptors climbing (passes), a daemon pid reused by a process that counts no tables (passes) and an fd leak beside flat tables (fails R3), a leaked child and an empty run, and checks
 that `analyze.py` passes the healthy and bounded ones and fails each of the others on exactly the rule it targets.
 `soak.py --inject-orphan` leaks a detached `sleep` (cwd: the run's temp root) before the survivor sweep, so a
 real run proves R7 fires.
