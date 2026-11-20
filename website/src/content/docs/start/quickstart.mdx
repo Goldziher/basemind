@@ -30,26 +30,32 @@ and wire agent-instructions rules before you scan.
 
 2. **Find where a symbol is defined**
 
-   <Code code={`basemind code symbols "parseQuery"`} lang="bash" />
+   <Code code={`basemind code symbols "parse_query"`} lang="bash" />
 
-   Output:
+   Output, one definition a line as `<path>:<line>: <signature>`, best match first:
 
-   <Code code={`src/parser.rs:142:1 parseQuery (function)
-src/utils.rs:89:1 parseQuery (type alias)`} lang="text" />
+   <Code code={`results:
+  src/parser.rs:142: pub fn parse_query(input: &str) -> Result<Query>
+  src/cli/args.rs:89: fn parse_query(raw: &str) -> Query`} lang="text" />
 
    Now you know exactly where to read — no grep noise, no manual parsing.
 
 3. **See what calls a function**
 
-   <Code code={`basemind code refs "processFile"`} lang="bash" />
+   <Code code={`basemind code refs "process_file"`} lang="bash" />
 
    Output:
 
-   <Code code={`src/scanner.rs:142:9 processFile
-src/scanner.rs:201:13 processFile
-src/extract.rs:57:20 processFile`} lang="text" />
+   <Code code={`total: 3
 
-   Every place it's called, with line and column numbers.
+hits (3 items):
+  src/scanner.rs:142
+  src/scanner.rs:201
+  src/extract.rs:57`} lang="text" />
+
+   Every place it's called, by file and line. A column is added when two calls share a line, and
+   where the index holds resolution facts for a call, a `resolution` field says how it was bound
+   ([MCP tools](/reference/mcp-tools/)).
 
 4. **Find who last touched a line**
 
@@ -57,9 +63,10 @@ src/extract.rs:57:20 processFile`} lang="text" />
 
    Or drill down to a single symbol:
 
-   <Code code={`basemind git blame-symbol src/main.rs "processFile"`} lang="bash" />
+   <Code code={`basemind git blame-symbol src/main.rs "process_file"`} lang="bash" />
 
-   Shows the last commit, author, and timestamp for each line or symbol.
+   Lists each run of lines with the commit that last changed it, then each of those commits'
+   author, time and summary.
 
 5. **Keep the index fresh**
 
