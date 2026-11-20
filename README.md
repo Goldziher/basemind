@@ -1021,8 +1021,11 @@ extension_denylist = []
 # Embedding scope: with a non-empty embed_include only matching documents are embedded; embed_exclude
 # always wins. Left-out documents stay extracted + keyword-searchable. Editing either (or `embed`)
 # deletes the vector rows of documents that stop being eligible on the next scan.
+# The default embed_exclude keeps structured data out of the vector store: it is searched by exact
+# text (code_grep) and keyword far more than by meaning. Setting the key REPLACES the list:
+# `embed_exclude = []` embeds those formats too.
 embed_include = []
-embed_exclude = []
+embed_exclude = ["*.json", "*.jsonc", "*.json5", "*.jsonl", "*.ndjson", "*.geojson", "*.yaml", "*.yml", "*.toml", "*.csv", "*.tsv", "*.xml"]
 # `extract_archives` is still accepted and ignored: archive extraction was removed, so archives
 # (.zip/.tar/.jar/…) are always skipped, and `true` logs a warning.
 

@@ -123,6 +123,8 @@ include = []  # globs selecting which non-code files become documents (empty = a
 exclude = []  # globs never indexed as documents (wins over include)
 max_file_bytes = 52428800  # per-document size cap (50 MiB), independent of [scan] max_file_bytes
 embed_include = []  # embed only matching documents (empty = all); embed_exclude always wins
+# never embedded, still keyword-searchable; the default is the structured data formats ([] embeds them)
+embed_exclude = ["*.json", "*.jsonc", "*.json5", "*.jsonl", "*.ndjson", "*.geojson", "*.yaml", "*.yml", "*.toml", "*.csv", "*.tsv", "*.xml"]
 
 [documents.reranker]
 enabled = true  # cross-encoder reranking for document chunks

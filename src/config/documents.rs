@@ -113,16 +113,22 @@ pub struct DocumentsConfig {
     pub embed: bool,
     /// Allow-list of globs for embedding: when non-empty only matching documents are embedded; the
     /// rest stay extracted + keyword-searchable. It only narrows what `include`/`exclude` already
-    /// index. Empty (default) = every indexed document is embedded. Only consulted when `embed = true`.
+    /// index. Empty (default) = every indexed document outside `embed_exclude` is embedded. Only
+    /// consulted when `embed = true`.
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub embed_include: Vec<String>,
     /// Glob patterns (repo-relative, forward-slash) for documents that are still extracted +
     /// indexed but **never** embedded. Keeps ONNX vectors off selected large or low-value documents
-    /// while leaving their text searchable by keyword. Beats `embed_include`. Empty by default; only
-    /// consulted when `embed = true`. Changing it removes the vector rows of newly excluded
-    /// documents on the next scan.
-    #[serde(default)]
+    /// while leaving their text searchable by keyword. Beats `embed_include`. The default holds the
+    /// structured data formats (`*.json`, `*.jsonc`, `*.json5`, `*.jsonl`, `*.ndjson`, `*.geojson`,
+    /// `*.yaml`, `*.yml`, `*.toml`, `*.csv`, `*.tsv`, `*.xml`), which are searched by exact text and
+    /// keyword rather than by meaning: they stay chunked, keyword-searchable and visible to
+    /// `code_grep`. Setting the key
+    /// replaces the default list; `embed_exclude = []` embeds them too. Only consulted when
+    /// `embed = true`. Changing it removes the vector rows of newly excluded documents on the next
+    /// scan.
+    #[serde(default = "DocumentsConfig::default_embed_exclude")]
     #[schemars(inner(length(min = 1)))]
     pub embed_exclude: Vec<String>,
     /// Deprecated and ignored: archive extraction was removed, so archives and compressed
@@ -211,6 +217,24 @@ impl DocumentsConfig {
         .map(String::from)
         .to_vec()
     }
+    fn default_embed_exclude() -> Vec<String> {
+        [
+            "*.json",
+            "*.jsonc",
+            "*.json5",
+            "*.jsonl",
+            "*.ndjson",
+            "*.geojson",
+            "*.yaml",
+            "*.yml",
+            "*.toml",
+            "*.csv",
+            "*.tsv",
+            "*.xml",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
     fn default_extract_archives() -> bool {
         false
     }
@@ -267,7 +291,7 @@ impl Default for DocumentsConfig {
             embedding_preset: Self::default_embedding_preset(),
             embed: Self::default_embed(),
             embed_include: Vec::new(),
-            embed_exclude: Vec::new(),
+            embed_exclude: Self::default_embed_exclude(),
             extract_archives: Self::default_extract_archives(),
             max_archive_bytes: Self::default_max_archive_bytes(),
             max_archive_entries: Self::default_max_archive_entries(),
@@ -749,6 +773,31 @@ impl fmt::Display for SecretString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embed_exclude_defaults_to_the_structured_data_formats() {
+        let expected = [
+            "*.json",
+            "*.jsonc",
+            "*.json5",
+            "*.jsonl",
+            "*.ndjson",
+            "*.geojson",
+            "*.yaml",
+            "*.yml",
+            "*.toml",
+            "*.csv",
+            "*.tsv",
+            "*.xml",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(DocumentsConfig::default().embed_exclude, expected);
+        let omitted: DocumentsConfig = toml::from_str("embed = true\n").expect("parse");
+        assert_eq!(omitted.embed_exclude, expected, "an omitted key takes the default");
+        let opted_in: DocumentsConfig = toml::from_str("embed_exclude = []\n").expect("parse");
+        assert!(opted_in.embed_exclude.is_empty(), "an empty list replaces the default");
+    }
 
     #[test]
     fn secret_string_redacts_in_debug() {
