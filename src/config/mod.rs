@@ -12,6 +12,7 @@ pub mod root_guard;
 pub mod rules;
 mod source;
 pub mod trust;
+pub mod user_settings;
 mod v1;
 mod validate;
 

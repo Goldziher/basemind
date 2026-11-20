@@ -15,42 +15,46 @@ pub const AGENTS_POLICY_FILE: &str = "agents.toml";
 /// The top-level table that holds the policy (`[agents.launch]`).
 pub const AGENTS_TABLE: &str = "agents";
 
-/// The operator's agent-launch policy file: `agents.toml` in basemind's configuration directory
-/// under the account's home directory (`~/.config/basemind` on Linux and the other Unixes,
-/// `~/Library/Application Support/basemind` on macOS). The home directory is the user database's
-/// entry for this process's user, never `HOME` or `XDG_CONFIG_HOME`: an MCP host that sets its
-/// servers' environment from a project's settings would otherwise choose the file (ADR-0044).
-/// `None` without such an entry.
+/// basemind's user-level configuration directory under the account's home directory
+/// (`~/.config/basemind` on Linux and the other Unixes, `~/Library/Application Support/basemind` on
+/// macOS). The home directory is the user database's entry for this process's user, never `HOME` or
+/// `XDG_CONFIG_HOME`: an MCP host that sets its servers' environment from a project's settings would
+/// otherwise choose the directory (ADR-0044). `None` without such an entry.
 #[cfg(unix)]
-pub fn policy_path() -> Option<PathBuf> {
+pub fn user_config_dir() -> Option<PathBuf> {
     #[cfg(feature = "test-support")]
     if let Some(home) = std::env::var_os(TEST_ACCOUNT_HOME_ENV) {
-        return Some(policy_path_in(std::path::Path::new(&home)));
+        return Some(user_config_dir_in(std::path::Path::new(&home)));
     }
-    account_home().map(|home| policy_path_in(&home))
+    account_home().map(|home| user_config_dir_in(&home))
 }
 
-/// The home directory [`policy_path`] uses in place of the account's, for tests that run the
+/// The home directory [`user_config_dir`] uses in place of the account's, for tests that run the
 /// binary as a lead. Builds without the `test-support` feature carry neither the variable nor the
-/// branch, so a shipped binary takes the policy from the user database only.
+/// branch, so a shipped binary takes the directory from the user database only.
 #[cfg(all(unix, feature = "test-support"))]
 pub const TEST_ACCOUNT_HOME_ENV: &str = "BASEMIND_TEST_ACCOUNT_HOME";
 
 /// Without a user database, the platform configuration directory.
 #[cfg(not(unix))]
-pub fn policy_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "basemind").map(|dirs| dirs.config_dir().join(AGENTS_POLICY_FILE))
+pub fn user_config_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "basemind").map(|dirs| dirs.config_dir().to_path_buf())
 }
 
-/// The policy file under the home directory `home`.
+/// The operator's agent-launch policy file: `agents.toml` in [`user_config_dir`].
+pub fn policy_path() -> Option<PathBuf> {
+    user_config_dir().map(|dir| dir.join(AGENTS_POLICY_FILE))
+}
+
+/// basemind's configuration directory under the home directory `home`.
 #[cfg(unix)]
-fn policy_path_in(home: &std::path::Path) -> PathBuf {
+fn user_config_dir_in(home: &std::path::Path) -> PathBuf {
     let dir = if cfg!(target_os = "macos") {
         home.join("Library").join("Application Support")
     } else {
         home.join(".config")
     };
-    dir.join("basemind").join(AGENTS_POLICY_FILE)
+    dir.join("basemind")
 }
 
 /// The home directory of this process's effective user, from the user database.
@@ -116,7 +120,10 @@ mod tests {
         } else {
             "/home/u/.config/basemind/agents.toml"
         };
-        assert_eq!(policy_path_in(std::path::Path::new("/home/u")), PathBuf::from(expected));
+        assert_eq!(
+            user_config_dir_in(std::path::Path::new("/home/u")).join(AGENTS_POLICY_FILE),
+            PathBuf::from(expected)
+        );
     }
 
     /// Review 3 N2: `HOME` and `XDG_CONFIG_HOME` name no other file. The test reruns itself with

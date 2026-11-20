@@ -27,7 +27,8 @@ use crate::store::{WORKSPACE_MARKER_FILE, acquire_lock, read_workspace_marker};
 use crate::store_gc::{GcError, GcReport, dir_size, gc_global_blobs_in, read_dir};
 use crate::store_gc_protect::{ProtectedWorkspace, ProtectionReason, cache_grace};
 
-/// Environment variable holding the cache byte budget in MiB. Unset ⇒ the disk-aware default
+/// Environment variable holding the cache byte budget in MiB. Unset ⇒ the user settings'
+/// `[cache] budget_mb` ([`crate::config::user_settings`]), else the disk-aware default
 /// ([`disk_aware_budget`]); `0` ⇒ unlimited (budget enforcement disabled).
 pub const CACHE_BUDGET_ENV: &str = "BASEMIND_CACHE_BUDGET_MB";
 
@@ -45,9 +46,10 @@ const MIB: u64 = 1024 * 1024;
 /// How the cache byte budget is set, when enforcement is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheBudget {
-    /// [`CACHE_BUDGET_ENV`] names the budget, in bytes here; it is enforced as given.
+    /// [`CACHE_BUDGET_ENV`] or the user settings name the budget, in bytes here; it is enforced
+    /// as given.
     Fixed(u64),
-    /// [`CACHE_BUDGET_ENV`] is unset: [`disk_aware_budget`], resolved at every sweep.
+    /// Neither names it: [`disk_aware_budget`], resolved at every sweep.
     DiskAware,
 }
 
@@ -75,6 +77,54 @@ pub fn disk_aware_budget(cache_bytes: u64, free_bytes: Option<u64>) -> u64 {
     free_bytes.map_or(ceiling, |free| {
         ceiling.min(cache_bytes.saturating_add(free) / DISK_SHARE_DIVISOR)
     })
+}
+
+/// Why `budget` cannot hold the cache back: a set budget larger than the cache's `cache_bytes`
+/// plus the `free_bytes` left on its volume, which the disk fills before eviction starts. `None` for
+/// a budget the disk can hold, the disk-aware default (half of that at most), disabled enforcement,
+/// or free space that cannot be read.
+pub fn budget_disk_warning(budget: Option<CacheBudget>, cache_bytes: u64, free_bytes: Option<u64>) -> Option<String> {
+    let Some(CacheBudget::Fixed(budget_bytes)) = budget else {
+        return None;
+    };
+    let free = free_bytes?;
+    let capacity = cache_bytes.saturating_add(free);
+    (budget_bytes > capacity).then(|| {
+        format!(
+            "the cache budget of {} MiB exceeds the {} MiB the disk can hold (the cache's {} MiB plus {} MiB \
+             free), so the disk fills before eviction starts; lower {CACHE_BUDGET_ENV} or `[cache] budget_mb` \
+             in {}, or unset both for the disk-aware default ({} MiB now)",
+            budget_bytes / MIB,
+            capacity / MIB,
+            cache_bytes / MIB,
+            free / MIB,
+            crate::config::user_settings::USER_SETTINGS_FILE,
+            disk_aware_budget(cache_bytes, Some(free)) / MIB,
+        )
+    })
+}
+
+/// [`budget_disk_warning`] for the machine-global cache, measured as a budget pass measures it.
+/// Only a set budget is measured: no other can exceed the disk.
+pub fn cache_budget_warning(data: &DataRoot, budget: Option<CacheBudget>) -> Result<Option<String>, GcError> {
+    cache_budget_warning_at(&data.workspaces_dir(), &data.global_blobs_root(), budget, || {
+        free_bytes_at(&data.cache_dir())
+    })
+}
+
+/// [`cache_budget_warning`] against explicit directories, `free_bytes` reading the volume's free
+/// space.
+pub(crate) fn cache_budget_warning_at(
+    workspaces_dir: &Path,
+    blobs_root: &Path,
+    budget: Option<CacheBudget>,
+    free_bytes: impl FnOnce() -> Option<u64>,
+) -> Result<Option<String>, GcError> {
+    if !matches!(budget, Some(CacheBudget::Fixed(_))) {
+        return Ok(None);
+    }
+    let cache_bytes = occupied_bytes(workspaces_dir, blobs_root, &[])?;
+    Ok(budget_disk_warning(budget, cache_bytes, free_bytes()))
 }
 
 /// Free bytes on the volume holding `dir`, or its closest existing ancestor on a fresh machine;
@@ -254,20 +304,26 @@ struct EvictionCandidate {
     dir: PathBuf,
 }
 
-/// The configured cache budget: [`CACHE_BUDGET_ENV`] in MiB, defaulting to
-/// [`CacheBudget::DiskAware`]; `0` (or an unparseable value, which is logged) disables
-/// enforcement and returns `None`.
+/// The configured cache budget, as [`cache_budget_with`] resolved it when the engine configuration
+/// was installed.
 pub fn cache_budget() -> Option<CacheBudget> {
     crate::config::engine::with(|config| config.gc.budget)
 }
 
-/// A [`CACHE_BUDGET_ENV`] value in MiB, read as [`cache_budget`] documents.
+/// A [`CACHE_BUDGET_ENV`] value in MiB with no user settings, read as [`cache_budget_with`] documents.
 pub fn cache_budget_from(raw: Option<&str>) -> Option<CacheBudget> {
+    cache_budget_with(raw, None)
+}
+
+/// The cache budget from [`CACHE_BUDGET_ENV`]'s value `raw` in MiB, else the user settings'
+/// `[cache] budget_mb` (`settings_mib`), else [`CacheBudget::DiskAware`]. `0` from either, or an
+/// unparseable `raw` (logged), disables enforcement and returns `None`.
+pub fn cache_budget_with(raw: Option<&str>, settings_mib: Option<u64>) -> Option<CacheBudget> {
     let Some(raw) = raw else {
-        return Some(CacheBudget::DiskAware);
+        return settings_mib.map_or(Some(CacheBudget::DiskAware), fixed_mib);
     };
     match raw.trim().parse::<u64>() {
-        Ok(mib) => (mib > 0).then(|| CacheBudget::Fixed(mib.saturating_mul(MIB))),
+        Ok(mib) => fixed_mib(mib),
         Err(_) => {
             crate::config::trust::warn_once(format!(
                 "{CACHE_BUDGET_ENV}={raw:?} is not a number; disabling cache budget enforcement"
@@ -275,6 +331,11 @@ pub fn cache_budget_from(raw: Option<&str>) -> Option<CacheBudget> {
             None
         }
     }
+}
+
+/// A budget of `mib` MiB; `None` (no enforcement) for `0`.
+fn fixed_mib(mib: u64) -> Option<CacheBudget> {
+    (mib > 0).then(|| CacheBudget::Fixed(mib.saturating_mul(MIB)))
 }
 
 /// Path of the persisted last-GC state in the machine-global cache root.
