@@ -21,8 +21,8 @@ x-ai-rulez:
 
 basemind extracts PDFs, Office files, spreadsheets, email, HTML and notebooks (and, in a build with
 OCR, raster images and scanned PDFs) into a LanceDB vector
-store and answers meaning-based queries with cross-encoder reranking. For exact matches in text
-files such as Jupyter notebooks, use a literal or regex file search. Semantic results cannot
+store and answers meaning-based queries with cross-encoder reranking. For exact text in markdown,
+config and data files use `code_grep` (see `basemind-code-search`): semantic results cannot
 establish that a string is absent.
 
 Prefer `docs_search` over opening PDFs/Office/HTML by hand. The tools are always loaded: call them

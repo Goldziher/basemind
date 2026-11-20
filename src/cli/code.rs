@@ -77,7 +77,8 @@ pub enum CodeCmd {
         #[arg(long)]
         end_line: Option<u32>,
     },
-    /// Content search across indexed code files. The pattern is literal text unless `--regex`.
+    /// Exact text search across indexed code, markdown, config and data files. The pattern is
+    /// literal text unless `--regex`.
     Grep {
         pattern: String,
         /// Treat the pattern as a Rust regex.
