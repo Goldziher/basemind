@@ -209,8 +209,17 @@ def tables_rule(v: Verdict, role: str, pid: int, series: list[dict[str, Any]], a
     v.add(
         f"R3t {role} {pid} live LSM table fds",
         True,
-        f"not judged: {tables[0]} -> {tables[-1]} over load, peak {max(tables)}",
+        f"not judged: {tables[0]} -> {tables[-1]} over load, peak {max(tables)}; {_fd_kind_moves(series)}",
     )
+
+
+def _fd_kind_moves(series: list[dict[str, Any]]) -> str:
+    """The descriptor kinds whose count moved over load, for an R3 failure to name what it holds."""
+    first, last = series[0].get("fd_kinds"), series[-1].get("fd_kinds")
+    if first is None or last is None:
+        return "no descriptor kinds recorded"
+    moved = sorted(((last.get(k, 0) - first.get(k, 0), k) for k in set(first) | set(last)), key=lambda m: -abs(m[0]))
+    return "descriptors by kind over load: " + (", ".join(f"{k} {d:+d}" for d, k in moved if d) or "unchanged")
 
 
 def _quiescent(rows: list[dict[str, Any]], phase: str, start: float | None, settle: float) -> list[dict[str, Any]]:

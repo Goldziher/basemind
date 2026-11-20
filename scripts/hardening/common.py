@@ -283,6 +283,32 @@ def live_lsm_table_fds(pid: int) -> int | None:
     return sum(1 for path in proc_open_paths(pid) if is_live_lsm_table(path))
 
 
+def fd_kind(path: str) -> str:
+    """What an open descriptor points at, coarse enough to count over a soak: the outermost Fjall or
+    Lance store it lies in (`index.fjall`, `memory.lance`; `index.fjall tables` for a live table;
+    `index.fjall (deleted)` for a file Linux marks removed), a Linux socket, pipe or anon inode by
+    its type, else `other`."""
+    deleted = path.endswith(" (deleted)")
+    clean = path.removesuffix(" (deleted)")
+    if ":[" in clean or clean.startswith("anon_inode:"):
+        return clean.split(":", 1)[0]
+    store = next((part for part in Path(clean).parts if part.endswith((".fjall", ".lance"))), "other")
+    if deleted:
+        return f"{store} (deleted)"
+    return f"{store} tables" if is_live_lsm_table(clean) else store
+
+
+def fd_kinds(pid: int) -> dict[str, int] | None:
+    """`pid`'s descriptors counted by `fd_kind`; None where open files cannot be listed."""
+    if not (IS_MAC or IS_LINUX):
+        return None
+    counts: dict[str, int] = {}
+    for path in proc_open_paths(pid):
+        kind = fd_kind(path)
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
 def all_pids() -> dict[int, int]:
     """pid -> ppid for every process of this user (every process on Windows)."""
     if IS_WINDOWS:
