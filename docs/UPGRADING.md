@@ -16,7 +16,8 @@ is cleaned up.
 2. Run `basemind comms stop`, so the 0.33 daemon is replaced (see "Upgrading to agent comms v2").
 3. Run `basemind scan`. The index is wiped and rebuilt at its first open, and the blob store moves to
    `cache/blobs/v34/`, so every file is re-extracted and every document re-embedded once (see "What
-   changes on upgrade").
+   changes on upgrade"). Run `basemind upgrade --plan` first to see what that costs, and rebuild one
+   worktree at a time (see "Planning a release-minor rebuild").
 4. Re-run `basemind init` (or `/bm-init`) in each repository that has a basemind rules block. A block
    written by 0.33 or earlier routes agents to `code` mode `outline` and the other retired tools;
    init replaces the block in place with the verb-tool routing. Pass `--yes` when running it
@@ -540,6 +541,33 @@ Also check scripts for these behaviour changes:
   values to 200 characters.
 - `agents` and `workspace` `--json` now use the MCP response shapes
 - MCP logging is gone, and the `memory` tool no longer accepts the `documents.*` / `llm.*` override fields.
+
+## Planning a release-minor rebuild
+
+A release-minor bump rebuilds each view at its first open by the new binary, and on a large
+repository with many worktrees that is gigabytes and minutes. `basemind upgrade --plan` (add
+`--json` for a script) shows the cost first and writes nothing. Run it with the new binary. Per
+repository group it prints:
+
+- the group index (`cache/groups/<group>/index.fjall`): replaced when one of the group's file maps
+  is of an older schema, its size freed, and the free space the scan's check then asks for (1.5x the
+  index plus the `BASEMIND_MIN_FREE_MB` headroom);
+- each workspace and each of its views: kept, rebuilt (with the reason: an older schema, an earlier
+  blob layout, a map that does not decode), set aside (a map whose version cannot be read), or
+  refused (a newer basemind's, left alone), with the bytes of the file maps removed;
+- for a rebuilt working view, the files its last scan indexed and a code-map scan estimate at 4,000
+  files a second (document extraction and embedding come on top), and the command that rebuilds that
+  workspace on its own.
+
+Then the blob store: the namespaces of older schemas and the un-namespaced blobs the sweep reaps once
+they are past the blob grace period, and the space the rebuild writes into the new namespace (the
+largest of those). The total line adds them up beside the free space of the data home's volume.
+
+The verdicts come from the code that acts on them: the writer open's decision for each file map, the
+blob sweep's for each namespace, and the scan's free-space estimate. A view is rebuilt only when
+something opens it for writing, so the rebuild can be staged: run `basemind scan --root <worktree>`
+for one worktree, check `basemind cache stats`, then the next. A session or the daemon that opens a
+workspace rebuilds it too.
 
 ## What changes on upgrade, and how it migrates
 

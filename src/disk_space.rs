@@ -82,12 +82,18 @@ pub fn dir_bytes(dir: &Path) -> u64 {
 /// unreadable free-space figure passes: a platform quirk must not block scans that would have
 /// worked.
 pub fn ensure_free_space(group_dir: &Path) -> Result<(), InsufficientSpace> {
-    let Ok(free) = fs2::available_space(nearest_existing(group_dir)) else {
+    let Some(free) = available_bytes(group_dir) else {
         return Ok(());
     };
     let index_bytes = dir_bytes(&group_dir.join(crate::index::INDEX_DIR));
     let headroom = crate::config::engine::with(|config| config.min_free_bytes);
     evaluate(group_dir, index_bytes, headroom, free)
+}
+
+/// Free bytes on the volume that holds `path`, or would hold it once created. `None` when the
+/// platform does not say.
+pub fn available_bytes(path: &Path) -> Option<u64> {
+    fs2::available_space(nearest_existing(path)).ok()
 }
 
 /// `path` or its closest existing ancestor, since the group dir may not be created yet.
