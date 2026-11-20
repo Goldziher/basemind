@@ -165,3 +165,38 @@ blake3 = "e4bc582c9a7bd40ee2d035278fd1b3d3c8f4e64aa138cc43597ea1c6ec92db80"
 number = 46
 status = "accepted"
 blake3 = "8a401042774da68b2c26959929eeaa90bf6d16c7f7849b534fc673aeba3bd6d2"
+
+[adrs."docs/adr/0047-analysis-commands-and-the-import-graph.md"]
+number = 47
+status = "accepted"
+blake3 = "5205fc31826e865c2508794c1497efe81706fdf0a8c832db8b49b0e6dfaa3944"
+
+[adrs."docs/adr/0048-http-routes-and-client-calls.md"]
+number = 48
+status = "accepted"
+blake3 = "4b13a83f54de0441cb14b9c3fd279f10767117cc98df70888721ff608d5b85ec"
+
+[adrs."docs/adr/0049-reading-outside-the-repository.md"]
+number = 49
+status = "accepted"
+blake3 = "4553a2a993a4eb60bde02a3d4c9185d66b7010f7556eebee4da48031cd22a05d"
+
+[adrs."docs/adr/0050-one-engine-configuration-per-process.md"]
+number = 50
+status = "accepted"
+blake3 = "26e565209276838ed174b83c1f8785abe8269598650e7110bb20385e4e46dc0e"
+
+[adrs."docs/adr/0051-value-gate-for-the-analysis-kinds-and-failed-baselines.md"]
+number = 51
+status = "accepted"
+blake3 = "d12964305ab9c1e859e2449e126dcae7f9f7c45affacda49ab0bf2c915f893f9"
+
+[adrs."docs/adr/0052-rows-as-the-shell-prints-them.md"]
+number = 52
+status = "accepted"
+blake3 = "a3e6312694be687f119a49deaa6c1916ce1bcdee92b76c68bd924c8c4343624c"
+
+[adrs."docs/adr/0053-text-answers-encoded-per-tool.md"]
+number = 53
+status = "accepted"
+blake3 = "9a63b75f67766f21d5187b3a165642c55fabb8f99d1faf69e894916e00beac14"
