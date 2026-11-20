@@ -45,7 +45,9 @@ impl PythonResolver {
     /// binds no export of `<module>`: `from . import views` names `views.py`, not a binding of the
     /// package's `__init__.py`. `package` is the file `<module>` resolved to, if any. A plain module
     /// file has no submodules, so only a package `__init__.py` or a package that resolved to no
-    /// file (a namespace package) is searched. `None` for an import that names no member.
+    /// file (a namespace package) is searched. A package's submodule is looked for beside its
+    /// `__init__.py`, as Python searches the package's `__path__`; a namespace package's under every
+    /// package root. `None` for an import that names no member.
     pub(crate) fn resolve_submodule(
         &self,
         root: &Path,
@@ -55,8 +57,12 @@ impl PythonResolver {
         probes: &mut ProbeSet,
     ) -> Option<RelPath> {
         let name = import.imported.as_deref()?;
-        if package.is_some_and(|package| !is_package_init(package)) {
-            return None;
+        if let Some(package) = package {
+            if !is_package_init(package) {
+                return None;
+            }
+            let package_dir = root.join(package.as_str()?).parent()?.to_path_buf();
+            return module_file(root, &package_dir, &dotted_to_parts(name)?, probes);
         }
         let module = import.specifier.as_str();
         let specifier = if module.ends_with('.') {

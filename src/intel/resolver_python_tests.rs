@@ -76,7 +76,23 @@ fn python_from_import_name_resolves_as_a_submodule() {
             "other",
             Some("pkg/other.py"),
         ),
+        (
+            &["pkg/__init__.py", "pkg/sub.py", "src/pkg/sub.py"],
+            "app.py",
+            Some("pkg/__init__.py"),
+            "pkg",
+            "sub",
+            Some("pkg/sub.py"),
+        ),
         (&["ns/views.py"], "app.py", None, "ns", "views", Some("ns/views.py")),
+        (
+            &["src/ns/views.py"],
+            "app.py",
+            None,
+            "ns",
+            "views",
+            Some("src/ns/views.py"),
+        ),
         (&["pkg.py", "pkg/sub.py"], "app.py", Some("pkg.py"), "pkg", "sub", None),
         (
             &["pkg/__init__.py"],
@@ -120,14 +136,13 @@ fn python_submodule_miss_records_both_candidates() {
         &from_import("pkg", Some("views")),
     );
     assert_eq!(got, None);
-    for candidate in [
-        "src/pkg/views.py",
-        "src/pkg/views/__init__.py",
-        "pkg/views.py",
-        "pkg/views/__init__.py",
-    ] {
+    for candidate in ["pkg/views.py", "pkg/views/__init__.py"] {
         assert!(probes.contains(candidate), "{candidate} must be a recorded probe");
     }
+    assert!(
+        !probes.contains("src/pkg/views.py"),
+        "a package's submodule is not looked for under another root"
+    );
 }
 
 #[test]
