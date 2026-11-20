@@ -1,6 +1,2 @@
-baseline = "v1.13.0"
+baseline = "v1.22.0"
 task_sets = ["governance", "governance-check", "lint-format"]
-
-[overrides.rust]
-version = "1.100.0"
-reason = "main builds on stable 1.100.0; 1.99.1 clippy rejects code main already passes (needless_range_loop in examples/retrieval_bench). Drop at baseline v1.18.0+, which pins 1.100.0."
