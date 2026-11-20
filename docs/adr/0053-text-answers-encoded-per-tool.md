@@ -90,13 +90,16 @@ The text block of a verb tool is written in the encoding that measured fewest to
 
 ## Consequences
 
-- A breaking change to the MCP text of four tools; `docs/UPGRADING.md` ("Text answers") lists them.
-  A client that parsed the text block as JSON reads `structuredContent`, or decodes the text.
+- A breaking change to the MCP text of four tools and of the `basemind://outline` resource;
+  `docs/UPGRADING.md` ("Text answers") lists them. A client that parsed the text block as JSON reads
+  `structuredContent`, or decodes the text.
 - Measured with the gate after the change, recall unchanged everywhere (basemind / tokio, tool
   tokens and ratio): `grep` 39 / 53 tokens, 0.78x / 0.86x; `grep_changed` 47 / 74, 0.83x / 0.98x;
   `read_around` 340 / 231, 1.43x / 1.61x; `outline` 669 / 359, 4.71x / 2.21x; `diff` 381 / 209,
   1.16x / 1.17x; `diff_structural` 114 / 74, 32.19x / 13.46x; `find` 11 / 13, 0.73x / 0.75x. Every
-  other kind is unchanged.
+  other kind is unchanged. These tool tokens are medians over every task of the kind, as `gate.md`
+  prints them, where the table above takes the credited tasks with a baseline; the two differ for
+  `outline` on tokio and for `diff_structural`, whose tasks are not all credited.
 - **`read_around` still fails the 1.5 floor on basemind (1.43x).** What remains over the rows the
   shell prints is the `# <path>` and `## <symbol>` headers: the enclosing symbol is a fact `rg` does
   not give, and this record keeps it. No threshold changes.
