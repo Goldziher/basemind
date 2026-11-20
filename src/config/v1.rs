@@ -383,16 +383,17 @@ impl Default for LanguageConfig {
     }
 }
 
-/// Memory tier selector. `group` (the default) is the shared, cross-agent tier — today's
-/// behavior, with an empty owner segment. `individual` scopes the entry to the calling
-/// agent (owner = its `AgentId`), so two agents can keep private same-key entries.
+/// Memory tier selector. `group` (the default) is the shared, cross-agent tier, with an empty
+/// owner segment. `individual` keys the entry to the workspace's memory owner, the agent id
+/// resolved once when the workspace opens; every caller of that workspace shares the tier, so a
+/// same-key save from any of them replaces the entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
     /// Shared, cross-agent memory (owner segment is empty). The default.
     #[default]
     Group,
-    /// Per-agent memory (owner segment is the caller's `AgentId`).
+    /// Owner-scoped memory (owner segment is the workspace's memory owner).
     Individual,
 }
 
@@ -416,7 +417,7 @@ impl JsonSchema for Visibility {
         schemars::json_schema!({
             "type": "string",
             "enum": ["group", "individual"],
-            "description": "`group` (default, shared across agents) or `individual` (the caller's own)."
+            "description": "`group` (default, cross-agent) or `individual` (the workspace owner's)."
         })
     }
 }

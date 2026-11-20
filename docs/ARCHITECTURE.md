@@ -1147,7 +1147,8 @@ new generation starts empty; the previous generation's store is not imported and
 Repo memory is namespaced by `(scope, visibility, owner)`: the `memory_by_key` Fjall key is
 `(scope, vis_byte, owner, key)` and the LanceDB memory table has `agent_id` + `visibility` columns.
 Group memory (`visibility=group`, default, `owner=""`) is shared across agents in a repo; individual
-memory (`visibility=individual`, `owner=agent_id`) is private to one agent. The vector tables are
+memory (`visibility=individual`, `owner=agent_id`) is keyed to the agent id the workspace resolved
+when it opened, so every caller of that workspace shares it. The vector tables are
 guarded by `VECTOR_STORE_VER`, a table-layout version independent of the release minor (ADR-0037); a
 mismatch wipes them and the notes re-embed into them.
 The notes are not: `memory.fjall` carries its own version (`store_meta`), is never wiped, and a
