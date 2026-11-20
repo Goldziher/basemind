@@ -151,6 +151,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Whole-corpus reads cost less (#280). `code_grep` stops reading files once those read hold more
+  matches than `limit`: a common pattern reads only the files its page needs, `total` then counts
+  those files and `total_is_partial` marks it a lower bound; `next_cursor` pages on as before. The
+  import graph behind `code_refs` importers and cycles and the CLI's impact, cycles, deadcode and
+  overview is built once per index generation however many calls ask for it at the same time, and
+  from its rows as they are read instead of from a copy of all of them.
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
   `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`
