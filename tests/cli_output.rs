@@ -1,5 +1,6 @@
 //! End-to-end checks of the CLI's output contract: human output never shortens a body, the timing
-//! footer stays off stdout, and `--cursor` / `--max-tokens` reach the MCP tool.
+//! footer stays off stdout, `--cursor` / `--max-tokens` reach the MCP tool, a usage error is spelled
+//! as the command line, and `scan` / `rescan` answer `--json`.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -169,4 +170,121 @@ fn human_output_writes_a_row_a_line() {
         "{blame:?}"
     );
     assert_eq!(blame.len(), 5, "{blame:?}");
+}
+
+/// Run `basemind --root <root> <args>` expecting exit `code`; return its stderr.
+fn run_failing(root: &Path, args: &[&str], code: i32) -> String {
+    let out = Command::new(bin())
+        .args(["--root", root.to_str().unwrap()])
+        .args(args)
+        .output()
+        .expect("run basemind");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(code), "{args:?}: {stderr}");
+    assert!(out.stdout.is_empty(), "{args:?} printed on stdout: {}", stdout(&out));
+    stderr
+}
+
+/// A tool's refusal names the command that was typed and its flags, not the MCP tool and its fields:
+/// the tool says `` `code_grep`: `limit` ``, the CLI `` `basemind code grep`: `--limit` ``.
+#[test]
+fn a_usage_error_is_spelled_as_the_command_line() {
+    let dir = build_repo();
+    let refusal = "`--limit` must be at least 1; omit it for the default page size.\n";
+    for (args, command) in [
+        (&["code", "grep", "alpha", "--limit", "0"][..], "basemind code grep"),
+        (
+            &["docs", "search", "releases", "--limit", "0"][..],
+            "basemind docs search",
+        ),
+        (
+            &["memory", "documents", "releases", "--limit", "0"][..],
+            "basemind memory documents",
+        ),
+    ] {
+        let stderr = run_failing(dir.path(), args, 2);
+        let expected = format!("Error: `{command}`: {refusal}");
+        assert!(
+            stderr.ends_with(&expected),
+            "{args:?}: expected {expected:?} in:\n{stderr}"
+        );
+    }
+}
+
+/// `docs search` is `docs_search`, as `memory documents` was: both run the one body, so they exit
+/// alike, and a build without the document tier refuses both in the same words.
+#[test]
+fn docs_search_and_its_old_name_give_the_same_answer() {
+    let dir = build_repo();
+    let answer = |args: &[&str]| {
+        let out = Command::new(bin())
+            .args(["--root", dir.path().to_str().unwrap()])
+            .args(args)
+            .output()
+            .expect("run basemind");
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        let error: Vec<String> = stderr
+            .lines()
+            .skip_while(|line| !line.starts_with("Error: "))
+            .map(str::to_string)
+            .collect();
+        (out.status.code(), error)
+    };
+    let new = answer(&["docs", "search", "releases"]);
+    let old = answer(&["memory", "documents", "releases"]);
+    assert_eq!(new, old);
+    if !cfg!(feature = "documents") {
+        assert_eq!(new.0, Some(1), "{new:?}");
+        assert!(
+            new.1
+                .first()
+                .is_some_and(|line| line.contains("`docs_search` needs the `documents` Cargo feature")),
+            "{new:?}"
+        );
+    }
+}
+
+/// `scan --json` and `rescan --json` print the `index_rescan` response and nothing else on stdout.
+#[test]
+fn scan_and_rescan_print_the_index_rescan_response_as_json() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
+    std::fs::write(root.join("b.rs"), b"pub fn beta() {}\n").unwrap();
+    let canonical = root.canonicalize().expect("canonical root").display().to_string();
+    let report = |args: &[&str]| -> serde_json::Value {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&stdout(&run(root, args))).unwrap_or_else(|e| panic!("{args:?} is not JSON: {e}"));
+        let elapsed = value
+            .as_object_mut()
+            .and_then(|map| map.remove("elapsed_ms"))
+            .unwrap_or_else(|| panic!("{args:?} has no elapsed_ms"));
+        assert!(elapsed.is_u64(), "{args:?}: elapsed_ms {elapsed}");
+        value
+    };
+    let counts = |scanned: u64, updated: u64, skipped_unchanged: u64| {
+        serde_json::json!({
+            "scanned": scanned,
+            "updated": updated,
+            "docs_indexed": 0,
+            "docs_degraded": 0,
+            "docs_text_fallback": 0,
+            "doc_timeouts": 0,
+            "removed": 0,
+            "skipped_unchanged": skipped_unchanged,
+            "skipped_no_lang": 0,
+            "extract_failed": 0,
+            "root": canonical,
+        })
+    };
+
+    assert_eq!(report(&["--json", "scan", "--no-git-history"]), counts(2, 2, 0));
+    assert_eq!(report(&["--json", "scan", "--no-git-history"]), counts(2, 0, 2));
+    std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\npub fn gamma() {}\n").unwrap();
+    assert_eq!(
+        report(&["--json", "rescan", "a.rs", "--no-git-history"]),
+        counts(1, 1, 0)
+    );
 }

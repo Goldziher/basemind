@@ -34,5 +34,8 @@ disagree.
    naming conventions and recent commits (`--sections` picks some, `--limit` sizes each list).
 2. `basemind code outline <path>` before opening a file, `basemind code symbols <name>` to find a
    definition, `basemind code refs <name>` for its call sites, `basemind git log` for history.
-3. Add `--json` to any query command for the response the MCP tool returns.
+3. Add `--json` to any query command for the response the MCP tool returns, and to `scan` or
+   `rescan` for the `index_rescan` response.
 4. `basemind <command> --help` lists a command's flags; this manual explains when to use it.
+   `basemind scan --help-json` (any command) prints the same definition as JSON: positional
+   counts, each flag's names and aliases, and whether it takes a value. It runs nothing.

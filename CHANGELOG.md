@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--help-json` on every command (#332) prints the command's definition as JSON from the clap tree
+  the binary parses with: `positional_count` (`min`, `max`, `null` when unbounded), each positional
+  and flag with its names, aliases, `takes_value`, value name, default, possible values and env
+  variable, and the subcommands. It is answered before argument parsing, so a command missing its
+  required arguments still describes itself, and it touches no workspace, cache or daemon.
+- `basemind docs search <query>` (#262) runs `docs_search`, with the flags `basemind memory documents`
+  took; `memory documents` stays as a hidden alias.
+- `basemind scan --json` and `basemind rescan --json` (#262) print only the `index_rescan` response
+  (`scanned`, `updated`, the document and skip counts, `elapsed_ms`, `root`) on stdout, for a scan run
+  in the process or forwarded to the daemon. `--json` no longer warns that it has no effect there.
+
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
   lists the files importing that file `by_depth`, up to `depth` hops (default 1, max 5), names those
   in an import cycle with it and says when the walk was cut; `relation: "cycles"` lists the import
@@ -143,6 +154,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A usage error a tool raises through the CLI (#262) names the command and its flags as typed:
+  `` `basemind code grep`: `--limit` must be at least 1 `` instead of `` code_grep: `code_grep`: `limit` … ``.
+  Busy errors exit `3` because the tool marks them busy, no longer because their text says "index
+  not available".
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
   `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`

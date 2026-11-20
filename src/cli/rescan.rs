@@ -7,17 +7,52 @@
 //!   escaping the repo, naming the repo root, or neither existing on disk nor indexed.
 //! * [`rescan_via_daemon`] ships the scan to the daemon when one is running. The CLI never runs an
 //!   unlocked in-process scan next to a live daemon.
+//!
+//! [`scan_json`] (and `forwarded_json` for a scan the daemon ran) is what `scan --json` and
+//! `rescan --json` print: the response `index_rescan` gives.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use super::exit::CliExit;
+use crate::engine::ops::index::RescanStats;
+use crate::engine::types::index::RescanResponse;
 
 /// Normalize and validate `raw` rescan targets against `root`, returning absolute paths. Every
 /// problem is reported in one exit-`2` error.
 pub fn resolve_paths(root: &Path, raw: &[String]) -> Result<Vec<PathBuf>> {
     crate::engine::scan::resolve_rescan_paths(root, raw).map_err(CliExit::usage)
+}
+
+/// The `--json` answer of a `basemind scan` or `basemind rescan` of `root` this process ran: the
+/// `index_rescan` response for `stats`, taking `elapsed`.
+pub fn scan_json(stats: &crate::scanner::ScanStats, elapsed: Duration, root: &Path) -> Result<serde_json::Value> {
+    response_json(RescanStats::from(stats), elapsed.as_millis(), root)
+}
+
+/// The `--json` answer of a `basemind scan` or `basemind rescan` of `root` the daemon ran: the
+/// `index_rescan` response for its counts. The daemon reports no per-file skip breakdown, so those
+/// counts read 0, as they do when `index_rescan` is forwarded.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub fn forwarded_json(report: &RescanReport, root: &Path) -> Result<serde_json::Value> {
+    let stats = RescanStats {
+        scanned: report.scanned,
+        updated: report.updated,
+        docs_indexed: report.docs_indexed,
+        docs_degraded: report.docs_degraded,
+        docs_text_fallback: report.docs_text_fallback,
+        doc_timeouts: report.doc_timeouts,
+        removed: report.removed,
+        ..RescanStats::default()
+    };
+    response_json(stats, u128::from(report.elapsed_ms), root)
+}
+
+fn response_json(stats: RescanStats, elapsed_ms: u128, root: &Path) -> Result<serde_json::Value> {
+    let response = RescanResponse::new(stats, elapsed_ms, root.display().to_string());
+    serde_json::to_value(response).context("serialize the scan report")
 }
 
 /// Counts the daemon reports for a forwarded rescan.
@@ -42,8 +77,6 @@ pub fn daemon_is_up() -> bool {
 /// failure here is a real error, never a cue to scan locally.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub fn rescan_via_daemon(root: &Path, paths: Option<Vec<PathBuf>>, full: bool) -> Result<RescanReport> {
-    use anyhow::Context as _;
-
     use crate::comms::client::{ClientHello, CommsClient};
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -71,6 +104,37 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src")).expect("mkdir");
         std::fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").expect("write");
         dir
+    }
+
+    #[test]
+    fn the_scan_report_is_the_index_rescan_response() {
+        let stats = crate::scanner::ScanStats {
+            scanned: 4,
+            updated: 2,
+            skipped_unchanged: 1,
+            skipped_no_lang: 1,
+            removed: 3,
+            docs_indexed: 5,
+            ..crate::scanner::ScanStats::default()
+        };
+        let value = scan_json(&stats, Duration::from_millis(42), Path::new("/repo")).expect("json");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "scanned": 4,
+                "updated": 2,
+                "docs_indexed": 5,
+                "docs_degraded": 0,
+                "docs_text_fallback": 0,
+                "doc_timeouts": 0,
+                "removed": 3,
+                "skipped_unchanged": 1,
+                "skipped_no_lang": 1,
+                "extract_failed": 0,
+                "elapsed_ms": 42,
+                "root": "/repo",
+            })
+        );
     }
 
     #[test]

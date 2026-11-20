@@ -67,7 +67,7 @@ pub(crate) fn cmd_lang_list(no_color: bool) -> Result<()> {
 }
 
 pub(crate) fn cmd_lang_install(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Result<()> {
-    crate::bootstrap_grammars(verbosity, no_color)?;
+    crate::bootstrap_grammars(&mut render::stdout(no_color), verbosity)?;
     if verbosity != Verbosity::Quiet {
         let summary = basemind::lang::ensure_grammars().map_err(|e| anyhow::anyhow!("{e}"))?;
         if !summary.did_download() {
