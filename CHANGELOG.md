@@ -200,6 +200,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BASEMIND_DAEMON_MEDIUM_CONCURRENCY` (default half the cores, 2 to 8), so a rescan no longer
   holds them back and they no longer run unbounded. `index_status` reports each class's `limit`,
   `in_use` and `queued` under `admission`.
+- `ATTRIBUTIONS.md` lists every model basemind downloads (#294): the default and opt-in embedding,
+  reranker and NER presets, the Tesseract `eng` data and the o200k tokenizer, each with its upstream
+  model card, pinned mirror revision and licence. All are MIT or Apache-2.0, so no default changes.
 
 ### Changed
 
