@@ -795,6 +795,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`extends React.Component`), a generic type (`implements Repo<T>`, `interface A extends B<T>`) or a
   Python subscript (`Generic[T]`) is now an implementation, named by its last segment.
   `EXTRACT_EPOCH` is 7.
+- **The free-space check counts what a scan writes, not only the index it has**
+  ([#203](https://github.com/Goldziher/basemind/issues/203)). A full scan asked for 1.5x the group
+  index plus 512 MiB, so a first scan, or the first after a release-minor bump, started from an empty
+  index and passed with about 512 MiB free before writing several GB of index rows, blobs and vectors.
+  The check now runs once the walk has listed the candidates and before anything is extracted, and adds
+  3.5x (index rows), 2.5x (blobs) and, when code is embedded, 1.5x (vectors) the bytes of every
+  candidate with a grammar that no file map lists yet. The refusal, in the CLI and from the daemon,
+  states the free and needed bytes and each part of the estimate, and names the blob namespaces and
+  per-view indexes an older release left in the cache, with how each is removed.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
