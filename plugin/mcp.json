@@ -3,7 +3,7 @@
   "mcpServers": {
     "basemind": {
       "type": "stdio",
-      "command": "./scripts/mcp-launch.sh",
+      "command": "./scripts/mcp-launch.cmd",
       "args": [
         "serve"
       ]
