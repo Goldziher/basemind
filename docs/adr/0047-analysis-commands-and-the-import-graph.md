@@ -51,13 +51,13 @@ The eight analyses ship as CLI commands, each with one engine op and no verb too
 | Issue | Command | Engine op |
 |---|---|---|
 | #120 | `basemind code explain <target>` | `src/engine/ops/explain.rs` |
-| #121 | `basemind code impact <target>` | `src/engine/ops/impact.rs` |
+| #121 | `basemind code impact [<target>]` | `src/engine/ops/impact.rs` |
 | #123 | `basemind code deadcode` | `src/engine/ops/deadcode.rs` |
-| #130 | `basemind code migration check <name>` | `src/engine/ops/migration.rs` |
+| #130 | `basemind code migration check [<name>]` | `src/engine/ops/migration.rs` |
 | #131 | `basemind overview` | `src/engine/ops/overview.rs` |
 | #133 | `basemind manual [topic]` | none: pages compiled in from `docs/manual/` |
 | #134 | `basemind git hotspots` | `src/engine/git/hotspots.rs` |
-| #135 | `basemind code cycles [path]` | `src/engine/ops/cycles.rs` |
+| #135 | `basemind code cycles [--path <p>] [--check FROM TO]` | `src/engine/ops/cycles.rs` |
 
 - Every command that reads the index is answered by the daemon: it is a `CLI_ONLY` entry with a
   dispatch arm, and a `cli_only(...)` parity row. `manual` reads no index and prints in the CLI
@@ -104,9 +104,9 @@ refused.
 ### 4. The file-level import edge row
 
 - **Row.** One row per importer in `import_targets`, under the importer's prefix at the reserved
-  `local_start = u32::MAX - 1`, beside `PROBE_MANIFEST_START`. Its value holds the deduplicated
-  first-hop targets with the offset of their first import, a per-edge kind byte, the counts of
-  external and unresolved imports, and the unresolved specifiers (capped). No keyspace is added.
+  `local_start` `FILE_EDGES_START` (`u32::MAX - 1`), beside `PROBE_MANIFEST_START`. Its value holds
+  the deduplicated first-hop targets with the offset of their first import, a per-edge kind byte,
+  the counts of external and unresolved imports, and the unresolved specifiers (capped). No keyspace is added.
   The value is `external:u32 ‖ unresolved:u32 ‖ edges:u32 ‖ edge* ‖ specifier*`, an edge being
   `kinds:u8 ‖ u16:len ‖ target ‖ local_start:u32` and a specifier `u16:len ‖ bytes` (big-endian).
 - **Edge kinds.** `kinds` is a bit set (`EdgeKinds`, `src/index/keys_probe.rs`) of every kind of
@@ -116,15 +116,18 @@ refused.
   parent module contains the child file). An edge with `import` or `module_only` is a runtime
   edge; `local_start` points at its first runtime import, else its first declaration, else its
   first type-only import. An unknown bit or an empty set makes the row malformed.
-- **Writer.** `stitch_cross_file_edges` (`src/intel/xfile.rs`) writes it once a target path is
-  known and before export matching, so barrel files, side-effect imports and unresolved imports are
-  counted. The row is deleted with the importer prefix, so invalidation is inherited.
+- **Writer.** `stitch_cross_file_edges` (`src/intel/xfile.rs`) writes it for the specifier
+  resolvers, and `stitch_module_edges` (`src/intel/module_resolver.rs`) for Rust and Go, once a
+  target path is known and before export matching, so barrel files, side-effect imports and
+  unresolved imports are counted. The row is deleted with the importer prefix, so invalidation is inherited.
   Every change to the row bumps `IMPORT_PROBE_VER` (`src/index/mod.rs`), which forces one
   wholesale pass; the kind byte took it to 5.
 - **Rust and Go resolvers,** file level only (no bindings, no facts), in new
-  `src/intel/module_resolver.rs`, `module_rust.rs` and `module_go.rs`, hooked into
+  `src/intel/module_resolver.rs`, `module_rust.rs` (with `module_rust_crates.rs` for the
+  `Cargo.toml` classification) and `module_go.rs`, hooked into
   `src/intel/resolve_pass.rs`:
-  - Rust: `mod x;` maps to `x.rs` or `x/mod.rs` beside the importer; `use crate::…` to the longest
+  - Rust: `mod x;` maps to its `#[path]` file, else `x.rs` or `x/mod.rs` in the declaring
+    module's directory; `use crate::…` to the longest
     existing module file under the crate root of the nearest `Cargo.toml`; `super::` and `self::`
     are relative.
   - Rust paths that start at a crate name are classified by the package's `Cargo.toml`:
@@ -158,7 +161,7 @@ refused.
 - Every answer reports coverage: per language the resolved, external and unresolved counts, and
   the languages that have no resolver. A repository with no resolvable language answers "no edges:
   no resolver for X", never "no cycles".
-- Transitive caller walks (#120, #121) follow resolved edges only; a `name_only` edge stops at one
+- Transitive caller walks (#120) follow resolved edges only; a `name_only` edge stops at one
   hop and is marked. This keeps out the name-only graph ADR-0017 removed.
 
 ### 6. Each reference says how it was resolved (#125)
@@ -169,9 +172,9 @@ refused.
   |---|---|
   | `same_file` | binds to a definition in the same file |
   | `imported` | binds through an import to a definition in another file |
-  | `scope_resolved` | binds through stack-graph or oxc scope resolution, not an import |
+  | `scope_resolved` | binds in its own file to no indexed definition: a local, a parameter, or an import whose target is not indexed |
   | `elsewhere` | checked; binds to another definition than the one asked for |
-  | `name_only` | no resolution facts for that file or language |
+  | `name_only` | no binding found for the site: matched by name alone |
   | `external` | no definition of the name in the index |
 
   ADR-0048 adds `path_match`. `elsewhere` and `name_only` stay apart: one is a checked negative,
@@ -196,9 +199,9 @@ refused.
   An empty side of a range is `HEAD`, as in git.
 
   The suffix `+importers` adds the depth-1 importers of every changed file through the graph.
-- The scope is a path predicate in each op's existing filter step (`src/engine/filters.rs`), and a
-  post-filter on `code_search`. The response adds `scope_files`. An empty scope answers
-  `scope_files: 0` and is not an error; an unknown rev is refused.
+- The scope is a path predicate (`changed::admits`, `src/engine/changed.rs`) in each op's existing
+  path filter, and a post-filter on `code_search`. The response adds `scope_files`. An empty scope
+  answers `scope_files: 0` and is not an error; an unknown rev is refused.
 
 ## Consequences
 
@@ -211,11 +214,11 @@ refused.
   floor. `callers` and `references` are re-measured after #125 and after the route linking.
 - `resolved` disappears from `code_refs` rows: a breaking change to the answer, taken in 0.34 with
   the rest of the surface.
-- The import graph is as good as the resolvers. Rust `pub use` re-exports and `#[path]` modules
-  under-resolve; an unresolved import is counted, not guessed. A language without a resolver is
-  reported as not analysed by every command that uses the graph.
+- The import graph is as good as the resolvers. Rust `pub use` re-exports are not followed (an
+  importer gets the first hop); an unresolved import is counted, not guessed. A language without a
+  resolver is reported as not analysed by every command that uses the graph.
 - The rebuild of 0.34.0 covers the new row and the `IMPORT_PROBE_VER` bump.
-- `src/intel/resolver.rs` is at 982 lines, so the new resolvers live in their own files.
+- `src/intel/resolver.rs` is near the 1,000-line cap, so the new resolvers live in their own files.
 
 ## Alternatives considered
 
