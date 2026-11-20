@@ -37,11 +37,10 @@ fn parse_since(value: &str) -> Result<String, String> {
     }
 }
 
-/// Run `basemind sessions` for the repository at `root`, reading the roots under the home directory.
+/// Run `basemind sessions` for the repository at `root`, reading the roots under the home directory:
+/// `HOME`, or `USERPROFILE` on Windows, else the account's profile directory.
 pub fn run(root: &Path, json: bool, args: &SessionsArgs) -> Result<()> {
-    let home = directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().to_path_buf())
-        .context("no home directory to read session transcripts from")?;
+    let home = std::env::home_dir().context("no home directory to read session transcripts from")?;
     let report = collect(
         &SessionRoots::under_home(&home),
         &Scope::discover(root),

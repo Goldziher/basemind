@@ -5,9 +5,10 @@
 //! and the subagent transcripts filed under each session, and [`codex::Codex`] reads
 //! `~/.codex/sessions/**/*.jsonl`, where a subagent is a rollout of its own naming its parent. A
 //! transcript counts only when its recorded working directory is inside this repository's main
-//! checkout or one of its worktrees. A subagent is reported on its own and attributed to its parent
-//! session. The roots are fixed and derived from the home directory alone ([`SessionRoots`]);
-//! [`contain`] holds the walk, which follows no symlink and only reads.
+//! checkout or one of its worktrees, a removed one included ([`worktrees`]). A subagent is reported
+//! on its own and attributed to its parent session. The roots are fixed and derived from the home
+//! directory alone ([`SessionRoots`]); [`contain`] holds the walk, which follows no symlink and only
+//! reads.
 //!
 //! Nothing here echoes transcript text: a parser keeps tool names, file paths named as arguments,
 //! error flags, timestamps and token counts, and the report carries counts and repository-relative
@@ -21,7 +22,10 @@ pub mod contain;
 pub mod lexical;
 pub mod shell;
 pub mod tally;
+pub mod worktrees;
 
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -32,6 +36,7 @@ use serde::{Deserialize, Serialize};
 use contain::{Found, RootState};
 use lexical::Lexical;
 use tally::{Counts, RepeatedRead, Tally};
+use worktrees::WorktreeDir;
 
 /// The host a transcript came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -87,10 +92,17 @@ pub struct Checkout {
     lexical: Vec<Lexical>,
 }
 
-/// The checkouts of this repository: the main one and every linked worktree.
+/// The checkouts of this repository: the main one and every linked worktree, and the directories
+/// its removed worktrees are recognised in ([`worktrees`]).
 #[derive(Debug, Clone)]
 pub struct Scope {
     checkouts: Vec<Checkout>,
+    /// Deepest first, so a directory nested in another is tried before it.
+    worktree_dirs: Vec<WorktreeDir>,
+    /// The canonical common git directory, when the scope was discovered from a repository.
+    common: Option<PathBuf>,
+    /// Whether each directory already looked at is a removed worktree.
+    removed: RefCell<AHashMap<PathBuf, bool>>,
 }
 
 impl Scope {
@@ -113,16 +125,25 @@ impl Scope {
                 }
             })
             .collect();
-        Self { checkouts }
+        Self {
+            checkouts,
+            worktree_dirs: Vec::new(),
+            common: None,
+            removed: RefCell::new(AHashMap::new()),
+        }
     }
 
     /// The repository at `root`, its main checkout and its linked worktrees; `root` alone when it is
     /// not in a git repository.
     pub fn discover(root: &Path) -> Self {
         let mut list: Vec<(PathBuf, String)> = Vec::new();
+        let mut common = None;
+        let mut linked_from = 0;
         if let Ok(repo) = gix::discover(root) {
+            common = repo.common_dir().canonicalize().ok();
             if let Some(main) = repo.main_repo().ok().and_then(|m| m.workdir().map(Path::to_path_buf)) {
                 list.push((main, "main".to_owned()));
+                linked_from = 1;
             }
             for worktree in repo.worktrees().unwrap_or_default() {
                 if let Ok(base) = worktree.base() {
@@ -134,20 +155,32 @@ impl Scope {
                 }
             }
         }
-        if list.is_empty() {
+        let found = !list.is_empty();
+        if !found {
             list.push((root.to_path_buf(), "main".to_owned()));
         }
-        Self::new(list)
+        let mut scope = Self::new(list);
+        if let Some(common) = common.filter(|_| found) {
+            let linked = scope.checkouts.get(linked_from..).unwrap_or_default();
+            scope.worktree_dirs = worktrees::dirs(linked, &scope.checkouts, &common);
+            scope.common = Some(common);
+        }
+        scope
     }
 
     pub fn checkouts(&self) -> &[Checkout] {
         &self.checkouts
     }
 
+    /// The directories a removed worktree of this repository is recognised in, deepest first.
+    pub fn worktree_dirs(&self) -> &[WorktreeDir] {
+        &self.worktree_dirs
+    }
+
     /// The checkout `cwd` is in: the checkout directory itself or any directory below it, the
     /// deepest checkout when one is nested in another. A `cwd` with a `..` component is matched only
-    /// by what it resolves to.
-    pub fn matching(&self, cwd: &str) -> Option<&Checkout> {
+    /// by what it resolves to. A removed worktree ([`worktrees`]) is a checkout too.
+    pub fn matching(&self, cwd: &str) -> Option<Cow<'_, Checkout>> {
         self.locate(cwd).map(|located| located.checkout)
     }
 
@@ -163,21 +196,60 @@ impl Scope {
             .canonicalize()
             .ok()
             .map(|path| Lexical::parse(&path.to_string_lossy()));
-        self.checkouts
+        let below = |forms: &[Lexical]| {
+            let lexically = forms.iter().filter(|_| !climbs).find_map(|base| named.strip(base));
+            lexically.or_else(|| resolved.as_ref().and_then(|r| r.strip(forms.first()?)))
+        };
+        let live = self
+            .checkouts
             .iter()
-            .filter_map(|c| {
-                let lexically = c.lexical.iter().filter(|_| !climbs).find_map(|base| named.strip(base));
-                let offset = lexically.or_else(|| resolved.as_ref().and_then(|r| r.strip(c.lexical.first()?)))?;
-                Some(Located { checkout: c, offset })
+            .filter_map(|c| Some((c, below(c.lexical.as_slice())?)))
+            .max_by_key(|(c, _)| c.path.components().count());
+        let depth = live.as_ref().map_or(0, |(c, _)| c.path.components().count());
+        self.removed_worktree(&below, depth).or_else(|| {
+            live.map(|(c, offset)| Located {
+                checkout: Cow::Borrowed(c),
+                offset,
             })
-            .max_by_key(|located| located.checkout.path.components().count())
+        })
+    }
+
+    /// The removed worktree `below` places the working directory in, when it is deeper than `depth`,
+    /// the depth of the live checkout it is in: the child of a [`WorktreeDir`] it is at or below.
+    fn removed_worktree(&self, below: &dyn Fn(&[Lexical]) -> Option<Vec<String>>, depth: usize) -> Option<Located<'_>> {
+        let common = self.common.as_deref()?;
+        self.worktree_dirs
+            .iter()
+            .filter(|dir| dir.path.components().count() >= depth)
+            .find_map(|dir| {
+                let mut offset = below(dir.lexical.as_slice())?;
+                if offset.is_empty() {
+                    return None;
+                }
+                let name = offset.remove(0);
+                let path = dir.path.join(&name);
+                let removed = *self
+                    .removed
+                    .borrow_mut()
+                    .entry(path.clone())
+                    .or_insert_with(|| worktrees::removed(&path, common));
+                removed.then(|| Located {
+                    checkout: Cow::Owned(Checkout {
+                        path,
+                        alias: None,
+                        label: token(&name, ID_MAX).unwrap_or("unparseable").to_owned(),
+                        lexical: dir.lexical.iter().map(|form| form.child(&name)).collect(),
+                    }),
+                    offset,
+                })
+            })
     }
 
     /// A tally whose paths are made relative to `located`'s checkout first, then to every other
     /// checkout; a relative path is taken from `located`'s directory.
     pub fn tally_for(&self, located: &Located<'_>) -> Tally {
         let mut paths = Vec::new();
-        for c in std::iter::once(located.checkout).chain(self.checkouts.iter()) {
+        for c in std::iter::once(located.checkout.as_ref()).chain(self.checkouts.iter()) {
             paths.extend(c.lexical.iter().cloned());
         }
         Tally::new(paths, located.offset.clone())
@@ -186,7 +258,8 @@ impl Scope {
 
 /// A working directory inside a checkout.
 pub struct Located<'a> {
-    pub checkout: &'a Checkout,
+    /// Borrowed from the scope, or owned for a removed worktree.
+    pub checkout: Cow<'a, Checkout>,
     /// The directories below the checkout, empty for the checkout itself.
     pub offset: Vec<String>,
 }
@@ -225,12 +298,14 @@ pub struct Parsed {
 /// What one host's transcripts have already counted, by the ids the host gives them. A fork, a
 /// resumed or reverted conversation and a subagent spawned with its parent's context copy earlier
 /// records with their ids, so a record whose id was seen in an earlier transcript is not counted
-/// again. Transcripts are read oldest first ([`TranscriptParser::written`]).
+/// again; a token count without an id is known by its cumulative totals. Transcripts are read oldest
+/// first ([`TranscriptParser::written`]).
 #[derive(Debug, Default)]
 pub struct Seen {
     calls: AHashSet<String>,
     results: AHashSet<String>,
     responses: AHashSet<String>,
+    token_counts: AHashSet<String>,
 }
 
 impl Seen {
@@ -247,6 +322,12 @@ impl Seen {
     /// Whether the model response `id` is counted for the first time.
     pub fn first_response(&mut self, id: &str) -> bool {
         first(&mut self.responses, id)
+    }
+
+    /// Whether the token count keyed `key` is counted for the first time. A host whose token counts
+    /// carry no id keys one by its cumulative totals, which a copied count repeats verbatim.
+    pub fn first_token_count(&mut self, key: &str) -> bool {
+        first(&mut self.token_counts, key)
     }
 }
 

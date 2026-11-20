@@ -139,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   included: namespaced MCP calls, code-mode `exec` scripts and their nested tool calls, and exit status
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
-  are not counted.
+  count as this repository's.
 
 ### Changed
 
@@ -726,6 +726,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current limit (`limit`) and a `note` naming the sysctl to raise. The daemon log warns once per
   pass that leaves more directories unwatched instead of once per directory. A refused directory is
   retried whenever its subtree is armed again.
+- `basemind sessions` (#162): a session that ran in a worktree since removed counts under that
+  worktree's name instead of `other_directories`. A worktree is removed when its gitdir is gone and
+  `git worktree list` no longer lists it; it is recognised in a directory that holds the
+  repository's live worktrees and no other repository. A Codex reply that calls no tool right
+  after a fork point now counts its output tokens: a copied token count is told by its cumulative
+  totals, not by the call before it. A Claude Code project directory whose slug is exactly 200
+  characters is matched whole, as Claude Code keeps it, and a longer one only by its first 200
+  characters followed by `-`. The transcript roots are under `HOME`, or under `USERPROFILE` on
+  Windows when it is set.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
