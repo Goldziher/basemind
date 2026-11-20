@@ -18,12 +18,12 @@ impl BasemindServer {
     #[tool(
         title = "Commit history",
         description = "Use instead of `git log`/`git show` for \"what changed recently\", \"what \
-        touched this file\", \"which commit mentions X\" or \"what changed this function\". `{}` \
-        lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. A row \
-        is `\"<sha> <summary>\"`, `[introduced]`/`[removed]` after a symbol's sha; recent and \
-        directory lists add `files`: sha to path to change. `rev` shows one commit whole, with \
-        author and time. A symbol's or directory's history pages by commit window: follow \
-        `next_cursor`, even from an empty page (`window`). Example: {\"path\":\"src/store.rs\",\"limit\":5}",
+        touched this file or function\" or \"which commit mentions X\". `{}` lists recent commits; \
+        `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. Rows: `\"<sha> <summary>\"`, \
+        `[introduced]`/`[removed]` for a symbol; recent and directory lists add `files` (sha to \
+        path to change). `rev`: one commit whole. Symbol and directory history is read in commit \
+        batches: an empty page with `next_cursor` is not the end. \
+        Example: {\"path\":\"src/store.rs\",\"limit\":5}",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -40,10 +40,10 @@ impl BasemindServer {
 
     #[tool(
         title = "Blame",
-        description = "Use instead of `git blame` for \"who last changed this\": per-line authorship \
-        of a file, a 1-based `line`..`end_line` span, or one `symbol` (at `rev`). \
-        `hunks`: `\"<line>[-<end>] <sha>[ <old path>]\"` (the rest of the row, when moved); \
-        `commits`: each sha's author, time, summary. \
+        description = "Use instead of `git blame` for \"who last changed this\": per-line \
+        authorship of a file, a 1-based `line`..`end_line` span or one `symbol`, at `rev`. \
+        `hunks`: `\"<line>[-<end>] <sha>[ <old path>]\"` (old path when moved); `commits`: each \
+        sha's author, time and summary. \
         Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
         annotations(
             read_only_hint = true,
@@ -61,10 +61,10 @@ impl BasemindServer {
 
     #[tool(
         title = "Diff and status",
-        description = "Use instead of `git status`/`git diff`. No arguments returns the working-tree \
-        status (staged, modified, untracked; 200 paths per list); a file `path` alone diffs its \
-        working tree against HEAD, or `from`/`to`; `structural` lists the symbols added and \
-        removed, and counts the `common` ones, instead of text hunks. A diff over 200 hunks or 128 KiB is cut (`truncated`). \
+        description = "Use instead of `git status`/`git diff`. No arguments: the working-tree \
+        status (staged, modified, untracked; 200 paths a list). A file `path` diffs its working \
+        tree against HEAD, or `from`/`to`; `structural`: symbols added and removed and a `common` \
+        count. A diff over 200 hunks or 128 KiB is cut (`truncated`). \
         Example: {\"path\":\"src/store.rs\",\"from\":\"HEAD~1\",\"to\":\"HEAD\"}",
         annotations(
             read_only_hint = true,

@@ -416,8 +416,7 @@ impl JsonSchema for Visibility {
         schemars::json_schema!({
             "type": "string",
             "enum": ["group", "individual"],
-            "description": "Memory tier: `group` (default) is shared across agents; `individual` \
-                            scopes the entry to the calling agent."
+            "description": "`group` (default, shared across agents) or `individual` (the caller's own)."
         })
     }
 }

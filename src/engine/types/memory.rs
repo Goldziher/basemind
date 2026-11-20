@@ -35,7 +35,7 @@ pub struct MemorySaveParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MemorySearchToolParams {
-    /// Search notes by meaning. At most one of `query`, `key`, `prefix`; none lists every note.
+    /// Search by meaning. At most one of `query`, `key`, `prefix`; none lists every note.
     #[serde(default)]
     pub query: Option<String>,
     /// Read one note by exact key.
@@ -52,7 +52,7 @@ pub struct MemorySearchToolParams {
     /// Max notes (default 10 for `query`, 100 for a listing). Not with `key`.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// `next_cursor` of the previous listing page. Not with `query` or `key`.
+    /// A prior listing's `next_cursor`. Not with `query` or `key`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
 }

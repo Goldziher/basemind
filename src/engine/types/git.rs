@@ -24,10 +24,10 @@ pub struct GitLogParams {
     /// `query` only.
     #[serde(default)]
     pub author: Option<String>,
-    /// Commits that changed this symbol's body; needs `path`, combines with nothing else but `line`.
+    /// Commits that changed this symbol's body; needs `path`, combines only with `line`.
     #[serde(default)]
     pub symbol: Option<String>,
-    /// With `symbol`: 1-based line inside the definition meant, when several share the name.
+    /// With `symbol`: a 1-based line inside the definition meant.
     #[serde(default)]
     pub line: Option<u32>,
     /// Show this one commit in full; `max_tokens` bounds its file list. Combines with nothing.
@@ -88,7 +88,7 @@ pub struct GitDiffParams {
     /// New revision (default: the working tree). Needs `path`; not with `structural`.
     #[serde(default)]
     pub to: Option<String>,
-    /// Symbol-level diff of `from` against the indexed working tree, instead of text hunks.
+    /// Symbol-level diff of `from` against the indexed working tree, not text hunks.
     #[serde(default)]
     pub structural: Option<bool>,
 }
