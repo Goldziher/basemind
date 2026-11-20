@@ -16,8 +16,9 @@
 //!
 //! An older basemind that is still running may serve a worktree from its old database. Every
 //! release that reads one reads the un-namespaced blobs, so while [`Holds::live`] names
-//! [`BlobNamespace::Unnamespaced`] nothing is deleted. A workspace whose lock another process holds
-//! is skipped.
+//! [`BlobNamespace::Unnamespaced`], or a live basemind's namespace cannot be told
+//! ([`Holds::unidentified`]), nothing is deleted. A workspace whose lock another process holds is
+//! skipped, and so is one holding a view a newer basemind wrote.
 
 use std::path::{Path, PathBuf};
 
@@ -47,25 +48,38 @@ pub(crate) struct LegacyIndexes {
 
 /// Reap the per-view index of every view the group index adopted, under the machine-global cache.
 pub(crate) fn reap_adopted_legacy_indexes(data: &DataRoot) -> Result<LegacyIndexReap, GcError> {
-    reap_adopted_legacy_indexes_in(&data.workspaces_dir(), &Holds::under(data).live)
+    reap_adopted_legacy_indexes_in(&data.workspaces_dir(), &Holds::under(data))
 }
 
 /// Whether a live basemind process may read a per-view index: one of a release that reads the
-/// un-namespaced blobs, all of which kept one database per view, is among the `live` namespaces.
-fn legacy_indexes_in_use(live: &[BlobNamespace]) -> bool {
-    live.contains(&BlobNamespace::Unnamespaced)
+/// un-namespaced blobs, all of which kept one database per view, is among the live namespaces, or
+/// one runs whose namespace cannot be told.
+fn legacy_indexes_in_use(holds: &Holds) -> bool {
+    holds.unidentified || holds.live.contains(&BlobNamespace::Unnamespaced)
+}
+
+/// The paths in `dir`; none when `dir` does not exist. Any other error reading it is returned, so a
+/// walk never passes over what it could not list.
+fn paths_in(dir: &Path) -> Result<Vec<PathBuf>, GcError> {
+    let io = |source| GcError::Io {
+        path: dir.to_path_buf(),
+        source,
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(io(source)),
+    };
+    entries
+        .map(|entry| entry.map(|entry| entry.path()).map_err(io))
+        .collect()
 }
 
 /// The view directories of `workspace` that still hold a per-view index.
-fn views_with_legacy_index(workspace: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(workspace.join(VIEWS_DIR)) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|view| view.join(INDEX_DIR).is_dir())
-        .collect()
+fn views_with_legacy_index(workspace: &Path) -> Result<Vec<PathBuf>, GcError> {
+    let mut views = paths_in(&workspace.join(VIEWS_DIR))?;
+    views.retain(|view| view.join(INDEX_DIR).is_dir());
+    Ok(views)
 }
 
 /// Whether the group index of `workspace`'s repository exists, so the group has adopted its views.
@@ -73,13 +87,13 @@ fn adopted_by_group(workspace: &Path) -> bool {
     crate::store_layout::group_dir_of(workspace).is_some_and(|group| group.join(INDEX_DIR).is_dir())
 }
 
-/// [`reap_adopted_legacy_indexes`] against an explicit workspaces directory and live namespaces, so
-/// tests never touch the machine-global cache nor depend on the processes running on the machine.
-pub(crate) fn reap_adopted_legacy_indexes_in(
-    workspaces_dir: &Path,
-    live: &[BlobNamespace],
-) -> Result<LegacyIndexReap, GcError> {
-    reap_legacy_indexes_where(workspaces_dir, live, adopted_by_group)
+/// [`reap_adopted_legacy_indexes`] against an explicit workspaces directory and holds, so tests
+/// never touch the machine-global cache nor depend on the processes running on the machine. A
+/// workspace holding a view a newer basemind wrote is that version's, as in budget enforcement.
+pub(crate) fn reap_adopted_legacy_indexes_in(workspaces_dir: &Path, holds: &Holds) -> Result<LegacyIndexReap, GcError> {
+    reap_legacy_indexes_where(workspaces_dir, holds, |workspace| {
+        adopted_by_group(workspace) && !crate::store_gc_budget::holds_a_newer_view(workspace)
+    })
 }
 
 /// Reap the per-view index of every view under `workspaces_dir`, whether the group index adopted it
@@ -87,10 +101,10 @@ pub(crate) fn reap_adopted_legacy_indexes_in(
 /// workspace, with the same liveness guard and workspace lock as [`reap_adopted_legacy_indexes`].
 pub(crate) fn evict_legacy_indexes_in(
     workspaces_dir: &Path,
-    live: &[BlobNamespace],
+    holds: &Holds,
     spared: &[PathBuf],
 ) -> Result<LegacyIndexReap, GcError> {
-    reap_legacy_indexes_where(workspaces_dir, live, |workspace| {
+    reap_legacy_indexes_where(workspaces_dir, holds, |workspace| {
         !spared.iter().any(|dir| dir == workspace)
     })
 }
@@ -99,11 +113,11 @@ pub(crate) fn evict_legacy_indexes_in(
 /// directory tree only; touches nothing.
 pub(crate) fn legacy_indexes_in(workspaces_dir: &Path) -> Result<LegacyIndexes, GcError> {
     let mut found = LegacyIndexes::default();
-    let Ok(entries) = std::fs::read_dir(workspaces_dir) else {
-        return Ok(found);
-    };
-    for workspace in entries.flatten().map(|entry| entry.path()) {
-        for view in views_with_legacy_index(&workspace) {
+    for workspace in paths_in(workspaces_dir)? {
+        if !workspace.is_dir() {
+            continue;
+        }
+        for view in views_with_legacy_index(&workspace)? {
             found.count += 1;
             found.bytes += dir_size(&view.join(INDEX_DIR))?;
         }
@@ -115,14 +129,14 @@ pub(crate) fn legacy_indexes_in(workspaces_dir: &Path) -> Result<LegacyIndexes, 
 /// unless a live basemind may read them.
 fn reap_legacy_indexes_where(
     workspaces_dir: &Path,
-    live: &[BlobNamespace],
+    holds: &Holds,
     eligible: impl Fn(&Path) -> bool,
 ) -> Result<LegacyIndexReap, GcError> {
     let mut report = LegacyIndexReap::default();
     if !workspaces_dir.exists() {
         return Ok(report);
     }
-    if legacy_indexes_in_use(live) {
+    if legacy_indexes_in_use(holds) {
         tracing::debug!("a live basemind of a release with per-view indexes is registered; keeping them");
         return Ok(report);
     }
@@ -133,8 +147,17 @@ fn reap_legacy_indexes_where(
                 source,
             })?
             .path();
-        if workspace.is_dir()
-            && !views_with_legacy_index(&workspace).is_empty()
+        if !workspace.is_dir() {
+            continue;
+        }
+        let has_legacy_index = match views_with_legacy_index(&workspace) {
+            Ok(views) => !views.is_empty(),
+            Err(error) => {
+                tracing::warn!(workspace = %workspace.display(), %error, "could not list its views; kept its per-view indexes");
+                false
+            }
+        };
+        if has_legacy_index
             && eligible(workspace.as_path())
             && let Err(error) = reap_workspace(&workspace, &mut report)
         {
@@ -157,7 +180,7 @@ fn reap_workspace(workspace: &Path, report: &mut LegacyIndexReap) -> Result<(), 
         Err(error) => return Err(error.into()),
     };
     // Measured before the rescue opens the databases, which rewrites their journals. ~keep
-    let measured = views_with_legacy_index(workspace)
+    let measured = views_with_legacy_index(workspace)?
         .into_iter()
         .map(|view| Ok((dir_size(&view.join(INDEX_DIR))?, view)))
         .collect::<Result<Vec<_>, GcError>>()?;
@@ -269,7 +292,7 @@ mod tests {
         let staged = cache.plant_legacy_view("staged");
         cache.adopt();
 
-        let report = reap_adopted_legacy_indexes_in(&cache.workspaces(), &[]).expect("reap");
+        let report = reap_adopted_legacy_indexes_in(&cache.workspaces(), &Holds::default()).expect("reap");
 
         assert_eq!(report.reaped, 2);
         assert!(report.bytes_freed > 0, "the removed databases' bytes are counted");
@@ -277,7 +300,7 @@ mod tests {
             assert!(!view.join(INDEX_DIR).exists(), "{} kept its index", view.display());
             assert!(view.join(INDEX_FILE).exists(), "{} lost its file map", view.display());
         }
-        let again = reap_adopted_legacy_indexes_in(&cache.workspaces(), &[]).expect("reap again");
+        let again = reap_adopted_legacy_indexes_in(&cache.workspaces(), &Holds::default()).expect("reap again");
         assert_eq!(again, LegacyIndexReap::default());
     }
 
@@ -302,11 +325,74 @@ mod tests {
             let working = cache.plant_legacy_view("working");
             cache.adopt();
 
-            let report = reap_adopted_legacy_indexes_in(&cache.workspaces(), live).expect("reap");
+            let holds = Holds {
+                live: live.to_vec(),
+                ..Holds::default()
+            };
+            let report = reap_adopted_legacy_indexes_in(&cache.workspaces(), &holds).expect("reap");
 
             assert_eq!(report.reaped, *reaped, "{case}");
             assert_eq!(working.join(INDEX_DIR).exists(), *reaped == 0, "{case}");
         }
+    }
+
+    /// A live basemind whose namespace cannot be told may be a release up to 0.33 reading its
+    /// per-view index, so none is removed while it runs.
+    #[test]
+    fn a_live_basemind_of_an_unknown_build_keeps_them() {
+        let cache = Cache::new();
+        let working = cache.plant_legacy_view("working");
+        cache.adopt();
+        let holds = Holds {
+            unidentified: true,
+            ..Holds::default()
+        };
+
+        let adopted = reap_adopted_legacy_indexes_in(&cache.workspaces(), &holds).expect("reap");
+        let evicted = evict_legacy_indexes_in(&cache.workspaces(), &holds, &[]).expect("evict");
+
+        assert_eq!(
+            (adopted, evicted),
+            (LegacyIndexReap::default(), LegacyIndexReap::default())
+        );
+        assert!(working.join(INDEX_DIR).is_dir());
+    }
+
+    /// A workspace holding a view a newer basemind wrote is that version's: its per-view indexes
+    /// stay, adopted or not, as budget enforcement spares it.
+    #[test]
+    fn a_workspace_holding_a_newer_view_keeps_its_indexes() {
+        let cache = Cache::new();
+        let working = cache.plant_legacy_view("working");
+        cache.adopt();
+        let mut newer = Index::empty();
+        newer.schema_ver = crate::extract::SCHEMA_VER + 1;
+        let newer_view = cache.workspace.join(VIEWS_DIR).join("newer");
+        fs::create_dir_all(&newer_view).expect("mk newer view");
+        fs::write(
+            newer_view.join(INDEX_FILE),
+            rmp_serde::to_vec_named(&newer).expect("encode index"),
+        )
+        .expect("write the newer file map");
+
+        let report = reap_adopted_legacy_indexes_in(&cache.workspaces(), &Holds::default()).expect("reap");
+
+        assert_eq!(report, LegacyIndexReap::default());
+        assert!(working.join(INDEX_DIR).is_dir());
+    }
+
+    /// A views directory that cannot be listed is an error to `cache stats`, not a workspace with
+    /// no per-view index; a cache with no workspaces directory has none.
+    #[test]
+    fn a_views_directory_that_cannot_be_listed_is_an_error() {
+        let cache = Cache::new();
+        assert_eq!(
+            legacy_indexes_in(&cache.tmp.path().join("absent")).expect("no workspaces"),
+            LegacyIndexes::default()
+        );
+        fs::write(cache.workspace.join(VIEWS_DIR), b"not a directory").expect("plant a file as views");
+
+        assert!(legacy_indexes_in(&cache.workspaces()).is_err());
     }
 
     #[test]
@@ -314,7 +400,7 @@ mod tests {
         let cache = Cache::new();
         let working = cache.plant_legacy_view("working");
 
-        let report = reap_adopted_legacy_indexes_in(&cache.workspaces(), &[]).expect("reap");
+        let report = reap_adopted_legacy_indexes_in(&cache.workspaces(), &Holds::default()).expect("reap");
 
         assert_eq!(report, LegacyIndexReap::default());
         assert!(working.join(INDEX_DIR).is_dir());
@@ -327,7 +413,7 @@ mod tests {
         cache.adopt();
         let held = crate::store::acquire_lock(&cache.workspace).expect("hold the workspace lock");
 
-        let report = reap_adopted_legacy_indexes_in(&cache.workspaces(), &[]).expect("reap");
+        let report = reap_adopted_legacy_indexes_in(&cache.workspaces(), &Holds::default()).expect("reap");
         drop(held);
 
         assert_eq!(report, LegacyIndexReap::default());
@@ -352,7 +438,7 @@ mod tests {
         }
         cache.adopt();
 
-        let report = reap_adopted_legacy_indexes_in(&cache.workspaces(), &[]).expect("reap");
+        let report = reap_adopted_legacy_indexes_in(&cache.workspaces(), &Holds::default()).expect("reap");
 
         assert_eq!(report.reaped, 1);
         assert!(!working.join(INDEX_DIR).exists());
@@ -372,7 +458,8 @@ mod tests {
         let other = cache.workspaces().join("other");
         let spared = plant_legacy_view_in(&other, "working");
 
-        let report = evict_legacy_indexes_in(&cache.workspaces(), &[], std::slice::from_ref(&other)).expect("evict");
+        let report = evict_legacy_indexes_in(&cache.workspaces(), &Holds::default(), std::slice::from_ref(&other))
+            .expect("evict");
 
         assert_eq!(report.reaped, 1);
         assert!(!working.join(INDEX_DIR).exists(), "the unadopted view's index goes");
@@ -393,7 +480,7 @@ mod tests {
         let (working_bytes, staged_bytes, other_bytes) = (size(&working), size(&staged), size(&other));
 
         let before = cache_stats_in(&cache.workspace, &cache.stores()).expect("stats");
-        reap_adopted_legacy_indexes_in(&cache.workspaces(), &[]).expect("reap");
+        reap_adopted_legacy_indexes_in(&cache.workspaces(), &Holds::default()).expect("reap");
         let after = cache_stats_in(&cache.workspace, &cache.stores()).expect("stats");
 
         assert_eq!(

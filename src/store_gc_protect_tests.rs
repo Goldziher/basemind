@@ -133,7 +133,11 @@ const SCHEMA: u16 = 7;
 const NO_LIVE_RULES: EvictionRules<'static> = EvictionRules {
     hot_floor: DAY,
     grace: Duration::ZERO,
-    live: &[],
+    holds: &Holds {
+        live: Vec::new(),
+        unidentified: false,
+        hold: Duration::ZERO,
+    },
 };
 
 /// The budget is a disk budget: blobs in an older schema's namespace and un-namespaced blobs of an
