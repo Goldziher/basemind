@@ -146,6 +146,13 @@ pub struct GcReport {
     /// Bytes reclaimed by reaping those directories. Disjoint from the other byte counters.
     #[serde(default)]
     pub group_store_bytes_freed: u64,
+    /// Per-view index databases of releases up to 0.33 that the group index adopted, removed by the
+    /// same sweep (ADR-0054).
+    #[serde(default)]
+    pub legacy_indexes_reaped: usize,
+    /// Bytes reclaimed by removing those databases. Disjoint from the other byte counters.
+    #[serde(default)]
+    pub legacy_index_bytes_freed: u64,
     /// Marker-less workspace dirs the next destructive sweep would reap (see
     /// [`markerless_workspace_candidates`]). Set only by [`gc_report_only`]; a destructive sweep
     /// counts the ones it removed in [`Self::workspaces_reaped`].
@@ -487,7 +494,8 @@ pub(crate) fn gc_global_blobs_in(
 }
 
 /// The daemon's full cache sweep: reap orphaned workspace cache dirs FIRST, then the directories
-/// of the groups no workspace names any more, then reference-count and sweep the global blob store.
+/// of the groups no workspace names any more and the per-view indexes the group index adopted, then
+/// reference-count and sweep the global blob store.
 ///
 /// Order is load-bearing. An orphaned workspace (its worktree deleted) still votes in the blob GC's
 /// cross-workspace live set, so every blob it references is pinned in the machine-global store
@@ -496,11 +504,14 @@ pub(crate) fn gc_global_blobs_in(
 pub fn reap_and_gc_global(data: &DataRoot) -> Result<GcReport, GcError> {
     let reaped = reap_orphaned_workspaces(data)?;
     let groups = crate::store_gc_groups::reap_orphaned_group_stores(data)?;
+    let legacy = crate::store_gc_legacy_views::reap_adopted_legacy_indexes(data)?;
     let mut report = gc_global_blobs(data)?;
     report.workspaces_reaped = reaped.reaped;
     report.workspace_bytes_freed = reaped.bytes_freed;
     report.group_stores_reaped = groups.reaped;
     report.group_store_bytes_freed = groups.bytes_freed;
+    report.legacy_indexes_reaped = legacy.reaped;
+    report.legacy_index_bytes_freed = legacy.bytes_freed;
     Ok(report)
 }
 
