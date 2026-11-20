@@ -757,7 +757,9 @@ commit walk behind `path` + `symbol`, and full-text `query` / `author` search) a
     serialize on the handle's build lock, so N sessions asking at once cause one walk.
 - A process that can reach neither backend falls back to the live walk (`git_history: None`). The
   index is a pure accelerator: tools use it only when `last_indexed_head == HEAD` and otherwise
-  live-walk and report `truncated_reason: "unindexed_scan"`, so it can never serve stale results.
+  live-walk, so it can never serve stale results. A `git_log {query}` search that falls back reports
+  `truncated_reason: "unindexed_scan"`, as does `basemind git hotspots` when its live walk is cut
+  short; a `git_log {path}` fallback reports `span_limit` or no reason.
 - A linked worktree shares the MAIN worktree's index (keyed on the main worktree root) rather than
   rebuilding its own, since the commit graph is identical across worktrees of one clone.
   The index tracks one head: a linked worktree whose HEAD descends from it appends the new commits,
