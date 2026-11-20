@@ -121,9 +121,10 @@ pub struct DocumentsConfig {
     /// Glob patterns (repo-relative, forward-slash) for documents that are still extracted +
     /// indexed but **never** embedded. Keeps ONNX vectors off selected large or low-value documents
     /// while leaving their text searchable by keyword. Beats `embed_include`. The default holds the
-    /// structured data formats (`*.json`, `*.jsonl`, `*.ndjson`, `*.yaml`, `*.yml`, `*.toml`,
-    /// `*.csv`, `*.tsv`, `*.xml`), which are searched by exact text and keyword rather than by
-    /// meaning: they stay chunked, keyword-searchable and visible to `code_grep`. Setting the key
+    /// structured data formats (`*.json`, `*.jsonc`, `*.json5`, `*.jsonl`, `*.ndjson`, `*.geojson`,
+    /// `*.yaml`, `*.yml`, `*.toml`, `*.csv`, `*.tsv`, `*.xml`), which are searched by exact text and
+    /// keyword rather than by meaning: they stay chunked, keyword-searchable and visible to
+    /// `code_grep`. Setting the key
     /// replaces the default list; `embed_exclude = []` embeds them too. Only consulted when
     /// `embed = true`. Changing it removes the vector rows of newly excluded documents on the next
     /// scan.
@@ -218,7 +219,18 @@ impl DocumentsConfig {
     }
     fn default_embed_exclude() -> Vec<String> {
         [
-            "*.json", "*.jsonl", "*.ndjson", "*.yaml", "*.yml", "*.toml", "*.csv", "*.tsv", "*.xml",
+            "*.json",
+            "*.jsonc",
+            "*.json5",
+            "*.jsonl",
+            "*.ndjson",
+            "*.geojson",
+            "*.yaml",
+            "*.yml",
+            "*.toml",
+            "*.csv",
+            "*.tsv",
+            "*.xml",
         ]
         .map(String::from)
         .to_vec()
@@ -768,7 +780,18 @@ mod tests {
     #[test]
     fn embed_exclude_defaults_to_the_structured_data_formats() {
         let expected = [
-            "*.json", "*.jsonl", "*.ndjson", "*.yaml", "*.yml", "*.toml", "*.csv", "*.tsv", "*.xml",
+            "*.json",
+            "*.jsonc",
+            "*.json5",
+            "*.jsonl",
+            "*.ndjson",
+            "*.geojson",
+            "*.yaml",
+            "*.yml",
+            "*.toml",
+            "*.csv",
+            "*.tsv",
+            "*.xml",
         ]
         .map(String::from)
         .to_vec();
