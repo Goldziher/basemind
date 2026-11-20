@@ -7,8 +7,8 @@ name: bm-scan
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:afa3a00897db6d79fc34695689c791df4d9e5aeaeead7187bbf85c9ed35cb558
-Source-Hash: blake3:9196a7e2b987986e9fe5587b3c98d2f262183438278f88fb5c08a6516862aa05
+Content-Hash: blake3:f988a2ac69c83ee231b252fa4a593f35fdfd327f37d25c5300650d35083918ad
+Source-Hash: blake3:031e3d7e9f1cc8042e21f97a87e7522ea25d0bf8399b13a858fa80116b718265
 Schema-Version: v1
 -->
 
@@ -25,14 +25,15 @@ results that shouldn't be empty, or the index is stale after large changes.
 
 ```sh
 basemind scan                  # no argument
-basemind rescan ${ARGUMENTS}   # a path argument
+basemind rescan "$ARGUMENTS"   # a path argument
 ```
 
 - No argument → `basemind scan`, a full working-tree scan.
 - A path argument (`/bm-scan src/mcp`) → `basemind rescan src/mcp`, which re-indexes only that path
-  (incremental); `scan` takes no path.
+  (incremental) when a working-tree index exists; with none yet, or one that must be rebuilt, it
+  runs a full scan instead. `scan` takes no path.
 - Prefer the plugin-managed, version-matched binary: run `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh scan`
-  (or `… rescan ${ARGUMENTS}`)
+  (or `… rescan "$ARGUMENTS"`)
   (in other hosts, `scripts/mcp-launch.sh` in the plugin directory). Use bare `basemind` from `PATH`
   only when no plugin launcher exists, or build a dev binary with `cargo build --release` and use
   `./target/release/basemind`.

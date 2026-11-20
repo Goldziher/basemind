@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:fa85eb311d885b0d2e291fe4e454000b370364cb358407e5886689d08d94c936
-Source-Hash: blake3:9196a7e2b987986e9fe5587b3c98d2f262183438278f88fb5c08a6516862aa05
+Content-Hash: blake3:410d2219ff1c1a2fd33ab9fe3d4dc58f7bff6cace239ef50f0b938848739a340
+Source-Hash: blake3:031e3d7e9f1cc8042e21f97a87e7522ea25d0bf8399b13a858fa80116b718265
 Schema-Version: v1
 -->
 
@@ -35,9 +35,10 @@ no tool covers the question.
 - **`code_symbols` instead of `grep` for a definition.** It matches indexed symbol names and skips
   the comment, string and test-name noise.
 - **`code_refs` instead of grepping call sites.** Indexed call edges, not text matches.
-- **`code_grep` instead of shelling out to ripgrep.** It sweeps every indexed code file and every
-  markdown, config and data file (a trigram filter skips code files that cannot match) and returns
-  each hit's line and enclosing symbol.
+- **`code_grep` instead of shelling out to ripgrep.** It sweeps every indexed code, markdown,
+  config and data file (a trigram filter skips code files that cannot match) and returns each hit's
+  line and enclosing symbol. A file created since the last scan is not in it until the watcher or
+  an `index_rescan {"paths":[…]}` indexes it, so a miss there is not proof of absence.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 - **`index_rescan` after you edit code**, not a server reconnect. Pass `paths` to limit it.
 

@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:946805ae34bdf23eee93abb56f5bf5347cee30fb95236969e76d0f5fff5755f7
-Source-Hash: blake3:9196a7e2b987986e9fe5587b3c98d2f262183438278f88fb5c08a6516862aa05
+Content-Hash: blake3:c3095c6b83dc21e30d74484203396f2703582f45dcd93fb5cb0a58ddb37f3c1c
+Source-Hash: blake3:031e3d7e9f1cc8042e21f97a87e7522ea25d0bf8399b13a858fa80116b718265
 Schema-Version: v1
 -->
 
@@ -51,17 +51,28 @@ basemind status
 
 ## 2. Is a server already running (holding the lock)?
 
-With a basemind daemon running, `basemind scan` is forwarded to it (`scan via daemon`), so the
-daemon never makes it fail. If `basemind scan` fails with a lock error (exit 3), another process
-(`basemind watch`, another scan) holds the index for this repo. The error names the live holder
-(command + pid) — it reads
-that from the `.lock.meta` sidecar next to the workspace `.lock`. Both live in this workspace's
-directory under the machine-global cache (Linux `~/.local/share/basemind/`, macOS
-`~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`), keyed by workspace — not
-in the repo.
+With a basemind daemon running, a working-tree `basemind scan` is forwarded to it (`scan via
+daemon`). A forwarded scan can still fail: exit 2 for a flag the daemon cannot apply, 3 while the
+daemon is stopping, 1 when the scan itself fails. `basemind scan --staged` and `basemind scan --rev`
+are not forwarded: while the daemon holds the index they exit 3 with an error naming the daemon's
+pid and saying it scans the working tree only. Stop it with `basemind comms stop`, then rerun the
+scan.
 
-- If that `pid` is **alive** (`ps -p <pid>`), let it finish, or stop it; meanwhile the MCP tools
-  answer, and `index_rescan {}` or `basemind rescan` refreshes the index.
+Otherwise a lock error (exit 3) means another process (`basemind watch`, another scan) holds the
+index for this repo. The error names the live holder (command + pid) when the `.lock.meta` sidecar
+next to the workspace `.lock` records it; without that record the error is generic and names
+neither. Both files live in this workspace's directory under the machine-global cache (Linux
+`~/.local/share/basemind/`, macOS `~/Library/Application Support/basemind/`; override
+`BASEMIND_DATA_HOME`), keyed by workspace — not in the repo.
+
+- If that `pid` is **alive** (`ps -p <pid>`), let it finish, or stop it. While it holds the index and
+  no daemon serves the workspace, index-backed MCP tools (`code_refs`, the keyword lane of
+  `code_search`) answer with a busy error, and `basemind rescan` exits 3 the same way: stop the
+  holder or start the daemon with `basemind comms start`, then retry the tool; retry the rescan once
+  the holder has finished or stopped.
+- If the error names **no holder**, there is no `pid` to check: rerun the same command. The OS
+  releases the lock when its holder exits, so a second exit 3 means a live process still holds it;
+  wait for it to finish, or stop the basemind process you started for this repo, then retry.
 - If that `pid` is **dead**, the lock is stale. The OS releases the advisory lock when a process
   dies, so a fresh `basemind scan` / `basemind serve` should just work — retry it. (You may delete
   the stale `.lock.meta` sidecar in that workspace cache dir to clear the advisory holder record.)

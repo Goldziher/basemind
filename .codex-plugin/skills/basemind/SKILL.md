@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:bbb712d048e9753e8af9c9177574ea6b3928aab851ea592ec2bc83e75bd60255
-Source-Hash: blake3:9196a7e2b987986e9fe5587b3c98d2f262183438278f88fb5c08a6516862aa05
+Content-Hash: blake3:523f197f7a814890a15d8cdaca4cccfe55b60d5be0a9cab659159650f05b856c
+Source-Hash: blake3:031e3d7e9f1cc8042e21f97a87e7522ea25d0bf8399b13a858fa80116b718265
 Schema-Version: v1
 -->
 
@@ -30,9 +30,9 @@ tool search needed. Agent messaging is the exception: `agent_post`, `agent_inbox
   implementations, importers. The code map (outline, symbols, refs) covers code only.
 - **Exact text search**: `code_grep` (literal or regex) over code and markdown, config and data
   files.
-- **Search by meaning**: `code_search` over code; `docs_search` over documents, the one tool for
-  PDFs, Office files, HTML and email (images too, when the build has `documents-ocr`), with
-  cross-encoder reranking.
+- **Search by meaning**: `code_search` over code; `docs_search` over documents, including PDFs,
+  Office files, HTML and email (images too, when the build has `documents-ocr`), with cross-encoder
+  reranking. For exact text in an indexed HTML file, `code_grep` reads it as text too.
 - **Git history**: log, blame, and diffs at symbol resolution.
 - **Shared memory**: per-repo notes that persist across sessions (`memory_save`, `memory_search`).
 
@@ -216,8 +216,9 @@ A 1000-line file becomes a 30-line table of contents.
   names the field.
 - The code map (`code_outline`, `code_symbols`, `code_refs`) covers code only. `code_grep` also
   finds exact text in markdown, config and data files; `docs_search` is for searching by meaning,
-  and for PDFs, Office files, HTML and email. `find_files` lists every file, and `code_read` with a
-  line span reads any text file.
+  and for PDFs, Office files, HTML and email. `find_files` lists the indexed files and the other
+  files git tracks, not an untracked file the index leaves out (a local `.env`) or a file outside a
+  git work tree; `code_read` with a line span reads any text file.
 - A `notice` field means the result is incomplete and says why (empty index, scan in progress).
 - The git tools require `basemind serve` to be running inside a git repository.
 - `code_search` needs the `code-search` Cargo feature, `docs_search` needs `documents`, and the
