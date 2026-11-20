@@ -343,6 +343,7 @@ The Homebrew / npm / pip / GitHub downloads are built with `full` — documents,
 recognition, search, shared memory, and agent comms — so the first run downloads the models it
 needs. The plain `cargo install` builds the code-map and git tools only: the one-shot CLI works, but
 `basemind serve` relays to the daemon and so needs the `comms` feature (`--features full` has it).
+The cargo installs need Rust 1.100.0 or newer, the `rust-version` every crate declares.
 
 A source build picks its document tiers by Cargo feature:
 
