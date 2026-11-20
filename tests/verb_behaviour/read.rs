@@ -6,7 +6,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Client, call_err, call_raw, started, text_of};
+use super::{Client, call, call_err, call_raw, started, started_with, text_of};
 
 /// The tool's JSON text; it must not be an error.
 async fn answer(client: &Client, arguments: Value) -> String {
@@ -73,6 +73,35 @@ async fn code_read_answers_byte_for_byte() {
     let edited = answer(&client, json!({ "path": "src/callers.rs", "symbol": "first" })).await;
     rows.push(("code_read edited".to_string(), edited, r#"{"path":"src/callers.rs","name":"first","kind":"function","line":3,"end_line":5,"body":"pub fn first() -> u32 {\n    7\n}","bytes":31,"stale":true}"#.to_string()));
     assert_all(&rows);
+}
+
+/// A span of more than 2,000 lines names `code_outline`; one of 2,000 lines does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_span_of_more_than_two_thousand_lines_names_code_outline() {
+    let big = "// filler\n".repeat(2_100);
+    let (_dir, client) = started_with(&[("src/big.rs", big.as_str())]).await;
+    let over = call(
+        &client,
+        "code_read",
+        json!({ "path": "src/big.rs", "line": 1, "end_line": 2_001 }),
+    )
+    .await;
+    assert_eq!(
+        over["notice"],
+        json!(
+            "this span is 2001 of the 2100 lines of `src/big.rs`; read `code_outline {\"path\":\"src/big.rs\"}` \
+             and then the narrower span you need"
+        ),
+        "{over}"
+    );
+    let at = call(
+        &client,
+        "code_read",
+        json!({ "path": "src/big.rs", "line": 1, "end_line": 2_000 }),
+    )
+    .await;
+    assert_eq!(at.get("notice"), None, "{at}");
+    assert_eq!(at["end_line"], json!(2_000), "{at}");
 }
 
 /// The refusal for a file the index holds but the working tree no longer has.

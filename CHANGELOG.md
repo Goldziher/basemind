@@ -204,6 +204,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reranker and NER presets, the Tesseract `eng` data and the o200k tokenizer, each with its upstream
   model card, mirror revision where one is pinned (the Tesseract `eng` data follows an unpinned
   branch) and licence. All are MIT or Apache-2.0, so no default changes.
+- A `code_read` line span of more than 2,000 lines carries a `notice` naming `code_outline` (#127):
+  read the file's outline first, then the narrower span needed.
 
 ### Changed
 
