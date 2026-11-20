@@ -524,24 +524,34 @@ fn build_export_query(lang: LangId) -> Option<Arc<tree_sitter::Query>> {
 mod tests {
     use super::*;
 
-    fn skip_if_no_grammar(lang: LangId) -> bool {
-        if crate::lang::language(lang).is_err() {
-            eprintln!("skip: {lang} grammar unavailable in this environment");
-            return true;
+    /// True when `lang`'s grammar cannot be loaded, reported through [`crate::testing::unavailable`],
+    /// which fails the test unless the environment allows a missing grammar.
+    fn grammar_unavailable(lang: LangId) -> bool {
+        let _ = crate::lang::ensure_grammars();
+        if crate::lang::language(lang).is_ok() {
+            return false;
         }
-        false
+        crate::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_GRAMMAR",
+            &format!("the {lang} grammar is unavailable"),
+        );
+        true
+    }
+
+    /// Resolve `src` with the grammar present: a `None` is an engine or resolution failure, not a
+    /// missing precondition, so it fails the test.
+    fn resolved(lang: LangId, src: &str) -> FileResolvedRefs {
+        resolve_stackgraph(lang, src.as_bytes())
+            .unwrap_or_else(|| panic!("{lang} stack-graph resolution returned None for {src:?}"))
     }
 
     #[test]
     fn typed_splat_parameter_does_not_abort_resolution() {
-        if skip_if_no_grammar("python") {
+        if grammar_unavailable("python") {
             return;
         }
         let src = "from m import f\n\n\ndef g(a: str, **kw: str) -> None:\n    return f(a)\n";
-        let Some(refs) = resolve_stackgraph("python", src.as_bytes()) else {
-            eprintln!("skip: python stack-graph engine unavailable");
-            return;
-        };
+        let refs = resolved("python", src);
         let import_binding = src.find("from m import f").unwrap() as u32 + "from m import ".len() as u32;
         let use_site = src.find("return f(a)").unwrap() as u32 + "return ".len() as u32;
         assert_eq!(
@@ -556,10 +566,7 @@ mod tests {
     /// `use_marker` site — i.e. the surrounding construct did not abort the whole-file build. These
     /// lock the grammar-drift / upstream-rule fixes found by sweeping real Python (grantflow).
     fn assert_import_resolves(src: &str, use_marker: &str) {
-        let Some(refs) = resolve_stackgraph("python", src.as_bytes()) else {
-            eprintln!("skip: python stack-graph engine unavailable");
-            return;
-        };
+        let refs = resolved("python", src);
         let import_binding =
             src.find("from m import f").expect("import present") as u32 + "from m import ".len() as u32;
         let use_site = src.find(use_marker).expect("use present") as u32 + (use_marker.len() - 3) as u32;
@@ -573,7 +580,7 @@ mod tests {
 
     #[test]
     fn class_keyword_base_does_not_abort_resolution() {
-        if skip_if_no_grammar("python") {
+        if grammar_unavailable("python") {
             return;
         }
         assert_import_resolves(
@@ -584,7 +591,7 @@ mod tests {
 
     #[test]
     fn parameterless_lambda_does_not_abort_resolution() {
-        if skip_if_no_grammar("python") {
+        if grammar_unavailable("python") {
             return;
         }
         assert_import_resolves(
@@ -595,7 +602,7 @@ mod tests {
 
     #[test]
     fn chained_assignment_does_not_abort_resolution() {
-        if skip_if_no_grammar("python") {
+        if grammar_unavailable("python") {
             return;
         }
         assert_import_resolves(
@@ -614,19 +621,11 @@ mod tests {
 
     #[test]
     fn python_local_shadows_module_and_import() {
-        if skip_if_no_grammar("python") {
+        if grammar_unavailable("python") {
             return;
         }
         let src = "from m import x\nX_MODULE = 1\ndef f():\n    x = 2\n    return x\n";
-        let refs = resolve_stackgraph("python", src.as_bytes());
-        let Some(refs) = refs else {
-            eprintln!("skip: python stack-graph engine unavailable (tsg build failed)");
-            return;
-        };
-        if refs.intra.is_empty() {
-            eprintln!("skip: python stack graph produced no intra edges in this env");
-            return;
-        }
+        let refs = resolved("python", src);
         let local_def = src.find("    x = 2").unwrap() as u32 + 4;
         let return_use = src.rfind("return x").unwrap() as u32 + "return ".len() as u32;
         let edge = edge_for_use(&refs, return_use);
@@ -643,18 +642,11 @@ mod tests {
 
     #[test]
     fn python_per_function_params_are_distinct() {
-        if skip_if_no_grammar("python") {
+        if grammar_unavailable("python") {
             return;
         }
         let src = "def first(x):\n    return x\ndef second(x):\n    return x * 2\n";
-        let Some(refs) = resolve_stackgraph("python", src.as_bytes()) else {
-            eprintln!("skip: python stack-graph engine unavailable");
-            return;
-        };
-        if refs.intra.is_empty() {
-            eprintln!("skip: no intra edges in this env");
-            return;
-        }
+        let refs = resolved("python", src);
         let first_param = src.find("first(x)").unwrap() as u32 + "first(".len() as u32;
         let second_param = src.find("second(x)").unwrap() as u32 + "second(".len() as u32;
         let first_use = src.find("return x\n").unwrap() as u32 + "return ".len() as u32;
@@ -674,18 +666,11 @@ mod tests {
 
     #[test]
     fn python_comprehension_var_shadows_outer() {
-        if skip_if_no_grammar("python") {
+        if grammar_unavailable("python") {
             return;
         }
         let src = "def g():\n    x = \"outer\"\n    values = [x for x in range(3)]\n    return x\n";
-        let Some(refs) = resolve_stackgraph("python", src.as_bytes()) else {
-            eprintln!("skip: python stack-graph engine unavailable");
-            return;
-        };
-        if refs.intra.is_empty() {
-            eprintln!("skip: no intra edges in this env");
-            return;
-        }
+        let refs = resolved("python", src);
         let outer_def = src.find("    x = \"outer\"").unwrap() as u32 + 4;
         let comp_binding = src.find("for x in").unwrap() as u32 + "for ".len() as u32;
         let comp_use = src.find("[x for").unwrap() as u32 + 1;
@@ -698,18 +683,11 @@ mod tests {
 
     #[test]
     fn java_field_vs_local_resolve_correctly() {
-        if skip_if_no_grammar("java") {
+        if grammar_unavailable("java") {
             return;
         }
         let src = "class C {\n    private int value = 1;\n    public int m() {\n        int value = 2;\n        return value;\n    }\n}\n";
-        let Some(refs) = resolve_stackgraph("java", src.as_bytes()) else {
-            eprintln!("skip: java stack-graph engine unavailable");
-            return;
-        };
-        if refs.intra.is_empty() {
-            eprintln!("skip: no intra edges in this env");
-            return;
-        }
+        let refs = resolved("java", src);
         let local_def = src.find("int value = 2").unwrap() as u32 + "int ".len() as u32;
         let return_use = src.find("return value;").unwrap() as u32 + "return ".len() as u32;
         let edge = edge_for_use(&refs, return_use);
@@ -721,18 +699,18 @@ mod tests {
 
     #[test]
     fn java_imported_class_not_conflated_with_local_method() {
-        if skip_if_no_grammar("java") {
+        if grammar_unavailable("java") {
             return;
         }
-        let src = "import a.b.Foo;\nclass C {\n    String greet() { return \"local\"; }\n    String use() { return Foo.greet(); }\n}\n";
-        let Some(refs) = resolve_stackgraph("java", src.as_bytes()) else {
-            eprintln!("skip: java stack-graph engine unavailable");
-            return;
-        };
-        if refs.intra.is_empty() {
-            eprintln!("skip: no intra edges in this env");
-            return;
-        }
+        let src = "import a.b.Foo;\nclass C {\n    String greet() { return \"local\"; }\n    String use() {\n        String s = Foo.greet();\n        return s;\n    }\n}\n";
+        let refs = resolved("java", src);
+        let local_s_def = src.find("String s =").unwrap() as u32 + "String ".len() as u32;
+        let return_use = src.find("return s;").unwrap() as u32 + "return ".len() as u32;
+        assert_eq!(
+            edge_for_use(&refs, return_use).def_start,
+            local_s_def,
+            "the file resolved: `return s` binds to the local `s`"
+        );
         let local_greet_def = src.find("String greet()").unwrap() as u32 + "String ".len() as u32;
         let foo_greet_use = src.find("Foo.greet()").unwrap() as u32 + "Foo.".len() as u32;
         if let Some(edge) = refs.intra.iter().find(|e| e.use_start == foo_greet_use) {
@@ -781,7 +759,7 @@ mod tests {
     /// found, because bounding a phase defers work and never drops it.
     #[test]
     fn many_references_still_resolve_across_bounded_phases() {
-        if skip_if_no_grammar("python") {
+        if grammar_unavailable("python") {
             return;
         }
         let mut src = String::new();
@@ -792,14 +770,7 @@ mod tests {
         for i in 0..120 {
             src.push_str(&format!("    v{i} = f{i}({i})\n"));
         }
-        let Some(refs) = resolve_stackgraph("python", src.as_bytes()) else {
-            eprintln!("skip: python stack-graph engine unavailable");
-            return;
-        };
-        if refs.intra.is_empty() {
-            eprintln!("skip: no intra edges in this env");
-            return;
-        }
+        let refs = resolved("python", &src);
         for i in 0..120 {
             let def = src.find(&format!("def f{i}(")).unwrap() as u32 + "def ".len() as u32;
             let call = src.find(&format!("= f{i}(")).unwrap() as u32 + "= ".len() as u32;
@@ -816,7 +787,7 @@ mod tests {
     /// one engine and one import / export query per language, shared, none leaked.
     #[test]
     fn concurrent_first_use_builds_one_engine_per_language() {
-        if skip_if_no_grammar("java") {
+        if grammar_unavailable("java") {
             return;
         }
         const THREADS: usize = 8;
