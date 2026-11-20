@@ -8,10 +8,11 @@ const https = require("node:https");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const { Duplex } = require("node:stream");
 const { after, before, test } = require("node:test");
 
 const INSTALL = path.join(__dirname, "..", "npm-package", "install.js");
-const { proxyFor, proxyHint } = require(INSTALL);
+const { fetchTextWithRedirects, proxyFor, proxyHint } = require(INSTALL);
 
 const PROXY_VARIABLES = ["HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"];
 const UNRESOLVABLE_HOST = "basemind.test";
@@ -225,6 +226,45 @@ test("a refused CONNECT fails with the proxy's status", async () => {
   } finally {
     await proxy.close();
   }
+});
+
+function eventLoopTurns(count) {
+  let turns = Promise.resolve();
+  for (let index = 0; index < count; index++) {
+    turns = turns.then(() => new Promise((resolve) => setImmediate(resolve)));
+  }
+  return turns;
+}
+
+test("a proxy that never completes the TCP connection fails at the deadline", async (t) => {
+  const stalled = [];
+  t.mock.method(net, "createConnection", () => {
+    const socket = new Duplex({ read() {}, write() {} });
+    socket.connecting = true;
+    stalled.push(socket);
+    return socket;
+  });
+  for (const variable of PROXY_VARIABLES.flatMap((name) => [name, name.toLowerCase()])) {
+    const value = process.env[variable];
+    t.after(() => {
+      if (value === undefined) delete process.env[variable];
+      else process.env[variable] = value;
+    });
+    delete process.env[variable];
+  }
+  process.env.HTTPS_PROXY = "http://192.0.2.1:3128";
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+
+  let failure = null;
+  fetchTextWithRedirects(`https://${UNRESOLVABLE_HOST}/checksums.txt`).catch((error) => {
+    failure = error;
+  });
+  await eventLoopTurns(3);
+  assert.equal(stalled.length, 1);
+  assert.equal(failure, null);
+  t.mock.timers.tick(30000);
+  await eventLoopTurns(10);
+  assert.equal(failure?.message, "proxy 192.0.2.1:3128 failed: Download timeout");
 });
 
 const PROXY_CASES = [
