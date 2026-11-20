@@ -74,6 +74,7 @@ struct Payload {
     cli_version: Option<String>,
     id: Option<Value>,
     session_id: Option<Value>,
+    forked_from_id: Option<Value>,
     parent_thread_id: Option<Value>,
     source: Option<Value>,
     thread_source: Option<Value>,
@@ -156,6 +157,7 @@ impl TranscriptParser for Codex {
             seen,
             copied: false,
             output_total: 0,
+            lineage: lineage(&meta),
         };
         // The position of a line after `session_meta` (ordinal 0): a Legacy-mode rollout writes no
         // ordinals, and its inherited prefix is then the lines before the start ordinal.
@@ -213,6 +215,9 @@ struct State<'a> {
     copied: bool,
     /// The last cumulative output-token total.
     output_total: u64,
+    /// The root thread of this rollout's lineage, which forks, reverts and subagents share
+    /// ([`lineage`]): equal totals are a copy only within it.
+    lineage: String,
 }
 
 impl State<'_> {
@@ -238,13 +243,24 @@ impl State<'_> {
     }
 }
 
-/// A token count's `total_token_usage`, as written: the key [`Seen::first_token_count`] tells a
-/// copied count by.
-fn totals_key(info: Option<&Value>) -> Option<String> {
-    info?
-        .get("total_token_usage")
-        .filter(|totals| totals.is_object())
-        .map(Value::to_string)
+/// A token count's `total_token_usage` as written, within `lineage`: the key
+/// [`Seen::first_token_count`] tells a copied count by. `None` without a cumulative output total,
+/// which [`State::output_delta`] then does not use either.
+fn totals_key(info: Option<&Value>, lineage: &str) -> Option<String> {
+    let totals = info?.get("total_token_usage")?;
+    totals
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .map(|_| format!("{lineage}\0{totals}"))
+}
+
+/// The root thread a rollout descends from: its `session_id`, else the thread it was forked from,
+/// else its own `id`. Two unrelated conversations differ in it even when their totals agree.
+fn lineage(meta: &Payload) -> String {
+    [&meta.session_id, &meta.forked_from_id, &meta.id]
+        .into_iter()
+        .find_map(|id| text(id.as_ref()))
+        .unwrap_or_default()
 }
 
 fn text(value: Option<&Value>) -> Option<String> {
@@ -356,8 +372,8 @@ fn record(session: &mut Parsed, kind: Option<&str>, payload: Payload, state: &mu
             // A fork copies the counts before its fork point verbatim, so a count with cumulative
             // totals is copied when they were seen before; a reply after the fork point that called
             // no tool carries totals of its own.
-            let copied =
-                totals_key(payload.info.as_ref()).map_or(state.copied, |key| !state.seen.first_token_count(&key));
+            let copied = totals_key(payload.info.as_ref(), &state.lineage)
+                .map_or(state.copied, |key| !state.seen.first_token_count(&key));
             if let Some(output) = state.output_delta(payload.info.as_ref()) {
                 if !copied {
                     session.tally.tokens(output, &state.turn);
@@ -645,6 +661,39 @@ mod tests {
         assert_eq!(parent(&fork), None, "a fork is a session of its own");
         let root = meta(serde_json::json!({"session_id": "root", "id": "root", "source": "cli"}));
         assert_eq!(parent(&root), None);
+    }
+
+    #[test]
+    fn a_totals_key_needs_an_output_total_and_is_scoped_to_the_lineage() {
+        let info = serde_json::json!({"total_token_usage": {"output_tokens": 10}});
+        assert_eq!(
+            totals_key(Some(&info), "root").as_deref(),
+            Some("root\0{\"output_tokens\":10}")
+        );
+        assert_ne!(totals_key(Some(&info), "root"), totals_key(Some(&info), "other"));
+        for unusable in [
+            serde_json::json!({"total_token_usage": {}}),
+            serde_json::json!({"total_token_usage": {"output_tokens": "10"}}),
+            serde_json::json!({"last_token_usage": {"output_tokens": 10}}),
+        ] {
+            assert_eq!(totals_key(Some(&unusable), "root"), None, "{unusable}");
+        }
+    }
+
+    #[test]
+    fn a_rollout_s_lineage_is_its_root_thread() {
+        let cases = [
+            (
+                serde_json::json!({"session_id": "root", "id": "fork", "forked_from_id": "mid"}),
+                "root",
+            ),
+            (serde_json::json!({"id": "fork", "forked_from_id": "mid"}), "mid"),
+            (serde_json::json!({"id": "solo"}), "solo"),
+            (serde_json::json!({}), ""),
+        ];
+        for (payload, root) in cases {
+            assert_eq!(lineage(&meta(payload.clone())), root, "{payload}");
+        }
     }
 
     fn failed(output: Value) -> bool {
