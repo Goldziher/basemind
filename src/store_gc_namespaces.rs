@@ -452,6 +452,29 @@ mod tests {
         assert_eq!(report.removed, 2, "both are reaped once no such host runs");
     }
 
+    /// The holds are read once the current namespace is swept: a basemind that registered while it
+    /// was swept keeps the namespace it reads.
+    #[test]
+    fn the_holds_are_read_after_the_current_namespace_is_swept() {
+        let root = tempfile::tempdir().unwrap();
+        let workspaces = tempfile::tempdir().unwrap();
+        let orphan = plant(root.path(), "v7/aa.fm.msgpack");
+        let held = plant_aged(root.path(), "v6/bb.fm.msgpack", 30 * DAY);
+
+        let report = crate::store_gc::gc_blob_store_in(workspaces.path(), root.path(), CURRENT, Duration::ZERO, || {
+            assert!(!orphan.exists(), "the current namespace is swept first");
+            Holds {
+                live: vec![BlobNamespace::Schema(6)],
+                unidentified: false,
+                hold: Duration::ZERO,
+            }
+        })
+        .unwrap();
+
+        assert_eq!(report.removed, 1);
+        assert!(held.exists(), "the basemind registered during the first sweep reads v6");
+    }
+
     #[test]
     fn the_hold_is_read_in_days_and_defaults_to_the_launcher_s_fourteen() {
         assert_eq!(prune_hold_from(None), 14 * DAY);
