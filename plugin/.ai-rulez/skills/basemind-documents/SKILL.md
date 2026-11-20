@@ -87,8 +87,9 @@ docs_search {"query":"rate limiting","mime_type":"text/html"}
   or `prefix` (list by key prefix); with none it lists everything. `tag` filters a search or a
   list. A list pages by `next_cursor`; `truncated` with `truncated_reason: "scan_cap"` means its
   `total` stopped counting and is a lower bound. Saving an existing `key` replaces the note.
-- Memory is scoped by the normalised git `origin` URL, so clones of the same repo share stored
-  entries and unrelated repos do not. `"visibility":"individual"` keeps a note to this agent.
+- Memory is one store per repository, keyed by the path of its main worktree: its worktrees
+  share notes (per worktree when it has no `origin`); another clone, a moved repository or a
+  changed `origin` does not see them. `"visibility":"individual"` keeps a note to this agent.
 - `docs_search` returns 10 hits by default; lists take `limit` and page with `next_cursor` ->
   `cursor`. An argument a tool does not take is rejected with a did-you-mean and the accepted list.
 

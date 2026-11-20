@@ -19,8 +19,10 @@ agent working in the same repository should know. Notes are keyed, tagged and se
   pages with `next_cursor`; `key` reads a note whole.
 - `visibility` is `group` (the default, shared by every agent of the repository) or `individual`
   (only the agent that saved it).
-- Memory is scoped by the normalised git `origin` URL: clones of one repository share notes,
-  unrelated repositories do not.
+- Notes live in one store per repository, keyed by the path of its main worktree, and inside it by
+  the normalised `origin` URL. The worktrees of a repository with an `origin` share notes; a clone
+  at another path, a moved repository and a changed `origin` do not see them. Without an `origin`
+  each worktree has its own notes. `basemind manual data` says where the store lives.
 - Both tools need a build with the `memory` feature (the release binary has it); without it the
   call is an error naming the feature. With a daemon running the CLI forwards memory operations to
   it.

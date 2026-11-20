@@ -14,6 +14,12 @@ import pytest
 from basemind import downloader
 
 
+@pytest.fixture(autouse=True)
+def _no_xdg_cache_home(monkeypatch):
+    """The cache paths these tests assert sit under the home directory, whatever the caller's env."""
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+
+
 def _triple(monkeypatch, *, system: str, machine: str, sysctls: dict[str, str]) -> str:
     monkeypatch.setattr(downloader.platform, "system", lambda: system)
     monkeypatch.setattr(downloader.platform, "machine", lambda: machine)
@@ -55,6 +61,20 @@ def test_linux_and_windows_unaffected(monkeypatch):
     assert _triple(monkeypatch, system="Linux", machine="x86_64", sysctls={}) == "x86_64-unknown-linux-gnu"
     assert _triple(monkeypatch, system="Linux", machine="aarch64", sysctls={}) == "aarch64-unknown-linux-gnu"
     assert _triple(monkeypatch, system="Windows", machine="AMD64", sysctls={}) == "x86_64-pc-windows-msvc"
+
+
+@pytest.mark.parametrize(
+    ("xdg_cache_home", "expected"),
+    [
+        ("xdg", ("xdg", "basemind", "0.34.0")),
+        ("", ("home", ".cache", "basemind", "0.34.0")),
+    ],
+)
+def test_the_cache_follows_xdg_cache_home_like_the_plugin_launcher(monkeypatch, tmp_path, xdg_cache_home, expected):
+    monkeypatch.setattr(downloader.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / xdg_cache_home) if xdg_cache_home else "")
+
+    assert downloader._cache_dir("0.34.0") == tmp_path.joinpath(*expected)
 
 
 def _age(path, days):

@@ -257,7 +257,7 @@ default_visibility = "group"
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `enabled` | bool | `true` | Reserved: the `memory` cargo feature alone decides whether memory is available. |
-| `scope_strategy` | enum | `git_remote_with_fallback` | Reserved. Intended: `git_remote_with_fallback` shares memory across clones of the same remote; `workdir_only` keeps each clone separate. |
+| `scope_strategy` | enum | `git_remote_with_fallback` | Reserved: notes are stored under the main worktree's path whichever value is set, so clones keep separate notes. |
 | `default_visibility` | enum | `group` | Reserved. Intended: default tier when a `memory_save` / `memory_search` call omits `visibility` (`group` shared, `individual` private to the calling agent). |
 
 All three `[memory]` keys parse but currently have no effect (see [Reserved keys](#reserved-keys)).

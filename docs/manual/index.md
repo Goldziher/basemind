@@ -22,6 +22,7 @@ disagree.
 | `basemind manual indexing` | Scanning, freshness, notices, the daemon and the cache. |
 | `basemind manual paging` | `limit`, `cursor`, token budgets and how a cut result says so. |
 | `basemind manual setup` | Onboarding, the MCP server, grammars, hooks, cache and admin commands. |
+| `basemind manual data` | Where basemind keeps its data on each platform, and how to uninstall it. |
 | `basemind manual exit-codes` | What each CLI exit status means. |
 | `basemind manual environment` | The `BASEMIND_*` environment variables an operator sets. |
 | `basemind manual troubleshooting` | What to check when a tool is missing, empty or failing. |
