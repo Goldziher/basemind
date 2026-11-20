@@ -142,6 +142,7 @@ class Sampler(threading.Thread):
                 "data_journals": data.journals,
                 "data_telemetry_bytes": data.telemetry,
                 "comms_bytes": comms.apparent,
+                "comms_journals": comms.journals,
                 "data_parts": data.parts,
                 "comms_parts": comms.parts,
             }

@@ -395,6 +395,15 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
         "MiB",
         MIB,
     )
+    # The comms dir holds the daemon's log and its stores; only their Fjall journals are size-bounded.
+    growth_rule(
+        v,
+        "R8c comms dir size (apparent, journals excluded)",
+        [(r["t"], r.get("comms_bytes", 0) - sum(r.get("comms_journals", {}).values())) for r in dirs],
+        args.dir_tol,
+        "MiB",
+        MIB,
+    )
     if dirs and "data_journals" not in dirs[0]:
         v.add("R8b size-bounded stores", False, "no journal / telemetry split recorded: soak.py predates it")
     elif dirs:
