@@ -1,9 +1,9 @@
 //! `path` means one thing in every search and list tool: a repo-relative prefix, or a glob over the
 //! whole path when it holds `*` (`*` within one segment, `**` across them).
 //!
-//! The fixture puts the same needle under `src/mcp/`, beside it in `src/mcp_types.rs`, under a
-//! second `src/mcp/` deeper in `pkg/`, and under a directory whose name holds glob characters, so
-//! each case tells a prefix from a substring and a glob from a prefix.
+//! The fixture puts the same needle and the same `PathConfig` definition under `src/mcp/`, beside it
+//! in `src/mcp_types.rs`, under a second `src/mcp/` deeper in `pkg/`, and under a directory whose name
+//! holds glob characters, so each case tells a prefix from a substring and a glob from a prefix.
 
 use serde_json::{Value, json};
 
@@ -243,4 +243,139 @@ fn docs_search_path_is_a_prefix_or_a_glob_with_a_star() {
         );
         let _ = client.cancel().await;
     });
+}
+
+/// The files of a `code_symbols` answer, from rows `"<path>:<line>: <signature>"`, sorted.
+async fn symbol_files(client: &Client, arguments: Value) -> Vec<String> {
+    let body = call(client, "code_symbols", arguments).await;
+    let mut files: Vec<String> = super::symbol_rows(&body)
+        .iter()
+        .map(|row| row.split_once(':').expect("a row starts with its path").0.to_string())
+        .collect();
+    files.sort_unstable();
+    files.dedup();
+    files
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_symbols_path_and_language_scope_the_definitions() {
+    let (_dir, client) = started_with(FILES).await;
+
+    let cases: &[(Value, &[&str])] = &[
+        (
+            json!({ "name": "PathConfig" }),
+            &[
+                "app/[id]/page.tsx",
+                "pkg/src/mcp/tools.rs",
+                "src/mcp/config.py",
+                "src/mcp/tools.rs",
+                "src/mcp_types.rs",
+            ],
+        ),
+        (
+            json!({ "name": "PathConfig", "path": "src/mcp/" }),
+            &["src/mcp/config.py", "src/mcp/tools.rs"],
+        ),
+        (
+            json!({ "name": "PathConfig", "path": "src/mc" }),
+            &["src/mcp/config.py", "src/mcp/tools.rs", "src/mcp_types.rs"],
+        ),
+        (
+            json!({ "name": "PathConfig", "path": "**/mcp/*.rs" }),
+            &["pkg/src/mcp/tools.rs", "src/mcp/tools.rs"],
+        ),
+        (
+            json!({ "name": "PathConfig", "path": "src/mcp/", "language": "rust" }),
+            &["src/mcp/tools.rs"],
+        ),
+        (
+            json!({ "name": "PathConfig", "language": "python" }),
+            &["src/mcp/config.py"],
+        ),
+        (
+            json!({ "name": "PathConfig", "path": "app/[id]/" }),
+            &["app/[id]/page.tsx"],
+        ),
+        // Files pass the filters, none defines the name: an empty answer, not a refusal.
+        (json!({ "name": "PathConfig", "path": "src/outline.rs" }), &[]),
+    ];
+    for (arguments, expected) in cases {
+        assert_eq!(symbol_files(&client, arguments.clone()).await, *expected, "{arguments}");
+    }
+
+    for (arguments, expected) in [
+        (
+            json!({ "name": "PathConfig", "path": "mcp/" }),
+            no_prefix("code_symbols", "mcp/"),
+        ),
+        (
+            json!({ "name": "PathConfig", "path": "*.go" }),
+            no_glob("code_symbols", "*.go"),
+        ),
+    ] {
+        assert_eq!(
+            call_err(&client, "code_symbols", arguments.clone()).await,
+            expected,
+            "{arguments}"
+        );
+    }
+    let language = call_err(
+        &client,
+        "code_symbols",
+        json!({ "name": "PathConfig", "language": "cobol" }),
+    )
+    .await;
+    assert!(
+        language.starts_with("`code_symbols`: no indexed file has language `cobol`."),
+        "{language}"
+    );
+}
+
+/// The keyword lane needs no embedding model, so this runs wherever `code_search` is built.
+#[cfg(feature = "code-search")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_search_path_and_language_scope_the_hits() {
+    let (_dir, client) = started_with(FILES).await;
+    let hits = |arguments: Value| {
+        let client = &client;
+        async move {
+            let mut arguments = arguments;
+            arguments["query"] = json!("needle");
+            arguments["lane"] = json!("keyword");
+            let body = call(client, "code_search", arguments).await;
+            let mut files: Vec<String> = Vec::new();
+            for hit in body["hits"].as_array().expect("hits") {
+                files.push(hit["path"].as_str().expect("a hit names its file").to_string());
+                for copy in hit["also_at"].as_array().into_iter().flatten() {
+                    files.push(copy.as_str().expect("a copy is a path").to_string());
+                }
+            }
+            files.sort_unstable();
+            files.dedup();
+            files
+        }
+    };
+
+    assert_eq!(
+        hits(json!({ "path": "src/mcp/" })).await,
+        ["src/mcp/config.py", "src/mcp/tools.rs"]
+    );
+    assert_eq!(
+        hits(json!({ "path": "**/mcp/*.rs" })).await,
+        ["pkg/src/mcp/tools.rs", "src/mcp/tools.rs"]
+    );
+    assert_eq!(
+        hits(json!({ "path": "src/mc", "language": "rust" })).await,
+        ["src/mcp/tools.rs", "src/mcp_types.rs"]
+    );
+    assert_eq!(hits(json!({ "path": "app/[id]/" })).await, ["app/[id]/page.tsx"]);
+    assert_eq!(
+        call_err(
+            &client,
+            "code_search",
+            json!({ "query": "needle", "lane": "keyword", "path": "mcp/" })
+        )
+        .await,
+        no_prefix("code_search", "mcp/")
+    );
 }

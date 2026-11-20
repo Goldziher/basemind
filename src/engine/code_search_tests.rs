@@ -27,6 +27,12 @@ fn scanned(root: &Path) -> Store {
     store
 }
 
+const UNFILTERED: Filters<'static> = Filters {
+    tool: "code_search",
+    path: None,
+    language: None,
+};
+
 fn keyword_seeds(store: &Store, query: &str) -> Vec<CodeSearchHit> {
     let db = store.index_db.as_ref().expect("index db");
     bm25_search(&db.view(), query, 50)
@@ -43,7 +49,7 @@ fn a_renamed_file_is_cited_at_its_new_path() {
     std::fs::rename(dir.path().join("old.rs"), dir.path().join("new.rs")).unwrap();
     let store = scanned(dir.path());
 
-    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0);
+    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0, &UNFILTERED);
 
     assert!(!hydrated.hits.is_empty(), "the keyword lane finds the chunk");
     for hit in &hydrated.hits {
@@ -65,7 +71,7 @@ fn identical_files_are_one_hit_listing_every_path() {
     let distinct = seeds.len();
     // A vector lane holds one row per path, so the same id can be ranked more than once.
     let doubled: Vec<CodeSearchHit> = seeds.iter().flat_map(|s| [s.clone(), s.clone()]).collect();
-    let hydrated = hydrate_hits(&store, doubled, 10, 10);
+    let hydrated = hydrate_hits(&store, doubled, 10, 10, &UNFILTERED);
 
     assert_eq!(hydrated.hits.len(), distinct, "one hit per chunk, not per copy");
     let top = &hydrated.hits[0];
@@ -78,6 +84,55 @@ fn identical_files_are_one_hit_listing_every_path() {
     );
 }
 
+/// A hit cites only the copies the filters pass, and a chunk no passing file holds is dropped
+/// without counting as stale.
+#[test]
+fn a_filtered_search_cites_the_copies_the_filters_pass() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for name in ["src/net/a.rs", "src/net_b.rs", "lib/src/net/c.rs"] {
+        let file = dir.path().join(name);
+        std::fs::create_dir_all(file.parent().expect("parent")).unwrap();
+        std::fs::write(file, BODY).unwrap();
+    }
+    let store = scanned(dir.path());
+    let hydrate = |path: &str, language: Option<&str>| {
+        let path = crate::path_filter::PathFilter::parse(path).expect("filter");
+        let filters = Filters {
+            tool: "code_search",
+            path: Some(&path),
+            language,
+        };
+        let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0, &filters);
+        assert_eq!(hydrated.omitted, 0);
+        hydrated
+            .hits
+            .iter()
+            .map(|hit| {
+                let mut cited = vec![hit.path.clone()];
+                cited.extend(hit.also_at.iter().cloned());
+                cited
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let cites = |path: &str, language: Option<&str>, expected: &[&str]| {
+        let hits = hydrate(path, language);
+        assert!(!hits.is_empty(), "{path}: the filter keeps the chunk");
+        for cited in hits {
+            assert_eq!(cited, expected, "{path}");
+        }
+    };
+    cites("", None, &["lib/src/net/c.rs", "src/net/a.rs", "src/net_b.rs"]);
+    cites("src/net/", None, &["src/net/a.rs"]);
+    cites("src/net", None, &["src/net/a.rs", "src/net_b.rs"]);
+    cites("**/net/*.rs", Some("rust"), &["lib/src/net/c.rs", "src/net/a.rs"]);
+    assert!(
+        hydrate("net/", None).is_empty(),
+        "a fragment inside the paths is no prefix of them"
+    );
+    assert!(hydrate("src/", Some("python")).is_empty(), "no copy is python");
+}
+
 #[test]
 fn a_chunk_no_file_holds_is_dropped_and_counted() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -86,7 +141,7 @@ fn a_chunk_no_file_holds_is_dropped_and_counted() {
     let mut seeds = vec![seed("00ff:0".to_string())];
     seeds.extend(keyword_seeds(&store, "retry upload"));
 
-    let hydrated = hydrate_hits(&store, seeds, 10, 0);
+    let hydrated = hydrate_hits(&store, seeds, 10, 0, &UNFILTERED);
 
     assert_eq!(hydrated.omitted, 1);
     assert!(hydrated.hits.iter().all(|h| h.path == "a.rs"));
@@ -122,7 +177,7 @@ fn a_prose_query_reaches_camel_case_identifiers() {
     .unwrap();
     let store = scanned(dir.path());
 
-    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "find references"), 10, 0);
+    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "find references"), 10, 0, &UNFILTERED);
 
     assert!(
         hydrated

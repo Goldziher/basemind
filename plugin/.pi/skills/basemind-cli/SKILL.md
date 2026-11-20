@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:ada9045231f43d697f3408f6f1ef466c260ba6621844bed3b0c2cd31344c95fe
-Source-Hash: blake3:239a6957fcdb4f1307ce987e61d7aa5f3383345466cb0a8f5958a640b9559c9e
+Content-Hash: blake3:31141da3a0f033a5d40fe64161c95b8f6a77ce67b56804b3d5b1411656c31e3c
+Source-Hash: blake3:f0d94aa352365ec5bbc615057772942ef3c14add0817a296337e3ea57aed0d7c
 Schema-Version: v1
 -->
 
@@ -63,7 +63,7 @@ command covers the question.
 | Question | Command | Notes |
 |---|---|---|
 | "What's the shape of file F?" | `basemind code outline path/F` | Symbols with 1-based line spans, plus imports. |
-| "Where is X defined?" | `basemind code symbols "X" [--kind K --fuzzy]` | Ranked exact, prefix, substring; `--fuzzy` adds fuzzy matches last. |
+| "Where is X defined?" | `basemind code symbols "X" [--kind K --path P --language L --fuzzy]` | Ranked exact, prefix, substring; `--fuzzy` adds fuzzy matches last. |
 | "One symbol's body, or a line span?" | `basemind code read path --symbol name` / `--line N --end-line M` | Alias `expand`. One form, not both. |
 | "Where does this text appear?" | `basemind code grep "pattern" [--regex --path P --language L --context N]` | Literal unless `--regex`; `--path` is a substring. |
 | "Find code by meaning?" | `basemind code search "query" [--lane hybrid\|semantic\|keyword]` | Alias `semantic`. Needs `code-search`. |

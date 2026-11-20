@@ -42,6 +42,11 @@ pub enum CodeCmd {
         name: String,
         #[arg(long)]
         kind: Option<String>,
+        /// Repository-relative prefix, or a glob when it holds `*` (`src/`, `src/**/*.rs`).
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long)]
+        language: Option<String>,
         /// Also match the name as a fuzzy subsequence, ranked last.
         #[arg(long)]
         fuzzy: bool,
@@ -111,6 +116,11 @@ pub enum CodeCmd {
         /// Retrieval lane (default hybrid).
         #[arg(long, value_enum)]
         lane: Option<SearchLane>,
+        /// Repository-relative prefix, or a glob when it holds `*` (`src/`, `src/**/*.rs`).
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long)]
+        language: Option<String>,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -306,6 +316,8 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
         CodeCmd::Symbols {
             name,
             kind,
+            path,
+            language,
             fuzzy,
             limit,
             cursor,
@@ -319,6 +331,8 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                     CodeSymbolsParams {
                         name,
                         kind,
+                        path,
+                        language,
                         fuzzy: fuzzy.then_some(true),
                         limit,
                         cursor: cursor.map(Cursor),
@@ -384,6 +398,8 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
         CodeCmd::Search {
             query,
             lane,
+            path,
+            language,
             limit,
             cursor,
             max_tokens,
@@ -395,6 +411,8 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                     CodeSearchParams {
                         query,
                         lane: lane.map(|lane| lane.as_str().to_string()),
+                        path,
+                        language,
                         limit,
                         cursor: cursor.map(Cursor),
                         max_tokens,

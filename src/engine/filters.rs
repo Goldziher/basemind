@@ -71,6 +71,11 @@ impl Filters<'_> {
         self.path.is_none() && self.language.is_none()
     }
 
+    /// Whether a file at `path` in `language` passes every filter.
+    pub(crate) fn passes(&self, path: &[u8], language: &str) -> bool {
+        self.path.is_none_or(|filter| filter.matches(path)) && self.language.is_none_or(|wanted| wanted == language)
+    }
+
     /// The refusal for filters that none of the files the tool lists passes, or `None` when one
     /// does. `listed` tallies those files; `unlisted_documents` tallies the document tier for a
     /// tool that does not cover it, so the refusal can say the filters named documents.

@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:44e8d8722c9fefa6ac85ca6d707fafa764e832b8d623324c6828ad1291dfacbf
-Source-Hash: blake3:239a6957fcdb4f1307ce987e61d7aa5f3383345466cb0a8f5958a640b9559c9e
+Content-Hash: blake3:d1a62d0de957bfd2eaae9d882a4bfdfbf53b3fa1bddada117224021827a06ec9
+Source-Hash: blake3:f0d94aa352365ec5bbc615057772942ef3c14add0817a296337e3ea57aed0d7c
 Schema-Version: v1
 -->
 
@@ -45,6 +45,7 @@ no tool covers the question.
 |---|---|---|
 | "What's the shape of file F?" | `code_outline {"path":"src/store.rs"}` | `basemind code outline src/store.rs` |
 | "Where is X defined?" | `code_symbols {"name":"parse_config","kind":"function"}` | `basemind code symbols parse_config --kind function` |
+| "Where is X defined in this directory?" | `code_symbols {"name":"Config","path":"src/mcp/"}` | `basemind code symbols Config --path src/mcp/` |
 | "I only half remember the name" | `code_symbols {"name":"prsconf","fuzzy":true}` | `basemind code symbols prsconf --fuzzy` |
 | "Show one symbol's body" | `code_read {"path":"src/store.rs","symbol":"open"}` | `basemind code read src/store.rs --symbol open` |
 | "Show these lines" | `code_read {"path":"src/store.rs","line":120,"end_line":160}` | `basemind code read src/store.rs --line 120 --end-line 160` |

@@ -1208,10 +1208,10 @@ degrading to a truncated in-memory view.
 | Command | Purpose |
 |---|---|
 | `outline <path>` | A file's structure: symbols, 1-based lines, signatures, imports (`code_outline`). |
-| `symbols <name> [--kind --changed]` | Find a definition by name, optionally filtered by kind (`code_symbols`). |
+| `symbols <name> [--kind --path --language --changed]` | Find a definition by name, optionally filtered by kind, path and language (`code_symbols`). |
 | `read <path> --symbol <name> [--kind]` / `read <path> --line <n> [--end-line <m>]` | One symbol's source body, or an inclusive line span (`code_read`; alias `expand`). |
 | `grep <pattern> [--regex --path --language --context N --changed]` | Text search; the pattern is literal unless `--regex`. `--path` is a repo-relative prefix, or a glob when it holds `*`; `--context N` (0-10) adds the N lines around each match (`code_grep`). |
-| `search <query> [--lane hybrid\|semantic\|keyword]` | Search code by meaning; returns pointers. Needs `--features code-search` (`code_search`; alias `semantic`). |
+| `search <query> [--lane hybrid\|semantic\|keyword --path --language]` | Search code by meaning; returns pointers. Needs `--features code-search` (`code_search`; alias `semantic`). |
 | `refs <name> [--relation --path --line --column --depth]` | Usages of a name: call sites by default, or `--relation implementations\|importers\|definition` (`code_refs`; alias `references`). `refs --relation importers --path <file> [--depth]` lists the files importing a file and `refs --relation cycles [--path]` the import cycles; neither takes a name. |
 | `callers <path> <name>` | Shorthand for `refs <name> --path <path>`: callers of one specific definition. |
 | `implementations <name>` | Shorthand for `refs <name> --relation implementations`. |

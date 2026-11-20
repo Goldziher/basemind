@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `path` and `language` on `code_symbols` and `code_search` (#252), with the meaning they have on
+  `code_grep` and `find_files`: `code_symbols {"name":"Config","path":"services/payments/"}` finds the
+  definitions under that directory only. `code_search` keeps the hits in files the filters pass
+  among the 1,000 best candidates of each lane, and cites only the copies of a file that pass.
+  A filter no indexed file passes is refused. `basemind code symbols|search` take `--path` and
+  `--language`.
+
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
   lists the files importing that file `by_depth`, up to `depth` hops (default 1, max 5), names those
   in an import cycle with it and says when the walk was cut; `relation: "cycles"` lists the import
