@@ -1,0 +1,5 @@
+{"timestamp":"2026-11-18T11:10:00.000Z","ordinal":0,"type":"session_meta","payload":{"session_id":"empty-totals","id":"empty-totals","timestamp":"2026-11-18T11:10:00.000Z","cwd":"{{REPO}}","originator":"codex_cli_rs","cli_version":"0.169.0","source":"cli"}}
+{"timestamp":"2026-11-18T11:10:01.000Z","ordinal":1,"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SECRET-EMPTY-TOTALS-REPLY"}]}}
+{"timestamp":"2026-11-18T11:10:02.000Z","ordinal":2,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{},"last_token_usage":{"input_tokens":2,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0,"total_tokens":7}}}}
+{"timestamp":"2026-11-18T11:10:03.000Z","ordinal":3,"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SECRET-EMPTY-TOTALS-REPLY"}]}}
+{"timestamp":"2026-11-18T11:10:04.000Z","ordinal":4,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{},"last_token_usage":{"input_tokens":2,"cached_input_tokens":0,"output_tokens":7,"reasoning_output_tokens":0,"total_tokens":9}}}}

@@ -596,6 +596,47 @@ fn a_reply_without_a_tool_call_after_a_fork_point_counts_once() {
 }
 
 #[test]
+fn unrelated_conversations_with_equal_totals_each_count_their_tokens() {
+    let env = setup();
+    let day = env.home.join(".codex/sessions/2026/11/20");
+    for stem in ["rollout-twin-a", "rollout-twin-b"] {
+        place(&env, &env.repo, "codex/twin.jsonl", &day.join(format!("{stem}.jsonl")));
+    }
+    let report = report(&env, None);
+    for stem in ["rollout-twin-a", "rollout-twin-b"] {
+        assert_eq!(
+            session(&report, stem).counts.output_tokens,
+            OutputTokens {
+                other: 10,
+                ..OutputTokens::default()
+            },
+            "{stem}: equal totals in another lineage are no copy"
+        );
+    }
+}
+
+#[test]
+fn token_counts_without_an_output_total_each_count_their_last_usage() {
+    let env = setup();
+    let day = env.home.join(".codex/sessions/2026/11/20");
+    place(
+        &env,
+        &env.repo,
+        "codex/empty-totals.jsonl",
+        &day.join("rollout-empty-totals.jsonl"),
+    );
+    let report = report(&env, None);
+    assert_eq!(
+        session(&report, "rollout-empty-totals").counts.output_tokens,
+        OutputTokens {
+            other: 12,
+            ..OutputTokens::default()
+        },
+        "two counts of 5 and 7 whose totals hold no output total"
+    );
+}
+
+#[test]
 fn a_reverted_thread_is_one_session() {
     let env = setup();
     let day = env.home.join(".codex/sessions/2026/11/20");
