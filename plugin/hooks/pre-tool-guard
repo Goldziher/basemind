@@ -146,6 +146,8 @@ Grep)
   grep_glob="$(printf '%s' "${input}" | jq -r '.tool_input.glob // empty' 2>/dev/null || true)"
   grep_cwd="$(printf '%s' "${input}" | jq -r '.cwd // empty' 2>/dev/null || true)"
   [ -n "${grep_cwd}" ] || grep_cwd="$(pwd)"
+  # Grep without a path searches its working directory, so scope to cwd as for an explicit ".".
+  [ -n "${grep_path}" ] || grep_path="."
   grep_path="$(grep_scope "$(repo_relative "${grep_path}" "${grep_cwd}")" "${grep_glob}")"
   grep_args="$(jq -cn --arg p "${grep_pattern:-…}" --arg s "${grep_path}" \
     '{pattern:$p,regex:true} + (if $s == "" then {} else {path:$s} end)' 2>/dev/null || true)"
