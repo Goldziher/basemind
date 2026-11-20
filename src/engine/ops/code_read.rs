@@ -3,6 +3,7 @@
 use crate::engine::error::EngineError;
 use crate::engine::files::{indexed_file, not_indexed_in};
 use crate::engine::freshness::{self, Unloadable};
+use crate::engine::ops::index::LARGE_FILE_LINES;
 use crate::engine::pick::pick_symbol;
 use crate::engine::types::code::{
     CodeReadParams, CodeReadResult, ExpandParams, ExpandResponse, ReadSpanResponse, kind_to_str, parse_kind,
@@ -93,6 +94,20 @@ fn read_span(
         bytes: span.bytes,
         truncated,
         truncated_reason: truncated.then_some(SIZE_CAP),
+        notice: outline_notice(path, line, end_line, total_lines),
+    })
+}
+
+/// The notice on a span of more than [`LARGE_FILE_LINES`] lines (so of a file at least that long):
+/// one such read spends most of an agent's context, where `code_outline` and a narrower span do not.
+/// The span counts the lines asked for, clamped to the file, whether or not the size cap cut it.
+fn outline_notice(path: &crate::path::RelPath, line: u32, end_line: u32, total_lines: u32) -> Option<String> {
+    let lines = end_line.min(total_lines).saturating_sub(line).saturating_add(1);
+    (lines > LARGE_FILE_LINES).then(|| {
+        format!(
+            "this span is {lines} of the {total_lines} lines of `{path}`; read `code_outline {{\"path\":\"{path}\"}}` \
+             and then the narrower span you need"
+        )
     })
 }
 
@@ -260,6 +275,33 @@ mod tests {
         std::fs::write(&file, contents).expect("write");
         let span = read_lines(&file, line, end_line).expect("read");
         (span.head, span.bytes, span.total_lines)
+    }
+
+    #[test]
+    fn only_a_span_of_more_than_the_large_file_lines_names_code_outline() {
+        let path = crate::path::RelPath::from("src/big.rs");
+        assert_eq!(
+            outline_notice(&path, 1, 2_001, 2_500).as_deref(),
+            Some(
+                "this span is 2001 of the 2500 lines of `src/big.rs`; read `code_outline {\"path\":\"src/big.rs\"}` \
+                 and then the narrower span you need"
+            )
+        );
+        assert_eq!(
+            outline_notice(&path, 100, u32::MAX, 2_500).as_deref(),
+            Some(
+                "this span is 2401 of the 2500 lines of `src/big.rs`; read `code_outline {\"path\":\"src/big.rs\"}` \
+                 and then the narrower span you need"
+            ),
+            "the span is clamped to the file"
+        );
+        assert_eq!(outline_notice(&path, 1, 2_000, 2_500), None, "exactly the threshold");
+        assert_eq!(
+            outline_notice(&path, 1, u32::MAX, 2_000),
+            None,
+            "a whole file of the threshold"
+        );
+        assert_eq!(outline_notice(&path, 1, u32::MAX, 0), None, "an empty file");
     }
 
     #[test]

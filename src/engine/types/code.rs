@@ -233,6 +233,10 @@ pub(crate) struct ReadSpanResponse {
     /// on from `end_line + 1`; one line longer than the cap cannot be read past it.
     #[serde(skip_serializing_if = "is_zero")]
     pub omitted_bytes: usize,
+    /// Set on a span of more than 2,000 lines: it names `code_outline`, the cheaper call to read
+    /// first before a narrower span.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
 }
 
 /// Answer of `code_read`: a symbol's body, or a line span.

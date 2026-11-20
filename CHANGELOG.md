@@ -140,6 +140,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- A `code_read` line span of more than 2,000 lines carries a `notice` naming `code_outline` (#127):
+  read the file's outline first, then the narrower span needed.
 
 ### Changed
 
