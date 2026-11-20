@@ -275,6 +275,7 @@ of, or alongside, their normal result:
 | `retry` | `true` to retry shortly for complete results; `false` if the result is usable but may be stale. |
 
 `index_status` additionally reports `warming` / `warm_ms` (in-memory preload of an existing index)
-and `indexing` / `index_build_ms` (first-time index build). Treat an empty or partial result carrying
+and `indexing` / `index_build_ms` (first-time index build), and `queued_scan` while a hosted
+workspace's watcher pass waits for a daemon scan slot. Treat an empty or partial result carrying
 a `notice` as "retry shortly," not "no matches." See
 [Index lifecycle and freshness](/concepts/how-it-works/#index-lifecycle-and-freshness) for details.

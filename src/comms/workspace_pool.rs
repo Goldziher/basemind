@@ -38,10 +38,10 @@ static READ_STACK_BUILD_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Se
 #[cfg(all(feature = "comms", any(unix, windows)))]
 const READ_STACK_BUILD_GATE_WAIT: Duration = Duration::from_secs(15 * 60);
 
-/// Run `build` on a blocking thread while holding one permit of `gate`. The permit is owned by the
-/// blocking closure, so it is released when the BUILD ends, not when the awaiting future is dropped:
-/// a cancelled caller (client disconnect, timeout, drain) cannot free the gate while its build is
-/// still running and let a second O(corpus) build start beside it.
+/// Run `build` on the background pool ([`crate::mcp::background_pool`]) while holding one permit of
+/// `gate`. The permit is owned by the build's closure, so it is released when the BUILD ends, not
+/// when the awaiting future is dropped: a cancelled caller (client disconnect, timeout, drain) cannot
+/// free the gate while its build is still running and let a second O(corpus) build start beside it.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 async fn run_gated_build<T: Send + 'static>(
     gate: std::sync::Arc<tokio::sync::Semaphore>,
@@ -52,12 +52,13 @@ async fn run_gated_build<T: Send + 'static>(
         .await
         .map_err(|_| anyhow::anyhow!("timed out after {wait:?} waiting for the read stack build gate"))?
         .map_err(|closed| anyhow::anyhow!("read stack build gate closed: {closed}"))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        build()
-    })
-    .await
-    .map_err(|join| anyhow::anyhow!("hosted read stack build panicked: {join}"))
+    crate::mcp::background_pool::background()
+        .run(move || {
+            let _permit = permit;
+            build()
+        })
+        .await
+        .ok_or_else(|| anyhow::anyhow!("hosted read stack build panicked"))
 }
 
 /// Default number of daemon-hosted READ STACKS kept warm at once — deliberately far below
@@ -844,20 +845,23 @@ impl WorkspacePool {
     }
 
     /// Start the full scan a freshly opened workspace owes when its index was wiped or is empty over
-    /// a populated file map. Detached: the open must not wait on a whole-tree scan. The entry's
-    /// `rebuild_pending` flag makes a racing client rescan run full too, and the scan coalesces.
+    /// a populated file map, detached on a scan slot: the open must not wait on a whole-tree scan. The
+    /// entry's `rebuild_pending` flag makes a racing client rescan run full too, and the scan coalesces.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     fn spawn_pending_rebuild(self: &std::sync::Arc<Self>, entry: &WorkspaceEntry) {
+        use super::scan_slots::RESCAN_SLOTS;
+
         if !entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
         let pool = std::sync::Arc::clone(self);
         let root = entry.root.clone();
-        tokio::task::spawn_blocking(move || {
+        let rebuild = move || {
             if let Err(error) = pool.rescan(&root, None, true, false, &pool.scan_cancel) {
                 tracing::warn!(root = %root.display(), %error, "index rebuild scan failed");
             }
-        });
+        };
+        tokio::spawn(super::scan_slots::on_blocking_slot(&RESCAN_SLOTS, rebuild));
     }
 
     /// Fetch the entry for `root`, opening it read-write and inserting it (evicting LRU past the

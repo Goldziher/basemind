@@ -99,6 +99,7 @@ impl Workspace {
     /// means a rebuild is in flight, which is exactly what `rebuild_in_progress` tells the caller.
     pub(crate) fn index_status(&self, _p: IndexStatusParams) -> Result<StatusResponse, EngineError> {
         let body = std::time::Instant::now();
+        let queued_scan = self.scan_queue.queued();
         let indexing = self.initial_scan_active.load(Ordering::Relaxed);
         let index_build_ms = {
             let ms = self.initial_scan_ms.load(Ordering::Relaxed);
@@ -125,6 +126,7 @@ impl Workspace {
                 rescan_needed: false,
                 rebuild_in_progress: true,
                 partial: false,
+                queued_scan,
                 degraded: None,
                 indexing,
                 index_build_ms,
@@ -173,6 +175,7 @@ impl Workspace {
             rescan_needed,
             rebuild_in_progress: false,
             partial: last_scan.as_ref().is_some_and(|status| status.partial),
+            queued_scan,
             degraded: last_scan
                 .as_ref()
                 .and_then(crate::store::StatusSidecar::degraded_summary),
