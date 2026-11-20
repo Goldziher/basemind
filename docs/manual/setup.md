@@ -8,6 +8,26 @@ capabilities to advertise (`--with`, `--without`, or every one with `--yes`), an
 block is delimited and replaced in place. `--print` shows what it would change and writes nothing;
 `--rules-target` picks the file and `--no-rules` skips it.
 
+## Rolling out to a team
+
+A repository checks in what every teammate shares; each teammate's machine keeps the rest.
+
+| Checked in | Per user |
+|---|---|
+| `.claude/settings.json`: the `basemind` marketplace under `extraKnownMarketplaces` and `basemind@basemind` under `enabledPlugins`, so Claude Code offers to install the plugin | The plugin install, which fetches the matching basemind release |
+| `basemind.toml`: what to scan, per-language overrides, the document tier, `[analysis] entry_points` | The environment variables of `basemind manual environment`: the cache budget (`BASEMIND_CACHE_BUDGET_MB`), the free-space headroom (`BASEMIND_MIN_FREE_MB`), the daemon caps (`BASEMIND_DAEMON_MAX_FOOTPRINT_MB`, `BASEMIND_DAEMON_MAX_SCAN_THREADS` and their siblings) and every grant |
+| Optionally, the read-only tool allows that `basemind init --settings-target shared` writes to `permissions.allow` in `.claude/settings.json`; tools that write are never listed | The `.local` rules and settings files `basemind init` writes by default, which it offers to gitignore |
+
+- The daemon is machine-global: one serves every session and every worktree of the user. It takes
+  its environment from the process that started it, so a variable set later in another shell does
+  not reach it. Set the variables where every session inherits them (the shell profile), then run
+  `basemind comms stop`; the next session starts a daemon with them. A session's implicit start drops the grants (the `ALLOW` variables); only an
+  explicit `basemind comms start` passes them on.
+- A repository cannot set these variables: the cache, the caps and the grants are the operator's.
+- Keep the team on one minor release. A checked-in `basemind.toml` that uses a key an older release
+  does not know stops loading for a teammate on that release, and each minor release rebuilds the
+  index on its first scan.
+
 ## The MCP server
 
 `basemind serve` is what an MCP host launches over stdio: it ensures the daemon is up and relays

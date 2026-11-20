@@ -391,7 +391,8 @@ pub const COMMS_START: &str = "\
 When to use: starting the daemon ahead of the first session; a session starts it when needed.
 
 Returns: once the daemon answers; a no-op when one is already alive. The daemon keeps the
-environment of the process that started it.
+environment of the process that started it; this explicit start also passes it the `ALLOW`
+grants, which a session's implicit start drops.
 
 Example:
   basemind comms start
