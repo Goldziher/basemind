@@ -1,8 +1,8 @@
 ---
 title: Shared memory
 description: >
-  Per-repo memory agents can write to and search. Clones of the same repo share it;
-  unrelated repos stay separate.
+  Per-repo memory agents can write to and search. The worktrees of one checkout share it;
+  other clones and unrelated repos do not.
 ---
 
 basemind provides a shared memory layer scoped to your repository: agents can store notes and search
@@ -10,9 +10,9 @@ them by meaning.
 
 ## How it works
 
-Each repository (keyed by its normalized git `origin` URL) has its own memory store. Clones and worktrees of
-the same repo on one machine share that store. When you work on an unrelated project, that memory stays
-separate — no leakage.
+Each repository on a machine has its own memory store, keyed by the path of its main worktree. The
+linked worktrees of that checkout share the store; another clone, even of the same remote, has its
+own. When you work on an unrelated project, that memory stays separate — no leakage.
 
 Any agent can:
 
@@ -54,10 +54,18 @@ with `memory_search {"query":"SQL injection prevention"}`.
 
 ## Scoping
 
-Memory is indexed by the repository's git origin URL, so:
+The store is `cache/repos/<key>/memory.fjall` under the data home, where `<key>` hashes the
+canonical path of the repository's main worktree. Inside the store, notes are filed under the
+normalised `origin` URL, or `path:<worktree>` when there is no `origin`. So:
 
-- Two clones or worktrees of the same repo on the same machine share the same memory. The store lives in the machine-global cache, so it is not synced between machines.
-- Forks or different remotes have separate memory stores (different URLs).
-- Each unrelated repo has its own memory (different URL).
+- The worktrees (`git worktree add`) of a repository with an `origin` share notes.
+- A second clone at another path has its own store and sees none of the first clone's notes, even
+  with the same `origin`.
+- Moving a repository, or cloning it again at another path, starts with no notes; the old ones
+  stay under the old path's key.
+- Adding or changing `origin` (`git remote set-url`) hides the existing notes; they stay in the
+  store under the old scope.
+- A repository without `origin` files notes per worktree, so its worktrees do not share them.
+- Nothing is synced between machines.
 
 This scoping is automatic — you don't configure it.

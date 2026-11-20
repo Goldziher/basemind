@@ -301,5 +301,6 @@ the caller can fix is a tool result with `isError` whose text names the fix.
 - Git commands require basemind to be running inside a git repository.
 - `code search` needs the `code-search` Cargo feature and the `memory` commands need `documents` /
   `memory` (all in `--features full` and in the release binary).
-- Memory is scoped by the normalized `origin` remote URL — clones of the same repo share memory;
-  unrelated repos do not see each other's entries.
+- Memory is one store per repository, keyed by the path of its main worktree: its worktrees
+  share notes (per worktree when it has no `origin`); another clone, a moved repository or a
+  changed `origin` does not see them.
