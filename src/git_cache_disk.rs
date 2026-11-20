@@ -139,7 +139,7 @@ impl DiskTier {
             let slot = &self.tracked[sub.slot()];
             let before = slot.load(Ordering::Acquire);
             let kept = evict_subdir(&self.dir(sub), self.max_bytes, now);
-            let _ = slot.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            let _ = slot.try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 Some(current.saturating_sub(before).saturating_add(kept))
             });
         }
