@@ -179,8 +179,9 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   | `cancelled` | the request was cancelled before it finished | `true` |
   | `internal` | a failure inside basemind the caller cannot fix | `false` |
 
-  `retryable` says whether the same call, unchanged, can succeed later. The overload refusal's code
-  is `busy` (it was `server_busy`) and it keeps `retry_after_ms`.
+  `retryable` says whether the same call, unchanged, can succeed later. The overload refusal says
+  `busy` where it said `server_busy`: in its code, at the start of its text and as the message of
+  the JSON-RPC error a resource read gets. It keeps `retry_after_ms`.
 - **Error text names no host path.** A data-home path is written `$BASEMIND_DATA_HOME/…`, a
   repository path repository-relative and another path under the home directory `~/…`; the server
   log keeps the full text. A store or index that cannot be read is `index_unavailable` and says to

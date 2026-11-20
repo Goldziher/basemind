@@ -251,7 +251,7 @@ mod tests {
         let busy = super::super::run_tool("rescan", Err(over_the_relay(busy))).expect_err("refused");
         assert_eq!(super::super::exit::exit_code_for(&busy), super::super::exit::BUSY);
 
-        let overloaded = crate::mcp::server_busy_for_cli();
+        let overloaded = crate::mcp::busy_for_cli();
         let overloaded = super::super::run_tool("code_grep", Err(over_the_relay(overloaded))).expect_err("refused");
         assert_eq!(super::super::exit::exit_code_for(&overloaded), super::super::exit::BUSY);
     }
