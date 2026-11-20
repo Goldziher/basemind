@@ -64,7 +64,7 @@ run = ["python3 scripts/sync_plugin_version.py", "bash scripts/sync-plugin-skill
 [tasks."plugin:pytest"]
 description = "Python tests of the plugin hooks, launchers, exports and the pip and Hermes packages"
 env = { PYTHONPATH = "pip-package" }
-run = "uv run --no-project --with pytest --with certifi --with build --with mcp==1.28.1 python -m pytest scripts/tests tests/test_legacy_plugin_exports.py tests/test_session_start_hook.py tests/test_agent_hooks.py tests/test_mcp_launch_prune.py tests/test_mcp_launch_signals.py tests/test_mcp_launch_download.py tests/test_fetch_release_binaries.py tests/test_pre_tool_guard_hook.py pip-package/tests pip-package-hermes/tests"
+run = "uv run --no-project --with pytest --with certifi --with build --with mcp==1.28.1 python -m pytest scripts/tests tests/test_legacy_plugin_exports.py tests/test_session_start_hook.py tests/test_agent_hooks.py tests/test_mcp_launch_prune.py tests/test_mcp_launch_signals.py tests/test_mcp_launch_download.py tests/test_fetch_release_binaries.py tests/test_pre_tool_guard_hook.py tests/test_hook_json_lib.py pip-package/tests pip-package-hermes/tests"
 
 [tasks."eval:pytest"]
 description = "Python tests of the retrieval-eval generators, gate and corpus fetch (benchmarks/eval)"

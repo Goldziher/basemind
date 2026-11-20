@@ -572,8 +572,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Operator-visible: `basemind comms status` prints `agent_store=…` where it printed
   `threads=… subscribers=…`, and `basemind comms doctor --json` reports `"agent_store"` where it
-  reported `"threads"`. The plugin hooks' inbox announcements need `jq`. The agent tools are not
-  listed over the HTTP front-end. The `PreToolUse` hook injects a session `as` only on Claude Code
+  reported `"threads"`. The agent tools are not listed over the HTTP front-end. The `PreToolUse` hook injects a session `as` only on Claude Code
   and Codex; on other hosts the hooks act as the principal, like the tool calls.
 
 - **BREAKING: `basemind init` without a terminal writes only with `--yes`.** It used to append to
@@ -795,6 +794,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`extends React.Component`), a generic type (`implements Repo<T>`, `interface A extends B<T>`) or a
   Python subscript (`Generic[T]`) is now an implementation, named by its last segment.
   `EXTRACT_EPOCH` is 7.
+- The plugin hooks no longer need `jq` (#239). Without it the session-start hook told the agent to
+  ignore a working basemind and left no indexed-session mark, so the `PreToolUse` guard never
+  steered, and `inbox-notify` stayed silent. The hooks now read and write JSON in bash and POSIX awk
+  (`hooks/json-lib.sh`), which Git for Windows and minimal images have.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

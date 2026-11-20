@@ -279,8 +279,8 @@ carries the message id, the thread id, `created`, `pending` and `notices`.
 **Announcing read.** A fourth read mode exists for the hooks and is not a field of the MCP tool. In
 the request body it is `mark: notify` (`Mark::Notify`, read kind `ReadKind::Announcing` on the
 branch); the hook asks for it through the CLI's `inbox` command, with `--announce` (and `--as` where
-the host takes an injected name, see *Hook-injected `as`*). The hook needs `jq`: it builds its JSON
-output with `jq -n --arg`. The announcing read:
+the host takes an injected name, see *Hook-injected `as`*). The hook reads the reply and builds its
+JSON output with `hooks/json-lib.sh`, in bash and awk, so it needs no `jq`. The announcing read:
 
 - returns front matter only (message id, thread, subject, sender, timestamp, body size), never a
   body, for unread messages above `max(read_seq, notified_seq)`, oldest first, at most `limit`;
