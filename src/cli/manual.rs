@@ -39,6 +39,7 @@ pages!(
     "agents",
     "indexing",
     "paging",
+    "cli",
     "setup",
     "exit-codes",
     "environment",
