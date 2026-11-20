@@ -12,7 +12,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use rmcp::ErrorData as McpError;
-use rmcp::model::{CallToolRequestParams, CallToolResponse, CreateTaskResult};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, CreateTaskResult};
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::task_manager::{TaskContext, TaskExit, TaskOptions};
 
@@ -75,6 +75,16 @@ pub(super) fn deadline_exceeded(deadline: Duration) -> McpError {
 }
 
 /// Whether `error` is a [`deadline_exceeded`] stop.
+/// How a task stopped at its deadline ends: an agent reads the stop as a tool result, like the direct
+/// path and `server_busy`; a CLI keeps the JSON-RPC error.
+fn deadline_stop(cli: bool, deadline: Duration) -> Result<CallToolResult, TaskExit> {
+    let stopped = deadline_exceeded(deadline);
+    if cli {
+        return Err(TaskExit::Error(stopped));
+    }
+    Ok(super::tool_contract::tool_error(stopped.message))
+}
+
 pub(super) fn is_deadline_exceeded(error: &McpError) -> bool {
     error.code == rmcp::model::ErrorCode(DEADLINE_EXCEEDED_CODE)
 }
@@ -191,6 +201,7 @@ pub(super) async fn run_slow_tool(
     let tool_ct = request_ct.child_token();
     context.ct = tool_ct.clone();
     let cancel_aware = is_cancel_aware_read(&request.name, request.arguments.as_ref());
+    let cli = server.cli;
     let deadline = server.heavy_admission.deadline();
     let expires = tokio::time::Instant::now() + deadline;
     let admission = Arc::new(admission);
@@ -229,7 +240,7 @@ pub(super) async fn run_slow_tool(
                 }
                 () = tokio::time::sleep_until(expires), if cancel_aware => {
                     settle_cancelled(work, &tool_ct, true, &admission);
-                    return Err(TaskExit::Error(deadline_exceeded(deadline)));
+                    return deadline_stop(cli, deadline);
                 }
                 joined = &mut work => joined,
             };
@@ -381,6 +392,18 @@ mod tests {
         assert!(
             admission.admit(WorkClass::Heavy).await.is_err(),
             "the write still holds its lane permit"
+        );
+    }
+
+    #[test]
+    fn a_task_stopped_at_its_deadline_is_a_tool_error_outside_the_cli() {
+        let deadline = std::time::Duration::from_secs(150);
+        let agent = deadline_stop(false, deadline).expect("a tool result");
+        assert_eq!(agent.is_error, Some(true));
+        let cli = deadline_stop(true, deadline);
+        assert!(
+            matches!(&cli, Err(TaskExit::Error(error)) if is_deadline_exceeded(error)),
+            "the CLI keeps the deadline_exceeded error"
         );
     }
 
