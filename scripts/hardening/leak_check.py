@@ -4,7 +4,12 @@
 Runs `basemind scan` (and any extra one-shot command given with --cmd) against the generated
 fixture (code + documents), two scale fixtures and, optionally, a copy of a real repository, each
 under the platform's leak checker, and reports the leak count, leaked bytes and the allocation
-sites. Any leak fails the run; a run the checker could not inspect is an error, not a pass.
+sites. Any leak fails the run; a run the checker could not inspect, or one killed at the run
+timeout, is an error, not a pass.
+
+The runs go in parallel (`--jobs`): valgrind serialises a process's threads onto one core, so one
+run per core divides the wall time instead of adding it up. The grammars are downloaded once,
+natively, into a cache every run shares, so no run spends its checked time on the download.
 
 The binary must be built with `--features system-allocator`. The shipped allocator, mimalloc,
 takes its memory with mmap and registers no malloc zone, so neither checker sees a Rust-heap leak,
@@ -17,18 +22,21 @@ checkers see the whole heap, so a report is a real leak and needs no allowlist.
 
 Usage:
     leak_check.py --binary target/release/basemind [--repo PATH] [--cmd "status"] [--tool leaks|valgrind]
+                  [--jobs N] [--run-timeout SECS]
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -41,9 +49,15 @@ STACK_HEAD = re.compile(r"STACK OF (\d+) INSTANCES? OF '([^']+)'")
 FRAME = re.compile(r"^\s*\d+\s+(\S+)\s+0x[0-9a-f]+ (.+?)(?: \+ \d+)?\s*$")
 VG_DEFINITE = re.compile(r"definitely lost: ([\d,]+) bytes in ([\d,]+) blocks")
 VG_NO_LEAKS = "All heap blocks were freed -- no leaks are possible"
-VG_RECORD = re.compile(r"([\d,]+) bytes in ([\d,]+) blocks are definitely lost in loss record")
+# A record whose block points at others reads `28,703 (264 direct, 28,439 indirect) bytes in 1 blocks`.
+VG_RECORD = re.compile(
+    r"([\d,]+)(?: \([\d,]+ direct, [\d,]+ indirect\))? bytes in ([\d,]+) blocks are definitely lost in loss record"
+)
 VG_FRAME = re.compile(r"^==\d+==\s+(?:at|by) 0x[0-9A-Fa-f]+: (.+?) \((?:in )?(.+)\)\s*$")
 VG_ALLOCATORS = ("malloc", "calloc", "realloc", "operator new", "posix_memalign", "aligned_alloc", "memalign")
+# Rust's allocation shims (`Box::new`, `RawVec`, `__rust_alloc`) sit between the allocator and the
+# code that owns the block.
+RUST_ALLOC_FRAMES = ("alloc::", "<alloc::", "__rust", "__rustc::")
 # A group of several roots ends its tree with a `<< TOTAL >>` line; a single root's tree starts with it.
 GROUP_TOTAL = re.compile(r"^\s*(\d+) \(([\d.]+)([KMG]?)(?: bytes)?\) (?:<< TOTAL >>|ROOT )", re.MULTILINE)
 UNIT = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3}
@@ -51,6 +65,24 @@ UNIT = {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3}
 # The scale fixture: Rust and Python files per language for the small and large run. A leak per
 # file shows as a count that grows from the small run to the large one.
 SCALE_FILES = (60, 600)
+
+# The language pack's cache base (src/cli/env_config.rs); every run of one check shares it.
+GRAMMAR_CACHE_ENV = "TREE_SITTER_LANGUAGE_PACK_CACHE_DIR"
+GRAMMAR_INSTALL_TIMEOUT = 600
+
+VALGRIND_FLAGS = (
+    "--leak-check=full",
+    "--show-leak-kinds=definite",
+    "--errors-for-leak-kinds=definite",
+    # The check judges leaks only. Tracking the definedness of every value is most of memcheck's
+    # cost and the leak search does not use it.
+    "--undef-value-errors=no",
+    # Threads here wait on each other in short sleep-polls (fjall's flush wait and its close). The
+    # default pipe lock lets a poller that wakes take the lock again ahead of the worker it waits
+    # for; the ticket lock hands it over in order.
+    "--fair-sched=try",
+    "--num-callers=40",
+)
 
 
 def _block_frames(block: str) -> list[str]:
@@ -128,53 +160,64 @@ def valgrind_sites(report: str) -> list[tuple[str, int]]:
                     break
                 continue
             frames.append(m.group(1))
-        callers = [f for f in frames if not f.startswith(VG_ALLOCATORS) and not f.startswith("ts_")]
+        callers = [f for f in frames if not f.startswith((*VG_ALLOCATORS, *RUST_ALLOC_FRAMES, "ts_"))]
         site = (callers[0] if callers else "?") + (f" -> {frames[0]}" if frames else "")
         sites[site] = sites.get(site, 0) + _num(rec.group(2))
     return sorted(sites.items(), key=lambda kv: -kv[1])
 
 
+def _text(captured: str | bytes | None) -> str:
+    """A captured stream as text: `TimeoutExpired` hands back bytes even when the run asked for text."""
+    if captured is None:
+        return ""
+    return captured if isinstance(captured, str) else captured.decode(errors="replace")
+
+
+def run_bounded(argv: list[str], cwd: Path, env: dict[str, str], timeout: float) -> tuple[int | None, str, str]:
+    """Run `argv` for at most `timeout` seconds: (exit code, stdout, stderr). The exit code is None
+    when the run was killed at the timeout; the streams then hold what it wrote until then."""
+    try:
+        proc = subprocess.run(  # noqa: S603
+            argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout, check=False
+        )
+    except subprocess.TimeoutExpired as expired:
+        return None, _text(expired.stdout), _text(expired.stderr)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
 def run_valgrind(  # noqa: PLR0913, PLR0917
-    binary: Path, target: Path, argv: list[str], iso: Isolation, out: Path, label: str, extra_env: dict[str, str]
+    binary: Path,
+    target: Path,
+    argv: list[str],
+    iso: Isolation,
+    out: Path,
+    label: str,
+    extra_env: dict[str, str],
+    timeout: float,
 ) -> dict:
     env = iso.env(extra_env)
     log_path = out / f"valgrind-{label}.txt"
     started = time.monotonic()
-    proc = subprocess.run(  # noqa: S603
-        [  # noqa: S607
-            "valgrind",
-            "--leak-check=full",
-            "--show-leak-kinds=definite",
-            "--errors-for-leak-kinds=definite",
-            "--num-callers=40",
-            f"--log-file={log_path}",
-            "--",
-            str(binary),
-            *argv,
-        ],
-        cwd=target,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=3600,
-        check=False,
+    code, stdout, stderr = run_bounded(
+        ["valgrind", *VALGRIND_FLAGS, f"--log-file={log_path}", "--", str(binary), *argv], target, env, timeout
     )
     secs = time.monotonic() - started
     report = log_path.read_text() if log_path.exists() else ""
-    (out / f"valgrind-{label}.stdout.txt").write_text(proc.stdout + "\n--- stderr ---\n" + proc.stderr)
+    (out / f"valgrind-{label}.stdout.txt").write_text(stdout + "\n--- stderr ---\n" + stderr)
     m = VG_DEFINITE.search(report)
     clean = VG_NO_LEAKS in report
     return {
         "label": label,
         "argv": argv,
         "target": str(target),
-        "checker_exit": proc.returncode,
+        "checker_exit": code,
+        "timed_out": code is None,
         "secs": round(secs, 1),
         "log": str(log_path),
         "inspected": m is not None or clean,
         "leaks": _num(m.group(2)) if m else 0 if clean else None,
         "bytes": _num(m.group(1)) if m else 0 if clean else None,
-        "command_failed": proc.returncode != 0,
+        "command_failed": code != 0,
         "sites": valgrind_sites(report),
         "groups": [],
     }
@@ -183,6 +226,8 @@ def run_valgrind(  # noqa: PLR0913, PLR0917
 def judge(result: dict) -> list[str]:
     """Why a `leaks` run fails, empty when it passes: any leaked block, or a leak count the stacks
     do not account for."""
+    if result["timed_out"]:
+        return [timed_out_reason(result)]
     if not result["inspected"]:
         return ["leaks could not inspect the process"]
     if not result["leaks"]:
@@ -200,8 +245,15 @@ def judge(result: dict) -> list[str]:
     return reasons
 
 
+def timed_out_reason(result: dict) -> str:
+    """The failure reason of a run killed at the run timeout."""
+    return f"killed at the run timeout after {result['secs']} s, before the checker reported"
+
+
 def judge_valgrind(result: dict) -> list[str]:
     """Why a valgrind run fails, empty when it passes: any definitely-lost block."""
+    if result["timed_out"]:
+        return [timed_out_reason(result)]
     if not result["inspected"]:
         return ["valgrind could not inspect the process"]
     if result["leaks"]:
@@ -235,39 +287,50 @@ def build_scale_fixture(root: Path, files: int) -> Path:
 
 
 def run_leaks(  # noqa: PLR0913, PLR0917
-    binary: Path, target: Path, argv: list[str], iso: Isolation, out: Path, label: str, extra_env: dict[str, str]
+    binary: Path,
+    target: Path,
+    argv: list[str],
+    iso: Isolation,
+    out: Path,
+    label: str,
+    extra_env: dict[str, str],
+    timeout: float,
 ) -> dict:
     env = iso.env({"MallocStackLogging": "1", "MallocStackLoggingNoCompact": "1", **extra_env})
     log_path = out / f"leaks-{label}.txt"
     started = time.monotonic()
-    proc = subprocess.run(  # noqa: S603
-        ["leaks", "--atExit", "--", str(binary), *argv],  # noqa: S607
-        cwd=target,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=3600,
-        check=False,
-    )
+    code, stdout, stderr = run_bounded(["leaks", "--atExit", "--", str(binary), *argv], target, env, timeout)
     secs = time.monotonic() - started
-    text = proc.stdout + "\n--- stderr ---\n" + proc.stderr
-    log_path.write_text(text)
-    m = SUMMARY.search(proc.stdout)
+    log_path.write_text(stdout + "\n--- stderr ---\n" + stderr)
+    m = SUMMARY.search(stdout)
     result = {
         "label": label,
         "argv": argv,
         "target": str(target),
-        "checker_exit": proc.returncode,
+        "checker_exit": code,
+        "timed_out": code is None,
         "secs": round(secs, 1),
         "log": str(log_path),
         "inspected": m is not None,
         "leaks": int(m.group(2)) if m else None,
         "bytes": int(m.group(3)) if m else None,
-        "command_failed": "exited with status" in proc.stdout and "status 0" not in proc.stdout,
+        "command_failed": "exited with status" in stdout and "status 0" not in stdout,
     }
-    result["sites"] = leak_sites(proc.stdout)
-    result["groups"] = leak_groups(proc.stdout)
+    result["sites"] = leak_sites(stdout)
+    result["groups"] = leak_groups(stdout)
     return result
+
+
+def warm_grammars(binary: Path, iso: Isolation, extra_env: dict[str, str], cache: str) -> None:
+    """Install the shipped grammars into `cache`, the cache every run shares, with a native
+    (unchecked) run, so no checked run downloads them. A failure only logs: each run then downloads
+    what it needs."""
+    log(f"grammars: basemind lang install into {cache}")
+    code, stdout, stderr = run_bounded(
+        [str(binary), "lang", "install"], iso.root, iso.env(extra_env), GRAMMAR_INSTALL_TIMEOUT
+    )
+    if code != 0:
+        log(f"grammars: lang install did not finish (exit {code}); every run downloads its own\n{stdout}{stderr}")
 
 
 def main() -> int:  # noqa: C901, PLR0915
@@ -284,6 +347,15 @@ def main() -> int:  # noqa: C901, PLR0915
         help="leak checker (default: leaks on macOS, valgrind on Linux)",
     )
     ap.add_argument("--threads", type=int, default=4, help="RAYON_NUM_THREADS for every run (default 4)")
+    ap.add_argument(
+        "--jobs", type=int, default=os.cpu_count() or 1, help="runs at the same time (default: one per core)"
+    )
+    ap.add_argument(
+        "--run-timeout",
+        type=float,
+        default=3000,
+        help="seconds after which a run is killed and fails (default 3000)",
+    )
     args = ap.parse_args()
     if args.tool is None or not shutil.which(args.tool):
         sys.stderr.write(
@@ -328,14 +400,30 @@ def main() -> int:  # noqa: C901, PLR0915
         targets.append(("repo", dest, iso2))
 
     extra = {"RAYON_NUM_THREADS": str(args.threads), **dict(kv.split("=", 1) for kv in args.env)}
-    results = []
-    for label, target, t_iso in targets:
-        for argv in [["scan"], *[shlex.split(c) for c in args.cmd]]:
-            name = f"{label}-{'-'.join(argv)}"
-            log(f"{args.tool}: basemind {' '.join(argv)} in {label}")
-            result = run_one(binary, target, argv, t_iso, out, name, extra)
-            result["reasons"] = judge(result) if args.tool == "leaks" else judge_valgrind(result)
-            results.append(result)
+    iso_g = Isolation("leaks-grammars")
+    isolations.append(iso_g)
+    grammars = extra.get(GRAMMAR_CACHE_ENV) or os.environ.get(GRAMMAR_CACHE_ENV)
+    if not grammars:
+        grammars = extra[GRAMMAR_CACHE_ENV] = str(iso_g.root / "grammars")
+    warm_grammars(binary, iso_g, extra, grammars)
+
+    runs = [
+        (label, target, t_iso, argv)
+        for label, target, t_iso in targets
+        for argv in [["scan"], *[shlex.split(c) for c in args.cmd]]
+    ]
+    jobs = max(1, min(args.jobs, len(runs)))
+
+    def check(run: tuple[str, Path, Isolation, list[str]]) -> dict:
+        label, target, t_iso, argv = run
+        log(f"{args.tool}: basemind {' '.join(argv)} in {label}")
+        result = run_one(binary, target, argv, t_iso, out, f"{label}-{'-'.join(argv)}", extra, args.run_timeout)
+        result["reasons"] = judge(result) if args.tool == "leaks" else judge_valgrind(result)
+        log(f"{args.tool}: {label} {' '.join(argv)} done in {result['secs']} s")
+        return result
+
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        results = list(pool.map(check, runs))
 
     ok = all(not r["reasons"] for r in results)
     lines = [
@@ -344,6 +432,7 @@ def main() -> int:  # noqa: C901, PLR0915
         f"- binary: `{binary}`",
         f"- checker: `{args.tool}`",
         f"- env: {extra}",
+        f"- runs: {len(runs)}, {jobs} at a time, each killed after {args.run_timeout} s",
         "- pass: no leaked block",
         "",
         "| run | inspected | leaks | bytes | verdict | secs | log |",

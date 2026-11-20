@@ -8,8 +8,9 @@ They need Python 3.10+ and nothing outside the standard library.
 |---|---|---|
 | `soak.py` + `analyze.py` | no growth in memory / fds / threads under load, quiet idle, clean shutdown, bounded data dir | load + idle + ~1 min (15 min for a short run, 1 h+ for a release) |
 | `functional_sweep.py` | every verb tool and its CLI command answers with the expected structure; RAG finds planted facts, with filters | 1-3 min (`comms` build); 5-15 min first time on a `full` build (model downloads) |
-| `leak_check.py` | no leaks in one-shot `basemind scan` (macOS `leaks`); no definitely-lost blocks (Linux valgrind); on a `system-allocator` build | 1-2 min for the fixtures (`leaks`); several under valgrind; longer with `--repo` |
+| `leak_check.py` | no leaks in one-shot `basemind scan` (macOS `leaks`); no definitely-lost blocks (Linux valgrind); on a `system-allocator` build | 1-2 min for the fixtures (`leaks`); about 20 min under valgrind on a 4-core runner; longer with `--repo` |
 | `selftest_analyze.py` | `analyze.py`'s rules fire on known-bad input and pass known-good input | seconds |
+| `selftest_leak_check.py` | `leak_check.py` names a definite leak's owning frame, judges clean and uninspected reports, and fails a run killed at its timeout | seconds |
 
 Build first, outside the repository's `target/` if you like:
 
@@ -180,9 +181,17 @@ Runs `basemind scan` under the platform's checker (`--tool` overrides) with `RAY
 pinned (`--threads`, default 4) on the fixture (code and, on a `documents` build, the documents),
 on two scale fixtures (Rust + Python, 60 and 600 files per language) and optionally a clone of
 `--repo`. `--cmd status` adds more one-shots. The full checker output, with stacks, is kept per run,
-beside `leaks.report.md` and `leaks.json`. A run fails on any leak and on a run the checker could
-not inspect: `leaks --atExit` (with `MallocStackLogging=1`) on macOS counts every unreachable block,
-`valgrind --leak-check=full` on Linux every "definitely lost" one. Windows has no checker wired up.
+beside `leaks.report.md` and `leaks.json`. A run fails on any leak, on a run the checker could not
+inspect, and on a run killed at `--run-timeout` (default 3000 s): `leaks --atExit` (with
+`MallocStackLogging=1`) on macOS counts every unreachable block, `valgrind --leak-check=full` on
+Linux every "definitely lost" one. Windows has no checker wired up.
+
+The runs go in parallel, `--jobs` at a time (default one per core): valgrind serialises a process's
+threads onto one core, so the wall time is the slowest run's, not the sum. Before them a native
+`basemind lang install` fills one grammar cache that every run shares
+(`TREE_SITTER_LANGUAGE_PACK_CACHE_DIR`, a temporary directory unless already set), so no checked run
+downloads grammars. valgrind runs with `--undef-value-errors=no`, since only leaks are judged, and
+`--fair-sched=try`.
 
 The binary must use the system allocator (`--features system-allocator`, never shipped); the
 script refuses a mimalloc build. Neither checker sees mimalloc's heap: it maps its own pages and
