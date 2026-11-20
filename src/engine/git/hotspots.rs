@@ -114,7 +114,8 @@ impl Window {
 }
 
 /// Walk `fetch(skip, take)` (newest first by commit time, with files) for the commits authored in
-/// the `span` seconds up to `end`, until a run of commits made before the window or `cap` commits.
+/// the `span` seconds up to `end`, both ends included, until a run of commits made before the window
+/// or `cap` commits. A commit authored after `end` is skipped without ending the walk.
 /// `committed` is a commit's commit time, read only for those authored before the window.
 fn collect_window(
     mut fetch: impl FnMut(usize, usize) -> Vec<CommitInfo>,
@@ -135,6 +136,11 @@ fn collect_window(
         let chunk = fetch(inspected, take);
         let fetched = chunk.len();
         for commit in chunk {
+            // Authored after the window's end (HEAD's commit time): made in the window, not of it.
+            if commit.author_time_unix > window.end {
+                out_run = 0;
+                continue;
+            }
             if commit.author_time_unix >= window.start {
                 out_run = 0;
                 window.add(commit);

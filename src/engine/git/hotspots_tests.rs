@@ -120,6 +120,30 @@ fn a_run_of_commits_authored_before_the_window_but_made_in_it_does_not_end_the_w
 }
 
 #[test]
+fn a_commit_authored_after_the_end_is_skipped_and_both_ends_are_inclusive() {
+    let day = SECS_PER_DAY;
+    let history = [
+        // HEAD, authored a day after it was made: after the window's end.
+        commit(101 * day, "a@x", &["future.rs"]),
+        commit(100 * day, "a@x", &["at_end.rs"]),
+        commit(93 * day, "b@x", &["at_start.rs"]),
+        commit(92 * day, "c@x", &["before.rs"]),
+    ];
+    let window = collect_window(
+        |skip, take| history.iter().skip(skip).take(take).cloned().collect(),
+        committed_when_authored,
+        100 * day,
+        7 * day,
+        INDEXED_COMMIT_CAP,
+    );
+    assert_eq!((window.start, window.end), (93 * day, 100 * day));
+    assert_eq!(window.commits, 2);
+    let mut paths: Vec<&str> = window.per_path.keys().map(|path| path.as_str().unwrap()).collect();
+    paths.sort_unstable();
+    assert_eq!(paths, ["at_end.rs", "at_start.rs"]);
+}
+
+#[test]
 fn the_walk_stops_at_its_cap_and_says_so() {
     let history: Vec<CommitInfo> = (0..30).map(|i| commit(1000 - i, "a@x", &["a.rs"])).collect();
     let window = collect_window(
