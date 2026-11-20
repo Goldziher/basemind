@@ -12,6 +12,7 @@ impl crate::engine::workspace::Workspace {
     pub(crate) fn docs_search(
         &self,
         _p: crate::engine::types::search::DocsSearchParams,
+        _cancelled: &dyn Fn() -> bool,
     ) -> Result<(), crate::engine::error::EngineError> {
         Err(crate::engine::error::EngineError::feature_missing(
             "docs_search",
@@ -41,13 +42,20 @@ mod enabled {
             DocsSearchError::InvalidArgument(_) => EngineError::InvalidArgument(message),
             DocsSearchError::Unsupported(_) | DocsSearchError::NoLane(_) => EngineError::Unavailable(message),
             DocsSearchError::Store(_) => EngineError::Internal(message),
+            DocsSearchError::Cancelled => EngineError::Cancelled,
         }
     }
 
     impl Workspace {
         /// `docs_search`: the ranking of the query (computed once per index generation and kept),
-        /// and the page of it the cursor points at.
-        pub(crate) fn docs_search(&self, p: DocsSearchParams) -> Result<DocsSearchResponse, EngineError> {
+        /// and the page of it the cursor points at. Stops with [`EngineError::Cancelled`] once
+        /// `cancelled` says so, between the ranking's steps and before the page is read: it runs on a
+        /// blocking thread that abandoning the call does not stop.
+        pub(crate) fn docs_search(
+            &self,
+            p: DocsSearchParams,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<DocsSearchResponse, EngineError> {
             let started = std::time::Instant::now();
             let generation = self.index_generation.load(Ordering::Relaxed);
             let offset = ranked_offset("docs_search", p.cursor.as_ref(), generation)?;
@@ -76,9 +84,12 @@ mod enabled {
                 "docs_search",
                 &arguments,
                 generation,
-                || self.rank_docs(&request, &filters, store.as_ref()),
+                || self.rank_docs(&request, &filters, store.as_ref(), cancelled),
                 crate::lance::docs_rank::is_cacheable,
             )?;
+            if cancelled() {
+                return Err(EngineError::Cancelled);
+            }
             let mut page = crate::lance::docs_page::page(store.as_ref(), ranking, offset, limit, budget(p.max_tokens));
             let next_cursor = page
                 .next_offset
@@ -113,6 +124,7 @@ mod enabled {
             request: &DocsRequest,
             filters: &Filters,
             store: Option<&DocStore>,
+            cancelled: &dyn Fn() -> bool,
         ) -> Result<DocsRanking, EngineError> {
             let (live, owed) = {
                 let index = self.store_read();
@@ -150,7 +162,7 @@ mod enabled {
                 },
                 rerank,
             };
-            crate::lance::docs_rank::rank(&request.query, filters, inputs).map_err(tool_error)
+            crate::lance::docs_rank::rank_until(&request.query, filters, inputs, cancelled).map_err(tool_error)
         }
     }
 }

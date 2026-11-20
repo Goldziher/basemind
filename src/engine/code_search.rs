@@ -26,6 +26,18 @@ use crate::search::rrf::{
 };
 use crate::store::Store;
 
+/// Hydrated hits between two checks of the caller's cancellation.
+const HYDRATE_CANCEL_EVERY: usize = 16;
+
+/// [`EngineError::Cancelled`] once `cancelled` says so.
+fn stop_if(cancelled: &dyn Fn() -> bool) -> Result<(), EngineError> {
+    if cancelled() {
+        Err(EngineError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
 /// Candidates each lane ranks when a `path` or `language` filter is set: the filter keeps the hits
 /// it passes among them.
 const FILTERED_LANE_DEPTH: usize = 1_000;
@@ -36,6 +48,9 @@ const SCOPED_OVERFETCH: usize = 8;
 /// The ranking of `query` over `lane` (default `hybrid`), at most `limit` hits after hydration, each
 /// in a file `filters` passes. With a `scope`, the lanes rank [`SCOPED_OVERFETCH`] times as deep and
 /// only the hits in its files are kept, so a change's chunks ranked below that depth are not found.
+/// Stops with [`EngineError::Cancelled`] once `cancelled` says so, checked between the lanes, every
+/// [`HYDRATE_CANCEL_EVERY`] hydrated hits and before the rerank: it runs on a blocking thread that
+/// abandoning the call does not stop.
 pub(super) fn retrieve(
     ws: &Workspace,
     query: String,
@@ -43,7 +58,9 @@ pub(super) fn retrieve(
     limit: usize,
     filters: &Filters<'_>,
     scope: Option<&ChangeScope>,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<CodeSearchRanking, EngineError> {
+    stop_if(cancelled)?;
     let rr = &ws.config.code_search.reranker;
     let (rerank_enabled, rerank_top_k) = (rr.enabled, rr.top_k);
     let fetch_n = if rerank_enabled { limit.max(rerank_top_k) } else { limit };
@@ -58,7 +75,7 @@ pub(super) fn retrieve(
 
     let mode = lane.map(str::trim).unwrap_or("hybrid");
     let (seeds, report): (Vec<CodeSearchHit>, LaneReport) = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
-        hybrid_hits(ws, &query, depth)?
+        hybrid_hits(ws, &query, depth, cancelled)?
     } else if mode.eq_ignore_ascii_case("semantic") {
         (
             semantic_hits(ws, &query, depth, SEMANTIC_MEANWHILE)?,
@@ -77,12 +94,14 @@ pub(super) fn retrieve(
     } else {
         0
     };
-    let hydrated = hydrate_hits(&ws.store_read(), seeds, fetch_n, keep_text, filters, scope);
+    stop_if(cancelled)?;
+    let hydrated = hydrate_hits(&ws.store_read(), seeds, fetch_n, keep_text, filters, scope, cancelled)?;
 
     // The reranker reorders the head of the ranking and drops nothing; a reranker that cannot run
     // leaves the fused order and says why, as a lane that did not run.
     let mut report = report;
     let hits = if rerank_enabled {
+        stop_if(cancelled)?;
         let (hits, failure) = rerank_hits(ws, &query, hydrated.hits, hydrated.texts, &rr.preset);
         if let Some(reason) = failure {
             report.unavailable.push(LaneUnavailable {
@@ -122,7 +141,12 @@ pub(super) fn is_cacheable(ranking: &CodeSearchRanking) -> bool {
 /// on the shared `chunk_id` key. Each lane is independent — a lane that is unavailable (no embedder,
 /// read-only index) or that a non-identifier query doesn't trigger simply contributes nothing; the
 /// query never fails on a single lane. The returned hits carry the fused RRF score in `score`.
-fn hybrid_hits(ws: &Workspace, query: &str, limit: usize) -> Result<(Vec<CodeSearchHit>, LaneReport), EngineError> {
+fn hybrid_hits(
+    ws: &Workspace,
+    query: &str,
+    limit: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(Vec<CodeSearchHit>, LaneReport), EngineError> {
     // A scoped search ranks deeper than 200, so the cap must not fall below `limit`.
     let fuse_limit = limit.saturating_mul(4).min(200).max(limit);
 
@@ -156,6 +180,7 @@ fn hybrid_hits(ws: &Workspace, query: &str, limit: usize) -> Result<(Vec<CodeSea
         Vec::new()
     };
 
+    stop_if(cancelled)?;
     let lanes = fjall_lanes(ws, query, fuse_limit, true);
     match &lanes.degraded {
         Some(degraded) => report.degrade(&["keyword", "exact"], degraded.reason.clone()),
@@ -379,6 +404,8 @@ struct Hydrated {
 /// paths `filters` passes and, with a `scope`, only those in its files. A chunk no indexed file holds
 /// is dropped and counted; one held only by files the filters or the scope leave out is dropped
 /// silently; an id ranked twice (one vector row per copy of a file) keeps its first rank.
+/// Stops with [`EngineError::Cancelled`] once `cancelled` says so, checked every
+/// [`HYDRATE_CANCEL_EVERY`] seeds.
 fn hydrate_hits(
     store: &Store,
     seeds: Vec<CodeSearchHit>,
@@ -386,7 +413,8 @@ fn hydrate_hits(
     keep_text: usize,
     filters: &Filters<'_>,
     scope: Option<&ChangeScope>,
-) -> Hydrated {
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Hydrated, EngineError> {
     let mut hydrator = ChunkHydrator::new(store);
     hydrator.resolve_paths(seeds.iter().map(|s| s.chunk_id.as_str()));
     let mut seen: AHashSet<String> = AHashSet::with_capacity(seeds.len());
@@ -395,9 +423,12 @@ fn hydrate_hits(
         texts: Vec::new(),
         omitted: 0,
     };
-    for mut hit in seeds {
+    for (at, mut hit) in seeds.into_iter().enumerate() {
         if out.hits.len() >= limit {
             break;
+        }
+        if at % HYDRATE_CANCEL_EVERY == 0 {
+            stop_if(cancelled)?;
         }
         if seen.contains(hit.chunk_id.as_str()) {
             continue;
@@ -437,7 +468,7 @@ fn hydrate_hits(
         seen.insert(hit.chunk_id.clone());
         out.hits.push(hit);
     }
-    out
+    Ok(out)
 }
 
 /// Most fused hits the reranker scores; the rest keep their fused order after them.

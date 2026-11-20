@@ -34,12 +34,27 @@ fn allowed_keys_in_the_predicate_need_no_projection() {
         ..DocPredicate::default()
     };
     let mut asked = Vec::new();
-    let (hits, capped) = project(&predicate, &AHashSet::new(), |k| {
+    let (hits, capped) = project(&predicate, &AHashSet::new(), &|| false, |k| {
         asked.push(k);
         Ok(vec![hit("a", 0)])
     })
     .unwrap();
     assert_eq!((hits.len(), capped, asked), (1, false, vec![LANE_CANDIDATES]));
+}
+
+/// A cancelled search fetches no further widening: the blocking thread it runs on outlives the
+/// call that started it.
+#[test]
+fn a_cancelled_projection_stops_widening() {
+    let allowed: AHashSet<String> = ["live".to_string()].into_iter().collect();
+    let asked = std::cell::RefCell::new(Vec::new());
+    let cancelled = || asked.borrow().len() >= 2;
+    let outcome = project(&DocPredicate::default(), &allowed, &cancelled, |k| {
+        asked.borrow_mut().push(k);
+        Ok((0..k).map(|i| hit("dead", i as u32)).collect())
+    });
+    assert!(matches!(outcome, Err(LaneError::Cancelled)), "{outcome:?}");
+    assert_eq!(asked.into_inner(), vec![600, 1200]);
 }
 
 #[test]
@@ -48,7 +63,7 @@ fn a_projection_widens_until_enough_live_hits_and_says_when_it_gave_up() {
     let predicate = DocPredicate::default();
     // Ninety-nine dead rows in a hundred: every fetch is full, the live share never reaches the lane depth.
     let mut asked = Vec::new();
-    let (hits, capped) = project(&predicate, &allowed, |k| {
+    let (hits, capped) = project(&predicate, &allowed, &|| false, |k| {
         asked.push(k);
         Ok((0..k)
             .map(|i| hit(if i % 100 == 0 { "live" } else { "dead" }, i as u32))
@@ -61,7 +76,10 @@ fn a_projection_widens_until_enough_live_hits_and_says_when_it_gave_up() {
     assert!(hits.iter().all(|h| h.doc_key == "live"));
 
     // A store that runs out of rows is not a cut.
-    let (hits, capped) = project(&predicate, &allowed, |_| Ok(vec![hit("live", 0), hit("dead", 1)])).unwrap();
+    let (hits, capped) = project(&predicate, &allowed, &|| false, |_| {
+        Ok(vec![hit("live", 0), hit("dead", 1)])
+    })
+    .unwrap();
     assert_eq!((hits.len(), capped), (1, false));
 }
 

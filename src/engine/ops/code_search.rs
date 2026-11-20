@@ -14,7 +14,7 @@ use crate::engine::workspace::Workspace;
 #[cfg(not(feature = "code-search"))]
 impl Workspace {
     /// `code_search` in a build without the retrieval stack.
-    pub(crate) fn code_search(&self, _p: CodeSearchParams) -> Result<(), EngineError> {
+    pub(crate) fn code_search(&self, _p: CodeSearchParams, _cancelled: &dyn Fn() -> bool) -> Result<(), EngineError> {
         Err(EngineError::feature_missing("code_search", "code-search"))
     }
 
@@ -39,8 +39,14 @@ mod enabled {
 
     impl Workspace {
         /// `code_search`: the ranking of the query (computed once per index generation and kept),
-        /// cut to the `changed` scope when one is passed, and the page of it the cursor points at.
-        pub(crate) fn code_search(&self, p: CodeSearchParams) -> Result<CodeSearchPage, EngineError> {
+        /// cut to the `changed` scope when one is passed, and the page of it the cursor points at. Stops with
+        /// [`EngineError::Cancelled`] once `cancelled` says so: between the lanes, while hits are hydrated
+        /// and before the rerank.
+        pub(crate) fn code_search(
+            &self,
+            p: CodeSearchParams,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<CodeSearchPage, EngineError> {
             let started = std::time::Instant::now();
             let generation = self.index_generation.load(Ordering::Relaxed);
             let offset = ranked_offset("code_search", p.cursor.as_ref(), generation)?;
@@ -74,6 +80,7 @@ mod enabled {
                         RANKED_FETCH as usize,
                         &filters,
                         scope.as_ref(),
+                        cancelled,
                     )
                 },
                 crate::engine::code_search::is_cacheable,
