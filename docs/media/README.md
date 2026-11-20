@@ -18,6 +18,16 @@ Re-record (needs `asciinema` + `agg` on PATH — macOS: `brew install asciinema 
 mise run demo:record    # → scripts/demo-record.sh
 ```
 
+The script records whichever binary `scripts/demo.sh` resolves: `BASEMIND_BIN`,
+then `target/release/basemind`, then `basemind` on `PATH`. It builds
+`target/release/basemind` with the release features (`--features full`) only
+when neither of the first two exists, so a stale build is recorded as is. To
+record a published release, point `BASEMIND_BIN` at it:
+
+```bash
+BASEMIND_BIN="$(command -v basemind)" mise run demo:record
+```
+
 The recorded command sequence lives in `scripts/demo.sh`; edit that to change
 what the demo shows, then re-record. Preview without recording:
 

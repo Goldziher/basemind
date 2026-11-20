@@ -18,8 +18,8 @@ need asciinema
 need agg
 
 if [ ! -x "target/release/basemind" ] && [ -z "${BASEMIND_BIN:-}" ]; then
-  printf 'demo-record: building release binary ...\n' >&2
-  cargo build --release
+  printf 'demo-record: building the release binary with the shipped features ...\n' >&2
+  cargo build --locked --release --features full --bin basemind
 fi
 
 mkdir -p "$MEDIA_DIR"
