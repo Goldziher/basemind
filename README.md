@@ -400,12 +400,12 @@ It shows two lines:
 
 ```text
 Opus · basemind · ⎇ main · 12% ctx
-◆ basemind  ●  1,247 files · 23m ago  │  312 calls · 180 srch · 44 git · 12 docs  │  1.4M saved  │  ✉ 3 @reviewer
+◆ basemind  1.2k files · 23m ago  │  312 calls · 1.4M saved  │  ✉ 3 @reviewer
 ```
 
-The dot is green when basemind is live and fresh, amber when idle, red when stale. The middle shows
-activity by type, then tokens saved, then unread messages. Adjust with
-`BASEMIND_STATUSLINE=full|compact|minimal`, or hide the top line with `BASEMIND_STATUSLINE_CONTEXT=0`.
+The second line shows the indexed files and the last scan, today's calls and tokens saved, then
+unread messages. Adjust with `BASEMIND_STATUSLINE=full|compact|minimal`, or hide the top line with
+`BASEMIND_STATUSLINE_CONTEXT=0`.
 
 </details>
 

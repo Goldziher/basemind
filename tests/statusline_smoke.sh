@@ -38,25 +38,17 @@ done < <(git rev-parse --local-env-vars)
 [[ -x "$STATUSLINE" ]] || chmod +x "$STATUSLINE"
 
 FIXTURE="$(mktemp -d)"
-trap 'rm -rf "$FIXTURE"' EXIT
-
-mkdir -p "$FIXTURE/.basemind/blobs"
-mkdir -p "$FIXTURE/.basemind/views/working"
-for i in 0 1 2 3 4 5 6; do
-  : >"$FIXTURE/.basemind/blobs/${i}aaaaaaaa.fm.msgpack"
-done
-: >"$FIXTURE/.basemind/views/working/index.msgpack"
-
-now_us="$(($(date +%s) * 1000000))"
-# One row per bucket under the tool-name keys, plus rows an older binary wrote (`domain:mode` keys
-# and a bare pre-consolidation name) so a telemetry log that spans an upgrade still buckets.
-for tool in code_outline code_grep index_status git_log docs_search memory_search \
-  code:outline git:recent memory:documents memory:get outline; do
-  printf '{"ts_micros": %d, "tool": "%s", "est_tokens_saved": 500}\n' "$now_us" "$tool"
-done >"$FIXTURE/.basemind/telemetry.jsonl"
+# The shell never reads an in-repo .basemind/: a repository that still carries the legacy config, and
+# a binary that renders nothing, show the shell's own actionable hint, whatever basemind is installed.
+mkdir -p "$FIXTURE/.basemind"
+: >"$FIXTURE/.basemind/basemind.toml"
+stub_bin="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$stub_bin/basemind"
+chmod +x "$stub_bin/basemind"
+trap 'rm -rf "$FIXTURE" "$stub_bin"' EXIT
 
 payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$FIXTURE")"
-output="$(printf '%s' "$payload" | "$STATUSLINE")"
+output="$(printf '%s' "$payload" | PATH="$stub_bin:$PATH" "$STATUSLINE")"
 exit_code=$?
 
 fail=0
@@ -82,99 +74,8 @@ assert_contains $'\033[' 'ANSI escape present'
 assert_contains $'\033[38;2;249;115;22m' 'true-color brand orange #F97316 present'
 assert_contains '◆' 'brand glyph ◆ present'
 assert_contains 'basemind' 'name present'
-assert_contains '●' 'liveness dot present'
-assert_contains '7' 'file count 7 from blob fixture'
-
-if command -v jq >/dev/null 2>&1; then
-  # The per-bucket segment is rendered in the full tier only; pin it instead of relying on the width.
-  plain="$(printf '%s' "$payload" | BASEMIND_STATUSLINE=full "$STATUSLINE" | sed $'s/\033\\[[0-9;]*m//g')"
-  assert_plain_contains() {
-    if [[ "$plain" == *"$1"* ]]; then
-      printf '  ok  %s\n' "$2"
-    else
-      printf '  FAIL %s — expected %q in: %s\n' "$2" "$1" "$plain" >&2
-      fail=1
-    fi
-  }
-  assert_plain_contains '11 calls' 'every telemetry row counted'
-  assert_plain_contains '5 srch' 'code_*, index_* and legacy code rows bucket as searches'
-  assert_plain_contains '2 git' 'git_log and legacy git:recent bucket as git'
-  assert_plain_contains '2 docs' 'docs_search and legacy memory:documents bucket as docs'
-  assert_plain_contains '2 mem' 'memory_search and legacy memory:get bucket as mem'
-else
-  printf '  skip telemetry bucket assertions (jq unavailable)\n'
-fi
-
-plugin_version=""
-if command -v jq >/dev/null 2>&1; then
-  plugin_version="$(jq -r '.version // empty' "$REPO_ROOT/.claude-plugin/plugin.json" 2>/dev/null || true)"
-fi
-if [[ -n "$plugin_version" ]]; then
-  assert_contains "v$plugin_version" "version v$plugin_version shown (full tier)"
-  min_output="$(printf '%s' "$payload" | BASEMIND_STATUSLINE=minimal "$STATUSLINE")"
-  if [[ "$min_output" != *"v$plugin_version"* ]]; then
-    printf '  ok  version omitted in minimal tier\n'
-  else
-    printf '  FAIL minimal tier should omit version v%s; got: %q\n' "$plugin_version" "$min_output" >&2
-    fail=1
-  fi
-  nover_output="$(printf '%s' "$payload" | BASEMIND_STATUSLINE_VERSION=0 "$STATUSLINE")"
-  if [[ "$nover_output" != *"v$plugin_version"* ]]; then
-    printf '  ok  BASEMIND_STATUSLINE_VERSION=0 hides version\n'
-  else
-    printf '  FAIL BASEMIND_STATUSLINE_VERSION=0 should hide version; got: %q\n' "$nover_output" >&2
-    fail=1
-  fi
-else
-  printf '  skip version assertions (jq or plugin.json unavailable)\n'
-fi
-
-legacy_dir="$(mktemp -d)"
-mkdir -p "$legacy_dir/.basemind/blobs" "$legacy_dir/.basemind/views/working"
-for i in 0 1 2 3; do
-  : >"$legacy_dir/.basemind/blobs/${i}bbbbbbbb.l1.msgpack"
-  : >"$legacy_dir/.basemind/blobs/${i}bbbbbbbb.l2.msgpack"
-done
-: >"$legacy_dir/.basemind/views/working/index.msgpack"
-legacy_payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$legacy_dir")"
-legacy_output="$(printf '%s' "$legacy_payload" | "$STATUSLINE")"
-legacy_clean="$(printf '%s' "$legacy_output" | sed -E $'s/\033\\[[0-9;:]*m//g')"
-rm -rf "$legacy_dir"
-if [[ "$legacy_clean" != *'scanning'* ]] && [[ "$legacy_clean" == *'4 files'* ]]; then
-  printf '  ok  legacy .l1/.l2 index renders ready with 4 files (no double-count)\n'
-else
-  printf '  FAIL legacy index should render "4 files" and not scanning; got: %q\n' "$legacy_clean" >&2
-  fail=1
-fi
-
-unscanned_dir="$(mktemp -d)"
-mkdir -p "$unscanned_dir/.basemind"
-trap 'rm -rf "$FIXTURE" "$empty_dir" "$unscanned_dir"' EXIT
-unscanned_payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$unscanned_dir")"
-unscanned_output="$(printf '%s' "$unscanned_payload" | "$STATUSLINE")"
-if [[ "$unscanned_output" == *'scanning'* ]]; then
-  printf '  ok  unscanned (no blobs) renders scanning hint\n'
-else
-  printf '  FAIL unscanned output should say scanning; got: %q\n' "$unscanned_output" >&2
-  fail=1
-fi
-
-empty_dir="$(mktemp -d)"
-# Missing .basemind/ now delegates to `basemind statusline --root`. Shadow the binary with a stub that
-# returns nothing, so this deterministically exercises the shell's own fallback (Part C: never blank)
-# regardless of whatever basemind is installed on this machine.
-stub_bin="$(mktemp -d)"
-printf '#!/usr/bin/env bash\nexit 0\n' >"$stub_bin/basemind"
-chmod +x "$stub_bin/basemind"
-trap 'rm -rf "$FIXTURE" "$empty_dir" "$stub_bin"' EXIT
-empty_payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$empty_dir")"
-empty_output="$(printf '%s' "$empty_payload" | PATH="$stub_bin:$PATH" "$STATUSLINE")"
-if [[ "$empty_output" == *'no index'* ]] && [[ "$empty_output" == *'basemind scan'* ]]; then
-  printf '  ok  missing .basemind/ + empty delegate output falls back to actionable hint\n'
-else
-  printf '  FAIL expected actionable hint, got: %q\n' "$empty_output" >&2
-  fail=1
-fi
+assert_contains 'no index' 'empty delegate output falls back to the no-index hint'
+assert_contains 'basemind scan' 'the hint names the command to run'
 
 resolver_dir="$(mktemp -d)"
 mkdir -p \
@@ -204,7 +105,7 @@ else
   printf '  note mtime ordering picked %q (fixture timing); sort -V guard still holds\n' "$picked_mtime"
 fi
 
-# Global-cache mode: no in-repo .basemind/. The shell must delegate to `basemind statusline --root`,
+# Global-cache mode: the shell delegates to `basemind statusline --root`,
 # which reads the status.json sidecar the scanner writes into the machine-global cache. Needs the
 # real binary (for the real workspace_key); skips cleanly if it can't be built.
 
