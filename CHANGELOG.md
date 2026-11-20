@@ -1125,7 +1125,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     no longer overwrite each other's blobs. This ships with the 0.34 release-minor bump: the sweep
     removes the un-namespaced blobs older builds wrote and the namespaces of older schemas, but
     never while a process of that version is registered under the data home (a daemon in
-    `daemons/` of any generation, or a host in `hosting/<pid>`, which now records its version), and
+    `daemons/` of any generation, or a host in `hosting/<pid>`; both now record the blob schema
+    they read, and a 0.33 record is read by its version), and
     only once nothing has been written into them for `BASEMIND_PRUNE_AFTER_DAYS` days (default 14,
     the launcher's retention of an unused version; `0` leaves only the running-process check). A
     0.33 daemon still serving another repository through the upgrade keeps answering; an older

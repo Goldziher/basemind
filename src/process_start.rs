@@ -51,6 +51,7 @@ mod tests {
             kind: DaemonKind::Comms,
             dir: "comms".into(),
             version: "0.33.0".to_string(),
+            blob_schema: None,
             started_unix,
             process_start: None,
             boot: None,

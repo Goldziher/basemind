@@ -29,10 +29,23 @@ struct HostRecord {
     /// boot named above is the host itself.
     #[serde(default)]
     started: Option<u64>,
-    /// The host's build version, which names the blob namespace it reads
-    /// ([`crate::store_gc_namespaces::namespace_read_by`]).
+    /// The host's build version.
     #[serde(default)]
     version: Option<String>,
+    /// The blob schema whose namespace the host reads ([`crate::extract::SCHEMA_VER`]).
+    #[serde(default)]
+    blob_schema: Option<u16>,
+}
+
+/// What a live host's marker says about its build: what [`crate::store_gc_namespaces`] reads its
+/// blob namespace from.
+#[cfg(any(unix, windows))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostBuild {
+    /// The host's build version.
+    pub(crate) version: Option<String>,
+    /// The blob schema the host reads; `None` in a marker that records only the version.
+    pub(crate) blob_schema: Option<u16>,
 }
 
 /// The boot this process runs in, as the judge of markers sees it.
@@ -117,13 +130,11 @@ fn judged_markers(hosting_dir: &Path, this_boot: ThisBoot<'_>) -> Vec<(PathBuf, 
     judged
 }
 
-/// The versions of the live hosts whose markers are under the data home. Read-only; a marker that
-/// records no version is passed over.
+/// The builds of the live hosts whose markers are under the data home `data`. Read-only.
 #[cfg(any(unix, windows))]
-pub(crate) fn live_host_versions() -> Vec<String> {
-    let data = DataRoot::current();
+pub(crate) fn live_host_builds(data: &DataRoot) -> Vec<HostBuild> {
     let id = crate::boot_identity::current();
-    live_host_versions_in(
+    live_host_builds_in(
         &data.path().join(HOSTING_DIR),
         ThisBoot {
             id: id.as_deref(),
@@ -132,13 +143,16 @@ pub(crate) fn live_host_versions() -> Vec<String> {
     )
 }
 
-/// [`live_host_versions`] over an explicit hosting directory.
+/// [`live_host_builds`] over an explicit hosting directory.
 #[cfg(any(unix, windows))]
-fn live_host_versions_in(hosting_dir: &Path, this_boot: ThisBoot<'_>) -> Vec<String> {
+fn live_host_builds_in(hosting_dir: &Path, this_boot: ThisBoot<'_>) -> Vec<HostBuild> {
     judged_markers(hosting_dir, this_boot)
         .into_iter()
         .filter(|(_, _, fate)| *fate == HostFate::Live)
-        .filter_map(|(_, record, _)| record.version)
+        .map(|(_, record, _)| HostBuild {
+            version: record.version,
+            blob_schema: record.blob_schema,
+        })
         .collect()
 }
 
@@ -281,6 +295,7 @@ fn write_marker(dir: &Path, boot: Option<&str>) -> Option<PathBuf> {
         boot: boot.map(str::to_string),
         started: crate::boot_identity::process_start(std::process::id()),
         version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        blob_schema: Some(crate::extract::SCHEMA_VER),
     };
     let bytes = serde_json::to_vec(&record).ok()?;
     let path = dir.join(std::process::id().to_string());
