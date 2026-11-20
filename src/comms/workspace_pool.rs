@@ -95,10 +95,9 @@ pub(crate) const WARM_READ_STACK_CAP_ENV: &str = "BASEMIND_WARM_READ_STACKS";
 /// stacks no matter how many workspaces the daemon has served; the TTL only reclaims *below* the
 /// cap, so shortening it further buys at most three stacks. It is not free, either: dropping a
 /// stack drops its `WatcherGuard` (they cannot be separated — the watcher task holds the read stack
-/// it would keep fresh), and a rebuild runs no catch-up scan, so edits made while a workspace is
-/// shed are invisible until the next watcher event or an explicit `admin rescan`. That exposure
-/// already existed at `WORKSPACE_HOT_TTL`; there is no reason to triple how often it is reached in
-/// exchange for memory the cap has already bounded.
+/// it would keep fresh), and a rebuild must then run a catch-up scan over everything edited while
+/// the workspace was shed. There is no reason to triple how often that is paid in exchange for
+/// memory the cap has already bounded.
 pub(crate) const READ_STACK_IDLE_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// The effective warm-stack cap: [`DEFAULT_WARM_READ_STACK_CAP`] unless [`WARM_READ_STACK_CAP_ENV`]
