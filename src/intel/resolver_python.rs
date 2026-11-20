@@ -10,6 +10,10 @@
 //!   the importer's own package (the importer's directory), then the remaining dotted tail
 //!   resolves under that directory.
 //!
+//! A `from` import's name may be a submodule rather than a binding of the package
+//! (`from . import views`); [`PythonResolver::resolve_submodule`] resolves that second reading,
+//! which the cross-file stitch tries when the name binds no export.
+//!
 //! Conservative: a specifier that climbs above `root`, or resolves to no on-disk file, yields
 //! `None`.
 
@@ -34,7 +38,42 @@ impl PythonResolver {
         import: &ImportEdge,
         probes: &mut ProbeSet,
     ) -> Option<RelPath> {
-        let specifier = import.specifier.as_str();
+        self.resolve_specifier(root, importer_rel, &import.specifier, probes)
+    }
+
+    /// Resolve `from <module> import <name>` to the submodule `<module>.<name>`, for a `<name>` that
+    /// binds no export of `<module>`: `from . import views` names `views.py`, not a binding of the
+    /// package's `__init__.py`. `package` is the file `<module>` resolved to, if any. A plain module
+    /// file has no submodules, so only a package `__init__.py` or a package that resolved to no
+    /// file (a namespace package) is searched. `None` for an import that names no member.
+    pub(crate) fn resolve_submodule(
+        &self,
+        root: &Path,
+        importer_rel: &str,
+        package: Option<&RelPath>,
+        import: &ImportEdge,
+        probes: &mut ProbeSet,
+    ) -> Option<RelPath> {
+        let name = import.imported.as_deref()?;
+        if package.is_some_and(|package| !is_package_init(package)) {
+            return None;
+        }
+        let module = import.specifier.as_str();
+        let specifier = if module.ends_with('.') {
+            format!("{module}{name}")
+        } else {
+            format!("{module}.{name}")
+        };
+        self.resolve_specifier(root, importer_rel, &specifier, probes)
+    }
+
+    fn resolve_specifier(
+        &self,
+        root: &Path,
+        importer_rel: &str,
+        specifier: &str,
+        probes: &mut ProbeSet,
+    ) -> Option<RelPath> {
         let dots = specifier.chars().take_while(|&c| c == '.').count();
         if dots > 0 {
             self.resolve_relative(root, importer_rel, specifier, dots, probes)
@@ -84,6 +123,12 @@ impl PythonResolver {
         };
         module_file(root, &base, &parts, probes)
     }
+}
+
+/// Whether `path` is a package's `__init__.py`.
+fn is_package_init(path: &RelPath) -> bool {
+    path.as_str()
+        .is_some_and(|path| path == "__init__.py" || path.ends_with("/__init__.py"))
 }
 
 /// Split a dotted module path into path components, rejecting empty segments (a malformed

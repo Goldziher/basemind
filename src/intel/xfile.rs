@@ -25,7 +25,9 @@
 //! resolves to at the first hop, whether or not the name binds an export there (a barrel forwards
 //! it), plus the imports that resolved to none. Each edge carries the [`EdgeKinds`] of the imports
 //! behind it: a type-only import, or a JS side-effect import, namespace import or `export … from`
-//! re-export (a `module_only` import, which joins no export), is flagged as such.
+//! re-export (a `module_only` import, which joins no export), is flagged as such. A Python `from`
+//! import whose name binds no export of the package it names (`from . import views`) names a
+//! submodule instead, and that submodule's file is an edge too.
 //!
 //! Best-effort: any resolver miss or unindexed target is logged at debug and skipped; a commit
 //! failure warns but never aborts the scan. Idempotency across re-scans is documented on
@@ -187,12 +189,35 @@ fn resolve_export_transitively(
             .imports
             .iter()
             .find(|import| !import.is_type && !import.module_only && import.local == wanted)?;
+        if reexport.imported.is_none() && resolver.default_export_name().is_none() {
+            return None;
+        }
         let next_rel = resolver.resolve(root, &current_key, reexport, probes)?;
         store.lookup(&next_rel)?;
         wanted = reexport.imported.clone().unwrap_or(wanted);
         current_rel = next_rel;
     }
     None
+}
+
+/// The indexed file `import`'s name names when it is read as a submodule of the module the import
+/// names, for a name that binds no export there (see [`SpecifierResolver::resolve_submodule`]).
+/// `package` is the indexed file the module resolved to, if any.
+fn indexed_submodule(
+    root: &Path,
+    store: &Store,
+    resolver: &SpecifierResolver,
+    importer_key: &str,
+    package: Option<&crate::path::RelPath>,
+    import: &ImportEdge,
+    probes: &mut ProbeSet,
+) -> Option<crate::path::RelPath> {
+    if import.is_type || import.module_only {
+        return None;
+    }
+    resolver
+        .resolve_submodule(root, importer_key, package, import, probes)
+        .filter(|submodule| store.lookup(submodule).is_some())
 }
 
 /// Stitch cross-file resolved edges for every importer in `importers` into the index, and record
@@ -246,19 +271,23 @@ pub fn stitch_cross_file_edges(
         let mut file_edges = FileEdgesBuilder::default();
 
         for import in &importer_facts.imports {
-            let Some(target_rel) = resolver.resolve(root, importer_key, import, &mut probes) else {
-                tracing::debug!(
-                    importer = %importer_rel,
-                    specifier = %import.specifier,
-                    "cross-file stitch: specifier did not resolve — skipping"
-                );
-                file_edges.miss(import);
+            let target_rel = resolver
+                .resolve(root, importer_key, import, &mut probes)
+                .filter(|target| store.lookup(target).is_some());
+            let Some(target_rel) = target_rel else {
+                match indexed_submodule(root, store, resolver, importer_key, None, import, &mut probes) {
+                    Some(submodule) => file_edges.hit(submodule, import),
+                    None => {
+                        tracing::debug!(
+                            importer = %importer_rel,
+                            specifier = %import.specifier,
+                            "cross-file stitch: specifier did not resolve to an indexed file — skipping"
+                        );
+                        file_edges.miss(import);
+                    }
+                }
                 continue;
             };
-            if store.lookup(&target_rel).is_none() {
-                file_edges.miss(import);
-                continue;
-            }
             file_edges.hit(target_rel.clone(), import);
             if import.is_type || import.module_only {
                 continue;
@@ -267,9 +296,15 @@ pub fn stitch_cross_file_edges(
             let Some(wanted) = import.imported.as_deref().or_else(|| resolver.default_export_name()) else {
                 continue;
             };
-            let Some((def_rel, name_start)) =
-                resolve_export_transitively(root, store, &catalog, resolver, target_rel, wanted, &mut probes)
-            else {
+            let bound =
+                resolve_export_transitively(root, store, &catalog, resolver, target_rel.clone(), wanted, &mut probes);
+            let Some((def_rel, name_start)) = bound else {
+                let package = Some(&target_rel);
+                if let Some(submodule) =
+                    indexed_submodule(root, store, resolver, importer_key, package, import, &mut probes)
+                {
+                    file_edges.hit(submodule, import);
+                }
                 continue;
             };
             targets.push((import.local_start, def_rel.clone(), name_start));
