@@ -136,6 +136,12 @@ jobs:
           python scripts/hardening/selftest_analyze.py --out "$HARDENING_REPORTS/selftest" 2>&1 |
             tee "$HARDENING_REPORTS/selftest.log"
 
+      - name: Selftest (leak_check.py judges synthetic reports and a timed-out run)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/hardening/selftest_leak_check.py 2>&1 | tee "$HARDENING_REPORTS/selftest-leak-check.log"
+
       - name: Build the binary under test
         id: build
         if: ${{ !cancelled() }}
@@ -208,13 +214,15 @@ jobs:
           mkdir -p "$RUNNER_TEMP/leak-bin"
           cp target/release/basemind "$RUNNER_TEMP/leak-bin/basemind"
 
+      # ~keep The runs go in parallel, one per core; a run past --run-timeout is killed and fails, so
+      # ~keep the report is written before the step's own limit cuts the job.
       - name: One-shot leak check (${{ matrix.leak_tool }})
         if: ${{ !cancelled() && steps.leak_build.outcome == 'success' }}
         timeout-minutes: 60
         shell: bash
         run: |
           python scripts/hardening/leak_check.py --binary "$RUNNER_TEMP/leak-bin/basemind" \
-            --tool "${{ matrix.leak_tool }}" --out "$HARDENING_REPORTS/leaks"
+            --tool "${{ matrix.leak_tool }}" --run-timeout 3000 --out "$HARDENING_REPORTS/leaks"
 
       - name: One-shot leak check skipped (Windows)
         if: ${{ matrix.leak_tool == '' }}
