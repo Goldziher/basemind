@@ -461,7 +461,7 @@ thread_local! {
 
 /// Atomic blob write: stream `bytes` to a per-thread-unique tmp file, then POSIX-rename it
 /// over `path`. The rename is atomic and safely clobbers any blob that raced in. Shared by
-/// the framed-filemap writer and the single-map [`write_blob_overwrite`].
+/// every blob writer (through `Store::write_blob`) and the cache layout's sidecar files.
 pub(crate) fn write_bytes_atomic(path: PathBuf, bytes: &[u8]) -> Result<(), StoreError> {
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -489,19 +489,45 @@ pub(crate) fn write_bytes_atomic(path: PathBuf, bytes: &[u8]) -> Result<(), Stor
     Ok(())
 }
 
-/// Compressed single-map blob write (doc tier + resolution tier). Always (re)writes, even when a
-/// same-schema blob already exists: a vectorless `Deferred` document blob (`embedding_dim: 0`) can
-/// later be upgraded to an embedded `Inline` blob for the same content hash, and a resolution blob
-/// from an older resolver epoch is replaced, so a schema-only skip would preserve stale state.
-pub(crate) fn write_blob_overwrite<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
+/// Compressed single-map blob encoding (doc tier + resolution tier). Its writers always (re)write,
+/// even when a same-schema blob already exists: a vectorless `Deferred` document blob
+/// (`embedding_dim: 0`) can later be upgraded to an embedded `Inline` blob for the same content
+/// hash, and a resolution blob from an older resolver epoch is replaced, so a schema-only skip would
+/// preserve stale state.
+fn encode_single_map<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, StoreError> {
     let bytes = rmp_serde::to_vec_named(value)?;
-    let encoded = encode_single_blob(&bytes, SCHEMA_VER)?;
-    write_bytes_atomic(path, &encoded)
+    encode_single_blob(&bytes, SCHEMA_VER)
 }
 
 /// The blob store's read/write surface: one accessor group per content-addressed tier, all keyed
 /// by the source file's content hash under [`Store::blobs_dir`].
 impl Store {
+    /// [`write_bytes_atomic`] for a blob, latching a full disk on the index handle
+    /// ([`crate::index::IndexDb::record_write_error`]): a scan that cannot write its blobs cannot
+    /// persist its work, and must stop and read partial as it does when an index commit hits a full
+    /// disk.
+    fn write_blob(&self, path: PathBuf, bytes: &[u8]) -> Result<(), StoreError> {
+        #[cfg(test)]
+        let written = if self
+            .index_db
+            .as_ref()
+            .is_some_and(|db| db.fault.take_injected_blob_full())
+        {
+            Err(StoreError::Io {
+                path,
+                source: std::io::Error::from(std::io::ErrorKind::StorageFull),
+            })
+        } else {
+            write_bytes_atomic(path, bytes)
+        };
+        #[cfg(not(test))]
+        let written = write_bytes_atomic(path, bytes);
+        if let (Err(error), Some(db)) = (&written, self.index_db.as_ref()) {
+            db.record_write_error(error);
+        }
+        written
+    }
+
     pub fn blob_path_fm(&self, hash: &Hash) -> PathBuf {
         let buf = hashing::hex_buf(hash);
         self.blob_path_fm_hex(hashing::hex_str(&buf))
@@ -589,7 +615,7 @@ impl Store {
         l2: Option<&FileMapL2>,
     ) -> Result<(), StoreError> {
         let bytes = frame_filemap(l1, l2)?;
-        write_bytes_atomic(self.blob_path_fm_hex(hash_hex), &bytes)
+        self.write_blob(self.blob_path_fm_hex(hash_hex), &bytes)
     }
 
     /// Write a document blob. Always overwrites (issue #44): this call is only reached after
@@ -603,7 +629,7 @@ impl Store {
     /// Generic over the document type, which the retrieval layer owns (`extract::doc::DocBlobs`).
     #[cfg(feature = "documents")]
     pub fn write_doc_blob<T: serde::Serialize>(&self, hash: &Hash, map: &T) -> Result<(), StoreError> {
-        write_blob_overwrite(self.blob_path_doc(hash), map)
+        self.write_blob(self.blob_path_doc(hash), &encode_single_map(map)?)
     }
 
     /// Read the document blob of `hash_hex` as `T`, refusing a blob whose schema version
@@ -662,7 +688,7 @@ impl Store {
         hash_hex: &str,
         refs: &crate::intel::model::FileResolvedRefs,
     ) -> Result<(), StoreError> {
-        write_blob_overwrite(self.blob_path_rref_hex(hash_hex), refs)
+        self.write_blob(self.blob_path_rref_hex(hash_hex), &encode_single_map(refs)?)
     }
 
     /// Read a file's resolution facts. `Ok(None)` when the file has no resolution blob (never
@@ -703,7 +729,7 @@ impl Store {
     #[cfg(feature = "code-search")]
     pub fn write_chunks_hex(&self, hash_hex: &str, blob: &crate::chunk::CodeChunkBlob) -> Result<(), StoreError> {
         let encoded = encode_chunk_blob(blob)?;
-        write_bytes_atomic(self.blob_path_chunk_hex(hash_hex), &encoded)
+        self.write_blob(self.blob_path_chunk_hex(hash_hex), &encoded)
     }
 
     /// Read a file's code-chunk sidecar. `Ok(None)` when the file has no chunk blob (never

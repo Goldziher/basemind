@@ -735,6 +735,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidate with a grammar that no file map lists yet. The refusal, in the CLI and from the daemon,
   states the free and needed bytes and each part of the estimate, and names the blob namespaces and
   per-view indexes an older release left in the cache, with how each is removed.
+- **A blob write that finds the disk full stops the scan**
+  ([#203](https://github.com/Goldziher/basemind/issues/203)). It marks the scan partial and fails it,
+  as a full-disk index commit does; it was counted as one failed extraction of a scan that read
+  complete.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
