@@ -156,11 +156,15 @@ fn reap_workspace(workspace: &Path, report: &mut LegacyIndexReap) -> Result<(), 
         }
         Err(error) => return Err(error.into()),
     };
+    // Measured before the rescue opens the databases, which rewrites their journals. ~keep
+    let measured = views_with_legacy_index(workspace)
+        .into_iter()
+        .map(|view| Ok((dir_size(&view.join(INDEX_DIR))?, view)))
+        .collect::<Result<Vec<_>, GcError>>()?;
     if !crate::store_gc_live::rescue_legacy_memory(workspace) {
         return Ok(());
     }
-    for view in views_with_legacy_index(workspace) {
-        let bytes = dir_size(&view.join(INDEX_DIR))?;
+    for (bytes, view) in measured {
         match crate::index::durability::discard_index(&view) {
             Ok(()) => {
                 report.reaped += 1;
