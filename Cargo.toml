@@ -225,6 +225,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 stack-graphs = { package = "basemind-stack-graphs", version = "0.14.2", path = "crates/stack-graphs", optional = true }
 streaming-iterator = "0.1"
+strsim = "0.11"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = [

@@ -844,6 +844,7 @@ dependencies = [
  "serde",
  "serde_json",
  "streaming-iterator",
+ "strsim",
  "syn 3.0.10",
  "tempfile",
  "thiserror 2.0.21",
