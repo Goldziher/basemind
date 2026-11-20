@@ -942,8 +942,8 @@ fn an_opencode_server_that_left_the_group_is_killed_once_the_session_ends() {
         let detached = &table.sessions[&launched.id.0].detached;
         crate::procinfo::info(server).is_some_and(|now| detached.contains(now.id()))
     };
-    release_once_detached(&opencode_pid, server, recorded);
     assert!(alive(server));
+    release_once_detached(&opencode_pid, server, recorded);
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Completed);
     // The session reports finished once its detached server was killed; init reaps it shortly.
     let deadline = Instant::now() + Duration::from_secs(2);
