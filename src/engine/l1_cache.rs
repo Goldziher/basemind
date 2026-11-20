@@ -34,13 +34,13 @@
 //! outline decoded under an older epoch is a miss for it, so the refreshed blob is read again while
 //! a reader still holding the previous snapshot keeps its hit.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use lru::LruCache;
 
+use crate::engine::paged_map::PagedMap;
 use crate::extract::FileMapL1;
 use crate::path::RelPath;
 
@@ -78,11 +78,13 @@ pub(crate) struct FileMeta {
 
 /// Sorted view of every indexed file that has a readable L1 blob.
 ///
-/// Sorted (a `BTreeMap`) because `list_files`, `find_files` and the completion surface all document
-/// path order as their pagination order; an unordered view would make cursors non-deterministic.
+/// Sorted because `list_files`, `find_files` and the completion surface all document path order as
+/// their pagination order; an unordered view would make cursors non-deterministic. Paged
+/// ([`PagedMap`]) so that the view a watcher batch derives shares every page the batch did not
+/// touch with this one.
 #[derive(Default)]
 pub(crate) struct FileIndexView {
-    files: BTreeMap<RelPath, FileMeta>,
+    files: PagedMap<RelPath, FileMeta>,
 }
 
 impl FileIndexView {
@@ -95,13 +97,15 @@ impl FileIndexView {
     /// msgpack decode the old build paid, so this is strictly cheaper than what it replaces.
     pub(crate) fn build(store: &crate::store::Store) -> Self {
         use rayon::prelude::*;
-        let files: BTreeMap<RelPath, FileMeta> = store
+        let files: Vec<(RelPath, FileMeta)> = store
             .index
             .files
             .par_iter()
             .filter_map(|(path, entry)| has_blob(store, entry).then(|| (path.clone(), FileMeta::from(entry))))
             .collect();
-        Self { files }
+        Self {
+            files: PagedMap::from_unsorted(files),
+        }
     }
 
     /// The paths a [`build`](Self::build) over `store` would map differently from this view:
@@ -153,32 +157,32 @@ impl FileIndexView {
     #[cfg(test)]
     pub(crate) fn from_pairs(pairs: impl IntoIterator<Item = (RelPath, FileMeta)>) -> Self {
         Self {
-            files: pairs.into_iter().collect(),
+            files: PagedMap::from_unsorted(pairs.into_iter().collect()),
         }
     }
 
+    /// The pages and the entries of this view that it does not share with `base`.
+    #[cfg(test)]
+    pub(crate) fn unshared_with(&self, base: &Self) -> (usize, usize) {
+        self.files.unshared_with(&base.files)
+    }
+
     /// Derive the next view from this one for a scoped (watcher) rescan: drop `removed`, re-project
-    /// `updated` from the reopened store, leave everything else untouched.
+    /// `updated` from the reopened store, and share every other entry with this view.
     pub(crate) fn with_delta(&self, store: &crate::store::Store, updated: &[RelPath], removed: &[RelPath]) -> Self {
-        let mut files: BTreeMap<RelPath, FileMeta> = self
-            .files
-            .iter()
-            .map(|(path, meta)| (path.clone(), meta.clone()))
-            .collect();
-        for path in removed {
-            files.remove(path);
+        let removals = removed.iter().map(|path| (path.clone(), None));
+        let updates = updated.iter().map(|path| {
+            let meta = store
+                .index
+                .files
+                .get(path)
+                .filter(|entry| has_blob(store, entry))
+                .map(FileMeta::from);
+            (path.clone(), meta)
+        });
+        Self {
+            files: self.files.patched(removals.chain(updates)),
         }
-        for path in updated {
-            match store.index.files.get(path) {
-                Some(entry) if has_blob(store, entry) => {
-                    files.insert(path.clone(), FileMeta::from(entry));
-                }
-                _ => {
-                    files.remove(path);
-                }
-            }
-        }
-        Self { files }
     }
 }
 

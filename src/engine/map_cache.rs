@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use crate::engine::l1_cache;
+use crate::engine::paged_map::PagedSet;
 use crate::extract::FileMapL1;
+use crate::path::RelPath;
 use crate::store::Store;
 
 pub(crate) struct MapCache {
@@ -25,15 +27,13 @@ pub(crate) struct MapCache {
     /// Every path of the document tier (markdown, config, data, PDFs ...), sorted. The code map
     /// holds code only, so decision records (`docs/adr/*.md`) and path citations to prose / config
     /// files resolve against this set instead of [`Self::files`]. Projected straight from the index
-    /// (no blob or LanceDB read), so it is rebuilt with every cache build and delta.
-    pub(crate) doc_paths: std::sync::Arc<[crate::path::RelPath]>,
+    /// (no blob or LanceDB read) by every build, and patched from the paths of a delta.
+    pub(crate) doc_paths: Arc<PagedSet<RelPath>>,
 }
 
 /// The sorted document-tier paths of `store`'s index.
-fn doc_paths_of(store: &Store) -> std::sync::Arc<[crate::path::RelPath]> {
-    let mut paths: Vec<crate::path::RelPath> = store.index.doc_files.keys().cloned().collect();
-    paths.sort_unstable();
-    paths.into()
+fn doc_paths_of(store: &Store) -> Arc<PagedSet<RelPath>> {
+    Arc::new(PagedSet::from_unsorted(store.index.doc_files.keys().cloned().collect()))
 }
 
 impl MapCache {
@@ -113,7 +113,7 @@ impl MapCache {
 
     /// Whether `path` is a tracked document (non-code file in the document tier).
     pub(crate) fn contains_doc(&self, path: &crate::path::RelPath) -> bool {
-        self.doc_paths.binary_search(path).is_ok()
+        self.doc_paths.contains(path)
     }
 
     /// What the index recorded about `path`'s content, without faulting in its outline.
@@ -240,7 +240,7 @@ impl MapCache {
             l1: Arc::clone(&self.l1),
             terms: Default::default(),
             routes: Default::default(),
-            doc_paths: doc_paths_of(store),
+            doc_paths: self.doc_paths_patched(store, updated, removed),
         };
         self.l1.forget_superseded(superseded, &next.files);
         if let Some(terms) = self.terms.get() {
@@ -249,6 +249,32 @@ impl MapCache {
                 .set(Arc::new(terms.patched(updated, removed, |p| next.get(p))));
         }
         next
+    }
+
+    /// The document paths of `store`, patched from this map's for the paths of a delta: each one is
+    /// a document exactly when `store` indexes it as one.
+    ///
+    /// A scoped scan that falls back to a full pass drops vanished documents without reporting
+    /// them, so a patched set that does not hold as many paths as `store` indexes documents missed
+    /// one, and the set is projected from `store` instead.
+    fn doc_paths_patched(&self, store: &Store, updated: &[RelPath], removed: &[RelPath]) -> Arc<PagedSet<RelPath>> {
+        let edits: Vec<(RelPath, bool)> = updated
+            .iter()
+            .chain(removed)
+            .map(|path| (path, store.index.doc_files.contains_key(path)))
+            .filter(|(path, present)| self.doc_paths.contains(path) != *present)
+            .map(|(path, present)| (path.clone(), present))
+            .collect();
+        let patched = if edits.is_empty() {
+            Arc::clone(&self.doc_paths)
+        } else {
+            Arc::new(self.doc_paths.patched(edits))
+        };
+        if patched.len() == store.index.doc_files.len() {
+            patched
+        } else {
+            doc_paths_of(store)
+        }
     }
 
     /// The map of `store` derived from this one, or `None` when it would map `store` exactly as
@@ -297,3 +323,7 @@ mod map_cache_budget_tests;
 #[cfg(test)]
 #[path = "map_cache_delta_tests.rs"]
 mod map_cache_delta_tests;
+
+#[cfg(test)]
+#[path = "map_cache_patch_cost_tests.rs"]
+mod map_cache_patch_cost_tests;

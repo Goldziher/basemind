@@ -52,6 +52,11 @@ pub(crate) struct StatusResponse {
     /// completed so far, not the repository. A full rescan clears it. Absent (false) otherwise.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// The watcher pass waiting for one of the daemon's scan slots, which every hosted workspace
+    /// shares: the batches merged into it and what it will scan. Until it runs, the edits it holds
+    /// are not indexed. Absent when no pass waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_scan: Option<QueuedScan>,
     /// One-line reason the index is degraded: a partial scan (with its reason and progress) or a
     /// resolve pass that never completed, leaving resolved references and callers stale. Absent when
     /// the last scan finished cleanly.
@@ -139,6 +144,19 @@ pub(crate) struct LargeFiles {
     pub count: usize,
     /// The longest few, largest first (ties by path).
     pub largest: Vec<SizedFile>,
+}
+
+/// The `queued_scan` block of `index_status`.
+#[derive(Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub(crate) struct QueuedScan {
+    /// Watcher batches merged into the waiting pass.
+    pub batches: usize,
+    /// Distinct paths the pass will scan; 0 for a whole-tree pass.
+    pub paths: usize,
+    /// The pass rescans the whole tree, because the OS dropped watch events. Absent (false)
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole_tree: bool,
 }
 
 /// Response of `index_rescan`.

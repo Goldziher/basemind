@@ -6,9 +6,9 @@
 //! `memmem` over contiguous bytes. Hits fetch their span and signature from the L1 cache by
 //! `(path, symbol index)`, so only the returned page is ever decoded.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::engine::paged_map::PagedMap;
 use crate::extract::{FileMapL1, SymbolKind};
 use crate::path::RelPath;
 
@@ -111,41 +111,45 @@ impl FileTerms {
 /// Path-ordered terms of every indexed file.
 #[derive(Default)]
 pub(crate) struct TermIndex {
-    files: BTreeMap<RelPath, Arc<FileTerms>>,
+    files: PagedMap<RelPath, FileTerms>,
 }
 
 impl TermIndex {
     /// Project every outline the stream yields.
     pub(crate) fn build(stream: impl FnOnce(&mut dyn FnMut(&RelPath, &FileMapL1))) -> Self {
-        let mut files = BTreeMap::new();
-        stream(&mut |path, l1| {
-            files.insert(path.clone(), Arc::new(FileTerms::from_l1(l1)));
-        });
-        Self { files }
+        let mut files = Vec::new();
+        stream(&mut |path, l1| files.push((path.clone(), FileTerms::from_l1(l1))));
+        Self {
+            files: PagedMap::from_unsorted(files),
+        }
     }
 
-    /// A copy with `removed` dropped and `updated` re-projected from `load`. Unchanged files share
-    /// their allocation with `self`.
+    /// A copy with `removed` dropped and `updated` re-projected from `load` (dropped where it loads
+    /// nothing). Every other file, and every page of files the patch does not touch, shares its
+    /// allocation with `self`.
     pub(crate) fn patched(
         &self,
         updated: &[RelPath],
         removed: &[RelPath],
         load: impl Fn(&RelPath) -> Option<Arc<FileMapL1>>,
     ) -> Self {
-        let mut files = self.files.clone();
-        for path in removed.iter().chain(updated) {
-            files.remove(path);
+        let removals = removed.iter().map(|path| (path.clone(), None));
+        let updates = updated
+            .iter()
+            .map(|path| (path.clone(), load(path).map(|l1| FileTerms::from_l1(&l1))));
+        Self {
+            files: self.files.patched(removals.chain(updates)),
         }
-        for path in updated {
-            if let Some(l1) = load(path) {
-                files.insert(path.clone(), Arc::new(FileTerms::from_l1(&l1)));
-            }
-        }
-        Self { files }
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&RelPath, &FileTerms)> {
-        self.files.iter().map(|(p, t)| (p, &**t))
+        self.files.iter()
+    }
+
+    /// The pages and the entries of this index that it does not share with `base`.
+    #[cfg(test)]
+    pub(crate) fn unshared_with(&self, base: &Self) -> (usize, usize) {
+        self.files.unshared_with(&base.files)
     }
 }
 

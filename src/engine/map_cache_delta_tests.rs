@@ -216,3 +216,197 @@ fn a_refresh_after_one_edit_decodes_one_outline() {
     scan(root, &mut store);
     assert!(next.refreshed(&store, 0).is_none(), "an unchanged rescan keeps the map");
 }
+
+/// Scan only `paths`, as a watcher batch does, and return the paths the scan reports.
+fn scan_scoped(root: &Path, store: &mut Store, paths: &[std::path::PathBuf]) -> crate::engine::scan::RescanPaths {
+    let cfg = crate::config::ConfigV1::with_defaults();
+    let mut delta = crate::engine::scan::RescanPaths::default();
+    crate::scanner::scan_paths_with_observer(
+        root,
+        store,
+        &cfg,
+        paths,
+        crate::scanner::EmbedMode::Inline,
+        &crate::scanner::ScanCancel::new(),
+        &mut delta,
+        crate::retrieval_wiring::backend(),
+    )
+    .expect("scoped scan");
+    delta
+}
+
+/// The watcher path: random edit, add, delete, rename, touch and document sequences, each scanned
+/// over the paths it touched and applied with [`MapCache::with_delta`] from the scan's report. After
+/// every step the patched map equals a map built from scratch over the same store.
+#[test]
+fn a_map_patched_from_scoped_scans_equals_a_rebuilt_one() {
+    crate::store::init_isolated_cache();
+    for seed in [0x6a09_e667_f3bc_c908_u64, 0xbb67_ae85_84ca_a73b] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let token = format!("delta_scoped_{:x}", seed & 0xffff);
+        let mut steps = Steps(seed);
+        let mut live: Vec<String> = Vec::new();
+        let mut serial = 0;
+        for _ in 0..6 {
+            let name = format!("f{serial}.rs");
+            std::fs::write(root.join(&name), source(&token, serial)).unwrap();
+            live.push(name);
+            serial += 1;
+        }
+        let mut store = Store::open(root, VIEW_WORKING).unwrap();
+        scan(root, &mut store);
+        let mut cache = MapCache::build(&store, 0);
+        cache.terms();
+
+        for step in 0..24 {
+            let op = steps.next(6);
+            let pick = steps.next(live.len().max(1));
+            let label = format!("seed {seed:x} step {step} op {op}");
+            let touched: Vec<String> = match op {
+                0 if !live.is_empty() => {
+                    serial += 1;
+                    std::fs::write(root.join(&live[pick]), source(&token, serial)).unwrap();
+                    vec![live[pick].clone()]
+                }
+                1 => {
+                    serial += 1;
+                    let name = format!("f{serial}.rs");
+                    std::fs::write(root.join(&name), source(&token, serial)).unwrap();
+                    live.push(name.clone());
+                    vec![name]
+                }
+                2 if live.len() > 1 => {
+                    let name = live.swap_remove(pick);
+                    std::fs::remove_file(root.join(&name)).unwrap();
+                    vec![name]
+                }
+                3 if !live.is_empty() => {
+                    let renamed = format!("r{serial}.rs");
+                    serial += 1;
+                    std::fs::rename(root.join(&live[pick]), root.join(&renamed)).unwrap();
+                    vec![std::mem::replace(&mut live[pick], renamed.clone()), renamed]
+                }
+                4 if !live.is_empty() => {
+                    let path = root.join(&live[pick]);
+                    let bytes = std::fs::read(&path).unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    std::fs::write(&path, bytes).unwrap();
+                    vec![live[pick].clone()]
+                }
+                5 => {
+                    let doc = format!("notes{}.md", pick % 2);
+                    if root.join(&doc).exists() {
+                        std::fs::remove_file(root.join(&doc)).unwrap();
+                    } else {
+                        std::fs::write(root.join(&doc), format!("# {token} notes\n")).unwrap();
+                    }
+                    vec![doc]
+                }
+                _ => continue,
+            };
+            let paths: Vec<std::path::PathBuf> = touched.iter().map(|name| root.join(name)).collect();
+            let delta = scan_scoped(root, &mut store, &paths);
+            cache = cache.with_delta(&store, &delta.updated, &delta.removed);
+            assert_same(&cache, &MapCache::build(&store, 0), &label);
+        }
+    }
+}
+
+fn set_mtime(path: &Path, since_epoch: std::time::Duration) {
+    let file = std::fs::OpenOptions::new().write(true).open(path).expect("open");
+    file.set_modified(std::time::UNIX_EPOCH + since_epoch)
+        .expect("set mtime");
+}
+
+/// A watcher batch that only moved a file's stamp (a touch) leaves its content unchanged but its
+/// index entry restamped; the workspace's patched map takes the new stamp a rebuild reads. Both
+/// stamps are settled, years from the clock, so the scan records them as they are.
+#[test]
+fn a_scoped_rescan_of_a_touched_file_maps_its_new_stamp() {
+    crate::store::init_isolated_cache();
+    let (tmp, git_cache) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = tmp.path();
+    // A workspace rescans only a root the root guard admits as a project.
+    std::fs::write(root.join("basemind.toml"), "").unwrap();
+    let file = root.join("a.rs");
+    std::fs::write(&file, source("delta_touch", 0)).unwrap();
+    set_mtime(&file, std::time::Duration::from_secs(1_000_000_000));
+    let ws = crate::engine::workspace::Workspace::new(
+        Store::open(root, VIEW_WORKING).unwrap(),
+        root.to_path_buf(),
+        Arc::new(crate::config::Config::with_defaults()),
+        None,
+        Arc::new(crate::git_cache::GitCache::open(git_cache.path(), 1, false).unwrap()),
+        None,
+        crate::engine::workspace::OpenOptions {
+            background: false,
+            read_only: false,
+            forwards_writes: false,
+            lazy_cache: false,
+            history_sync: None,
+            #[cfg(feature = "memory")]
+            memory_owner: |_| "owner".to_string(),
+        },
+    );
+    ws.rescan(None, crate::scanner::EmbedMode::Deferred, false).unwrap();
+
+    set_mtime(&file, std::time::Duration::from_secs(1_100_000_000));
+    let report = ws
+        .rescan(Some(vec![file.clone()]), crate::scanner::EmbedMode::Deferred, false)
+        .unwrap();
+    assert_eq!(
+        (report.stats.updated, report.stats.skipped_unchanged),
+        (0, 1),
+        "the touch reads as unchanged content"
+    );
+
+    let rel = RelPath::from("a.rs");
+    let patched = ws.cache.load();
+    let meta = patched
+        .file_metas()
+        .find(|(path, _)| **path == rel)
+        .map(|(_, meta)| meta);
+    assert_eq!(meta.map(|meta| meta.mtime_ns), Some(1_100_000_000_000_000_000));
+    assert_same(&patched, &MapCache::build(&ws.store_read(), 0), "touch");
+}
+
+fn doc_entry() -> crate::store::DocEntry {
+    crate::store::DocEntry {
+        hash_hex: "d".repeat(64),
+        embedding_preset: String::new(),
+        size_bytes: 1,
+        mtime: 0,
+        embedded: true,
+        embed_attempted: true,
+        config_digest: String::new(),
+    }
+}
+
+/// A delta patches the document paths it names, and a document the delta does not name (a full
+/// pass drops a vanished one unreported) still leaves the paths a rebuild would map.
+#[test]
+fn a_delta_maps_the_documents_a_rebuild_maps() {
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::write(root.join("f0.rs"), source("delta_docs", 0)).unwrap();
+    let mut store = Store::open(root, VIEW_WORKING).unwrap();
+    scan(root, &mut store);
+    let (kept, added, dropped) = (RelPath::from("a.md"), RelPath::from("b.md"), RelPath::from("c.md"));
+    store.index.doc_files.insert(kept.clone(), doc_entry());
+    store.index.doc_files.insert(dropped.clone(), doc_entry());
+    let cache = MapCache::build(&store, 0);
+
+    store.index.doc_files.insert(added.clone(), doc_entry());
+    let next = cache.with_delta(&store, std::slice::from_ref(&added), &[]);
+    assert_eq!(
+        next.doc_paths.iter().cloned().collect::<Vec<_>>(),
+        [kept.clone(), added.clone(), dropped.clone()]
+    );
+
+    store.index.doc_files.remove(&dropped);
+    let after = next.with_delta(&store, &[], &[]);
+    assert_eq!(after.doc_paths.iter().cloned().collect::<Vec<_>>(), [kept, added]);
+    assert_eq!(after.doc_paths, MapCache::build(&store, 0).doc_paths);
+}

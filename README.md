@@ -501,6 +501,9 @@ background, so a client never blocks waiting for a large repo to load. The `stat
 `warming` (still loading) and, once done, `warm_ms`; a first-time index build similarly reports
 `indexing` / `index_build_ms`, and the boot-time git-history sync `history_syncing` (a `git_log` or
 `git_blame` cursor issued before it ends may be refused as stale).
+A daemon-hosted workspace whose watcher pass waits for one of the daemon's four scan slots, which
+every workspace it hosts shares, reports it as `queued_scan`: the watcher batches merged into the pass
+(`batches`), the paths it will scan (`paths`) and whether it rescans the whole tree (`whole_tree`).
 
 While the server isn't fully ready, `status` and every code-map read tool may carry a `notice`
 object — `{ state, message, retry }` — instead of (or alongside) their normal result:

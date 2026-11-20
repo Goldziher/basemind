@@ -67,6 +67,9 @@ pub mod http_auth;
 pub mod http_frontend;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod protocol;
+/// The gate that bounds how many hosted read-stack builds run at once.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) mod read_stack_gate;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod relay;
 /// Dialing the daemon's relay endpoint.
@@ -75,6 +78,10 @@ pub mod relay_connect;
 /// The token and detail the daemon declines a relay session with.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod relay_decline;
+/// The scan slots every daemon scan shares, and the drain that runs a hosted workspace's queued
+/// watcher passes through them.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) mod scan_slots;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod singleton;
 #[cfg(all(feature = "comms", any(unix, windows)))]
