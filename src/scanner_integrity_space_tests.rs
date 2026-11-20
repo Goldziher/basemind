@@ -166,3 +166,46 @@ fn a_git_backed_scan_is_charged_its_blob_sizes_not_the_working_tree() {
         );
     }
 }
+
+/// A conflicted path has an index entry per stage. A staged scan extracts the stage
+/// [`crate::git::Repo::read_blob_staged`] reads, so it is charged that stage's blob, not the larger
+/// one of another stage.
+#[test]
+fn a_conflicted_path_is_charged_the_stage_a_staged_scan_reads() {
+    let dir = one_file_repo();
+    let root = dir.path();
+    git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("x.rs"), BETA).expect("write the base");
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "base"]);
+    git(root, &["checkout", "-qb", "side"]);
+    std::fs::write(root.join("x.rs"), GAMMA).expect("write theirs");
+    git(root, &["commit", "-qam", "theirs"]);
+    git(root, &["checkout", "-q", "-"]);
+    let ours = [ALPHA, GAMMA, BETA].concat();
+    std::fs::write(root.join("x.rs"), &ours).expect("write ours");
+    git(root, &["commit", "-qam", "ours"]);
+    let merge = std::process::Command::new("git")
+        .args(["merge", "-q", "side", "-m", "merge"])
+        .current_dir(root)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@e.x")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@e.x")
+        .output()
+        .expect("git in PATH");
+    assert!(
+        !merge.status.success(),
+        "both sides changed x.rs, so the merge conflicts"
+    );
+    let repo = crate::git::Repo::discover(root).expect("repo");
+
+    let read = repo.read_blob_staged("x.rs").expect("read").expect("x.rs is staged");
+    assert_eq!(read, BETA, "a staged read takes the merge base");
+    assert_eq!(repo.staged_blob_sizes(["x.rs"]).expect("sizes"), [len(BETA)]);
+    assert_eq!(
+        repo.staged_blob_sizes(["alpha.rs"]).expect("sizes"),
+        [len(ALPHA)],
+        "stage 0"
+    );
+}
