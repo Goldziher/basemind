@@ -15,6 +15,30 @@ to 34, so each view's index is wiped at its first open, the blob store moves to 
 and every file is re-extracted and every document and code chunk re-embedded once. Read
 [`docs/UPGRADING.md`](docs/UPGRADING.md) before installing.
 
+**Highlights:**
+
+- **One MCP tool per job (ADR-0018).** The mode-dispatched `code`, `git`, `memory` and `admin` tools
+  are replaced by verb tools with exact schemas and no `mode`; the `agents` tool by `agent_post`,
+  `agent_inbox` and `agent_threads` (agent comms v2, ADR-0021). No aliases.
+- **Smaller answers.** The locating tools answer with rows as the shell prints them (ADR-0052), and
+  the text block of `code_grep`, `code_outline`, `git_diff` and a `find_files` list is no longer JSON
+  (#157, ADR-0053).
+- **The import graph and analysis commands.** `code_refs` lists a file's importers and the import
+  cycles (#121, #135); every call site says how it was resolved (#125, ADR-0047). New CLI commands:
+  `code impact` (#121), `code cycles` (#135), `code explain` (#120), `code deadcode` (#123),
+  `code migration check` (#130), `overview` (#131), `git hotspots` (#134) and `sessions` (#128).
+- **Scoped and size-aware queries.** `changed` limits `code_grep`, `code_symbols`, `code_refs` and
+  `find_files` to the files a change touched (#122); `index_status` and `find_files` `min_lines`
+  name the large files before they are opened (#127).
+- **One index per repository group (ADR-0028)**, shared by every worktree and view, and `docs_search`
+  rebuilt on one document store per group (ADR-0029, ADR-0037), with the documentation of the
+  repository's dependencies behind `[documents.dependencies]` (#132).
+- **Agent launch.** `basemind serve --lead` launches agents in worktrees of their own, off until the
+  operator's `agents.toml` enables it (ADR-0040).
+- **An offline manual**, `basemind manual [topic]`, compiled into the binary.
+- **Removed:** web ingestion, agent shells, the code graph tool, the token-saving text tools, the
+  `workspace` tool, memory audit and mining, archive extraction and LLM summarization.
+
 ### Added
 
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
