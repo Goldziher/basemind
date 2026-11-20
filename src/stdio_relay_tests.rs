@@ -88,7 +88,8 @@ async fn reconnect_replays_initialization_and_keeps_client_transport_open() {
 }
 
 /// A backend that swallows a request must not hang the host: the relay answers with a retryable
-/// `backend_timeout` and drops the backend's late reply so the host never sees two responses.
+/// `backend_timeout`, cancels the request on the backend, and drops the backend's late reply so the
+/// host never sees two responses.
 #[tokio::test(start_paused = true)]
 async fn unanswered_request_gets_a_timeout_error_and_the_late_reply_is_dropped() {
     let (client_input, proxy_input) = tokio::io::duplex(4096);
@@ -119,6 +120,22 @@ async fn unanswered_request_gets_a_timeout_error_and_the_late_reply_is_dropped()
     assert_eq!(error["id"], serde_json::json!(5));
     assert_eq!(error["error"]["code"], BACKEND_TIMEOUT_CODE);
     assert_eq!(error["error"]["data"]["retryable"], true);
+
+    // The backend is told to stop the request the host gave up on, so it frees its admission.
+    line.clear();
+    backend_read
+        .read_line(&mut line)
+        .await
+        .expect("backend sees the cancellation");
+    let cancelled: Value = serde_json::from_str(&line).expect("cancellation JSON");
+    assert_eq!(
+        cancelled,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": { "requestId": 5, "reason": "no reply within 30s" }
+        })
+    );
 
     // The late reply is swallowed; the next request's reply is the next thing the host reads.
     backend_write

@@ -731,8 +731,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   permit moves to an overflow pool as large as the heavy lane, so the next heavy call is admitted.
   A hung read used to keep its permit until the daemon restarted, and every later heavy call
   (`docs_search`, `index_rescan`, CLI `code_search`) was refused with `server_busy`. A client that
-  cancels such a read frees the lane the same way. Abandoned reads beyond the overflow pool keep
-  their lane permit, so hung work stays bounded.
+  cancels such a read frees the lane the same way, and so does the stdio relay: a request it answers
+  with `backend_timeout` is cancelled on the daemon (`notifications/cancelled`). Abandoned reads
+  beyond the overflow pool keep their lane permit, so hung work stays bounded.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
