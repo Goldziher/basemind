@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use ignore::gitignore::GitignoreBuilder;
 
+use super::init_write::{self, Written};
+
 /// Given a target file `basemind init` might write, the `.gitignore` pattern it should be covered
 /// by, or `None` when `target` is a COMMITTED (shared) file that must never be gitignored — e.g.
 /// `CLAUDE.md` or the committed ai-rulez rule file. Only the known `.local`-flavored targets get a
@@ -54,9 +56,10 @@ pub(crate) fn is_covered(root: &Path, target: &Path) -> Result<bool> {
 }
 
 /// Ensure `target` is covered by `.gitignore`, prompting in an interactive TTY unless `assume_yes`.
-/// Without a TTY only `assume_yes` appends. Returns the `.gitignore` path that was appended to, or
-/// `None` if nothing changed (already covered, declined, or no one to ask).
-pub(crate) fn ensure_coverage(root: &Path, target: &Path, pattern: &str, assume_yes: bool) -> Result<Option<PathBuf>> {
+/// Without a TTY only `assume_yes` appends. Returns the `.gitignore` write, or `None` if nothing
+/// changed (already covered, declined, no one to ask, or the pattern already on its own line). A
+/// `.gitignore` that resolves outside the repository is written only with `assume_yes`.
+pub(crate) fn ensure_coverage(root: &Path, target: &Path, pattern: &str, assume_yes: bool) -> Result<Option<Written>> {
     if is_covered(root, target)? {
         return Ok(None);
     }
@@ -64,9 +67,7 @@ pub(crate) fn ensure_coverage(root: &Path, target: &Path, pattern: &str, assume_
     if !should_add {
         return Ok(None);
     }
-    let gitignore_path = root.join(".gitignore");
-    append_pattern(&gitignore_path, pattern)?;
-    Ok(Some(gitignore_path))
+    append_pattern(root, &root.join(".gitignore"), pattern, assume_yes)
 }
 
 /// Hand-rolled Y/n prompt over stdin, matching the style of the other `init.rs` prompts. A blank
@@ -85,15 +86,15 @@ fn prompt_add_to_gitignore(pattern: &str) -> Result<bool> {
 
 /// Append `pattern` to `gitignore_path` with a trailing newline, creating the file if absent and
 /// skipping the append entirely if the exact pattern is already on its own line. The rest of the
-/// file — content and order — is preserved verbatim.
-fn append_pattern(gitignore_path: &Path, pattern: &str) -> Result<()> {
+/// file — content and order — is preserved verbatim, and the file is replaced atomically.
+fn append_pattern(root: &Path, gitignore_path: &Path, pattern: &str, allow_outside: bool) -> Result<Option<Written>> {
     let existing = match std::fs::read_to_string(gitignore_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(anyhow::Error::new(e).context(format!("read {}", gitignore_path.display()))),
     };
     if existing.lines().any(|l| l.trim() == pattern) {
-        return Ok(());
+        return Ok(None);
     }
     let mut out = existing;
     if !out.is_empty() && !out.ends_with('\n') {
@@ -101,7 +102,7 @@ fn append_pattern(gitignore_path: &Path, pattern: &str) -> Result<()> {
     }
     out.push_str(pattern);
     out.push('\n');
-    std::fs::write(gitignore_path, out).with_context(|| format!("write {}", gitignore_path.display()))
+    init_write::write_file(root, gitignore_path, out.as_bytes(), allow_outside).map(Some)
 }
 
 /// Directories from `root` down to `target`'s parent, inclusive, in root-to-leaf order — the order
@@ -193,7 +194,8 @@ mod tests {
         let appended = ensure_coverage(root, &target, "CLAUDE.local.md", true)
             .expect("ensure coverage")
             .expect("a pattern was appended");
-        assert_eq!(appended, root.join(".gitignore"));
+        assert_eq!(appended.path, root.join(".gitignore"));
+        assert!(appended.symlink_target.is_none());
         let contents = std::fs::read_to_string(root.join(".gitignore")).expect("read .gitignore");
         assert_eq!(contents, "CLAUDE.local.md\n");
         assert!(is_covered(root, &target).expect("check coverage"), "now covered");
@@ -240,6 +242,36 @@ mod tests {
         assert!(
             !root.join(".gitignore").exists(),
             "no root .gitignore should be created"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_gitignore_is_appended_through_and_reported() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        std::fs::create_dir(root.join("config")).expect("mkdir config");
+        let real = root.join("config").join("gitignore");
+        std::fs::write(&real, "target/\n").expect("seed shared gitignore");
+        std::os::unix::fs::symlink("config/gitignore", root.join(".gitignore")).expect("symlink");
+        let target = root.join("CLAUDE.local.md");
+
+        let appended = ensure_coverage(root, &target, "CLAUDE.local.md", true)
+            .expect("ensure coverage")
+            .expect("a pattern was appended");
+
+        let canonical_real = std::fs::canonicalize(&real).expect("canonicalize");
+        assert_eq!(
+            appended.to_string(),
+            format!(
+                "{} (via symlink → {})",
+                root.join(".gitignore").display(),
+                canonical_real.display()
+            )
+        );
+        assert_eq!(
+            std::fs::read_to_string(&real).expect("read"),
+            "target/\nCLAUDE.local.md\n"
         );
     }
 }
