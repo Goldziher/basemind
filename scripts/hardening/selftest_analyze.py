@@ -284,6 +284,27 @@ def fd_leak(rng: random.Random) -> list[dict[str, Any]]:
     return recs
 
 
+def _with_tables(recs: list[dict[str, Any]], per_min: float) -> list[dict[str, Any]]:
+    """Count the daemon's live LSM table descriptors, `per_min` more each minute, inside its fds."""
+    for r in recs:
+        if r.get("kind") == "proc" and r["pid"] == DAEMON:
+            grown = int(per_min * r["t"] / 60)
+            r["fds_lsm_tables"] = 20 + grown
+            r["fds"] += 20 + grown
+    return recs
+
+
+def table_growth(rng: random.Random) -> list[dict[str, Any]]:
+    """Live table descriptors climb one per minute as the stores add tables: R8's to judge, so the
+    descriptors net of them are flat and R3 passes."""
+    return _with_tables(healthy(rng), 1.0)
+
+
+def table_fd_leak(rng: random.Random) -> list[dict[str, Any]]:
+    """The live tables stay put while a descriptor per 20-second cycle leaks beside them."""
+    return _with_tables(fd_leak(rng), 0.0)
+
+
 def _on_windows(recs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Mark the run as sampled on Windows, where `fds` is the process handle count: one handle per
     live thread on top of the descriptors."""
@@ -336,6 +357,8 @@ CASES: list[tuple[str, Callable[[random.Random], list[dict[str, Any]]], int, set
     ("comms-climb", comms_climb, 1, {"R8"}),
     ("idle-busy", idle_busy, 1, {"R6"}),
     ("fd-leak", fd_leak, 1, {"R3"}),
+    ("table-growth", table_growth, 0, set()),
+    ("table-fd-leak", table_fd_leak, 1, {"R3"}),
     ("win-pool-step", win_pool_step, 0, set()),
     ("win-handle-leak", win_handle_leak, 1, {"R3"}),
     ("leaked-child", leaked_child, 1, {"R7"}),
