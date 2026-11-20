@@ -1,8 +1,8 @@
 """Windows process access for the hardening scripts, through kernel32 / ntdll / shell32 via ctypes.
 
 Standard library only. Gives `common.py` what it reads from libproc on macOS and `/proc` on Linux:
-the process table (pid -> parent), a process's executable path and argv, liveness, and a resource
-sample (working set, private bytes, threads, handles, CPU time).
+the process table (pid -> parent), a process's executable path, argv and creation time, liveness,
+and a resource sample (working set, private bytes, threads, handles, CPU time).
 """
 
 from __future__ import annotations
@@ -120,6 +120,10 @@ def snapshot() -> dict[int, Entry]:
     return table
 
 
+def _ticks(ft: wintypes.FILETIME) -> int:
+    return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+
+
 def _open(pid: int, access: int = _PROCESS_QUERY_LIMITED_INFORMATION) -> int | None:
     handle = _k32.OpenProcess(access, False, pid)
     return handle or None
@@ -173,6 +177,20 @@ def argv(pid: int) -> list[str] | None:
         _k32.LocalFree(parts)
 
 
+def created(pid: int) -> int | None:
+    """The creation time of `pid` in FILETIME ticks, or None when it is gone or unreadable."""
+    handle = _open(pid)
+    if handle is None:
+        return None
+    try:
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not _k32.GetProcessTimes(handle, *[ctypes.byref(t) for t in times]):
+            return None
+    finally:
+        _k32.CloseHandle(handle)
+    return _ticks(times[0])
+
+
 def alive(pid: int) -> bool:
     handle = _open(pid, _SYNCHRONIZE | _PROCESS_QUERY_LIMITED_INFORMATION)
     if handle is None:
@@ -211,14 +229,10 @@ def sample(pid: int, threads: int) -> Sample | None:
         _k32.GetProcessHandleCount(handle, ctypes.byref(count))
     finally:
         _k32.CloseHandle(handle)
-
-    def ticks(ft: wintypes.FILETIME) -> int:
-        return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
-
     return Sample(
         working_set=int(mem.WorkingSetSize),
         private=int(mem.PrivateUsage),
         threads=threads,
         handles=int(count.value),
-        cpu_s=(ticks(times[2]) + ticks(times[3])) / 1e7,
+        cpu_s=(_ticks(times[2]) + _ticks(times[3])) / 1e7,
     )

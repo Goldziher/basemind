@@ -14,7 +14,9 @@ still set, for a human reading `ps` output on Linux.)
 Windows exposes neither another process's cwd nor its open files without a debugger, so there the
 binary under test is copied into the run root (`Isolation.stage_binary`) and a process belongs to
 the run when its executable lies inside the root, or when it descends from such a process. The
-daemon `serve` spawns re-executes `current_exe()`, so it is anchored the same way.
+daemon `serve` spawns re-executes `current_exe()`, so it is anchored the same way. Windows keeps a
+dead parent's pid and reuses pids, so there a parent link counts only when the parent was created
+no later than the child (`parent_link_holds`).
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
@@ -306,32 +309,59 @@ def anchored(pid: int, root: Path, binary_names: tuple[str, ...] = BINARY_NAMES)
     return False
 
 
-def owned_processes(root: Path) -> dict[int, list[str]]:
-    """pid -> argv of every live process of the run rooted at `root` (see the module docstring)."""
-    table = all_pids()
-    me = os.getpid()
-    owned = {pid for pid in table if pid != me and anchored(pid, root)}
+def parent_link_holds(pid: int, ppid: int, created: Callable[[int], int | None]) -> bool:
+    """Whether `ppid` can be the process that started `pid`.
+
+    Windows keeps a process's parent pid after that parent exits and reuses pids, so a parent pid
+    can name an unrelated process started later: a session's `winlogon.exe` and `csrss.exe` carry
+    the pid of their long-gone `smss.exe`, which a CLI one-shot of the run can be given. The link
+    holds only when the parent was created no later than the child; a creation time that cannot be
+    read proves nothing, so the link does not hold.
+    """
+    child, parent = created(pid), created(ppid)
+    return child is not None and parent is not None and parent <= child
+
+
+def _linked(pid: int, ppid: int) -> bool:
+    # A Unix parent that exits re-parents its children, so a parent pid there is always current.
+    return not IS_WINDOWS or parent_link_holds(pid, ppid, winproc.created)
+
+
+def expand_owned(
+    table: dict[int, int], anchors: set[int], linked: Callable[[int, int], bool], me: int
+) -> set[int]:
+    """`anchors` plus every process in `table` (pid -> ppid) descending from one through `linked`."""
+    owned = set(anchors)
     grew = True
     while grew:
         grew = False
         for pid, ppid in table.items():
-            if ppid in owned and pid not in owned and pid != me:
+            if ppid in owned and pid not in owned and pid != me and linked(pid, ppid):
                 owned.add(pid)
                 grew = True
-    return {pid: proc_argv(pid) or [] for pid in owned}
+    return owned
+
+
+def owned_processes(root: Path) -> dict[int, list[str]]:
+    """pid -> argv of every live process of the run rooted at `root` (see the module docstring)."""
+    table = all_pids()
+    me = os.getpid()
+    anchors = {pid for pid in table if pid != me and anchored(pid, root)}
+    return {pid: proc_argv(pid) or [] for pid in expand_owned(table, anchors, _linked, me)}
 
 
 def still_owned(pid: int, root: Path) -> bool:
     """Re-check ownership of one pid right before signalling it."""
     if anchored(pid, root):
         return True
-    ppid = all_pids().get(pid)
+    table = all_pids()
     seen = set()
-    while ppid and ppid not in seen and ppid > 1:
+    child, ppid = pid, table.get(pid)
+    while ppid and ppid not in seen and ppid > 1 and _linked(child, ppid):
         if anchored(ppid, root):
             return True
         seen.add(ppid)
-        ppid = all_pids().get(ppid)
+        child, ppid = ppid, table.get(ppid)
     return False
 
 
