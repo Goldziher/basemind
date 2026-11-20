@@ -71,10 +71,10 @@ pub struct Repo {
     /// tell "the caller IS this repo" from "the caller inherited an ancestor repo" without
     /// re-running (or changing) discovery. See [`Repo::origin_is_workdir`].
     origin: PathBuf,
-    /// True if `.git/shallow` exists — history walks may terminate at the boundary, and
-    /// blame/diff_outline can hit "tree iterator" errors near the cut. Surfaced through
-    /// `Repo::is_shallow()` so MCP tools can flag responses as truncated rather than fail.
-    is_shallow: bool,
+    /// The clone's `shallow` file, in the common git directory so every worktree reads the same one.
+    /// [`Repo::is_shallow`] looks at it on every call: `git fetch --unshallow` deletes it while a
+    /// daemon holds this `Repo`.
+    shallow_file: PathBuf,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -271,12 +271,14 @@ impl Repo {
             .work_dir()
             .ok_or_else(|| GitError::Other("bare repositories are not supported".to_string()))?
             .to_path_buf();
-        let is_shallow = inner.path().join("shallow").exists();
+        let shallow_file = local
+            .shallow_file()
+            .unwrap_or_else(|_| local.common_dir().join("shallow"));
         Ok(Self {
             inner,
             workdir,
             origin: canonical(start),
-            is_shallow,
+            shallow_file,
         })
     }
 
@@ -343,11 +345,26 @@ impl Repo {
             .unwrap_or(false)
     }
 
-    /// True when the underlying clone is shallow (`.git/shallow` exists). History walks may
-    /// terminate at the shallow boundary; MCP tools mark responses as `truncated` instead
-    /// of erroring.
+    /// True when the underlying clone is shallow (its `shallow` file lists boundary commits). History
+    /// walks may terminate at the shallow boundary; MCP tools mark responses as `truncated` instead
+    /// of erroring. Read afresh on every call, so a clone unshallowed or deepened while this `Repo`
+    /// is held answers as it now is.
     pub fn is_shallow(&self) -> bool {
-        self.is_shallow
+        std::fs::metadata(&self.shallow_file).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+    }
+
+    /// True when the commit `sha` names has a parent this clone holds. False for a root commit, for
+    /// a shallow clone's boundary commit, and for a `sha` that is not a commit here.
+    pub fn has_readable_parent(&self, sha: &str) -> bool {
+        let local = self.local();
+        let Ok(id) = local.rev_parse_single(sha) else {
+            return false;
+        };
+        local.find_commit(id.detach()).is_ok_and(|commit| {
+            commit
+                .parent_ids()
+                .any(|parent| local.find_commit(parent.detach()).is_ok())
+        })
     }
 
     /// Borrow a per-thread `Repository` view of the wrapped thread-safe repo.
@@ -649,7 +666,7 @@ impl Repo {
         let outcome = match local.blame_file(BStr::new(path.as_bytes()), suspect, options) {
             Ok(o) => o,
             Err(e) => {
-                if self.is_shallow && looks_like_shallow_blame_error(&e) {
+                if self.is_shallow() && looks_like_shallow_blame_error(&e) {
                     return Ok(BlameResult {
                         path: path.clone(),
                         suspect_sha: suspect_sha.to_string(),

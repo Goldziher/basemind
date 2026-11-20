@@ -15,7 +15,10 @@
 //!   `basemind cache` operations.
 //!
 //! Both layers are content-addressed by the inputs the agent passed; we never
-//! invalidate, only roll off via LRU. The schema version is baked into every
+//! invalidate, only roll off via LRU. That holds only for a complete history: a shallow clone
+//! answers differently for the same sha (blame stops at the graft, a boundary commit's files are
+//! its whole tree, a walk ends at the boundary), and the answer changes once the clone is
+//! deepened. So nothing computed while the clone is shallow is cached in either layer. The schema version is baked into every
 //! payload and a mismatch on read treats the entry as a miss — the value is
 //! recomputed from `gix` and the fresh-schema payload overwrites it on write, so
 //! a schema bump rebuilds the git cache lazily without any destructive wipe.
@@ -41,8 +44,10 @@ use crate::git::{BlameResult, ChangeKind, CommitInfo, GitError, Repo};
 ///
 /// The offset is `+2` since commit file lists stopped naming directories and started naming a
 /// merge's files only when they differ from every parent: the cached lists of earlier builds are
-/// misses. `+3` since a root commit's list stopped naming the directories of its tree.
-pub const GIT_CACHE_SCHEMA: u16 = crate::version::RELEASE_MINOR + 3;
+/// misses. `+3` since a root commit's list stopped naming the directories of its tree. `+4` since
+/// answers computed in a shallow clone stopped being cached: earlier builds' payloads may hold one,
+/// and would outlive `git fetch --unshallow`.
+pub const GIT_CACHE_SCHEMA: u16 = crate::version::RELEASE_MINOR + 4;
 pub const GIT_CACHE_DIR: &str = "git-cache";
 
 #[derive(Debug, Error)]
@@ -243,7 +248,7 @@ impl GitCache {
     }
 
     /// Look up (or compute) the per-file change list for a commit. Sha-keyed: result is
-    /// immutable, so any hit is correct forever.
+    /// immutable, so any hit is correct forever. Computed in a shallow clone, it is not cached.
     pub fn commit_files(&self, repo: &Repo, commit_sha: &str) -> Result<Arc<Vec<CommitFileChange>>, CacheError> {
         if let Some(hit) = self.commit_files.lock().unwrap().lru.get(commit_sha).cloned() {
             return Ok(hit);
@@ -256,8 +261,11 @@ impl GitCache {
                 .admit(commit_sha.to_string(), Arc::clone(&arc));
             return Ok(arc);
         }
-        let computed = repo.commit_files_uncached(commit_sha)?;
-        let arc = Arc::new(computed);
+        let shallow = repo.is_shallow();
+        let arc = Arc::new(repo.commit_files_uncached(commit_sha)?);
+        if shallow {
+            return Ok(arc);
+        }
         self.commit_files
             .lock()
             .unwrap()
@@ -267,7 +275,8 @@ impl GitCache {
     }
 
     /// Look up (or compute) a log slice. Keyed by (head_sha, path, limit, include_files);
-    /// commits past `head_sha` are immutable, so the cached walk stays valid.
+    /// commits past `head_sha` are immutable, so the cached walk stays valid. A walk of a shallow
+    /// clone ends at its boundary and is not cached.
     pub fn log(
         &self,
         repo: &Repo,
@@ -290,18 +299,23 @@ impl GitCache {
             self.log.lock().unwrap().admit(key.clone(), Arc::clone(&arc));
             return Ok(arc);
         }
+        let shallow = repo.is_shallow();
         let commits = match path {
             Some(p) => repo.log_for_path(p, limit as usize)?,
             None => repo.log_paths(limit as usize, include_files)?,
         };
         let arc = Arc::new(commits);
+        if shallow {
+            return Ok(arc);
+        }
         self.log.lock().unwrap().admit(key.clone(), Arc::clone(&arc));
         self.write_log_disk(&key, &arc);
         Ok(arc)
     }
 
     /// Look up (or compute) a blame for `(suspect_sha, path, range)`. Sha-keyed: caches
-    /// forever. Cost of cold compute scales with file history size.
+    /// forever. Cost of cold compute scales with file history size. A blame in a shallow clone
+    /// stops at the graft and is not cached.
     pub fn blame(
         &self,
         repo: &Repo,
@@ -322,8 +336,11 @@ impl GitCache {
             self.blame.lock().unwrap().admit(key.clone(), Arc::clone(&arc));
             return Ok(arc);
         }
-        let computed = repo.blame_file(suspect_sha, path, range)?;
-        let arc = Arc::new(computed);
+        let shallow = repo.is_shallow();
+        let arc = Arc::new(repo.blame_file(suspect_sha, path, range)?);
+        if shallow {
+            return Ok(arc);
+        }
         self.blame.lock().unwrap().admit(key.clone(), Arc::clone(&arc));
         self.write_blame_disk(&key, &arc);
         Ok(arc)
