@@ -266,6 +266,7 @@ macro_rules! conformance_tests {
             creating_a_thread_at_the_cap_archives_the_least_recently_active,
             members_are_capped_per_thread,
             members_of_a_thread_the_cap_archived_are_told_on_their_next_read,
+            messages_a_sweep_removed_before_a_member_read_them_are_counted,
             sweep_drops_messages_outside_the_newest_of_their_thread,
             record_past_its_retention_is_returned_until_a_sweep_removes_it,
             sweep_removes_old_messages_inside_a_live_thread,

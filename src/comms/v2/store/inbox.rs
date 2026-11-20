@@ -13,6 +13,10 @@
 //! A read over all the caller's threads leaves out the archived ones, but tells the caller about
 //! each one the thread cap archived, with how many of its messages are unread
 //! ([`rules::tells_cap_archive`]). A marking read records that it told, in the caller's marks.
+//!
+//! A read also says how many messages a sweep removed from a thread past where the caller
+//! stood in it ([`rules::reports_swept`]). The first row a thread's walk finds gives that away,
+//! so it costs no row of its own; the notice holds until a read takes the caller past the gap.
 
 use ahash::AHashSet;
 
@@ -20,7 +24,7 @@ use super::records::{MessageMeta, Reader, ThreadRecord};
 use super::{Txn, keys};
 use crate::comms::v2::api::{
     Actor, Caller, CommsError, Cursor, InboxBody, InboxMessage, InboxReply, InboxSelect, MAX_LIMIT, MessageId,
-    ReadKind, ThreadId, cap_archived_member_notice,
+    ReadKind, ThreadId, cap_archived_member_notice, swept_notice,
 };
 use crate::comms::v2::rules::{self, BodyForm, Delivered, DeliveredRange, Position};
 
@@ -86,6 +90,11 @@ pub(super) fn read(
         _ => None,
     };
     let messages: Vec<InboxMessage> = page.into_iter().map(|(_, message)| message).collect();
+    for (thread, lane) in covered.iter().zip(&merge.lanes) {
+        if let Some(swept) = lane.swept(thread.record.head) {
+            notices.push(swept_notice(&thread.id, swept));
+        }
+    }
     let mut read_to = Vec::new();
     let mut ranges = Vec::new();
     if kind.writes() {
@@ -147,6 +156,9 @@ struct Lane {
     lower: Option<u64>,
     /// The rows walked, in order, and whether each is one the read returns.
     walked: Vec<(u64, bool)>,
+    /// The sequence number the walk started at, when it started where the caller stands and
+    /// the read reports what a sweep removed there.
+    start: Option<u64>,
 }
 
 impl Lane {
@@ -166,6 +178,20 @@ impl Lane {
             passed = Some(*seq);
         }
         Ok(passed)
+    }
+
+    /// How many sequence numbers from where the walk started, up to `head`, hold no message
+    /// because a sweep removed it: those below the first row walked, or all of them when the walk
+    /// found none. `None` when there are none, the walk did not report them, or it was not
+    /// walked.
+    fn swept(&self, head: u64) -> Option<u64> {
+        let start = self.start?;
+        let first = match self.walked.first() {
+            Some((seq, _)) => *seq,
+            None if self.rows.is_none() => head + 1,
+            None => return None,
+        };
+        Some(first - start).filter(|swept| *swept > 0)
     }
 }
 
@@ -195,11 +221,13 @@ impl Merge {
                 first = first_past(reader, &thread.id, first, last, after)?;
             }
             let rows: Option<Rows> = (first <= last).then(|| Box::new(reader.metas(&thread.id, first..=last)) as Rows);
+            let start = (rows.is_some() && rules::reports_swept(kind, after.is_some())).then_some(first);
             lanes.push(Lane {
                 rows,
                 front: None,
                 lower: None,
                 walked: Vec::new(),
+                start,
             });
         }
         Ok(Self {

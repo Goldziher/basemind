@@ -28,8 +28,9 @@ code follows this document. Where the document leaves a point open, the code doe
 - A message in a reply carries `body_bytes`, the size of its whole body. In an announcing read
   `body` is empty.
 - The store puts the thread-cap notices in: the poster's into the reply of the post, and each
-  member's into its reads over all threads until a marking read has told it. The other notices are
-  the daemon's; `shared_identity_notice` returns none for a call that carries `as`.
+  member's into its reads over all threads until a marking read has told it. The store also puts
+  in the count of messages a sweep removed before the reader read them (*Sweep*). The other
+  notices are the daemon's; `shared_identity_notice` returns none for a call that carries `as`.
 - `basemind agent cleanup [--archive <thread>]...` archives each named thread, whoever created it,
   then runs one retention sweep. The `archive` change of `agent_threads` stays creator-only.
 - `BASEMIND_HOST` is set identically for `serve` and the hooks by the plugin launcher
@@ -398,6 +399,16 @@ the wall clock at the moment it runs:
 A thread's last activity is the latest timestamp of any post made to it. No read hides a record
 that the sweep has not removed.
 
+The sweep removes messages whatever their readers have read. A marking read, an announcing read
+and the first page of a peek that find a thread's first stored message past the reader's position
+plus one, or no message where the head says there are some, carry a notice for that thread with
+how many sequence numbers in between hold no message. The sweep keeps no authors, so the count
+includes any of the reader's own posts among them. The notice is repeated by every such read until
+one takes the reader past the gap; a history read, which starts at the oldest message kept, and a
+read by `id` carry none. The gap is seen from the first row the read walks in the thread, so a read
+that stops at its scan budget before it reaches a thread says nothing of it until a later read
+does.
+
 - **Seen records.** The 31 days are `SEEN_TTL` (30 days) plus `SEEN_REFRESH_INTERVAL` (one day, the
   most a record trails its actor's last call) on the branch. An actor is therefore seen for at
   least 30 and at most 31 days after its last call.
@@ -457,7 +468,9 @@ Every reply has `notices`, a list of sentences about something other than the re
   `BASEMIND_AGENT_ID`. One-shot CLI and hook connections are not counted, and the notice is left
   out when the call carries `as`;
 - a thread archived by the thread cap: on the reply of the post that caused it, and on each
-  member's reads over all threads until a marking read has told it (*Thread cap*).
+  member's reads over all threads until a marking read has told it (*Thread cap*);
+- messages of a thread a sweep removed before the reader read them, with their count, on its
+  unread reads until one takes it past them (*Sweep*).
 
 ## Errors
 

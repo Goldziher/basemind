@@ -704,6 +704,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Agent comms: a read says how many messages a sweep removed before the reader read them (#306).
+  The sweep keeps the newest 1,000 messages of a thread and 30 days of them whatever each member
+  has read, and the inbox used to step over the gap without a word. A marking read, a hook's
+  announcing read and the first page of a peek now carry a notice for each thread whose first stored
+  message lies past the reader's position, with the count, until a read takes the reader past it;
+  a waiting read returns at once with it. History reads and reads by id carry none.
 - `basemind comms cleanup [--dry-run] [--older-than <days>]` removes the rendezvous files no daemon
   uses any more: the directories of other protocol generations under the comms directory, and the
   files releases up to 0.33 keep directly in it (`comms.sock`, `daemon.lock`, `daemon.pid`,

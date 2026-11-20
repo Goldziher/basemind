@@ -1,9 +1,10 @@
 //! Telling a member it lost messages: to a thread the thread cap archived, and to a sweep.
 
 use super::super::api::{
-    CommsError, InboxBody, MAX_ACTIVE_THREADS_PER_REPO, PostReply, ReplayKey, ThreadAction, cap_archived_member_notice,
+    CommsError, DEFAULT_LIMIT, InboxBody, MAX_ACTIVE_THREADS_PER_REPO, MAX_MESSAGES_PER_THREAD, MessageId, PostReply,
+    ReplayKey, ThreadAction, cap_archived_member_notice, swept_notice,
 };
-use super::{ConformanceHarness, bodies, change, only, peek, read, read_as, say, start, who};
+use super::{ConformanceHarness, bodies, change, history, only, peek, read, read_as, say, start, who};
 
 fn no_notices() -> Vec<String> {
     Vec::new()
@@ -55,4 +56,31 @@ pub fn members_of_a_thread_the_cap_archived_are_told_on_their_next_read(h: &impl
             cap: MAX_ACTIVE_THREADS_PER_REPO,
         })
     );
+}
+
+/// A sweep removes messages whatever a member has read. The member's next unread read says how
+/// many of them it missed in that thread, and goes on saying so until a read takes it past them;
+/// a history read, which starts at the oldest message kept, does not.
+pub fn messages_a_sweep_removed_before_a_member_read_them_are_counted(h: &impl ConformanceHarness) {
+    let thread = unread_for_b(h).thread;
+    let over = 5;
+    for _ in 1..MAX_MESSAGES_PER_THREAD + over {
+        say(h, "a", &thread, "more").expect("post");
+    }
+    h.sweep();
+    let missed = swept_notice(&thread, over);
+
+    let peeked = read_as(h, "b", peek()).expect("inbox");
+    assert_eq!(peeked.notices, std::slice::from_ref(&missed));
+    assert_eq!(
+        peeked.messages[0].id,
+        MessageId::new(thread.clone(), over + 1).expect("id")
+    );
+    assert_eq!(read_as(h, "b", history()).expect("inbox").notices, no_notices());
+
+    let first = read(h, "b");
+    assert_eq!(first.notices, std::slice::from_ref(&missed));
+    let last = over + u64::from(DEFAULT_LIMIT);
+    assert_eq!(first.read_to, [MessageId::new(thread, last).expect("id")]);
+    assert_eq!(read(h, "b").notices, no_notices(), "the read went past them");
 }

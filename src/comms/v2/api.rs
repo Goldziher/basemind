@@ -440,8 +440,8 @@ pub struct InboxReply {
     #[serde(default)]
     pub next_cursor: Option<Cursor>,
     /// Things the agent should know that are not about this request. An [`AgentOps`]
-    /// implementation puts [`cap_archived_member_notice`] here and nothing else; the daemon and
-    /// the tool layer append theirs.
+    /// implementation puts [`cap_archived_member_notice`] and [`swept_notice`] here and nothing
+    /// else; the daemon and the tool layer append theirs.
     #[serde(default)]
     pub notices: Vec<String>,
     /// How the wait ended.
@@ -509,7 +509,7 @@ pub struct ThreadsReply {
 /// Every operation takes the [`Caller`] the daemon derived. An actor counts as seen once any of
 /// these returns `Ok` for it; nothing is recorded, seen included, on a store newer than the
 /// binary. No operation fills `notices`, except a post with [`cap_archive_notice`] and an inbox
-/// read with [`cap_archived_member_notice`].
+/// read with [`cap_archived_member_notice`] and [`swept_notice`].
 ///
 /// No operation removes a record or hides one for its age: that is an implementation's sweep.
 pub trait AgentOps: Send + Sync {
@@ -747,6 +747,21 @@ pub fn cap_archived_member_notice(thread: &ThreadId, unread: u64) -> String {
          active threads; {unread} of its messages are unread by you. A read over all your threads leaves it out: \
          read it with agent_inbox `thread`. It takes no more posts: continue in a new thread by posting with \
          `subject`."
+    )
+}
+
+/// Seconds in a day, for saying how long a message is kept.
+const DAY_SECS: u64 = 24 * 60 * 60;
+
+/// The notice an inbox read carries for `thread` when a sweep removed `swept` messages of it past
+/// where the caller stood, before it read them. The sweep cannot tell whose they were, so the
+/// count includes any the caller posted itself.
+pub fn swept_notice(thread: &ThreadId, swept: u64) -> String {
+    format!(
+        "{swept} messages of thread {thread} past your read position were removed by retention before you read \
+         them (messages are kept {} days, the newest {MAX_MESSAGES_PER_THREAD} per thread); any of your own \
+         posts among them count too. They cannot be read.",
+        MESSAGE_TTL.as_secs() / DAY_SECS
     )
 }
 
