@@ -27,7 +27,8 @@ The download goes through the proxy named by `HTTPS_PROXY` (or `HTTP_PROXY` when
 unset; the lowercase names take precedence), over an HTTP `CONNECT` tunnel, so TLS still runs end to
 end with GitHub. The proxy URL must be `http://`; `http://user:password@proxy:3128` sends the
 credentials as `Proxy-Authorization`, and a value without a scheme (`proxy:3128`) is read as
-`http://`. `NO_PROXY` lists the hosts to reach directly, separated by commas or spaces: `*` matches
+`http://`. That header is Basic authentication on the plain-HTTP `CONNECT` request, so the
+credentials reach the proxy unencrypted: put them in the URL only on a network path you trust. `NO_PROXY` lists the hosts to reach directly, separated by commas or spaces: `*` matches
 every host, `example.com`, `.example.com` and `*.example.com` match the host and its subdomains, and
 `example.com:8443` matches that port only.
 

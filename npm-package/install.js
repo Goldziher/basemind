@@ -176,7 +176,13 @@ function openTunnel(proxy, host, port) {
       agent: false,
       headers: { Host: authority, "User-Agent": USER_AGENT, ...proxyAuthorization(proxy) },
     });
+    // The deadline starts before the TCP connection, which a socket timeout would not cover, so a
+    // proxy that never answers the SYN cannot hold the install until the operating system gives up.
+    const deadline = setTimeout(() => {
+      req.destroy(new Error("Download timeout"));
+    }, REQUEST_TIMEOUT_MS);
     req.once("connect", (res, socket) => {
+      clearTimeout(deadline);
       if (res.statusCode === 200) {
         resolve(socket);
         return;
@@ -185,10 +191,8 @@ function openTunnel(proxy, host, port) {
       reject(new Error(`proxy ${proxyAddress(proxy)} refused CONNECT ${authority}: HTTP ${res.statusCode}`));
     });
     req.once("error", (error) => {
+      clearTimeout(deadline);
       reject(new Error(`proxy ${proxyAddress(proxy)} failed: ${error.message}`, { cause: error }));
-    });
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-      req.destroy(new Error("Download timeout"));
     });
     req.end();
   });
