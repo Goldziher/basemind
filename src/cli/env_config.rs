@@ -1,4 +1,5 @@
-//! The documented `BASEMIND_*` environment variables, mapped onto the engine configuration.
+//! The documented `BASEMIND_*` environment variables, mapped onto the engine configuration, over
+//! the operator's user settings file ([`crate::config::user_settings`]).
 //!
 //! This is the one place the library reads them: the binary installs the result before any command
 //! runs, and core, retrieval and engine code read the installed [`EngineConfig`] (ADR-0050). Each
@@ -14,6 +15,7 @@ use crate::config::engine::DependencyHomes;
 use crate::config::engine::{ExtraRootsGrant, is_truthy};
 use crate::config::root_guard::ALLOW_ANY_ROOT_ENV;
 use crate::config::trust::{ALLOW_DEPENDENCY_ROOTS_ENV, ALLOW_FOLLOW_SYMLINKS_ENV};
+use crate::config::user_settings::UserSettings;
 use crate::daemon_lock::{MAX_LIVE_DAEMONS_ENV, max_live_daemons_from};
 use crate::disk_space::{MIN_FREE_ENV, headroom_bytes};
 use crate::engine::{DataRoot, Engine, EngineConfig, EngineError};
@@ -22,7 +24,7 @@ use crate::index::INDEX_CACHE_BYTES_ENV;
 use crate::scanner_candidates::ALLOW_EXTRA_ROOTS_ENV;
 use crate::scanner_filter::ALLOW_REPO_CREDENTIALS_ENV;
 use crate::store_gc::{BLOB_GC_GRACE_ENV, grace_from};
-use crate::store_gc_budget::{CACHE_BUDGET_ENV, cache_budget_from};
+use crate::store_gc_budget::{CACHE_BUDGET_ENV, cache_budget_with};
 use crate::store_gc_namespaces::{PRUNE_AFTER_DAYS_ENV, prune_hold_from};
 use crate::store_gc_protect::{CACHE_GRACE_ENV, cache_grace_from};
 use crate::store_layout::DATA_HOME_ENV;
@@ -54,14 +56,15 @@ fn grant(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> bool {
     text(lookup, name).is_some_and(|value| is_truthy(&value))
 }
 
-/// The engine configuration the process environment describes.
+/// The engine configuration the process environment and the user settings file describe.
 pub fn engine_config_from_env() -> EngineConfig {
     crate::config::trust::warn_removed_variables(|name| std::env::var_os(name).is_some());
-    engine_config_from(|name| std::env::var_os(name))
+    engine_config_from(|name| std::env::var_os(name), &UserSettings::load())
 }
 
-/// The engine configuration `lookup` describes, `lookup` standing in for `std::env::var_os`.
-pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineConfig {
+/// The engine configuration `lookup` describes over `settings`, `lookup` standing in for
+/// `std::env::var_os`: a variable that is set wins over the setting it names.
+pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>, settings: &UserSettings) -> EngineConfig {
     let mut config = EngineConfig::default();
     if let Some(home) = lookup(DATA_HOME_ENV) {
         config.data_root = data_root_from(home);
@@ -84,7 +87,7 @@ pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineCo
     config.grammars.cache_dir = lookup(GRAMMAR_CACHE_DIR_ENV)
         .filter(|value| value.to_str().is_none_or(|value| !value.trim().is_empty()))
         .map(absolute);
-    config.gc.budget = cache_budget_from(text(&lookup, CACHE_BUDGET_ENV).as_deref());
+    config.gc.budget = cache_budget_with(text(&lookup, CACHE_BUDGET_ENV).as_deref(), settings.cache.budget_mb);
     config.gc.grace = cache_grace_from(text(&lookup, CACHE_GRACE_ENV).as_deref());
     config.gc.blob_grace = grace_from(text(&lookup, BLOB_GC_GRACE_ENV).as_deref());
     config.gc.superseded_hold = prune_hold_from(text(&lookup, PRUNE_AFTER_DAYS_ENV).as_deref());
@@ -203,11 +206,15 @@ mod tests {
     use crate::store_gc_budget::CacheBudget;
 
     fn config_of(vars: &[(&str, &str)]) -> EngineConfig {
+        config_with(vars, &UserSettings::default())
+    }
+
+    fn config_with(vars: &[(&str, &str)], settings: &UserSettings) -> EngineConfig {
         let vars: HashMap<String, OsString> = vars
             .iter()
             .map(|(name, value)| ((*name).to_string(), OsString::from(value)))
             .collect();
-        engine_config_from(|name| vars.get(name).cloned())
+        engine_config_from(|name| vars.get(name).cloned(), settings)
     }
 
     #[test]
@@ -329,6 +336,29 @@ mod tests {
         assert_eq!(
             config_of(&[(MAX_LIVE_DAEMONS_ENV, "0")]).max_live_daemons,
             MAX_LIVE_DAEMONS
+        );
+    }
+
+    #[test]
+    fn the_user_settings_set_the_budget_and_the_variable_wins() {
+        let settings = |budget_mb: u64| {
+            let mut settings = UserSettings::default();
+            settings.cache.budget_mb = Some(budget_mb);
+            settings
+        };
+        let budget = |vars: &[(&str, &str)], settings: &UserSettings| config_with(vars, settings).gc.budget;
+        assert_eq!(budget(&[], &settings(8192)), Some(CacheBudget::Fixed(8192 << 20)));
+        assert_eq!(budget(&[], &settings(0)), None, "0 disables enforcement");
+        assert_eq!(
+            budget(&[(CACHE_BUDGET_ENV, "512")], &settings(8192)),
+            Some(CacheBudget::Fixed(512 << 20)),
+            "the variable wins over the file"
+        );
+        assert_eq!(budget(&[(CACHE_BUDGET_ENV, "0")], &settings(8192)), None);
+        assert_eq!(
+            budget(&[], &UserSettings::default()),
+            Some(CacheBudget::DiskAware),
+            "neither: the disk-aware default"
         );
     }
 

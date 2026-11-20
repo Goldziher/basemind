@@ -251,6 +251,48 @@ fn cache_stats_reports_blob_accounting() {
     assert_human_contains(root, &["cache", "stats"], "blob_count");
 }
 
+/// `[cache] budget_mb` in the user settings file sets the budget `cache stats` checks against the
+/// disk, and a set `BASEMIND_CACHE_BUDGET_MB` wins over it. The settings live under the
+/// `test-support` stand-in for the account's home directory.
+#[cfg(unix)]
+#[test]
+fn cache_stats_warns_of_a_user_settings_budget_the_disk_cannot_hold() {
+    let dir = build_and_scan();
+    let home = tempfile::tempdir().expect("home");
+    let config_dir = if cfg!(target_os = "macos") {
+        home.path().join("Library").join("Application Support")
+    } else {
+        home.path().join(".config")
+    }
+    .join("basemind");
+    std::fs::create_dir_all(&config_dir).expect("mk config dir");
+    std::fs::write(config_dir.join("settings.toml"), "[cache]\nbudget_mb = 1000000000000\n").expect("write settings");
+    let stats = |budget_variable: Option<&str>| -> Value {
+        let mut command = Command::new(bin());
+        command
+            .args(["--root", dir.path().to_str().unwrap(), "--json", "cache", "stats"])
+            .env("BASEMIND_TEST_ACCOUNT_HOME", home.path())
+            .env_remove("BASEMIND_CACHE_BUDGET_MB");
+        if let Some(value) = budget_variable {
+            command.env("BASEMIND_CACHE_BUDGET_MB", value);
+        }
+        let output = command.output().expect("run basemind cache stats");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        serde_json::from_slice(&output.stdout).expect("cache stats JSON")
+    };
+
+    let warning = stats(None)["budget_warning"].as_str().unwrap_or_default().to_owned();
+    assert!(
+        warning.starts_with("the cache budget of 1000000000000 MiB exceeds the "),
+        "the settings budget is checked: {warning:?}"
+    );
+    assert_eq!(
+        stats(Some("1")).get("budget_warning"),
+        None,
+        "the variable wins, and 1 MiB fits the disk"
+    );
+}
+
 /// A refused command prints its message, never a backtrace, even with `RUST_BACKTRACE=1` set (as CI
 /// sets it): anyhow captures one then, and `{:?}` would print it after the error.
 #[test]

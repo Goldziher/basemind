@@ -512,6 +512,94 @@ fn a_fixed_budget_ignores_the_disk() {
     assert_eq!(CacheBudget::Fixed(100 * GIB).resolve(0, Some(GIB)), 100 * GIB);
 }
 
+/// `(variable, settings, expected)`: a set variable wins, else the settings, else the disk-aware
+/// default; `0` from either disables enforcement.
+#[test]
+fn the_user_settings_budget_applies_unless_the_variable_is_set() {
+    for (raw, settings, expected) in [
+        (None, Some(8192), Some(CacheBudget::Fixed(8192 * MIB))),
+        (None, Some(0), None),
+        (None, None, Some(CacheBudget::DiskAware)),
+        (Some("512"), Some(8192), Some(CacheBudget::Fixed(512 * MIB))),
+        (Some("0"), Some(8192), None),
+        (Some("garbage"), Some(8192), None),
+    ] {
+        assert_eq!(cache_budget_with(raw, settings), expected, "{raw:?}, {settings:?}");
+    }
+}
+
+#[test]
+fn a_set_budget_larger_than_the_disk_is_warned_about() {
+    assert_eq!(
+        budget_disk_warning(Some(CacheBudget::Fixed(64 * GIB)), 4 * GIB, Some(12 * GIB)).as_deref(),
+        Some(
+            "the cache budget of 65536 MiB exceeds the 16384 MiB the disk can hold (the cache's 4096 MiB \
+             plus 12288 MiB free), so the disk fills before eviction starts; lower BASEMIND_CACHE_BUDGET_MB \
+             or `[cache] budget_mb` in settings.toml, or unset both for the disk-aware default (8192 MiB now)"
+        )
+    );
+}
+
+/// `(budget, cache, free)`: a budget the disk holds (to the byte), the disk-aware default, disabled
+/// enforcement and unreadable free space are not warned about.
+#[test]
+fn a_budget_the_disk_can_hold_is_not_warned_about() {
+    for (budget, cache, free) in [
+        (Some(CacheBudget::Fixed(16 * GIB)), 4 * GIB, Some(12 * GIB)),
+        (Some(CacheBudget::Fixed(8 * GIB)), 4 * GIB, Some(500 * GIB)),
+        (Some(CacheBudget::DiskAware), 4 * GIB, Some(0)),
+        (None, 4 * GIB, Some(0)),
+        (Some(CacheBudget::Fixed(64 * GIB)), 4 * GIB, None),
+    ] {
+        assert_eq!(
+            budget_disk_warning(budget, cache, free),
+            None,
+            "{budget:?}, {cache}, {free:?}"
+        );
+    }
+}
+
+/// The `cache stats` check measures the cache as a budget pass does: a 1 GiB budget is more than a
+/// small cache on a fake disk with 512 MiB free can hold, and less than one with 500 GiB free.
+#[test]
+fn cache_stats_warns_of_a_budget_over_a_small_disk_and_not_a_large_one() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspaces = tmp.path().join("workspaces");
+    let blobs = tmp.path().join("blobs");
+    fs::create_dir_all(&blobs).expect("mk blobs");
+    seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), DAY_AGO);
+    let budget = Some(CacheBudget::Fixed(GIB));
+
+    let small = cache_budget_warning_at(&workspaces, &blobs, budget, || Some(512 * MIB)).expect("measure");
+    let large = cache_budget_warning_at(&workspaces, &blobs, budget, || Some(500 * GIB)).expect("measure");
+
+    assert_eq!(
+        small.as_deref(),
+        Some(
+            "the cache budget of 1024 MiB exceeds the 512 MiB the disk can hold (the cache's 0 MiB plus 512 \
+             MiB free), so the disk fills before eviction starts; lower BASEMIND_CACHE_BUDGET_MB or `[cache] \
+             budget_mb` in settings.toml, or unset both for the disk-aware default (256 MiB now)"
+        )
+    );
+    assert_eq!(large, None);
+}
+
+/// Only a set budget can exceed the disk, so no other budget pays for measuring the cache.
+#[test]
+fn cache_stats_does_not_measure_the_cache_for_the_default_budget() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    for budget in [Some(CacheBudget::DiskAware), None] {
+        let warning = cache_budget_warning_at(
+            &tmp.path().join("workspaces"),
+            &tmp.path().join("blobs"),
+            budget,
+            || panic!("the free space is not read for {budget:?}"),
+        )
+        .expect("no measurement");
+        assert_eq!(warning, None);
+    }
+}
+
 /// [`enforce_cache_budget_at`] over a flat blob dir with the disk-aware budget, `free` bytes free.
 fn enforce_disk_aware(workspaces: &Path, blobs: &Path, free: u64) -> EvictReport {
     enforce_cache_budget_at(

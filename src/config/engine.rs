@@ -124,7 +124,8 @@ impl Default for GitLimits {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GcPolicy {
-    /// Cache budget, disk-aware unless set; `None` disables enforcement (`BASEMIND_CACHE_BUDGET_MB`).
+    /// Cache budget, disk-aware unless set; `None` disables enforcement (`BASEMIND_CACHE_BUDGET_MB`, else
+    /// `[cache] budget_mb` in the user settings file).
     pub budget: Option<crate::store_gc_budget::CacheBudget>,
     /// A workspace built this recently is not evicted for the budget (`BASEMIND_CACHE_GRACE_MINUTES`).
     pub grace: Duration,
