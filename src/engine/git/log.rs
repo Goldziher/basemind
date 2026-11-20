@@ -6,10 +6,10 @@
 //! `diff_outline`, `blame`, `blame_symbol`, `symbol_history`) in `file.rs`. The split
 //! is only about the 1000-line per-file cap.
 
-use super::by_path::{LIVE_WALK, by_path};
+use super::by_path::{LIVE_WALK, MATCHED_EARLIER, by_path};
 use super::common::{
     LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, LOG_WALK_MAX, commit_to_view, git_history_if_fresh, head_sha, head_snapshot_id,
-    require_git_repo,
+    live_walk_span, require_git_repo,
 };
 use super::show::{budget_commits, budget_commits_with_files, run_show};
 use crate::engine::budget::budget;
@@ -459,11 +459,15 @@ pub(super) fn touching_page(
     take: usize,
 ) -> Result<(TouchingSpan, u32), EngineError> {
     let repo = require_git_repo(ws)?;
+    // The lookup's reads take no lock, so a sync that clears or rebuilds the index between the
+    // freshness check and them can make a path with history read as untouched: the answer counts
+    // only when the index still stamps `head` after it.
     let indexed = git_history_if_fresh(ws, head).and_then(|index| {
         index
             .commits_touching(path, from, take)
             .inspect_err(|error| tracing::warn!(%error, "git-history lookup failed; walking the history live"))
             .ok()
+            .filter(|_| index.last_indexed_head_hex().as_deref() == Some(head))
     });
     history_page(
         "git_log",
@@ -478,7 +482,7 @@ pub(super) fn touching_page(
             resume: None,
         }),
         || {
-            repo.touching_span(head, path, from, take, LOG_WALK_MAX)
+            repo.touching_span(head, path, from, take, live_walk_span())
                 .map_err(|e| EngineError::internal(format!("log: {e}")))
         },
     )
@@ -564,7 +568,7 @@ fn run_touching(ws: &Workspace, params: CommitsTouchingParams) -> Result<Commits
     let repo = require_git_repo(ws)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let head = head_sha(repo)?;
-    let Some((skip, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
+    let Some((packed, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
         return Ok(CommitsTouchingResponse {
             commits: Vec::new(),
             truncated: false,
@@ -574,12 +578,15 @@ fn run_touching(ws: &Workspace, params: CommitsTouchingParams) -> Result<Commits
             cursor_invalidated: true,
         });
     };
-    let skip = usize::try_from(skip).unwrap_or(usize::MAX);
+    let skip = usize::try_from(packed & !MATCHED_EARLIER).unwrap_or(usize::MAX);
+    let matched_earlier = packed & MATCHED_EARLIER != 0;
     let fetch = limit + 1;
     let (found, snapshot) = touching_page(ws, &head, issued, &params.path, skip, fetch)?;
+    // The history ran out with no page matching: the path is a mistake in the call unless it is on
+    // disk. One an earlier page matched has a history, which may end in its deletion.
     if found.commits.is_empty()
         && found.resume.is_none()
-        && skip == 0
+        && !matched_earlier
         && !repo.is_shallow()
         && !on_disk(repo, &params.path)
     {
@@ -591,17 +598,20 @@ fn run_touching(ws: &Workspace, params: CommitsTouchingParams) -> Result<Commits
         params.max_tokens,
         snapshot,
         repo.is_shallow(),
+        matched_earlier,
     ))
 }
 
 /// The `touching` page for the commits `found`, `limit` of them at most, its cursor cut from the
-/// list `snapshot` names.
+/// list `snapshot` names and carrying whether this page or one before it (`matched_earlier`) listed
+/// a commit.
 fn touching_response(
     found: TouchingSpan,
     limit: usize,
     max_tokens: Option<u32>,
     snapshot: u32,
     shallow: bool,
+    matched_earlier: bool,
 ) -> CommitsTouchingResponse {
     let offsets: Vec<usize> = found.commits.iter().map(|(offset, _)| *offset).collect();
     let page: Vec<CommitView> = found
@@ -611,6 +621,7 @@ fn touching_response(
         .map(|(_, c)| commit_to_view(c, false))
         .collect();
     let (page, budgeted) = budget_commits(page, max_tokens);
+    let matched = matched_earlier || !page.is_empty();
     // The next page starts at the first commit this one left out, or where the live walk's span ran
     // out when it held no more.
     let resume = found.resume.map(|(position, _)| position);
@@ -626,7 +637,10 @@ fn touching_response(
         budgeted,
         truncated: truncated_reason.is_some(),
         truncated_reason,
-        next_cursor: next_offset.map(|offset| crate::engine::cursor::Cursor::encode_in_memory(offset as u64, snapshot)),
+        next_cursor: next_offset.map(|offset| {
+            let carried = if matched { MATCHED_EARLIER } else { 0 };
+            crate::engine::cursor::Cursor::encode_in_memory(offset as u64 | carried, snapshot)
+        }),
         cursor_invalidated: false,
     }
 }

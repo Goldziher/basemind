@@ -15,6 +15,7 @@ use super::log::{reject_external_path, touching_page, walk_cursor};
 use crate::engine::error::EngineError;
 use crate::engine::pick::pick_symbol;
 use crate::engine::timing::elapsed_us;
+use crate::engine::types::SPAN_LIMIT;
 use crate::engine::types::code::{kind_to_str, parse_kind};
 use crate::engine::types::git::{
     BlameFileParams, BlameHunks, BlameResponse, BlameSymbolParams, BlameSymbolResponse, DiffFileParams,
@@ -522,17 +523,26 @@ pub(super) fn run_symbol_history(
     };
     // Without the seed the oldest commit inspected would read as the symbol's introduction
     // whenever the symbol exists there. It is the file at the next older commit touching it, or,
-    // when the live walk's span ran out first, at the newest commit the span left untested.
+    // when the live walk's span ran out first, at the oldest inspected commit's first parent: the
+    // commit the span left untested can sit on another branch of a merge, without the file. A page
+    // with no commit reads the file where the span resumes.
     let mut commits = found.commits;
     let beyond_window = (commits.len() > window).then(|| commits.split_off(window));
-    let older = beyond_window
+    let next_touching = beyond_window
         .as_deref()
         .and_then(<[(usize, CommitInfo)]>::first)
-        .map(|(offset, commit)| (*offset, commit.sha.as_str()))
-        .or_else(|| found.resume.as_ref().map(|(position, sha)| (*position, sha.as_str())));
+        .map(|(offset, commit)| (*offset, commit.sha.clone()));
+    let span_ran_out = next_touching.is_none() && found.resume.is_some();
+    let older = next_touching.or(found.resume);
     let window_exhausted = older.is_some();
-    let seed = match older {
-        Some((_, sha)) => fingerprint_at(sha)?,
+    let seed_sha = match (span_ran_out, commits.last()) {
+        (true, Some((_, oldest))) => repo
+            .first_parent(&oldest.sha)
+            .map_err(|e| EngineError::internal(format!("parent: {e}")))?,
+        _ => older.as_ref().map(|(_, sha)| sha.clone()),
+    };
+    let seed = match seed_sha {
+        Some(sha) => fingerprint_at(&sha)?,
         None => None,
     };
 
@@ -590,7 +600,7 @@ pub(super) fn run_symbol_history(
     };
     let window_edge = window_exhausted && offsets.len() <= page.len();
     let truncated_reason = if window_edge {
-        Some("window")
+        Some(if span_ran_out { SPAN_LIMIT } else { "window" })
     } else if repo.is_shallow() {
         Some("shallow_clone")
     } else {
