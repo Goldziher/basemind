@@ -20,9 +20,12 @@ A repository checks in what every teammate shares; each teammate's machine keeps
 
 - The daemon is machine-global: one serves every session and every worktree of the user. It takes
   its environment from the process that started it, so a variable set later in another shell does
-  not reach it. Set the variables where every session inherits them (the shell profile), then run
-  `basemind comms stop`; the next session starts a daemon with them. A session's implicit start drops the grants (the `ALLOW` variables); only an
-  explicit `basemind comms start` passes them on.
+  not reach it. Set the variables where every session inherits them (the shell profile), close
+  every session connected to the daemon, then run `basemind comms stop`; the next session, started
+  from an environment that has them, starts a daemon with them. While a session is still connected
+  the daemon refuses to stop (`daemon_busy`) and keeps its old environment. A session's implicit
+  start drops the grants (the `ALLOW` variables); only an explicit `basemind comms start` passes
+  them on.
 - A repository cannot set these variables: the cache, the caps and the grants are the operator's.
 - Keep the team on one minor release. A checked-in `basemind.toml` that uses a key an older release
   does not know stops loading for a teammate on that release, and each minor release rebuilds the
