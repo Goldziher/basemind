@@ -32,10 +32,31 @@ function installCommands(version) {
   return `\`pnpm add -g basemind@${version}\` (or \`pip install basemind==${version}\`)`;
 }
 
+/** The exit status `cmd.exe` gives a command it cannot find on PATH. */
+const CMD_NOT_FOUND = 9009;
+
+/**
+ * How `basemind --version` is spawned on `platform`. Windows goes through the
+ * shell: a `pnpm add -g` install puts `basemind.cmd` and `basemind.ps1` shims on
+ * PATH, which only a shell resolves. The command line is fixed; no input reaches it.
+ */
+export function versionInvocation(platform) {
+  const shell = platform === "win32";
+  return { file: shell ? "basemind --version" : "basemind", args: shell ? [] : ["--version"], shell };
+}
+
+/** Whether a failed spawn means there is no `basemind` on PATH. */
+export function isNotFound(error, shell) {
+  return error?.code === "ENOENT" || (shell && error?.code === CMD_NOT_FOUND);
+}
+
 function runVersion(env, timeoutMs) {
+  const { file, args, shell } = versionInvocation(process.platform);
+  // A read-only probe: a binary that ignores SIGTERM must not keep setup waiting past the timeout.
+  const options = { env, timeout: timeoutMs, killSignal: "SIGKILL", shell };
   return new Promise((resolve) => {
-    execFile("basemind", ["--version"], { env, timeout: timeoutMs }, (error, stdout) => {
-      resolve({ error, stdout: String(stdout ?? "") });
+    execFile(file, args, options, (error, stdout) => {
+      resolve({ error, notFound: isNotFound(error, shell), stdout: String(stdout ?? "") });
     });
   });
 }
@@ -54,8 +75,8 @@ function runVersion(env, timeoutMs) {
  */
 export async function checkBinary({ expected, env = process.env, timeoutMs = VERSION_TIMEOUT_MS }) {
   const install = installCommands(expected);
-  const { error, stdout } = await runVersion(env, timeoutMs);
-  if (error?.code === "ENOENT") {
+  const { error, notFound, stdout } = await runVersion(env, timeoutMs);
+  if (notFound) {
     return {
       status: "missing",
       message: `basemind: no \`basemind\` binary on PATH, so the basemind MCP server is not registered. Install it with ${install}, then restart OpenCode.`,
