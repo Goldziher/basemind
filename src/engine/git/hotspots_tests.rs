@@ -40,8 +40,13 @@ fn since_takes_days_weeks_and_years_only() {
     }
 }
 
+/// A commit's commit time when it is its author time.
+fn committed_when_authored(commit: &CommitInfo) -> Option<i64> {
+    Some(commit.author_time_unix)
+}
+
 #[test]
-fn the_window_ends_at_the_newest_commit_and_counts_commits_and_authors_per_path() {
+fn the_window_ends_at_the_given_end_and_counts_commits_and_authors_per_path() {
     let day = SECS_PER_DAY;
     let history = [
         commit(100 * day, "A@x", &["a.rs", "b.rs"]),
@@ -52,10 +57,12 @@ fn the_window_ends_at_the_newest_commit_and_counts_commits_and_authors_per_path(
     ];
     let window = collect_window(
         |skip, take| history.iter().skip(skip).take(take).cloned().collect(),
+        committed_when_authored,
+        101 * day,
         7 * day,
         INDEXED_COMMIT_CAP,
     );
-    assert_eq!((window.start, window.end), (93 * day, 100 * day));
+    assert_eq!((window.start, window.end), (94 * day, 101 * day));
     assert_eq!(window.commits, 3);
     let (commits, authors) = &window.per_path[&RelPath::from("a.rs")];
     // `A@x` and `a@x` are one author.
@@ -74,6 +81,8 @@ fn one_backdated_commit_does_not_end_the_window_but_a_run_of_them_does() {
     history.push(commit(98 * day, "a@x", &["beyond.rs"]));
     let window = collect_window(
         |skip, take| history.iter().skip(skip).take(take).cloned().collect(),
+        committed_when_authored,
+        100 * day,
         7 * day,
         INDEXED_COMMIT_CAP,
     );
@@ -83,10 +92,40 @@ fn one_backdated_commit_does_not_end_the_window_but_a_run_of_them_does() {
 }
 
 #[test]
+fn a_run_of_commits_authored_before_the_window_but_made_in_it_does_not_end_the_walk() {
+    let day = SECS_PER_DAY;
+    let mut rebased = commit(1, "a@x", &["rebased.rs"]);
+    rebased.sha = "rebased".to_string();
+    let mut history = vec![commit(100 * day, "a@x", &["head.rs"])];
+    history.extend(std::iter::repeat_n(rebased, OUT_OF_WINDOW_RUN + 10));
+    history.push(commit(98 * day, "b@x", &["beyond.rs"]));
+    let window = collect_window(
+        |skip, take| history.iter().skip(skip).take(take).cloned().collect(),
+        |commit: &CommitInfo| {
+            Some(if commit.sha == "rebased" {
+                99 * day
+            } else {
+                commit.author_time_unix
+            })
+        },
+        100 * day,
+        7 * day,
+        INDEXED_COMMIT_CAP,
+    );
+    assert_eq!(window.commits, 2);
+    let mut paths: Vec<&str> = window.per_path.keys().map(|path| path.as_str().unwrap()).collect();
+    paths.sort_unstable();
+    assert_eq!(paths, ["beyond.rs", "head.rs"]);
+    assert_eq!(window.truncated_reason, None);
+}
+
+#[test]
 fn the_walk_stops_at_its_cap_and_says_so() {
     let history: Vec<CommitInfo> = (0..30).map(|i| commit(1000 - i, "a@x", &["a.rs"])).collect();
     let window = collect_window(
         |skip, take| history.iter().skip(skip).take(take).cloned().collect(),
+        committed_when_authored,
+        1000,
         SECS_PER_DAY,
         10,
     );
