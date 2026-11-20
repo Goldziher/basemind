@@ -39,7 +39,7 @@ impl WorkClass {
     /// The class of the call `name` with `arguments`: heavy for a call that can become a task
     /// ([`super::tasks::SLOW_CALLS`]), medium for a whole-corpus read, control otherwise.
     pub(crate) fn of(name: &str, arguments: Option<&serde_json::Map<String, serde_json::Value>>) -> Self {
-        if super::tasks::is_slow_tool(name, arguments) {
+        if super::tasks::is_slow_tool(name) {
             return Self::Heavy;
         }
         let graph_relation = name == "code_refs"

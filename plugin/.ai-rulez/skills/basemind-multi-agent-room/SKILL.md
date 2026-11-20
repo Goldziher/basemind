@@ -19,8 +19,8 @@ x-ai-rulez:
 
 Run a team of subagents that coordinate in shared threads, driven by one orchestrator. Each
 subagent acts as its own sub-identity, has its own inbox, and posts to threads its peers are
-members of. The tools are the deferred `agent_post`, `agent_inbox` and `agent_threads` (find them
-by tool search); the `basemind-comms` skill has the full contract.
+members of. The tools are `agent_post`, `agent_inbox` and `agent_threads`, listed separately from
+the others; the `basemind-comms` skill has the full contract.
 
 ## When to use it
 

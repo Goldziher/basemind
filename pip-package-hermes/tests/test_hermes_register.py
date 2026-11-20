@@ -158,7 +158,7 @@ def fake_cli(monkeypatch, inbox, name="session-1a2b3c4d"):
     return calls
 
 
-def test_session_start_context_names_the_deferred_tools_and_counts_unread(monkeypatch):
+def test_session_start_context_names_the_agent_tools_and_counts_unread(monkeypatch):
     calls = fake_cli(monkeypatch, {"messages": [{"subject": "hi", "from": "peer", "id": "t-abcdef.1"}]})
     text = hermes._session_start_context("/tmp")
     assert "agent_post" in text and "agent_inbox" in text and "agent_threads" in text

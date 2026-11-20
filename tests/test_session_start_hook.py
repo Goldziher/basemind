@@ -34,8 +34,8 @@ VERB_TOOLS = (
     "index_status",
     "index_rescan",
 )
-# Deferred: a host finds them by tool search, so the hook names them without listing them as loaded.
-DEFERRED_AGENT_TOOLS = ("agent_post", "agent_inbox", "agent_threads")
+# Listed apart from the verb tools: the hook names them without listing them as loaded.
+AGENT_TOOLS = ("agent_post", "agent_inbox", "agent_threads")
 # A routed call: a tool name followed by its JSON arguments.
 ROUTED_CALL = re.compile(r"\b([a-z]+_[a-z]+) (\{[^{}]*\})")
 # The surface ADR-0018 removed: the mode-dispatched `code` / `git` / `memory` / `admin` tools.
@@ -102,8 +102,9 @@ esac""",
         path.chmod(0o755)
 
     def invoke(self, response: str, *, inbox: str = "", exit_code: int = 0, **extra: str) -> str:
+        # Codex's markers: the hook takes a session without them for Claude Code's.
         env = {
-            **os.environ,
+            **{key: value for key, value in os.environ.items() if key not in ("PLUGIN_ROOT", "CODEX_PLUGIN_ROOT")},
             "HOME": str(self.root),
             "PATH": str(self.bin),
             "CLAUDE_PLUGIN_ROOT": str(self.root),
@@ -138,8 +139,8 @@ esac""",
         self.assertIn(", ".join(VERB_TOOLS), result)
         self.assertIn("mcp__plugin_basemind_basemind__<tool>", result)
         self.assertNotIn("ToolSearch", result)
-        self.assertIn('code_grep {"pattern":"cache_root("}', result)
-        self.assertIn("Jupyter notebooks", result)
+        self.assertIn("the basemind server instructions name the tool for each question", result)
+        self.assertNotIn("code_grep {", result)
         args = (self.root / "status-args").read_text().splitlines()
         self.assertEqual(
             args,
@@ -198,8 +199,15 @@ esac""",
         self.assertIsNotNone(declared, "the hook must declare TOOL_NAMES")
         self.assertEqual(declared.group(1).split(), list(VERB_TOOLS))
 
+    def test_a_host_other_than_claude_code_gets_the_routing_itself(self) -> None:
+        result = self.invoke('{"file_count":631,"schema_version":33}', PLUGIN_ROOT=str(self.root))
+        self.assertIn('code_grep {"pattern":"cache_root("}', result)
+        self.assertIn("Jupyter notebooks", result)
+        self.assertNotIn("server instructions", result)
+        self.assertNotIn("mcp__plugin_basemind_basemind__", result)
+
     def test_routing_names_only_verb_tools(self) -> None:
-        result = self.invoke('{"file_count":631,"schema_version":33}')
+        result = self.invoke('{"file_count":631,"schema_version":33}', PLUGIN_ROOT=str(self.root))
         calls = ROUTED_CALL.findall(result)
         self.assertGreaterEqual(len(calls), 12, result)
         for name, arguments in calls:
@@ -234,13 +242,17 @@ esac""",
         self.assertIn("basemind verified", context)
         self.assertNotIn("No messages in your inbox", context)
 
-    def test_agent_tools_are_named_as_deferred_and_not_as_loaded(self) -> None:
+    def test_agent_tools_are_named_apart_from_the_loaded_ones_without_a_host_feature(self) -> None:
         result = self.invoke('{"file_count":5,"schema_version":33}')
-        self.assertIn("opt-in through the deferred tools agent_post, agent_inbox and agent_threads", result)
-        self.assertIn("find them by tool search", result)
+        self.assertIn(
+            "The agent tools agent_post, agent_inbox and agent_threads are listed separately; "
+            "they are needed only when collaborating",
+            result,
+        )
+        self.assertNotIn("deferred", result)
         self.assertIn("passes `as`", result)
         loaded = result.split("Its tools are always loaded")[1].split(".")[0]
-        for tool in DEFERRED_AGENT_TOOLS:
+        for tool in AGENT_TOOLS:
             self.assertNotIn(tool, loaded)
         self.assertNotIn("THREADS", result)
         self.assertNotIn("agents", result)
@@ -285,7 +297,7 @@ esac""",
 
     def test_a_build_without_agent_messaging_names_no_agent_tool(self) -> None:
         result = self.invoke('{"file_count":5,"schema_version":33}', AGENT_EXIT="2")
-        for tool in DEFERRED_AGENT_TOOLS:
+        for tool in AGENT_TOOLS:
             self.assertNotIn(tool, result)
         self.assertFalse((self.root / "inbox-args").exists())
 

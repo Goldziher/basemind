@@ -62,10 +62,10 @@ impl ServerHandler for BasemindServer {
             .map(rmcp::model::CallToolResponse::Complete);
         }
         let client_supports_tasks = context.client_capabilities().is_some_and(|caps| caps.supports_tasks());
-        if client_supports_tasks && tasks::is_slow_tool(&request.name, request.arguments.as_ref()) {
+        if client_supports_tasks && tasks::is_slow_tool(&request.name) {
             return tasks::run_slow_tool(self, request, context, admission, self.task_threshold()).await;
         }
-        let cancel_aware = tasks::is_cancel_aware_read(&request.name, request.arguments.as_ref());
+        let cancel_aware = tasks::is_cancel_aware_read(&request.name);
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         // Pure read-only calls race the client's cancellation and the admission deadline: the handler
         // future is dropped the moment either fires, and the call's admission is abandoned so blocking
@@ -242,8 +242,8 @@ pub(super) fn server_config() -> ServerConfig {
          structuredContent {error, retryable}, error being invalid_argument, unavailable, \
          index_unavailable, busy, cancelled or internal; a notice field means the result is \
          incomplete and says why. An unknown argument is rejected, never ignored.\n\
-         Only when collaborating with other agents in this repository: the deferred tools agent_post, \
-         agent_inbox and agent_threads (find them by tool search) carry threads of messages; reading \
-         marks read, and a subagent passes `as` to keep its own inbox. Skip them when working alone.",
+         The agent tools agent_post, agent_inbox and agent_threads are listed separately; they are \
+         needed only when collaborating with other agents in this repository. They carry threads of \
+         messages; reading marks read, and a subagent passes `as` to keep its own inbox.",
     )
 }

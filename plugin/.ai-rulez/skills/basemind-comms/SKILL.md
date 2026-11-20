@@ -2,7 +2,7 @@
 type: Playbook
 title: basemind comms
 description: Coordinate with other agents working the same repo through basemind's
-  deferred agent_post, agent_inbox and agent_threads tools — threads, a per-actor read
+  agent_post, agent_inbox and agent_threads tools — threads, a per-actor read
   position, bodies inline. Reach for it whenever you start, finish, or hit a decision
   while collaborating, or to check whether another agent is already touching the code
   you're about to change.
@@ -20,8 +20,8 @@ x-ai-rulez:
 # basemind-comms — agent coordination over the daemon
 
 You may be one of several agents working this repo. Messaging is opt-in and secondary to code
-navigation: three **deferred** MCP tools, found by tool search (they are not loaded at session
-start): `agent_post`, `agent_inbox`, `agent_threads`. Post a two-line note when you start a task
+navigation: three MCP tools listed separately from the others, needed only when collaborating:
+`agent_post`, `agent_inbox`, `agent_threads`. Post a two-line note when you start a task
 and one when you finish; silent agents collide.
 
 | Tool | Does |
