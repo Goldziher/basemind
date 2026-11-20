@@ -124,8 +124,8 @@ impl Default for GitLimits {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GcPolicy {
-    /// Cache byte budget; `None` disables enforcement (`BASEMIND_CACHE_BUDGET_MB`).
-    pub budget_bytes: Option<u64>,
+    /// Cache budget, disk-aware unless set; `None` disables enforcement (`BASEMIND_CACHE_BUDGET_MB`).
+    pub budget: Option<crate::store_gc_budget::CacheBudget>,
     /// A workspace built this recently is not evicted for the budget (`BASEMIND_CACHE_GRACE_MINUTES`).
     pub grace: Duration,
     /// An unreferenced blob this young is kept (`BASEMIND_BLOB_GC_GRACE_SECS`).
@@ -135,7 +135,7 @@ pub struct GcPolicy {
 impl Default for GcPolicy {
     fn default() -> Self {
         Self {
-            budget_bytes: crate::store_gc_budget::cache_budget_from(None),
+            budget: crate::store_gc_budget::cache_budget_from(None),
             grace: crate::store_gc_protect::cache_grace_from(None),
             blob_grace: crate::store_gc::grace_from(None),
         }

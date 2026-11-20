@@ -113,7 +113,7 @@ Machine-global daemon knobs read from the environment rather than from `basemind
 | Variable | Effect | Default |
 |---|---|---|
 | `BASEMIND_WARM_READ_STACKS` | Read stacks kept warm at once. Zero or unparseable falls back to the default. | 3 |
-| `BASEMIND_CACHE_BUDGET_MB` | Size budget for the whole cache in MiB. `0` disables enforcement. A workspace in use is never evicted to meet it: the cache stays over budget and `cache_stats.last_gc` and `basemind doctor` say so. | 20480 (20 GiB) |
+| `BASEMIND_CACHE_BUDGET_MB` | Size budget for the whole cache in MiB, each workspace's git cache included. `0` disables enforcement. Unset, each sweep resolves it from the disk: half of the cache's size plus the free space on its volume, so the cache never grows past the free space it leaves. A workspace in use is never evicted to meet it: the cache stays over budget and `cache_stats.last_gc` and `basemind doctor` say so. | half of cache + free space, at most 20480 (20 GiB) |
 | `BASEMIND_CACHE_GRACE_MINUTES` | Budget eviction never touches a workspace built or rescanned this recently. The locked and most recently used workspaces are always kept, even over budget. `0` disables only the window. | 360 (6 h) |
 | `BASEMIND_INDEX_CACHE_BYTES` | Overrides the computed Fjall block cache size, in bytes. | computed |
 | `BASEMIND_MAX_DAEMONS` | Ceiling on concurrently live daemons before a spawn is refused. | 8 |

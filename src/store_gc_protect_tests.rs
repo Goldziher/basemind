@@ -141,8 +141,8 @@ fn the_budget_footprint_counts_the_older_blob_namespaces() {
     fs::write(root.join("flat.fm.msgpack"), vec![0_u8; 64 * 1024]).expect("flat blob");
     seed_workspace_aged(&workspaces, "key-a", &"a".repeat(64), Duration::from_secs(9999));
 
-    let report =
-        enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, u64::MAX, DAY, Duration::ZERO).expect("enforce");
+    let report = enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, |_| u64::MAX, DAY, Duration::ZERO)
+        .expect("enforce");
 
     assert!(
         report.total_bytes_before >= 2 * 64 * 1024,
@@ -176,8 +176,8 @@ fn a_newer_blob_namespace_is_outside_the_budget_and_costs_no_workspace() {
     // Exactly this version's bytes, as measured here: allocation differs between file systems.
     let budget = dir_size(&workspaces).expect("size") + dir_size(&root).expect("size")
         - dir_size(&root.join("v8")).expect("size");
-    let report =
-        enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, budget, DAY, Duration::ZERO).expect("enforce");
+    let report = enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, |_| budget, DAY, Duration::ZERO)
+        .expect("enforce");
 
     assert!(
         report.total_bytes_before <= budget,

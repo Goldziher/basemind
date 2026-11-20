@@ -144,6 +144,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The default cache budget fits the disk (#291). With `BASEMIND_CACHE_BUDGET_MB` unset, each sweep
+  holds the cache to half of what it could occupy (its own size plus the free space on its volume),
+  at most 20 GiB, instead of a fixed 20 GiB that on a disk with less free never evicted before the
+  disk filled. The footprint counts each workspace's git cache, which eviction already removed. A
+  set `BASEMIND_CACHE_BUDGET_MB` is enforced as given; `0` still disables enforcement.
+  `cache_stats.last_gc.cache_budget_bytes` reports the budget the sweep applied.
+
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
   `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`
