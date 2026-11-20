@@ -16,8 +16,8 @@ use crate::engine::freshness;
 use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use crate::engine::types::code::{kind_to_str, parse_kind};
 use crate::engine::types::refs::{
-    DefinitionView, FindCallersParams, FindCallersResponse, FindReferencesParams, FindReferencesResponse, RefHits,
-    ReferenceHit, Resolution,
+    DefinitionView, FindCallersParams, FindCallersResponse, FindReferencesParams, FindReferencesResponse, ReferenceHit,
+    Resolution,
 };
 use crate::engine::types::{LifecycleNotice, SCAN_CAP};
 use crate::index::view::IndexView;
@@ -109,7 +109,7 @@ pub(crate) fn run_find_references(
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
     let name = route.as_ref().map_or_else(|| params.name.clone(), Endpoint::name);
-    let mut finished = finish_page(scan, params.resolution, &name, params.max_tokens, params.ranges);
+    let mut finished = finish_page(scan, params.resolution, &name, params.max_tokens);
     flag_stale(&mut finished.page.hits);
     Ok(FindReferencesResponse {
         resolution_default: finished.default,
@@ -118,9 +118,8 @@ pub(crate) fn run_find_references(
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(SCAN_CAP),
         budgeted: finished.page.budgeted,
-        hits: RefHits::Rows(finished.page.hits),
+        hits: finished.page.hits,
         scope_files: None,
-        omitted: None,
         next_cursor: stamp(finished.page.next_cursor, generation),
         notice: notice(),
     })
@@ -262,7 +261,7 @@ pub(crate) fn run_find_callers(
     let total = page.total;
     let total_is_partial = page.total_is_partial;
     let name = route.as_ref().map_or_else(|| params.name.clone(), Endpoint::name);
-    let finished = finish_page(page, params.resolution, &name, params.max_tokens, params.ranges);
+    let finished = finish_page(page, params.resolution, &name, params.max_tokens);
     Ok(FindCallersResponse {
         definition,
         resolution_note,
@@ -273,9 +272,8 @@ pub(crate) fn run_find_callers(
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(SCAN_CAP),
         budgeted: finished.page.budgeted,
-        hits: RefHits::Rows(finished.page.hits),
+        hits: finished.page.hits,
         scope_files: None,
-        omitted: None,
         next_cursor: stamp(finished.page.next_cursor, generation),
         notice: notice(),
     })

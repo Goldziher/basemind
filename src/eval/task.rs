@@ -52,8 +52,7 @@ pub enum EvalMode {
     GrepChanged,
     /// `find_files` with `min_lines`: every file at least that many lines long (#127).
     FindLarge,
-    /// `code_grep` with `ranges`, then `code_read` with those ranges per file: every `path:line`
-    /// within the context of a match (#129).
+    /// `code_grep` with `context: 5`: every `path:line` within the context of a match (#129).
     ReadAround,
     /// `code explain` on a symbol (CLI-only): its definition, its call sites and `->name` per callee
     /// (#120).

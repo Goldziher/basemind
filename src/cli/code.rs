@@ -76,9 +76,6 @@ pub enum CodeCmd {
         /// Last line, inclusive (default: `--line`).
         #[arg(long)]
         end_line: Option<u32>,
-        /// Several spans in one read, e.g. `120-148,310`; not with `--symbol` or `--line`.
-        #[arg(long)]
-        ranges: Option<String>,
     },
     /// Content search across indexed code files. The pattern is literal text unless `--regex`.
     Grep {
@@ -94,9 +91,6 @@ pub enum CodeCmd {
         /// Lines to show before and after each match (0-10).
         #[arg(long, value_name = "N")]
         context: Option<u32>,
-        /// Per file, the matches widened by 5 lines and merged into spans for `code read --ranges`.
-        #[arg(long)]
-        ranges: bool,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -164,10 +158,6 @@ pub enum CodeCmd {
         /// `imported`, `scope_resolved`, `elsewhere`, `name_only`, `external`, `path_match`).
         #[arg(long)]
         resolution: Option<String>,
-        /// Call sites only: per file, the sites widened by 5 lines and merged into spans for
-        /// `code read --ranges`.
-        #[arg(long)]
-        ranges: bool,
         /// Call sites only: only files changed since this revision (`HEAD`: the uncommitted
         /// changes) or in `A..B`; append `+importers` to add the files importing them.
         #[arg(long)]
@@ -343,7 +333,6 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             kind,
             line,
             end_line,
-            ranges,
         } => (
             "code_read",
             tools
@@ -355,7 +344,6 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         kind,
                         line,
                         end_line,
-                        ranges,
                     },
                     async |s, p| s.op_unpaged(p, Workspace::code_read).await,
                 )
@@ -367,7 +355,6 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             path,
             language,
             context,
-            ranges,
             limit,
             cursor,
             max_tokens,
@@ -383,7 +370,6 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         path,
                         language,
                         context,
-                        ranges: ranges.then_some(true),
                         limit,
                         cursor: cursor.map(Cursor),
                         max_tokens,
@@ -427,7 +413,6 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             cursor,
             max_tokens,
             resolution,
-            ranges,
             changed,
         } => {
             let refs = CodeRefsParams {
@@ -442,7 +427,6 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                 cursor: cursor.map(Cursor),
                 max_tokens,
                 resolution,
-                ranges: ranges.then_some(true),
                 changed,
             };
             (
@@ -632,7 +616,6 @@ fn refs(name: String, relation: RefsRelation) -> CodeRefsParams {
         cursor: None,
         max_tokens: None,
         resolution: None,
-        ranges: None,
         changed: None,
     }
 }

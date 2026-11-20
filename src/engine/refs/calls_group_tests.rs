@@ -127,7 +127,7 @@ fn pages(view: &dyn IndexView, name: &str, matching: Matching) -> Vec<Vec<Hit>> 
     loop {
         let page = scan_calls_by_name(view, name, matching, PAGE, cursor.as_deref()).expect("scan");
         assert!(!page.total_is_partial, "{name}: the fixture is far below every cap");
-        let page = budget_call_page(page, name, None, false);
+        let page = budget_call_page(page, name, None);
         pages.push(
             page.hits
                 .iter()

@@ -87,8 +87,8 @@ pub fn decode(text: &str) -> Result<Value, String> {
 }
 
 /// `code_grep`'s answer as TOON lines for everything but `hits`, then the rows under file and symbol
-/// headers. `None` when `hits` is not rows (ranges, or nothing listed) or holds a row the block
-/// cannot carry: one not starting with its line number, or holding a line break or carriage return.
+/// headers. `None` when `hits` lists nothing or holds a row the block cannot carry: one not starting
+/// with its line number, or holding a line break or carriage return.
 fn encode_grep(value: &Value) -> Option<String> {
     let map = value.as_object()?;
     let hits = map.get(HITS)?.as_object()?;

@@ -394,55 +394,6 @@ async fn code_grep_searches_text_files_outside_code() {
     assert_eq!(grep_hits(&one_file).len(), 1, "{one_file}");
 }
 
-/// `ranges` answers each file's hits as read ranges: hits widened by 5 lines, clamped to the file,
-/// merged where they touch, ready for `code_read` `ranges`. `context` does not combine with it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_grep_ranges_merges_each_files_hits_into_read_ranges() {
-    let (_dir, client) = started().await;
-
-    let ranged = call(
-        &client,
-        "code_grep",
-        json!({ "pattern": "file_outline_l2", "path": "src/", "ranges": true }),
-    )
-    .await;
-    assert!(ranged.get("total").is_none(), "{ranged}");
-    assert_eq!(
-        ranged["hits"],
-        json!({
-            "src/outline.rs": { "ranges": [[2, 12], [14, 21]], "hits": 2 },
-            "src/callers.rs": { "ranges": [[3, 9]], "hits": 2 },
-        }),
-        "{ranged}"
-    );
-
-    let read = call(
-        &client,
-        "code_read",
-        json!({ "path": "src/outline.rs", "ranges": "2-12,14-21" }),
-    )
-    .await;
-    let spans: Vec<(u64, u64)> = read["spans"]
-        .as_array()
-        .expect("spans")
-        .iter()
-        .map(|span| (span["line"].as_u64().unwrap(), span["end_line"].as_u64().unwrap()))
-        .collect();
-    assert_eq!(spans, [(2, 12), (14, 21)], "{read}");
-
-    let refused = super::call_err(
-        &client,
-        "code_grep",
-        json!({ "pattern": "file_outline_l2", "ranges": true, "context": 1 }),
-    )
-    .await;
-    assert_eq!(
-        refused,
-        "`code_grep`: `ranges` already widens each hit by 5 lines; drop `context`, or drop `ranges` for hit \
-         lines with `context` lines around each."
-    );
-}
-
 /// `context: N` writes the N lines around each hit as `"<line>- <text>"` rows, each line once where
 /// windows overlap (as `rg -C N` merges them), never past the file's last line, under the hit's
 /// symbol. More than 10 lines, or a boolean, is refused naming the field.

@@ -17,7 +17,7 @@ use crate::engine::refs::routes::{Endpoint, run_route_definition};
 use crate::engine::stale::flag_listed;
 use crate::engine::types::refs::{
     CodeRefsParams, CodeRefsResult, DependentsResponse, FindCallersParams, FindCallersResponse,
-    FindImplementationsParams, FindReferencesParams, GotoDefinitionParams, RefHits, ResolutionFilter,
+    FindImplementationsParams, FindReferencesParams, GotoDefinitionParams, ResolutionFilter,
 };
 use crate::engine::workspace::Workspace;
 
@@ -100,10 +100,8 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
             "`resolution` filters call sites and applies only to relation `callers`",
         ));
     }
-    if relation != Relation::Callers && (p.changed.is_some() || p.ranges == Some(true)) {
-        return Err(shape_error(
-            "`changed` and `ranges` apply to call sites, relation `callers`, only",
-        ));
+    if relation != Relation::Callers && p.changed.is_some() {
+        return Err(shape_error("`changed` applies to call sites, relation `callers`, only"));
     }
     let resolution = p
         .resolution
@@ -145,7 +143,6 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
             // import graph under the store read lock.
             let scope = crate::engine::changed::resolve(ws, "code_refs", p.changed.as_deref())?;
             let scope_files = scope.as_ref().map(|scope| scope.len());
-            let ranges = p.ranges.unwrap_or(false);
             let call_sites = CallSites {
                 name,
                 path: p.path,
@@ -157,7 +154,7 @@ fn code_refs(ws: &Workspace, p: CodeRefsParams) -> Result<CodeRefsResult, Engine
                 resolution,
                 scope,
             };
-            run_call_sites(ws, call_sites, scope_files, ranges)
+            run_call_sites(ws, call_sites, scope_files)
         }
         Relation::Implementations => {
             if p.path.is_some() {
@@ -241,14 +238,8 @@ struct CallSites {
     scope: Option<crate::engine::scope::ChangeScope>,
 }
 
-/// Relation `callers`, with the `changed` scope's size and, with `ranges`, the call sites merged
-/// into read ranges per file.
-fn run_call_sites(
-    ws: &Workspace,
-    p: CallSites,
-    scope_files: Option<usize>,
-    ranges: bool,
-) -> Result<CodeRefsResult, EngineError> {
+/// Relation `callers`, with the `changed` scope's size.
+fn run_call_sites(ws: &Workspace, p: CallSites, scope_files: Option<usize>) -> Result<CodeRefsResult, EngineError> {
     let mut answer = match p.path {
         Some(path) => {
             let callers = FindCallersParams {
@@ -262,7 +253,6 @@ fn run_call_sites(
                 cursor: p.cursor,
                 resolution: p.resolution,
                 scope: p.scope,
-                ranges,
             };
             CodeRefsResult::Callers(run_callers(ws, callers)?)
         }
@@ -282,7 +272,6 @@ fn run_call_sites(
                     cursor: p.cursor,
                     resolution: p.resolution,
                     scope: p.scope,
-                    ranges,
                 },
                 || ws.lifecycle_notice(),
                 |hits| flag_listed(ws, &cache, hits),
@@ -290,23 +279,10 @@ fn run_call_sites(
             CodeRefsResult::References(references)
         }
     };
-    let (hits, scope_files_field, omitted) = match &mut answer {
-        CodeRefsResult::Callers(callers) => (&mut callers.hits, &mut callers.scope_files, &mut callers.omitted),
-        CodeRefsResult::References(references) => (
-            &mut references.hits,
-            &mut references.scope_files,
-            &mut references.omitted,
-        ),
+    match &mut answer {
+        CodeRefsResult::Callers(callers) => callers.scope_files = scope_files,
+        CodeRefsResult::References(references) => references.scope_files = scope_files,
         _ => unreachable!("relation `callers` answers call sites"),
-    };
-    *scope_files_field = scope_files;
-    if ranges {
-        let cache = ws.cache.load_full();
-        let rows = std::mem::replace(hits, RefHits::Rows(Vec::new()));
-        let (merged, uncovered) =
-            rows.into_ranges(|path| cache.meta(path).map(|meta| meta.lines).filter(|lines| *lines > 0));
-        *hits = merged;
-        *omitted = (uncovered > 0).then_some(uncovered);
     }
     Ok(answer)
 }
@@ -323,7 +299,7 @@ fn run_callers(ws: &Workspace, params: FindCallersParams) -> Result<FindCallersR
             ws.lifecycle_notice()
         })?
     };
-    flag_listed(ws, &cache, callers.hits.rows_mut());
+    flag_listed(ws, &cache, &mut callers.hits);
     Ok(callers)
 }
 

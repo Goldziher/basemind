@@ -7,7 +7,7 @@ clipped to the file, and overlapping or adjacent ranges merge. The gold is every
 `path:line` of every range. A pattern is a word (case-sensitive substring) in 1 to `--max-files`
 files with at most `--max-hits` hits, the size of a look-around an agent does by hand.
 
-Baseline: what an agent without `ranges` runs, the literal output of
+Baseline: what an agent without basemind runs, the literal output of
 `rg -n -C5 -F -e PATTERN -g '*.EXT'` in the repository root (no tty, as the harness runs it with
 `sh -c`). rg merges overlapping and adjacent windows itself, prints the path on every line
 (`path:N:text` for a match, `path-N-text` for a context line) and `--` between groups. `-g '*.EXT'`

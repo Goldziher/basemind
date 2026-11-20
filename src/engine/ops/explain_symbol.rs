@@ -226,7 +226,6 @@ fn callers(ws: &Workspace, briefing: &mut Briefing, path: &RelPath, name: &str, 
     let default = answer.resolution_default.unwrap_or(Resolution::NameOnly);
     let frontier: Vec<(RelPath, u32)> = answer
         .hits
-        .rows()
         .iter()
         .filter(|hit| matches!(hit.resolution, Resolution::SameFile | Resolution::Imported))
         .map(|hit| (hit.path.clone(), hit.line))
@@ -305,7 +304,7 @@ fn indirect_callers(
                 }
             };
             more |= page.next_cursor.is_some() || page.truncated || page.budgeted;
-            for hit in page.hits.into_rows() {
+            for hit in page.hits {
                 if rows.len() >= limit {
                     more = true;
                     break 'walk;

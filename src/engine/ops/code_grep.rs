@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use regex::Regex;
 
 use super::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
-use crate::engine::budget::{apply_budget_by_path, apply_budget_grep_rows, budget};
+use crate::engine::budget::{apply_budget_grep_rows, budget};
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
 use crate::engine::files::{IndexedFiles, Sweep};
@@ -52,19 +52,12 @@ impl Workspace {
                 "`code_grep`: `pattern` is empty; pass the text to find.",
             ));
         }
-        let ranges = p.ranges.unwrap_or(false);
         let context = p.context.unwrap_or(0);
         if context > GREP_CONTEXT_MAX {
             return Err(EngineError::invalid_argument(format!(
                 "`code_grep`: `context` is at most {GREP_CONTEXT_MAX} lines (got {context}); read a longer span \
                  with `code_read`."
             )));
-        }
-        if ranges && context > 0 {
-            return Err(EngineError::invalid_argument(
-                "`code_grep`: `ranges` already widens each hit by 5 lines; drop `context`, or drop `ranges` \
-                 for hit lines with `context` lines around each.",
-            ));
         }
         self.wait_map_ready();
         let scope = crate::engine::changed::resolve(self, "code_grep", p.changed.as_deref())?;
@@ -77,7 +70,6 @@ impl Workspace {
                 limit: p.limit,
                 max_tokens: budget(p.max_tokens),
                 context,
-                ranges,
                 literal: !p.regex.unwrap_or(false),
                 cursor: p.cursor,
             },
@@ -115,7 +107,7 @@ fn workspace_grep(
                     truncated: false,
                     truncated_reason: None,
                     budgeted: false,
-                    hits: GrepHits::Rows(Vec::new()),
+                    hits: GrepHits(Vec::new()),
                     stale: Vec::new(),
                     next_cursor: None,
                     skipped_files: 0,
@@ -232,14 +224,7 @@ fn workspace_grep(
         meta.hash_hex.is_empty() || crate::engine::freshness::matches_index(meta.into(), file, bytes)
     };
     let (mut hits, hit_cursors) = materialize(files, &paths, &selected, &is_fresh, &re, params.context, skip_files);
-    if params.ranges {
-        // A range answer writes no line text or symbol, so the budget costs each hit without them.
-        for hit in &mut hits {
-            hit.text.clear();
-        }
-    } else {
-        annotate_symbols(&cache, &mut hits);
-    }
+    annotate_symbols(&cache, &mut hits);
 
     // A page cut by `limit` is paging and says so with its cursor alone. Files the byte budget
     // left unread are a cut the caller did not ask for, on whichever page it shows.
@@ -252,12 +237,8 @@ fn workspace_grep(
         (None, false) => None,
     };
 
-    // A range answer is JSON; rows are the text answer's plain block (ADR-0053).
-    let budget = if params.ranges {
-        apply_budget_by_path(hits, params.max_tokens)
-    } else {
-        apply_budget_grep_rows(hits, params.max_tokens)
-    };
+    // Rows are the text answer's plain block (ADR-0053).
+    let budget = apply_budget_grep_rows(hits, params.max_tokens);
     let (hits, budgeted, next_cursor) = if budget.budgeted {
         let kept = budget.items.len();
         let resume = hit_cursors
@@ -268,11 +249,7 @@ fn workspace_grep(
         (budget.items, false, next_cursor)
     };
 
-    let hits = if params.ranges {
-        GrepHits::Ranges(read_ranges(hits))
-    } else {
-        GrepHits::Rows(hits)
-    };
+    let hits = GrepHits(hits);
 
     Ok(WorkspaceGrepResponse {
         total: next_cursor.is_some().then_some(total),
@@ -287,19 +264,6 @@ fn workspace_grep(
         scope_files: None,
         notice: ws.lifecycle_notice(),
     })
-}
-
-/// A page's hits as per-file read ranges: each hit widened by
-/// [`DEFAULT_CONTEXT`](crate::engine::ranges::DEFAULT_CONTEXT) lines, clamped to the file it was
-/// read from, and merged.
-fn read_ranges(hits: Vec<GrepHit>) -> Vec<crate::engine::ranges::FileRanges> {
-    let lines: ahash::AHashMap<RelPath, u32> = hits.iter().map(|hit| (hit.path.clone(), hit.file_lines)).collect();
-    crate::engine::ranges::merge_hits(
-        hits.into_iter().map(|hit| (hit.path, hit.line)),
-        |path| lines.get(path).copied(),
-        crate::engine::ranges::RangeOptions::default(),
-    )
-    .files
 }
 
 /// Operator kill switch for the trigram-bloom prefilter: `BASEMIND_GREP_BLOOM=0` forces the full
@@ -639,7 +603,6 @@ fn collect_hits(
         .chain(memchr::memchr_iter(b'\n', source.as_bytes()).map(|pos| pos + 1))
         .collect();
     let line_count = line_starts.len() - usize::from(source.ends_with('\n'));
-    let file_lines = line_count as u32;
     let context = context as usize;
     // Lines before this index are shown by an earlier hit of the page, as its line or its context.
     let mut shown_until = 0usize;
@@ -696,7 +659,6 @@ fn collect_hits(
                 context_after,
                 start_byte: match_start as u32,
                 stale: !source_fresh,
-                file_lines,
             },
         ));
     }

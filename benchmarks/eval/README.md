@@ -296,9 +296,7 @@ exception, below.
 | `explain` | one command per section the tool answers: the file's definition lines, `git grep -n -w NAME` (callers), `sed -n` from the first attribute or doc comment to the body's end (doc, body, callees), the `impact` depth-1 `git grep -l -E` `use` lines for the definition's file (importers), `git log -n 5 -s --format='%h %an %aI %s' -L '/fn NAME[(<]/,/^INDENT}/:PATH'` (history); scored with the `explain` reader (recall reported, not gated: a reducing kind) |
 
 The `read_around` tool arm is one `code_grep {pattern, context: 5, language}` call, paged like any set-scored kind:
-every match and context row is a line shown, scored against the same gold as rg's rows. Until the third 0.34 gate run it
-was two steps, `code_grep {ranges: true}` and then a `code_read` of each file's ranges, and counted against
-`code_read`.
+every match and context row is a line shown, scored against the same gold as rg's rows.
 
 `read_around` runs `rg` itself: the baseline is the literal output of the command an agent runs for "the lines
 around each hit", not a format built for the comparison. rg merges overlapping and adjacent context windows and

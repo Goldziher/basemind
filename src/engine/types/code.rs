@@ -153,9 +153,6 @@ pub struct CodeReadParams {
     /// Last line of a span, inclusive (default: `line`). Not with `symbol`.
     #[serde(default)]
     pub end_line: Option<u32>,
-    /// Spans like `120-148,310`, alone; read on with `next_ranges`.
-    #[serde(default)]
-    pub ranges: Option<String>,
 }
 
 /// Parameters for the `expand` MCP tool.
@@ -238,47 +235,12 @@ pub(crate) struct ReadSpanResponse {
     pub omitted_bytes: usize,
 }
 
-/// One span of a `code_read` with `ranges`.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct ReadRangeSpan {
-    /// 1-based first line returned.
-    pub line: u32,
-    /// 1-based last line returned, inclusive: clamped to the file, and to what fits when cut.
-    pub end_line: u32,
-    pub body: String,
-}
-
-/// Response of a `code_read` of several spans (`ranges`).
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct ReadRangesResponse {
-    pub path: String,
-    pub total_lines: u32,
-    /// The spans read, sorted and merged, each with its text.
-    pub spans: Vec<ReadRangeSpan>,
-    /// Byte length of every span together before any truncation.
-    pub bytes: usize,
-    /// `true` when the spans together passed the 128 KiB size cap: the last span returned ends at
-    /// its last whole line that fits, and later spans are left out; absent otherwise.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub truncated: bool,
-    /// `size_cap` whenever `truncated` is true.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub truncated_reason: Option<&'static str>,
-    /// Bytes of the spans left out of the bodies.
-    #[serde(skip_serializing_if = "is_zero")]
-    pub omitted_bytes: usize,
-    /// The spans not yet returned, to pass back as `ranges` to read on.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_ranges: Option<String>,
-}
-
-/// Answer of `code_read`: a symbol's body, a line span, or several spans.
+/// Answer of `code_read`: a symbol's body, or a line span.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub(crate) enum CodeReadResult {
     Symbol(ExpandResponse),
     Span(ReadSpanResponse),
-    Spans(ReadRangesResponse),
 }
 
 /// Arguments of `code_symbols`.
