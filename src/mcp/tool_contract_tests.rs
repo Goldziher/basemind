@@ -22,6 +22,26 @@ fn server(root: &std::path::Path, scanned: bool) -> BasemindServer {
 }
 
 fn server_with(root: &std::path::Path, scanned: bool, config: ConfigV1) -> BasemindServer {
+    server_over(root, scanned, config, |root| {
+        Store::open_read_only(root, VIEW_WORKING).expect("open ro")
+    })
+}
+
+/// A one-shot server over `root` scanned first, its store opened as a CLI command opens it, with
+/// the index the keyword lane reads.
+#[cfg(feature = "code-search")]
+fn query_server(root: &std::path::Path, config: ConfigV1) -> BasemindServer {
+    server_over(root, true, config, |root| {
+        Store::open_for_query(root, VIEW_WORKING).expect("open for query")
+    })
+}
+
+fn server_over(
+    root: &std::path::Path,
+    scanned: bool,
+    config: ConfigV1,
+    open: impl FnOnce(&std::path::Path) -> Store,
+) -> BasemindServer {
     crate::store::init_isolated_cache();
     {
         let mut store = Store::open(root, VIEW_WORKING).expect("open rw");
@@ -39,7 +59,7 @@ fn server_with(root: &std::path::Path, scanned: bool, config: ConfigV1) -> Basem
             store.flush().expect("persist the empty file map");
         }
     }
-    let store = Store::open_read_only(root, VIEW_WORKING).expect("open ro");
+    let store = open(root);
     let git_cache = Arc::new(GitCache::open(&store.basemind_dir, 16, false).expect("git cache"));
     BasemindServer::new_oneshot(store, root.to_path_buf(), Arc::new(config), None, git_cache)
 }
@@ -124,6 +144,82 @@ async fn a_populated_index_carries_no_empty_index_notice() {
         "{found}"
     );
     assert!(found.get("notice").is_none(), "{found}");
+}
+
+/// The `index_rebuilding` notice every verb tool attaches while the last scan is partial.
+#[cfg(any(feature = "code-search", feature = "documents"))]
+fn index_rebuilding_notice() -> Value {
+    serde_json::json!({
+        "state": "index_rebuilding",
+        "message": "index rebuilding — results incomplete. A full scan is rebuilding the symbol / reference \
+                    index; an empty `references` / `callers` / `implementations` answer does not mean there \
+                    are none. Call `index_status {}` until `degraded` clears, then retry.",
+        "retry": true,
+    })
+}
+
+/// Record the workspace's last scan as stopped short, as an interrupted first build leaves it.
+#[cfg(any(feature = "code-search", feature = "documents"))]
+fn mark_scan_partial(root: &std::path::Path) {
+    crate::store::write_status_sidecar(
+        &crate::store::workspace_cache_dir(root),
+        1,
+        1,
+        &crate::store::ScanHealth::partial("interrupted", 1, 2),
+    );
+}
+
+/// `code_search` answers a complete index without a notice and a partial one with the same
+/// `index_rebuilding` notice as the other verb tools, even when the ranking is served from the
+/// one kept for the first call.
+#[cfg(feature = "code-search")]
+#[tokio::test]
+async fn code_search_reports_a_partial_index_with_the_lifecycle_notice() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("a.rs"), "pub fn alpha() {}\n").expect("a.rs");
+    let server = query_server(tmp.path(), ConfigV1::with_defaults());
+    let search = || -> crate::engine::types::search::CodeSearchParams {
+        parse_args(serde_json::json!({ "query": "alpha", "lane": "keyword" })).expect("valid arguments")
+    };
+
+    let complete = json_of(&server.code_search_call(search()).await.expect("code_search"));
+    assert_eq!(complete["hits"][0]["path"], "a.rs", "{complete}");
+    assert!(complete.get("notice").is_none(), "{complete}");
+
+    mark_scan_partial(tmp.path());
+    let partial = json_of(&server.code_search_call(search()).await.expect("code_search"));
+    assert_eq!(partial["hits"][0]["path"], "a.rs", "{partial}");
+    assert_eq!(partial["notice"], index_rebuilding_notice(), "{partial}");
+}
+
+/// `docs_search` answers a complete index without a notice and a partial one with the same
+/// `index_rebuilding` notice as the other verb tools, even when the ranking is served from the
+/// one kept for the first call.
+#[cfg(feature = "documents")]
+#[tokio::test]
+async fn docs_search_reports_a_partial_index_with_the_lifecycle_notice() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join("guide.md"),
+        "# Guide\n\nHow the harbour is run, long enough to index as a document.\n",
+    )
+    .expect("guide.md");
+    let mut config = ConfigV1::with_defaults();
+    config.documents.enabled = true;
+    config.documents.embed = false;
+    let server = server_with(tmp.path(), true, config);
+    let search = || -> crate::engine::types::search::DocsSearchParams {
+        parse_args(serde_json::json!({ "query": "harbour" })).expect("valid arguments")
+    };
+
+    let complete = json_of(&server.docs_search_call(search()).await.expect("docs_search"));
+    assert_eq!(complete["hits"][0]["path"], "guide.md", "{complete}");
+    assert!(complete.get("notice").is_none(), "{complete}");
+
+    mark_scan_partial(tmp.path());
+    let partial = json_of(&server.docs_search_call(search()).await.expect("docs_search"));
+    assert_eq!(partial["hits"][0]["path"], "guide.md", "{partial}");
+    assert_eq!(partial["notice"], index_rebuilding_notice(), "{partial}");
 }
 
 #[tokio::test]

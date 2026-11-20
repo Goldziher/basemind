@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(any(feature = "code-search", feature = "documents"))]
+use super::LifecycleNotice;
 use crate::engine::cursor::Cursor;
 use crate::path::RelPath;
 
@@ -159,7 +161,8 @@ pub(crate) struct CodeSearchRanking {
 /// One page of a `code_search` ranking.
 ///
 /// Serialized by hand, in the key order the response has always had: the ranking's own fields
-/// (with a `stale_chunks` cut among them), the timing, the lanes, then the page and its cuts.
+/// (with a `stale_chunks` cut among them), the timing, the lanes, then the page and its cuts, and
+/// last the lifecycle `notice`.
 #[cfg(feature = "code-search")]
 #[derive(Debug)]
 pub(crate) struct CodeSearchPage {
@@ -174,6 +177,10 @@ pub(crate) struct CodeSearchPage {
     /// deserialization, and response serialization. See [`crate::engine::timing`] for the full
     /// contract.
     pub elapsed_us: u64,
+    /// Lifecycle notice while the index is incomplete (warming, building, rescanning, rebuilding or
+    /// empty), as on every verb tool; absent when it is ready. Computed per call, never kept with
+    /// the ranking.
+    pub notice: Option<LifecycleNotice>,
 }
 
 #[cfg(feature = "code-search")]
@@ -206,6 +213,9 @@ impl Serialize for CodeSearchPage {
         }
         if let Some(cursor) = &self.next_cursor {
             map.serialize_entry("next_cursor", cursor)?;
+        }
+        if let Some(notice) = &self.notice {
+            map.serialize_entry("notice", notice)?;
         }
         map.end()
     }
@@ -246,4 +256,8 @@ pub(crate) struct DocsSearchResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
     pub elapsed_us: u64,
+    /// Lifecycle notice while the index is incomplete, as on every verb tool; absent when it is
+    /// ready. It takes the place of the page's own document `notice`, so a response has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LifecycleNotice>,
 }
