@@ -55,6 +55,7 @@ impl BackgroundPool {
 
     /// [`spawn`](Self::spawn) `job` and wait for its result without holding a thread. `None` when
     /// the job panicked.
+    #[cfg(any(test, all(feature = "comms", any(unix, windows))))]
     pub(crate) async fn run<T: Send + 'static>(&self, job: impl FnOnce() -> T + Send + 'static) -> Option<T> {
         let (result, done) = tokio::sync::oneshot::channel();
         self.spawn(move || {
