@@ -27,9 +27,9 @@ Every step here uses the CLI, so it works while the MCP server is down.
 
 A failed tool call is a result with `isError` whose text names the fix: follow it before
 diagnosing further. Its `structuredContent` holds a stable `error` code and a `retryable` flag:
-`invalid_argument` (change the call), `unavailable` (not in this workspace, session or build),
-`index_unavailable` and `busy` (retry; the overload refusal adds `retry_after_ms`), `cancelled`,
-and `internal` (a fault inside basemind). The text writes a data-home path as
+`"invalid_argument"` (change the call), `"unavailable"` (not in this workspace, session or
+build), `"index_unavailable"` and `"busy"` (retry; the overload refusal adds `retry_after_ms`),
+`"cancelled"`, and `"internal"` (a fault inside basemind). The text writes a data-home path as
 `$BASEMIND_DATA_HOME/…` and a repository path relative to the repository, so it can be quoted in an
 issue; the server log (for the daemon, the `daemon.log` that `basemind comms doctor` names) keeps
 the full text and the cause of an `internal` failure.
