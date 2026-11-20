@@ -280,7 +280,13 @@ fn guard_clear(basemind_dir: &Path, component: &str, yes: bool) -> Result<()> {
     } else {
         format!("clear `{component}` under {}", basemind_dir.display())
     };
-    if !std::io::stdin().is_terminal() {
+    confirm(&what, std::io::stdin().is_terminal())
+}
+
+/// Ask on a terminal before doing `what`, or refuse with a usage error (exit `2`) when stdin is
+/// not one (`terminal` false): a destructive command without `--yes` needs someone to confirm it.
+pub(crate) fn confirm(what: &str, terminal: bool) -> Result<()> {
+    if !terminal {
         return Err(CliExit::usage(format!(
             "refusing to {what} without confirmation; pass --yes to proceed"
         )));

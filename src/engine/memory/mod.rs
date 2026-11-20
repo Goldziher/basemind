@@ -1,9 +1,13 @@
 //! The memory notes of a repo group: `memory_save`, `memory_search` and `basemind memory delete`.
 //!
 //! The Fjall `memory_by_key` record is the truth for a note ([`ops`]); its vector row, which
-//! `memory_search` by meaning reads, is derived from it ([`vectors`]).
+//! `memory_search` by meaning reads, is derived from it ([`vectors`]). A search no model can embed
+//! matches the notes by words ([`lexical`]).
 
+pub(crate) mod lexical;
 pub(crate) mod ops;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub(crate) mod vectors;
 
 use std::sync::{Arc, Mutex, PoisonError};
@@ -13,8 +17,8 @@ use super::EngineError;
 use super::cursor::Cursor;
 use super::timing::elapsed_us;
 use super::types::memory::{
-    MemoryDeleteParams, MemoryDeleteResponse, MemoryEntry, MemoryGetParams, MemoryListParams, MemoryListResponse,
-    MemoryPutParams, MemoryPutResponse, Visibility,
+    MemoryClearResponse, MemoryDeleteParams, MemoryDeleteResponse, MemoryEntry, MemoryGetParams, MemoryListParams,
+    MemoryListResponse, MemoryPutParams, MemoryPutResponse, Visibility,
 };
 use super::workspace::Workspace;
 
@@ -286,7 +290,22 @@ impl Workspace {
         )?)
     }
 
-    /// Delete one note and, best effort, its vector row.
+    /// Remove every note of the repository group and, best effort, every row of every model's
+    /// vector store.
+    pub(crate) fn memory_clear_group(&self) -> Result<MemoryClearResponse, EngineError> {
+        let notes_removed = {
+            let store = self.store_read();
+            let idx = store.index_handle().ok_or_else(index_unavailable)?;
+            ops::clear_core(&idx)?
+        };
+        let vector_stores_purged = vectors::purge_every_vector_row(self);
+        Ok(MemoryClearResponse {
+            notes_removed,
+            vector_stores_purged,
+        })
+    }
+
+    /// Delete one note and, best effort, its vector rows in every model's store.
     pub(crate) fn memory_delete_note(&self, params: MemoryDeleteParams) -> Result<MemoryDeleteResponse, EngineError> {
         let (vis_byte, owner) = self.memory_namespace(params.visibility);
         let deleted = {
@@ -294,10 +313,14 @@ impl Workspace {
             let idx = store.index_handle().ok_or_else(index_unavailable)?;
             ops::delete_core(&idx, &self.scope, vis_byte, owner, &params.key)?
         };
-        vectors::delete_vector_row(self, params.visibility, owner, &params.key);
+        vectors::purge_vector_rows(self, params.visibility, owner, &params.key);
         Ok(MemoryDeleteResponse { deleted })
     }
 }
+
+#[cfg(test)]
+#[path = "clear_tests.rs"]
+mod clear_tests;
 
 #[cfg(test)]
 mod embed_report_tests {

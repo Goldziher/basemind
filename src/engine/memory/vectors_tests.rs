@@ -1,9 +1,8 @@
 use super::*;
-use crate::embeddings::SharedEmbedder;
 use crate::engine::memory::ops::{delete_core, put_core};
+use crate::engine::memory::test_support::{DIM, workspace};
 use crate::engine::types::memory::MemoryDeleteParams;
 
-const DIM: u16 = 4;
 /// The group tier's namespace byte.
 fn vis() -> u8 {
     Visibility::Group.vis_byte()
@@ -38,8 +37,8 @@ fn stamps(rows: &[(&str, i64)], duplicated: &[&str]) -> MemoryStamps {
     }
 }
 
-/// A vector that depends on the text alone. Text containing `unembeddable` is refused, as a model
-/// refuses input it cannot take.
+/// A unit vector that depends on the text alone, as every preset's is. Text containing
+/// `unembeddable` is refused, as a model refuses input it cannot take.
 fn fake_embed(text: &str) -> anyhow::Result<Vec<f32>> {
     if text.contains("unembeddable") {
         anyhow::bail!("the model rejects this text");
@@ -48,45 +47,13 @@ fn fake_embed(text: &str) -> anyhow::Result<Vec<f32>> {
     for (index, byte) in text.bytes().enumerate() {
         vector[index % usize::from(DIM)] += f32::from(byte) / 255.0;
     }
-    Ok(vector)
+    let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+    Ok(vector.into_iter().map(|x| x / norm).collect())
 }
 
 /// A workspace over an empty directory whose embedder is `model`, answering with [`fake_embed`].
 fn server(root: &Path, model: &str) -> Workspace {
-    use crate::config::Config;
-    use crate::store::{Store, VIEW_WORKING};
-
-    crate::store::init_isolated_cache();
-    // An earlier workspace over the same root releases its index lock a moment after it is dropped.
-    let opening = std::time::Instant::now();
-    let store = loop {
-        match Store::open(root, VIEW_WORKING) {
-            Ok(store) => break store,
-            Err(_) if opening.elapsed() < Duration::from_secs(20) => std::thread::sleep(Duration::from_millis(50)),
-            Err(error) => panic!("open the store: {error}"),
-        }
-    };
-    let ws = Workspace::new(
-        store,
-        root.to_path_buf(),
-        Arc::new(Config::with_defaults()),
-        None,
-        Arc::new(crate::git_cache::GitCache::open(root, 1, false).unwrap()),
-        None,
-        crate::engine::workspace::OpenOptions {
-            background: false,
-            read_only: false,
-            forwards_writes: false,
-            lazy_cache: false,
-            history_sync: None,
-            memory_owner: |_| "owner".to_string(),
-        },
-    );
-    ws.embedder
-        .set(Arc::new(SharedEmbedder::fake(model, DIM, fake_embed)))
-        .ok()
-        .unwrap();
-    ws
+    workspace(root, model, fake_embed)
 }
 
 /// Save a note in the Fjall truth only: a note with no vector row, as after a wipe.
@@ -492,6 +459,94 @@ fn a_delete_does_not_create_a_store() {
     delete_vector_row(&state, Visibility::Group, "", "plain");
 
     assert!(!memory_lance_dir(root.path(), "fake", DIM).exists());
+}
+
+/// A note saved under one preset, then again under another, has a row in both stores. The delete
+/// removes it from both, and leaves neither a marked row nor an earlier version that still holds it.
+#[test]
+fn a_delete_purges_the_note_from_every_models_store() {
+    let root = tempfile::tempdir().unwrap();
+    let first = server(root.path(), "model-a");
+    put(&first, "doomed", "a note", true);
+    put(&first, "kept", "another note", true);
+    drop(first);
+    let second = server(root.path(), "model-b");
+    put(&second, "doomed", "a note", true);
+    put(&second, "kept", "another note", true);
+
+    let params = MemoryDeleteParams {
+        key: "doomed".into(),
+        visibility: Visibility::Group,
+    };
+    assert!(second.memory_delete_note(params).unwrap().deleted);
+    assert_eq!(hit_keys(&search_json(&second, "a note", 10)), ["kept"]);
+    drop(second);
+
+    let scope = format!("path:{}", root.path().display());
+    for model in ["model-a", "model-b"] {
+        let dir = memory_lance_dir(root.path(), model, DIM);
+        let scope = scope.clone();
+        let (keys, marked, versions) = off(move || {
+            let store = LanceStore::open(&dir, DIM, model).unwrap();
+            let keys: Vec<String> = store
+                .memory_stamps(&scope, "group", "")
+                .unwrap()
+                .stamps
+                .keys()
+                .cloned()
+                .collect();
+            let versions = store.version_counts().unwrap();
+            (keys, store.memory_rows_marked_deleted().unwrap(), versions)
+        });
+        assert_eq!(keys, ["kept"], "{model}");
+        assert_eq!(marked, Some(0), "{model}");
+        let memory_versions: Vec<usize> = versions
+            .into_iter()
+            .filter(|(table, _)| table == "memory")
+            .map(|(_, count)| count)
+            .collect();
+        assert_eq!(memory_versions, [1], "{model}");
+    }
+}
+
+/// One axis per topic: notes on different topics are orthogonal, at distance 2 from each other.
+fn topic_embed(text: &str) -> anyhow::Result<Vec<f32>> {
+    let axis = ["alpha", "beta", "gamma"]
+        .iter()
+        .position(|topic| text.contains(topic))
+        .unwrap_or(3);
+    let mut vector = vec![0.0_f32; usize::from(DIM)];
+    vector[axis] = 1.0;
+    Ok(vector)
+}
+
+/// A search answers the notes within the relevance floor and says how many nearer ones it left
+/// out; a query about none of the notes is answered with none.
+#[test]
+fn a_search_leaves_out_the_notes_past_the_relevance_floor() {
+    let root = tempfile::tempdir().unwrap();
+    let state = workspace(root.path(), "fake", topic_embed);
+    save(&state, "a", "the alpha note");
+    save(&state, "b", "the beta note");
+
+    let related = search_json(&state, "alpha", 10);
+    assert_eq!(hit_keys(&related), ["a"]);
+    assert_eq!(related["hits"][0]["distance"], 0.0);
+    assert_eq!(related["notice"], unrelated_notice(1));
+    assert!(related.get("lexical").is_none(), "{related}");
+
+    let unrelated = search_json(&state, "gamma", 10);
+    assert!(hit_keys(&unrelated).is_empty(), "{unrelated}");
+    assert_eq!(unrelated["notice"], unrelated_notice(2));
+}
+
+#[test]
+fn the_relevance_floor_notice_names_the_count_and_the_floor() {
+    assert_eq!(
+        unrelated_notice(3),
+        "3 of the nearest notes are farther from the query than the relevance floor (distance 1.0) and are left \
+         out: they are unlikely to be about it. A listing by `prefix` or `tag` shows every note"
+    );
 }
 
 fn put_params(key: &str, value: &str, embed: bool) -> crate::engine::types::memory::MemoryPutParams {

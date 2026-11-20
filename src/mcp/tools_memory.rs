@@ -14,7 +14,7 @@ use super::BasemindServer;
 use super::strict::Strict;
 use super::types_tools::{DocsSearchParams, MemorySaveParams, MemorySearchToolParams};
 use crate::engine::Workspace;
-use crate::engine::types::memory::MemoryDeleteParams;
+use crate::engine::types::memory::{MemoryClearParams, MemoryDeleteParams};
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_memory")]
 impl BasemindServer {
@@ -42,7 +42,8 @@ impl BasemindServer {
     #[tool(
         title = "Save a note",
         description = "Use to remember a decision, convention or finding for later sessions and \
-        other agents working in this repository. Saving an existing `key` replaces it. \
+        other agents working in this repository. Saving an existing `key` replaces it. Notes are \
+        plain text on local disk: never save secrets. \
         Example: {\"key\":\"decision/auth-tokens\",\"value\":\"Tokens rotate every 24h.\",\"tags\":[\"auth\"]}",
         annotations(
             read_only_hint = false,
@@ -61,8 +62,8 @@ impl BasemindServer {
     #[tool(
         title = "Recall notes",
         description = "Use to recall what was saved with `memory_save`: `query` searches notes by \
-        meaning, `key` reads one, `prefix` lists by key prefix, and no arguments lists everything. \
-        Lists show 200 characters of a value; `key` reads it whole. \
+        meaning (by words when no model loads), `key` reads one, `prefix` lists by key prefix, and no \
+        arguments lists everything. Lists show 200 characters of a value; `key` reads it whole. \
         Example: {\"query\":\"token rotation\"}",
         annotations(
             read_only_hint = true,
@@ -98,5 +99,10 @@ impl BasemindServer {
     /// Delete one note. No MCP tool: `basemind memory delete`.
     pub(crate) async fn memory_delete_call(&self, p: MemoryDeleteParams) -> Result<CallToolResult, McpError> {
         self.cli_op(p, Workspace::memory_delete).await
+    }
+
+    /// Remove every note of the repository group. No MCP tool: `basemind memory clear`.
+    pub(crate) async fn memory_clear_call(&self, p: MemoryClearParams) -> Result<CallToolResult, McpError> {
+        self.cli_op(p, Workspace::memory_clear).await
     }
 }

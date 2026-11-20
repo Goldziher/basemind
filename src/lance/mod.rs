@@ -344,6 +344,21 @@ impl LanceStore {
         Self::connect(dir, dim, &model, &[], session::shared())
     }
 
+    /// Open the store at `dir` for the model and dimension its `meta.json` records, under the rules
+    /// of [`Self::open`], or `None` when `dir` holds no store. For a caller that must reach every
+    /// store of a repo group, whichever preset wrote it.
+    pub fn open_recorded(dir: &Path) -> Result<Option<Self>> {
+        let meta_path = dir.join(META_FILE);
+        let bytes = match std::fs::read(&meta_path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error).with_context(|| format!("read {}", meta_path.display())),
+        };
+        let meta: LanceMeta =
+            serde_json::from_slice(&bytes).with_context(|| format!("unreadable {}", meta_path.display()))?;
+        Self::open(dir, meta.dim, &meta.embedding_model).map(Some)
+    }
+
     /// Connect to the store at `dir` of model `model_key` through `session` (its caches), creating
     /// those of `tables` it lacks.
     fn connect(

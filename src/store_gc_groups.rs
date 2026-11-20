@@ -302,6 +302,31 @@ mod tests {
         assert_eq!(stats.total_bytes, components + stats.other_bytes, "{stats:?}");
     }
 
+    /// `cache stats` names the repository group directory that holds the memory notes and their
+    /// vector stores, and leaves it out for a workspace whose marker names no root.
+    #[test]
+    fn cache_stats_name_the_memory_directory() {
+        use crate::store_cache_admin::{BlobStorePaths, cache_stats_in};
+        let (_tmp, cache) = cache_with_groups(&["g"]);
+        let blobs = BlobStorePaths {
+            root: cache.join("blobs"),
+            schema: crate::extract::SCHEMA_VER,
+            gc_state: cache.join("gc-state.json"),
+            repos: cache.join("repos"),
+        };
+        let named = workspace(&cache, "w", Some(r#"{"root":"/gone","updated_unix":0,"group":"g"}"#));
+        let markerless = workspace(&cache, "markerless", None);
+
+        let stats = cache_stats_in(&named, &blobs).expect("stats");
+        let unnamed = cache_stats_in(&markerless, &blobs).expect("stats");
+
+        assert_eq!(
+            stats.memory_dir,
+            Some(crate::store_layout::repo_group_dir(Path::new("/gone")))
+        );
+        assert_eq!(unnamed.memory_dir, None);
+    }
+
     /// `cache stats` counts the group's retrieval store; `cache clear lance` and `cache clear all`
     /// remove it, and leave the group index beside it.
     #[cfg(feature = "intelligence")]

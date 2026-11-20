@@ -1,11 +1,12 @@
-//! `memory_save`, `memory_search` and `basemind memory delete` (no MCP tool).
+//! `memory_save`, `memory_search`, and `basemind memory delete` and `basemind memory clear` (no MCP
+//! tool).
 //!
 //! The tools are advertised in every build and gate here: an agent looking for "remember this" is
 //! better served a tool that answers "rebuild with `--features memory`" than a tool that is not
 //! there, and never an empty result it would read as "nothing stored".
 
 use crate::engine::error::EngineError;
-use crate::engine::types::memory::{MemoryDeleteParams, MemorySaveParams, MemorySearchToolParams};
+use crate::engine::types::memory::{MemoryClearParams, MemoryDeleteParams, MemorySaveParams, MemorySearchToolParams};
 use crate::engine::workspace::Workspace;
 
 #[cfg(not(feature = "memory"))]
@@ -24,14 +25,19 @@ impl Workspace {
     pub(crate) fn memory_delete(&self, _p: MemoryDeleteParams) -> Result<(), EngineError> {
         Err(EngineError::feature_missing("memory delete", "memory"))
     }
+
+    /// `basemind memory clear` in a build without the memory store.
+    pub(crate) fn memory_clear(&self, _p: MemoryClearParams) -> Result<(), EngineError> {
+        Err(EngineError::feature_missing("memory clear", "memory"))
+    }
 }
 
 #[cfg(feature = "memory")]
 mod enabled {
     use super::*;
     use crate::engine::types::memory::{
-        MemoryDeleteResponse, MemoryGetParams, MemoryListParams, MemoryMissing, MemoryPutParams, MemoryPutResponse,
-        MemorySearchAnswer, MemorySearchParams,
+        MemoryClearResponse, MemoryDeleteResponse, MemoryGetParams, MemoryListParams, MemoryMissing, MemoryPutParams,
+        MemoryPutResponse, MemorySearchAnswer, MemorySearchParams,
     };
 
     /// The argument shapes `memory_search` accepts, quoted in every shape error.
@@ -101,6 +107,12 @@ mod enabled {
         /// `basemind memory delete`: delete one note. No MCP tool.
         pub(crate) fn memory_delete(&self, p: MemoryDeleteParams) -> Result<MemoryDeleteResponse, EngineError> {
             self.memory_delete_note(p)
+        }
+
+        /// `basemind memory clear`: remove every note of the repository group and their vectors.
+        /// No MCP tool.
+        pub(crate) fn memory_clear(&self, _p: MemoryClearParams) -> Result<MemoryClearResponse, EngineError> {
+            self.memory_clear_group()
         }
     }
 }

@@ -200,7 +200,11 @@ pub(crate) struct MemorySearchHit {
 pub(crate) struct MemorySearchResponse {
     pub query: String,
     pub hits: Vec<MemorySearchHit>,
-    /// Set while the vector index is behind the saved notes: the hits may be incomplete.
+    /// True when no model could embed the query and the notes were matched by its words instead.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub lexical: bool,
+    /// Set while the vector index is behind the saved notes (the hits may be incomplete), when
+    /// hits past the relevance floor were left out, and when the search fell back to words.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notice: Option<String>,
     /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
@@ -224,6 +228,20 @@ pub struct MemoryDeleteParams {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct MemoryDeleteResponse {
     pub deleted: bool,
+}
+
+/// `basemind memory clear`: every note of the repository group. No arguments.
+#[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryClearParams {}
+
+#[cfg(feature = "memory")]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(crate) struct MemoryClearResponse {
+    /// Notes removed, of every tier and owner.
+    pub notes_removed: usize,
+    /// Embedding models' vector stores emptied of their rows and purged.
+    pub vector_stores_purged: usize,
 }
 
 /// Verification verdict of a memory's code references against the live index, set by the

@@ -12,6 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `basemind memory clear [--yes]` (CLI only) removes every memory note of the repository group, of
+  every tier and agent, and empties and purges the vector store of every embedding model. It asks
+  for confirmation on a terminal and refuses (exit 2) without `--yes` anywhere else; with the daemon
+  running it runs in the daemon, and while another process holds the index without a daemon it is
+  refused (exit 3). `basemind cache stats` names the repository group directory that holds the
+  notes and their vectors as `memory_dir` (#323).
+- `memory_search` with `query` falls back to matching words when no embedding model can embed the
+  query (none downloaded, offline, the model refused the text) instead of failing: a note is a hit
+  when at least half of the query's words begin a word of its key, value or tags, ranked by how
+  many it holds, and the reply carries `"lexical": true` and a `notice` saying why. A search by
+  meaning drops the hits past a relevance floor (squared L2 distance `1.0`, a cosine similarity
+  below one half) and says how many it left out, so an unrelated query returns no hit instead of
+  the ten nearest notes (#326).
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
   lists the files importing that file `by_depth`, up to `depth` hops (default 1, max 5), names those
   in an import cycle with it and says when the walk was cut; `relation: "cycles"` lists the import
@@ -720,6 +733,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `basemind memory delete` removes the note's vector rows from the store of every embedding model
+  of the repository group, not only the configured one, and purges each store after: the deleted
+  rows are rewritten out of the data files and every earlier table version is dropped, so a store
+  written by an earlier release, whose rows carried the note's text, no longer keeps it. The
+  `memory_save` description and the memory manual now say notes are plain text on local disk and
+  must not hold secrets (#324).
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

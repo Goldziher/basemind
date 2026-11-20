@@ -10,13 +10,31 @@ agent working in the same repository should know. Notes are keyed, tagged and se
 | Read one note | `memory_search {"key":"decision/auth-tokens"}` | `basemind memory get decision/auth-tokens` |
 | List by key prefix | `memory_search {"prefix":"decision/"}` | `basemind memory list --prefix decision/` |
 | Delete a note | none | `basemind memory delete decision/auth-tokens` |
+| Remove every note of the repository | none | `basemind memory clear --yes` |
+| Find where the notes are kept | none | `basemind cache stats` |
 
 ## Contracts
 
 - `memory_save` with an existing `key` replaces the note.
+- Notes are plain text on local disk, in the repository group directory `basemind cache stats`
+  names. Never save a secret, a token or a credential in one.
+- `basemind memory clear` removes every note of the repository, of every tier and agent, and
+  empties and purges the vector store of every embedding model. It asks for confirmation on a
+  terminal and refuses without `--yes` anywhere else. With the daemon running it runs in the daemon;
+  while another basemind process holds the workspace's index and no daemon runs, it is refused.
+- `basemind memory delete` removes the note and its vector rows from the store of every embedding
+  model the repository has used, and purges those stores, so no earlier version of them still holds
+  the note.
 - `memory_search` takes at most one of `query`, `key` and `prefix`; with none it lists every note.
   `tag` filters a search or a listing. A listing shows the first 200 characters of each value and
   pages with `next_cursor`; `key` reads a note whole.
+- A `query` search answers the notes within a relevance floor (squared L2 distance `1.0` between
+  unit vectors, a cosine similarity of one half); the reply's `notice` says how many nearer notes it
+  left out, and an unrelated query returns no hit.
+- When no embedding model can embed the query (none downloaded, offline), `query` matches words
+  instead and the reply carries `"lexical": true`: a note is a hit when at least half of the
+  query's words each begin a word of its key, value or tags, and its `distance` is the share of
+  the words it lacks.
 - `visibility` is `group` (the default, shared by every agent of the repository) or `individual`
   (only the agent that saved it).
 - Memory is scoped by the normalised git `origin` URL: clones of one repository share notes,
