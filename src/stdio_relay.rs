@@ -244,6 +244,14 @@ struct SessionState {
     owes_list_changed: bool,
 }
 
+/// The requests [`SessionState::expire`] gave up on.
+struct Expired {
+    /// The timeout errors to answer the host with, one JSON-RPC line each, without a newline.
+    errors: Vec<String>,
+    /// The `notifications/cancelled` lines to send the backend, each ending in a newline.
+    cancels: Vec<String>,
+}
+
 impl SessionState {
     /// Track a host frame; returns the line to forward (rewritten for a keyless `post`).
     fn observe_client(&mut self, line: &str) -> String {
@@ -323,8 +331,9 @@ impl SessionState {
             .min()
     }
 
-    /// Fail every pending request older than `deadline` with a retryable timeout error.
-    fn expire(&mut self, deadline: Duration) -> Vec<String> {
+    /// Fail every pending request older than `deadline` with a retryable timeout error, and tell the
+    /// backend to stop each one, so the work the host gave up on frees its admission.
+    fn expire(&mut self, deadline: Duration) -> Expired {
         let now = tokio::time::Instant::now();
         let init_key = self.initialize_id.as_ref().map(id_key);
         let expired: Vec<String> = self
@@ -333,7 +342,10 @@ impl SessionState {
             .filter(|(key, at)| Some(*key) != init_key.as_ref() && now.duration_since(**at) >= deadline)
             .map(|(key, _)| key.clone())
             .collect();
-        let mut errors = Vec::with_capacity(expired.len());
+        let mut out = Expired {
+            errors: Vec::with_capacity(expired.len()),
+            cancels: Vec::with_capacity(expired.len()),
+        };
         for key in expired {
             self.started.remove(&key);
             self.replay.remove(&key);
@@ -344,23 +356,31 @@ impl SessionState {
                 self.abandoned.pop_front();
             }
             self.abandoned.push_back(key);
-            errors.push(
+            let reason = format!("no reply within {}s", deadline.as_secs());
+            out.errors.push(
                 serde_json::json!({
                     "jsonrpc": "2.0",
                     "id": id,
                     "error": {
                         "code": BACKEND_TIMEOUT_CODE,
                         "message": format!(
-                            "backend_timeout: no reply within {}s; the request may or may not have been applied",
-                            deadline.as_secs()
+                            "backend_timeout: {reason}; the request may or may not have been applied"
                         ),
                         "data": { "retryable": true }
                     }
                 })
                 .to_string(),
             );
+            out.cancels.push(format!(
+                "{}\n",
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/cancelled",
+                    "params": { "requestId": id, "reason": reason }
+                })
+            ));
         }
-        errors
+        out
     }
 
     /// Fail every in-flight request that cannot be replayed; replayable ones that have not yet been
@@ -552,11 +572,19 @@ where
                     }
                 } => {
                     if let Some(limit) = deadline {
-                        for error in state.expire(limit) {
+                        let expired = state.expire(limit);
+                        for error in expired.errors {
                             output.write_all(error.as_bytes()).await?;
                             output.write_all(b"\n").await?;
                         }
                         output.flush().await?;
+                        // A failed write is a dead backend, which the read half reports as EOF.
+                        for cancel in expired.cancels {
+                            if write_half.write_all(cancel.as_bytes()).await.is_err() {
+                                break;
+                            }
+                        }
+                        let _ = write_half.flush().await;
                     }
                 }
             }
