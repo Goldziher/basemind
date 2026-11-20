@@ -938,6 +938,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   submodule (`from . import views`) is an import of `views.py`. For Python this changes the
   `code_refs` `importers` and `cycles` relations, `code impact`, `code cycles` and the unreachable
   files of `code deadcode`. `RESOLVE_EPOCH` is 2: the next scan resolves every file again once.
+- A command run from a directory that was removed under it (a deleted worktree) exits `1` with
+  `read the current directory (pass --root to name the repository)` instead of panicking (#223). A
+  scan whose worker pool the OS refuses to spawn, an embedding call whose thread pool cannot be built
+  and `Broker::new` when neither the machine registry nor its fallback opens return errors too.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

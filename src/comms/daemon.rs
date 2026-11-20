@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
+use anyhow::Context;
 use tokio::sync::Mutex;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -215,21 +216,28 @@ pub struct Broker {
     pub(super) version: String,
 }
 
+/// Open the machine registry under `data`. A failure there degrades to an empty registry rooted at
+/// `fallback_dir` rather than failing the daemon: coordination tools then return empty until a
+/// workspace registers. An error only when the fallback cannot be opened either.
+pub(crate) fn open_machine_registry(
+    data: &crate::data_root::DataRoot,
+    fallback_dir: &std::path::Path,
+) -> anyhow::Result<MachineRegistry> {
+    MachineRegistry::from_data_home(data).or_else(|error| {
+        tracing::warn!(%error, "comms: machine registry open failed; coordination tools degrade to empty");
+        MachineRegistry::open(fallback_dir).context("open the fallback machine registry")
+    })
+}
+
 impl Broker {
     /// Construct a broker over an opened agent store, opening the machine registry from the
-    /// machine-global cache. A registry-open failure degrades to an empty in-memory registry (rooted
-    /// at a throwaway path) rather than failing the daemon — coordination tools then return empty
-    /// until a workspace registers. Use [`Broker::with_registry`] to inject a registry (tests).
-    pub fn new(agents: AgentHub) -> Self {
-        let registry =
-            MachineRegistry::from_data_home(&crate::data_root::DataRoot::current()).unwrap_or_else(|error| {
-                tracing::warn!(%error, "comms: machine registry open failed; using an empty in-memory registry");
-                MachineRegistry::open(
-                    &std::env::temp_dir().join(format!("basemind-registry-fallback-{}", std::process::id())),
-                )
-                .expect("open fallback registry in temp dir")
-            });
-        Self::with_registry(agents, registry)
+    /// machine-global cache through [`open_machine_registry`], with a throwaway fallback under the
+    /// temp directory. Fails only when neither registry opens. Use [`Broker::with_registry`] to
+    /// inject a registry (tests).
+    pub fn new(agents: AgentHub) -> anyhow::Result<Self> {
+        let fallback = std::env::temp_dir().join(format!("basemind-registry-fallback-{}", std::process::id()));
+        let registry = open_machine_registry(&crate::data_root::DataRoot::current(), &fallback)?;
+        Ok(Self::with_registry(agents, registry))
     }
 
     /// Construct a broker over an opened agent store and an explicit machine registry. The daemon

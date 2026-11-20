@@ -211,7 +211,7 @@ fn scan_paths_inner(
         seen,
         #[cfg(feature = "documents")]
         doc_seen,
-    } = drive_scan(&drive, &rels, store, &mut report.stats, observer);
+    } = drive_scan(&drive, &rels, store, &mut report.stats, observer)?;
 
     // A path that still exists but ended up neither kept as code nor as a document (its language
     // was disabled, it grew past the size cap, turned binary, ...) is dropped exactly as a full
@@ -291,8 +291,9 @@ fn scan_paths_inner(
     }
 
     let precise = config.code_intel.precise_resolution;
+    let pool = scanner_pool(config.resources.scan_threads)?;
     run_optional_lane(LANE_RESOLVE, || {
-        scanner_pool(config.resources.scan_threads).install(|| {
+        pool.install(|| {
             crate::intel::resolve_pass::resolve_pass_incremental(
                 root,
                 store,

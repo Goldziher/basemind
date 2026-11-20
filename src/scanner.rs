@@ -129,6 +129,9 @@ pub enum ScanError {
     /// The volume lacks room for the index; see [`crate::disk_space`].
     #[error("scan refused: {0}")]
     InsufficientSpace(#[from] crate::disk_space::InsufficientSpace),
+    /// The OS refused to spawn the scan worker pool's threads; see [`crate::scanner_file::scanner_pool`].
+    #[error("scan aborted: the scan worker pool could not be started: {0}")]
+    WorkerPool(#[from] rayon::ThreadPoolBuildError),
 }
 
 /// `node_modules (812431), .cache (194002)` — the contributor list in [`ScanError::TooManyCandidates`].
@@ -502,7 +505,7 @@ pub fn scan_with_observer(
         cancel,
     };
     let bm25_pass = crate::scanner_flush::begin_bm25_pass_if_any(store, config, true);
-    let driven = drive_scan(&drive, &candidates, store, &mut report.stats, observer);
+    let driven = drive_scan(&drive, &candidates, store, &mut report.stats, observer)?;
     let (seen_count, total_candidates) = (driven.seen.len(), candidates.len());
     // Before the cancel check and the stale purge: a drive stopped by a fatal commit failure is a ~keep
     // partial pass too, and must not be flushed or purged as if it were whole. ~keep
@@ -637,8 +640,9 @@ pub fn scan_with_observer(
         ensure_space(store)?;
         let precise = config.code_intel.precise_resolution;
         let mut resolved = false;
+        let pool = scanner_pool(config.resources.scan_threads)?;
         run_optional_lane(LANE_RESOLVE, || {
-            resolved = scanner_pool(config.resources.scan_threads).install(|| {
+            resolved = pool.install(|| {
                 crate::intel::resolve_pass::resolve_pass(root, store, precise, config.resources.max_footprint_mb)
             });
         });

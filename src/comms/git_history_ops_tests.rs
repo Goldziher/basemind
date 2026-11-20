@@ -5,7 +5,7 @@ use super::*;
 fn temp_broker() -> (tempfile::TempDir, Arc<Broker>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let agents = crate::comms::agents_hub::AgentHub::open(dir.path());
-    (dir, Arc::new(Broker::new(agents)))
+    (dir, Arc::new(Broker::new(agents).expect("broker")))
 }
 
 /// Opening one history more than the cap closes the least recently used handle nobody holds, keeps

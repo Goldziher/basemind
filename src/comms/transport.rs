@@ -226,7 +226,7 @@ mod tests {
             }
         }
         let dir = tempfile::tempdir().expect("tempdir");
-        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())));
+        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())).expect("broker"));
         let guard = broker.register_link();
         tokio::time::timeout(
             LINK_WRITE_TIMEOUT * 2,

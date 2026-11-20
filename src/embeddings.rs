@@ -184,19 +184,21 @@ pub fn resolve_embed_threads(max_threads: usize) -> usize {
 
 /// Returns the process-wide bounded rayon `ThreadPool` for ONNX embedding.
 ///
-/// Initialized once on first call with `resolve_embed_threads(max_threads)`.
+/// Initialized once on first successful call with `resolve_embed_threads(max_threads)`; a build
+/// the OS refuses (no thread can be spawned) is returned as an error and retried on the next call.
 /// All `embed_texts` calls from [`SharedEmbedder`] run inside this pool via
 /// `pool.install(...)`, which constrains xberg's internal rayon tasks (including
 /// the per-chunk embedding fan-out) to at most `current_num_threads()` workers.
-pub fn embed_pool(max_threads: usize) -> &'static rayon::ThreadPool {
-    EMBED_POOL.get_or_init(|| {
-        let n = resolve_embed_threads(max_threads);
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(n)
-            .thread_name(|i| format!("bm-embed-{i}"))
-            .build()
-            .expect("failed to build embedding rayon pool")
-    })
+pub fn embed_pool(max_threads: usize) -> Result<&'static rayon::ThreadPool> {
+    if let Some(pool) = EMBED_POOL.get() {
+        return Ok(pool);
+    }
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(resolve_embed_threads(max_threads))
+        .thread_name(|i| format!("bm-embed-{i}"))
+        .build()
+        .context("build the embedding thread pool")?;
+    Ok(EMBED_POOL.get_or_init(|| pool))
 }
 
 /// What stands in for the model in a test: the vector for a text.
@@ -416,7 +418,7 @@ impl SharedEmbedder {
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
     {
-        let pool = embed_pool(self.max_embed_threads);
+        let pool = embed_pool(self.max_embed_threads)?;
         if pool.current_thread_index().is_some() {
             // Already on an embed worker: blocking it on its own pool could starve the pool.
             return Ok(work());
