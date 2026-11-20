@@ -11,6 +11,7 @@ pub(crate) use commit::FILE_LISTINGS;
 mod diff;
 mod eol_config;
 mod export;
+mod git_form;
 mod remote;
 mod status;
 mod tracked;
@@ -46,6 +47,10 @@ pub enum GitError {
     /// A working-tree read was asked for a path that leaves the repository.
     #[error("{0} is outside this repository")]
     OutsideRepo(crate::path::RelPath),
+    /// A working-tree file could not be converted to the form git stores for it: a filter driver
+    /// failed, or the line-ending or attribute configuration could not be read.
+    #[error("cannot convert the working-tree file {path} to its git form: {msg}")]
+    Convert { path: crate::path::RelPath, msg: String },
     #[error("git error: {0}")]
     Other(String),
 }

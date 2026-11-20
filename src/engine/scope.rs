@@ -183,13 +183,17 @@ fn working_tree(repo: &Repo, rev: Option<&str>) -> Result<AHashSet<RelPath>, Eng
 }
 
 /// Whether the working tree holds `path` exactly as commit `commit` does: both absent, or both a
-/// regular file with the same bytes. Anything it cannot compare is not the same.
+/// regular file with the same bytes once the working-tree file is in the form git stores for it
+/// (line endings, clean filters). Anything it cannot compare is not the same.
 fn on_disk_as_at(repo: &Repo, commit: &str, path: &RelPath) -> Result<bool, EngineError> {
     let Ok(file) = crate::path::lexical_file(repo.workdir(), path) else {
         return Ok(false);
     };
     let on_disk = match std::fs::symlink_metadata(&file) {
-        Ok(meta) if meta.is_file() => Some(std::fs::read(&file)?),
+        Ok(meta) if meta.is_file() => match repo.to_git_form(path.as_ref(), &std::fs::read(&file)?) {
+            Ok(converted) => Some(converted),
+            Err(_) => return Ok(false),
+        },
         Ok(_) => return Ok(false),
         Err(error)
             if matches!(
