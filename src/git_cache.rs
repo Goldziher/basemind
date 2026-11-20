@@ -347,10 +347,9 @@ impl GitCache {
                 path: root.to_path_buf(),
                 source,
             })?;
-            fs::create_dir_all(root).map_err(|source| CacheError::Io {
-                path: root.to_path_buf(),
-                source,
-            })?;
+            for sub in Subdir::ALL {
+                ensure_subdir(root, sub.name())?;
+            }
             disk.reset();
         }
         category(&self.commit_files).clear();
@@ -786,6 +785,21 @@ mod tests {
         assert!(!cache.commit_files.is_poisoned());
         assert!(!cache.log.is_poisoned());
         assert!(!cache.blame.is_poisoned());
+    }
+
+    /// Disk writes land in the subdirectories, so a clear must leave every one of them in place.
+    #[test]
+    fn clear_recreates_every_disk_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = GitCache::open(dir.path(), 8, true).unwrap();
+        cache.clear().unwrap();
+        for sub in Subdir::ALL {
+            assert!(
+                dir.path().join(GIT_CACHE_DIR).join(sub.name()).is_dir(),
+                "{} survives a clear",
+                sub.name()
+            );
+        }
     }
 
     /// Opening a persistent cache no longer sweeps on the caller's thread, but it still sweeps: what
