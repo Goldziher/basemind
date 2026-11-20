@@ -124,8 +124,11 @@ def fixture(root: Path) -> Path:
     return repo
 
 
-def run(binary: Path, args: list[str], env: dict[str, str]) -> str:
-    done = subprocess.run([str(binary), *args], env=env, capture_output=True, text=True, timeout=TIMEOUT)
+def run(binary: Path, args: list[str], env: dict[str, str], timeout: float = TIMEOUT) -> str:
+    try:
+        done = subprocess.run([str(binary), *args], env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(f"basemind {' '.join(args)} did not finish within {timeout:.0f}s") from None
     if done.returncode != 0:
         raise SystemExit(f"basemind {' '.join(args)} exited {done.returncode}:\n{done.stderr.strip()}")
     return done.stdout
@@ -181,15 +184,22 @@ class Server:
 
 
 def agent_store_state(binary: Path, repo: Path, env: dict[str, str]) -> str:
-    """The agent store's state once it is no longer ``opening``, within ``STORE_OPEN_DEADLINE``."""
+    """The agent store's state once it is no longer ``opening``, within ``STORE_OPEN_DEADLINE``.
+
+    Each ``agent status`` gets only the time left before the deadline, and an answer that arrives
+    after it fails the smoke whatever state it reports.
+    """
     deadline = time.monotonic() + STORE_OPEN_DEADLINE
     while True:
-        status = json.loads(run(binary, ["--root", str(repo), "--json", "agent", "status"], env))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SystemExit(f"the agent store was still opening after {STORE_OPEN_DEADLINE}s")
+        status = json.loads(run(binary, ["--root", str(repo), "--json", "agent", "status"], env, remaining))
+        if time.monotonic() > deadline:
+            raise SystemExit(f"agent status answered after the {STORE_OPEN_DEADLINE}s deadline")
         state = status["store"]["state"]
         if state != "opening":
             return state
-        if time.monotonic() >= deadline:
-            raise SystemExit(f"the agent store was still opening after {STORE_OPEN_DEADLINE}s")
         time.sleep(STORE_POLL_INTERVAL)
 
 

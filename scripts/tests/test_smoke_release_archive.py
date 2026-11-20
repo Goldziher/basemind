@@ -70,7 +70,7 @@ class AgentStoreStateTests(unittest.TestCase):
         smoke = load_smoke()
         replies = iter([status("opening"), status("opening"), status("open")])
         with (
-            mock.patch.object(smoke, "run", side_effect=lambda *_: next(replies)) as run,
+            mock.patch.object(smoke, "run", side_effect=lambda *_, **__: next(replies)) as run,
             mock.patch.object(smoke.time, "sleep"),
         ):
             state = smoke.agent_store_state(Path("basemind"), Path("repo"), {})
@@ -86,6 +86,41 @@ class AgentStoreStateTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as raised:
                 smoke.agent_store_state(Path("basemind"), Path("repo"), {})
         self.assertEqual(str(raised.exception), "the agent store was still opening after 0s")
+
+    def test_an_immediate_open_gets_the_whole_deadline_as_its_timeout(self) -> None:
+        smoke = load_smoke()
+        with (
+            mock.patch.object(smoke, "run", return_value=status("open")) as run,
+            mock.patch.object(smoke.time, "monotonic", return_value=1000.0),
+        ):
+            state = smoke.agent_store_state(Path("basemind"), Path("repo"), {})
+        self.assertEqual(state, "open")
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[3], smoke.STORE_OPEN_DEADLINE)
+
+    def test_an_open_answered_after_the_deadline_fails_the_smoke(self) -> None:
+        """A status command that blocks past the deadline must not pass because it ends with `open`."""
+        smoke = load_smoke()
+        late = 1000.0 + smoke.STORE_OPEN_DEADLINE + 30
+        with (
+            mock.patch.object(smoke, "run", return_value=status("open")) as run,
+            mock.patch.object(smoke.time, "monotonic", side_effect=[1000.0, 1000.0, late]),
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                smoke.agent_store_state(Path("basemind"), Path("repo"), {})
+        self.assertEqual(str(raised.exception), "agent status answered after the 60s deadline")
+        self.assertEqual(run.call_args.args[3], smoke.STORE_OPEN_DEADLINE)
+
+
+class RunTests(unittest.TestCase):
+    def test_a_command_past_its_timeout_fails_the_smoke(self) -> None:
+        smoke = load_smoke()
+        expired = smoke.subprocess.TimeoutExpired(cmd=["basemind"], timeout=5)
+        with mock.patch.object(smoke.subprocess, "run", side_effect=expired) as run:
+            with self.assertRaises(SystemExit) as raised:
+                smoke.run(Path("basemind"), ["agent", "status"], {}, 5)
+        self.assertEqual(str(raised.exception), "basemind agent status did not finish within 5s")
+        self.assertEqual(run.call_args.kwargs["timeout"], 5)
 
 
 class MissingNoticesTests(unittest.TestCase):
