@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:8119de89f6686713f6c6b78ae02eb616e9f10050d1fff43914c6a7882738f7f5
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:4095badd412b1677830e2afa72e9cdf33d41f6a22cb73438836c4d5c31849dcd
+Source-Hash: blake3:2c2d53f0b84699454bf3f753ae0f38ea3a40928c5e2f3c4abbae7a3a7ad0d98a
 Schema-Version: v1
 -->
 
@@ -37,7 +37,9 @@ no tool covers the question.
 - **`code_grep` instead of shelling out to ripgrep.** It sweeps every indexed code file (a trigram
   filter skips files that cannot match) and returns each hit's line and enclosing symbol.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
-- **`index_rescan` after you edit code**, not a server reconnect. Pass `paths` to limit it.
+- **The index follows your edits**: no rescan and no server reconnect after each one. If a result
+  says `stale` or a new file is missing, run `index_rescan {"paths":["src/store.rs"]}` for the files
+  you touched; run `index_rescan {}` only when `index_status` reports an empty or degraded index.
 
 ## Tool routing
 
@@ -60,7 +62,7 @@ no tool covers the question.
 | "Which file is named like X?" | `find_files {"query":"readme"}` | `basemind code find readme` |
 | "What files are indexed under a directory?" | `find_files {"path_prefix":"src/mcp/"}` | `basemind code files --path-prefix src/mcp/` |
 | "What's indexed?" | `index_status {}` | `basemind status` |
-| "Refresh the index after editing?" | `index_rescan {"paths":["src/store.rs"]}` | `basemind rescan src/store.rs` |
+| "A result says stale, or a new file is missing?" | `index_rescan {"paths":["src/store.rs"]}` | `basemind rescan src/store.rs` |
 | "Fetch the next page?" | pass the response's `next_cursor` back as `cursor` | `--cursor <next_cursor>` |
 
 ## Examples

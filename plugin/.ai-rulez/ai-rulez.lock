@@ -4,13 +4,13 @@
 version = 1
 ai_rulez_version = '5.14.0'
 scope = 'all'
-tree = 'sha256:3f31ae2980b4395a31b64e8100ac62d91ddfe99e41b11de23384d40d209256ef'
+tree = 'sha256:cba8c9e552891f14e3c52e3fc8d68b99b5deae60c3aa84373ea20b1e8af5ecd2'
 
 [[item]]
 kind = 'command'
 id = 'bm'
 path = 'commands/bm.md'
-digest = 'sha256:a9aec4b265c9c99c6b09f2200ca495b53d3f59c6e16d93348e7ca785f6e78395'
+digest = 'sha256:01e9bc6b8431a012bda35724e1a772223ce123a7dc6ada6cae79d201b6f3e4c8'
 
 [[item]]
 kind = 'command'
@@ -28,7 +28,7 @@ digest = 'sha256:bb884817fc4c932f2dc5626a4e65672e221938702f3b33115d7434f809c0ec5
 kind = 'command'
 id = 'bm-scan'
 path = 'commands/bm-scan.md'
-digest = 'sha256:8e29e03df9c43cb533a9dca986a183fc194df07aff946bfbdae81f0795b79eed'
+digest = 'sha256:4cbd259b7c5f1f9aa2c4821574bc49965b0c1789fe92562001a07e23f6f86a97'
 
 [[item]]
 kind = 'command'
@@ -46,19 +46,19 @@ digest = 'sha256:97e4cf0bb225e72bab95c0e967264d9176013f89c8c8a7f98fae1ebe1cc6721
 kind = 'skill'
 id = 'basemind'
 path = 'skills/basemind'
-digest = 'sha256:36a0f7e455637cbc2e55d4ca731dc2af4471765b06ddae0f4b40952b46fb4fb9'
+digest = 'sha256:f3768d80a35b440530c4711042894a607005f63e6bcdedd29f45122a50f4010b'
 
 [[item]]
 kind = 'skill'
 id = 'basemind-cli'
 path = 'skills/basemind-cli'
-digest = 'sha256:c511f8e01d352723c45cf019273330fc613a40a3ca4a40be62a90787515d0926'
+digest = 'sha256:df5d70c5ff8fdbf4c37a5bc1a97876617e1087a4202f82df7017fe8c9d216651'
 
 [[item]]
 kind = 'skill'
 id = 'basemind-code-search'
 path = 'skills/basemind-code-search'
-digest = 'sha256:26f710aad42ae66bbd41350bbe3a5c0a0da846bc2b022af888b2bdb00cec4470'
+digest = 'sha256:0a4efbfebc6ad5f8143fdd86018f14a2f97bb02c20763b18a3104f17f2284ac6'
 
 [[item]]
 kind = 'skill'
@@ -70,7 +70,7 @@ digest = 'sha256:cbd309679c48f6c6911aee50cfa6fc53b3e1bdc5b24a921b9ae2574ade60635
 kind = 'skill'
 id = 'basemind-doctor'
 path = 'skills/basemind-doctor'
-digest = 'sha256:5d5e78b9fa6baee5e302cd42454f9b127e7a375e87acb751fa062ada79497dcc'
+digest = 'sha256:27c0eb012b84441bb8d175df74222e5583c461364fd525cf1f569a6463d81083'
 
 [[item]]
 kind = 'skill'
@@ -94,7 +94,7 @@ digest = 'sha256:9af0de879f1e2f213d07e3f65fada08f2e7c302498913f9ff019bbf21bfebfe
 kind = 'skill'
 id = 'basemind-scan'
 path = 'skills/basemind-scan'
-digest = 'sha256:25773c5f1c4b80f668cf4c39380bcdb40d114309ff484d5daea7b3ee6aa38ce9'
+digest = 'sha256:d672f4573544f820edca327e2f1d6d6c680ccf33248e134291ded2c04e23f1f8'
 
 [[item]]
 kind = 'skill'

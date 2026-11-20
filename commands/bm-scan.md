@@ -7,8 +7,8 @@ name: bm-scan
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:1169aeb0143ceddd5f8f23ab0f6b02a17ec71069d0304a703ab9faea94e581fb
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:30438731882e303b5f0e2ab67f644400b7d47b947069ef56f774054c0e869283
+Source-Hash: blake3:2c2d53f0b84699454bf3f753ae0f38ea3a40928c5e2f3c4abbae7a3a7ad0d98a
 Schema-Version: v1
 -->
 
@@ -19,7 +19,7 @@ Run `basemind scan` via the CLI so the code map exists and is current.
 ## When to use
 
 basemind (or its statusline) reports "no index" / "no indexed files", an MCP tool returns empty
-results that shouldn't be empty, or the index is stale after large changes.
+results that shouldn't be empty, or `index_status` reports a degraded index.
 
 ## How to use
 

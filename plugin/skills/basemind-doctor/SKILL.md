@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:b0de18f0091cabff22c1b5899b4b4131c12da5d287d4b7982eac905c11abc00b
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:3b7384c541d89c6d948aefa088bd7e69eb6065415a36b43baae644739e5a0eee
+Source-Hash: blake3:2c2d53f0b84699454bf3f753ae0f38ea3a40928c5e2f3c4abbae7a3a7ad0d98a
 Schema-Version: v1
 -->
 
@@ -57,8 +57,9 @@ directory under the machine-global cache (Linux `~/.local/share/basemind/`, macO
 `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`), keyed by workspace — not
 in the repo.
 
-- If that `pid` is **alive** (`ps -p <pid>`), the server is up — use the MCP tools, and
-  `index_rescan {}` or `basemind rescan` to refresh. Don't run a CLI `scan` (it will contend on the lock and exit 3).
+- If that `pid` is **alive** (`ps -p <pid>`), the server is up — use the MCP tools; it keeps the
+  index fresh as you edit. For a file a result calls stale, run `index_rescan {"paths":["src/store.rs"]}`
+  or `basemind rescan src/store.rs`. Don't run a CLI `scan` (it will contend on the lock and exit 3).
 - If that `pid` is **dead**, the lock is stale. The OS releases the advisory lock when a process
   dies, so a fresh `basemind scan` / `basemind serve` should just work — retry it. (You may delete
   the stale `.lock.meta` sidecar in that workspace cache dir to clear the advisory holder record.)

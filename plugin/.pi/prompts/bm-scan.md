@@ -6,8 +6,8 @@ description: Build or refresh the basemind index by running `basemind scan` via 
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:e69a233418e2678e1a9d84d48991ca59046bcc3ae1bb9b57c795a0bc684bcf40
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:51dec275725d416569246922b47e8023ac112486ba6c92cb757e1c715f078c39
+Source-Hash: blake3:2c2d53f0b84699454bf3f753ae0f38ea3a40928c5e2f3c4abbae7a3a7ad0d98a
 Schema-Version: v1
 -->
 
@@ -18,7 +18,7 @@ Run `basemind scan` via the CLI so the code map exists and is current.
 ## When to use
 
 basemind (or its statusline) reports "no index" / "no indexed files", an MCP tool returns empty
-results that shouldn't be empty, or the index is stale after large changes.
+results that shouldn't be empty, or `index_status` reports a degraded index.
 
 ## How to use
 

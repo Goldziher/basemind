@@ -1,5 +1,5 @@
 ---
-description: Build or refresh the basemind index by running `basemind scan` via the CLI. Use this when basemind reports "no index" / "no indexed files", when the MCP server isn't available, or after large changes when the index is stale. Works without the MCP server — it shells the basemind binary directly.
+description: Build or refresh the basemind index by running `basemind scan` via the CLI. Use this when basemind reports "no index" / "no indexed files", when the MCP server isn't available, or when `index_status` reports a degraded index. Works without the MCP server — it shells the basemind binary directly.
 name: basemind-scan
 license: MIT
 metadata:
@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:769035726f8df4af4a77c5bb9e10c33e2ad8f5396f4e1f7787de0c530ec827e1
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:45bc0903d84dcc05069572142d9dafc8889b0d872deb81cb4c96948931955078
+Source-Hash: blake3:2c2d53f0b84699454bf3f753ae0f38ea3a40928c5e2f3c4abbae7a3a7ad0d98a
 Schema-Version: v1
 -->
 
@@ -28,7 +28,8 @@ basemind answers code-map questions from an index in a machine-global cache (Lin
 - basemind / the statusline reports **no index** for this repo.
 - An MCP tool returns "no indexed files" or empty results that should not be empty.
 - The MCP server isn't running or isn't reachable, and you need the code map.
-- The index is stale after large changes and you want a full rebuild.
+- `index_status` reports a degraded index (`rescan_needed`) and you want a full rebuild. A running
+  server already re-indexes the files you edit.
 
 ## How to run
 
