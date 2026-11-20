@@ -446,6 +446,7 @@ mod tests {
     fn touching(index: &GitHistoryIndex, path: &str) -> Vec<String> {
         index
             .commits_touching(&RelPath::from(path.as_bytes()), 0, 100)
+            .expect("read the posting list")
             .into_iter()
             .map(|c| c.sha)
             .collect()

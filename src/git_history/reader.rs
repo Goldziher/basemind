@@ -6,7 +6,7 @@
 
 use ahash::AHashMap;
 
-use super::{CommitMeta, GitHistoryIndex, LocalDb, encoding, keys};
+use super::{CommitMeta, GitHistoryError, GitHistoryIndex, LocalDb, encoding, keys};
 use crate::git::CommitInfo;
 use crate::path::RelPath;
 
@@ -16,7 +16,14 @@ type PathCache<'a> = AHashMap<u32, RelPath>;
 impl GitHistoryIndex {
     /// Commits that touched `rel`, newest-first, after skipping `skip` and taking at most `take`.
     /// Files are omitted (parity with the live `commits_touching`, which passes `include_files=false`).
-    pub fn commits_touching(&self, rel: &RelPath, skip: usize, take: usize) -> Vec<CommitInfo> {
+    /// An empty list is the answer for a path no indexed commit touches; a lookup that failed is an
+    /// error, never an empty list.
+    pub fn commits_touching(
+        &self,
+        rel: &RelPath,
+        skip: usize,
+        take: usize,
+    ) -> Result<Vec<CommitInfo>, GitHistoryError> {
         self.local().commits_touching(rel, skip, take)
     }
 
@@ -33,20 +40,22 @@ impl GitHistoryIndex {
 }
 
 impl LocalDb {
-    fn commits_touching(&self, rel: &RelPath, skip: usize, take: usize) -> Vec<CommitInfo> {
-        let Some(path_id) = self.path_id(rel) else {
-            return Vec::new();
+    fn commits_touching(&self, rel: &RelPath, skip: usize, take: usize) -> Result<Vec<CommitInfo>, GitHistoryError> {
+        let Some(path_id) = self.stored_path_id(rel)? else {
+            return Ok(Vec::new());
         };
-        let Some(buf) = self.posting_bytes(path_id) else {
-            return Vec::new();
+        let Some(buf) = self.stored_posting(path_id)? else {
+            return Ok(Vec::new());
         };
         let ords = encoding::decode_ords_head(&buf, skip.saturating_add(take));
         let mut cache = PathCache::new();
         ords.into_iter()
             .skip(skip)
             .take(take)
-            .filter_map(|ord| self.commit_meta(ord, false))
-            .map(|meta| self.meta_to_info(meta, &mut cache))
+            .map(|ord| {
+                self.stored_commit(ord, false)
+                    .map(|meta| self.meta_to_info(meta, &mut cache))
+            })
             .collect()
     }
 
