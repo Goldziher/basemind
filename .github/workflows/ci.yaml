@@ -64,6 +64,16 @@ jobs:
       - uses: ./.github/actions/setup-rust
       - run: python3 scripts/check_vendored_crates.py
 
+  # ~keep The publish workflows hold registry publish rights; a force-pushed tag of an action they
+  # ~keep run would publish with them, so every action there is pinned to a commit SHA.
+  pinned-actions:
+    name: publish actions are pinned to commit SHAs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 scripts/check_pinned_actions.py
+
   toolchain:
     name: toolchain baseline
     runs-on: ubuntu-latest
