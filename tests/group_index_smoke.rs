@@ -3,7 +3,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use basemind::config::ConfigV1;
 use basemind::index::view::IndexView;
@@ -15,7 +14,7 @@ fn layout() {
 }
 
 fn git(args: &[&str], cwd: &Path) {
-    let out = Command::new("git")
+    let out = basemind::testing::git_command()
         .args(args)
         .current_dir(cwd)
         .output()

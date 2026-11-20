@@ -15,7 +15,6 @@
 #![cfg(feature = "code-intel-stack")]
 
 use std::path::Path;
-use std::process::Command;
 
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
@@ -24,13 +23,9 @@ use tempfile::TempDir;
 
 /// Run a `git` command in `repo`, propagating identity env vars so CI works.
 fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .status()
         .expect("git in PATH");
     assert!(status.success(), "git {args:?} failed in {}", repo.display());

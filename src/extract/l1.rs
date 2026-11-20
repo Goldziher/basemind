@@ -831,7 +831,7 @@ pub fn locked() {}
     #[test]
     fn java_function_locals_are_not_symbols() {
         let src = b"class A {\n  int field = 1;\n  void m() { int local = 2; }\n}\n";
-        let Ok(map) = extract_l1("java", src) else { return };
+        let map = extract_l1("java", src).expect("extract");
         let names = names_of(&map);
         assert!(names.contains(&"A") && names.contains(&"m"), "{names:?}");
         assert!(!names.contains(&"local"), "{names:?}");
@@ -840,11 +840,16 @@ pub fn locked() {}
     #[test]
     fn c_function_locals_are_not_symbols() {
         let src = b"int top = 1;\nint f(void) { int local = 2; return local; }\n";
-        let Ok(map) = extract_l1("c", src) else { return };
-        let names = names_of(&map);
-        if names.is_empty() {
-            return; // no symbol query for this grammar in this environment
+        let _ = crate::lang::ensure_grammars();
+        if !matches!(crate::lang::try_get_combined_l1_query("c"), Ok(Some(_))) {
+            crate::testing::unavailable(
+                "BASEMIND_TEST_ALLOW_NO_GRAMMAR",
+                "the c grammar or its symbol query is unavailable",
+            );
+            return;
         }
+        let map = extract_l1("c", src).expect("extract");
+        let names = names_of(&map);
         assert!(names.contains(&"f"), "{names:?}");
         assert!(!names.contains(&"local"), "{names:?}");
     }

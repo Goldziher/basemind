@@ -21,7 +21,6 @@
 //! Scope: HEAD/current-branch, matching plain `git log <sha>` (NOT `git log --all`).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use basemind::git::Repo;
 use basemind::git_history::GitHistoryIndex;
@@ -30,7 +29,7 @@ use basemind::git_history::fts::FtsScope;
 
 /// `git -C <repo> <args>` → trimmed stdout lines (drops the trailing empty line).
 fn git_lines(repo: &Path, args: &[&str]) -> Vec<String> {
-    let out = Command::new("git")
+    let out = basemind::testing::git_command()
         .arg("-C")
         .arg(repo)
         .args(args)

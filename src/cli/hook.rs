@@ -163,7 +163,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         let git = |cwd: &Path, args: &[&str]| {
-            let status = Command::new("git")
+            let status = crate::testing::git_command()
                 .current_dir(cwd)
                 .args(["-c", "user.name=t", "-c", "user.email=t@t"])
                 .args(args)

@@ -17,7 +17,7 @@ fn a_scan_is_refused_when_the_volume_is_below_the_headroom() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     assert!(
-        std::process::Command::new("git")
+        basemind::testing::git_command()
             .args(["init", "--quiet"])
             .current_dir(root)
             .status()

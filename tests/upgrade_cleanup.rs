@@ -8,7 +8,6 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use basemind::config::ConfigV1;
@@ -23,7 +22,10 @@ fn fixture(salt: &str) -> (TempDir, ConfigV1) {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    let _ = Command::new("git").args(["init", "-q"]).current_dir(root).status();
+    let _ = basemind::testing::git_command()
+        .args(["init", "-q"])
+        .current_dir(root)
+        .status();
     // Salted so the process-shared content-addressed blob cache never serves another test's blob.
     fs::write(root.join("app.py"), format!("# {salt}\n{PY}")).unwrap();
     fs::write(

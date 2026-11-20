@@ -64,6 +64,7 @@ pub(crate) mod scanner_drive;
 pub mod scanner_file;
 pub(crate) mod scanner_filter;
 pub(crate) mod scanner_flush;
+pub mod scanner_hold;
 pub(crate) mod scanner_index_batch;
 pub(crate) mod scanner_integrity;
 pub mod scanner_lanes;
@@ -123,5 +124,43 @@ pub mod testing {
             "{what}. Nothing was checked. Set {allow}=1 to skip this where it cannot be provided."
         );
         let _ = writeln!(std::io::stderr().lock(), "SKIP ({allow}): {what}");
+    }
+
+    /// The null device, which `GIT_CONFIG_GLOBAL` takes as an empty global config (git and gix
+    /// both name it `nul` on Windows).
+    pub const NULL_DEVICE: &str = if cfg!(windows) { "nul" } else { "/dev/null" };
+
+    /// A `git` command isolated from the host's git configuration, so its `core.hooksPath`,
+    /// `commit.gpgsign`, `core.autocrlf` or `init.defaultBranch` cannot reach a test: no system
+    /// config, an empty global config, `HOME` and `XDG_CONFIG_HOME` in an empty directory of their
+    /// own (git's default ignore and attributes files live there), no config passed down through
+    /// the environment, and a fixed author and committer. A caller's own `.env` still overrides.
+    pub fn git_command() -> std::process::Command {
+        let home = isolated_git_home();
+        let mut command = std::process::Command::new("git");
+        command
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", NULL_DEVICE)
+            .env("HOME", home)
+            .env("XDG_CONFIG_HOME", home)
+            .env_remove("GIT_CONFIG_PARAMETERS")
+            .env_remove("GIT_CONFIG_COUNT")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@e.x")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@e.x");
+        command
+    }
+
+    /// The empty directory [`git_command`] points `HOME` at, shared by every test process and
+    /// never written to.
+    fn isolated_git_home() -> &'static std::path::Path {
+        static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        HOME.get_or_init(|| {
+            let dir = std::env::temp_dir().join("basemind-test-git-home");
+            std::fs::create_dir_all(&dir)
+                .unwrap_or_else(|error| panic!("create the isolated git home {}: {error}", dir.display()));
+            dir
+        })
     }
 }

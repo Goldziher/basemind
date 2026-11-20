@@ -54,7 +54,7 @@ async fn a_hook_in_a_subdirectory_acts_as_the_serve_session() {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     assert!(
-        Command::new("git")
+        basemind::testing::git_command()
             .args(["init", "-q"])
             .current_dir(root)
             .status()

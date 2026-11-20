@@ -15,7 +15,6 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use basemind::config::ConfigV1;
@@ -54,7 +53,10 @@ fn fixture() -> (TempDir, ConfigV1) {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    let _ = Command::new("git").args(["init", "-q"]).current_dir(root).status();
+    let _ = basemind::testing::git_command()
+        .args(["init", "-q"])
+        .current_dir(root)
+        .status();
     let salt = root.display().to_string();
     for name in DOC_NAMES {
         fs::write(root.join(name), doc_body(name, &salt)).expect("write fixture doc");

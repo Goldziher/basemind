@@ -94,11 +94,10 @@ struct BindAddr {
     configured: bool,
 }
 
-/// Resolve the address to bind: [`HTTP_ADDR_ENV`] when set and non-blank, else [`DEFAULT_HTTP_ADDR`].
-fn resolve_addr() -> Result<BindAddr> {
-    let configured = std::env::var(HTTP_ADDR_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty());
+/// Resolve the address to bind from the [`HTTP_ADDR_ENV`] value: it when set and non-blank, else
+/// [`DEFAULT_HTTP_ADDR`].
+fn resolve_addr(env_value: Option<String>) -> Result<BindAddr> {
+    let configured = env_value.filter(|value| !value.trim().is_empty());
     let raw = configured.as_deref().unwrap_or(DEFAULT_HTTP_ADDR);
     let addr = raw
         .parse::<SocketAddr>()
@@ -497,7 +496,7 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
         return Ok(());
     }
     let token = HttpToken::generate()?;
-    let bind = resolve_addr()?;
+    let bind = resolve_addr(std::env::var(HTTP_ADDR_ENV).ok())?;
     let addr = bind.addr;
     if !addr.ip().is_loopback() {
         tracing::warn!(
@@ -675,22 +674,29 @@ mod tests {
     }
 
     #[test]
-    fn resolve_addr_defaults_and_honors_env() {
-        // Default when unset.
-        // SAFETY: single-threaded test; no other thread reads the env concurrently.
-        unsafe { std::env::remove_var(HTTP_ADDR_ENV) };
-        let default = resolve_addr().expect("default parses");
-        assert_eq!(default.addr.to_string(), DEFAULT_HTTP_ADDR);
-        assert!(!default.configured);
-        unsafe { std::env::set_var(HTTP_ADDR_ENV, "127.0.0.1:0") };
+    fn resolve_addr_defaults_when_unset_or_blank_and_honors_a_set_value() {
+        let default = BindAddr {
+            addr: DEFAULT_HTTP_ADDR.parse::<SocketAddr>().unwrap(),
+            configured: false,
+        };
+        assert_eq!(resolve_addr(None).expect("default parses"), default);
+        assert_eq!(resolve_addr(Some("  ".to_string())).expect("blank is unset"), default);
         assert_eq!(
-            resolve_addr().expect("env parses"),
+            resolve_addr(Some("127.0.0.1:0".to_string())).expect("value parses"),
             BindAddr {
                 addr: "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
                 configured: true,
             }
         );
-        unsafe { std::env::remove_var(HTTP_ADDR_ENV) };
+    }
+
+    #[test]
+    fn resolve_addr_rejects_a_value_that_is_not_a_socket_address() {
+        let error = resolve_addr(Some("localhost".to_string())).expect_err("no port");
+        assert_eq!(
+            error.to_string(),
+            format!("parse {HTTP_ADDR_ENV}=\"localhost\" as a host:port socket address")
+        );
     }
 
     /// Two generations' daemons both prefer the default port. The second must still get a

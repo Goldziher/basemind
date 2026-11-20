@@ -107,6 +107,7 @@ pub(crate) fn run_candidates(
                 if cancel.is_cancelled() || store.index_db.as_ref().is_some_and(IndexDb::has_fatal_fault) {
                     return false;
                 }
+                crate::scanner_hold::hold_while_gated(cancel);
                 // One file whose extraction panics is reported failed and keeps its prior rows ~keep
                 // (`keeps_prior_entry`); unwinding would fail this scan and every later one. ~keep
                 let result = crate::scanner_lanes::contain_panic(|| {

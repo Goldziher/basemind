@@ -6,7 +6,7 @@ use crate::path::RelPath;
 use crate::store::{INDEX_FILE, Store, VIEW_STAGED, VIEW_WORKING};
 
 fn git(args: &[&str], cwd: &Path) {
-    let out = std::process::Command::new("git")
+    let out = crate::testing::git_command()
         .args(args)
         .current_dir(cwd)
         .output()

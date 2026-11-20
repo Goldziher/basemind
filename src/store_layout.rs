@@ -600,6 +600,10 @@ pub fn init_isolated_cache() {
             // A literal key, not the `comms::singleton::COMMS_DIR_ENV` constant: that module is
             // feature-gated, this helper is not. ~keep
             std::env::set_var("BASEMIND_COMMS_DIR", comms_dir);
+            // The host's git configuration (a signing requirement, a hooks path, `core.autocrlf`)
+            // must reach neither gix in this process nor any git or basemind child. ~keep
+            std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+            std::env::set_var("GIT_CONFIG_GLOBAL", crate::testing::NULL_DEVICE);
             if let Some(grammars) = &grammars {
                 std::env::set_var(GRAMMAR_CACHE_DIR_ENV, grammars);
             }

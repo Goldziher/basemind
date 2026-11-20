@@ -4,13 +4,12 @@
 //! enumeration path end to end. Each test uses its own registry directory for isolation.
 
 use std::path::Path;
-use std::process::Command;
 
 use super::*;
 
 /// Run a git command in `cwd`, asserting success.
 fn git(args: &[&str], cwd: &Path) {
-    let out = Command::new("git")
+    let out = crate::testing::git_command()
         .args(args)
         .current_dir(cwd)
         .output()
@@ -24,7 +23,7 @@ fn git(args: &[&str], cwd: &Path) {
 
 /// Run a git command in `cwd` and return trimmed stdout.
 fn git_capture(args: &[&str], cwd: &Path) -> String {
-    let out = Command::new("git")
+    let out = crate::testing::git_command()
         .args(args)
         .current_dir(cwd)
         .output()

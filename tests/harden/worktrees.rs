@@ -214,7 +214,7 @@ fn measure_worktree(root: &Path, label: &str, commit: &str, diff_files: usize) -
 }
 
 fn git(repo: &Path, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("git")
+    let out = basemind::testing::git_command()
         .arg("-C")
         .arg(repo)
         .args(args)

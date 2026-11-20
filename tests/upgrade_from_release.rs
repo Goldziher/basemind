@@ -293,7 +293,7 @@ fn fixture(tmp: &Path, daemon_bins: &[&Path]) -> Env {
     write("basemind.toml", "\"$schema\" = \"v1\"\n\n[documents]\nembed = false\n");
     // Two real commits, so the git history every version indexes has something to carry over.
     let git = |args: &[&str]| {
-        let status = Command::new("git")
+        let status = basemind::testing::git_command()
             .args(["-c", "user.name=upgrade", "-c", "user.email=upgrade@example.invalid"])
             .args(["-c", "commit.gpgsign=false"])
             .args(args)

@@ -5,7 +5,6 @@
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
 use std::path::Path;
-use std::process::Command;
 
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
@@ -17,7 +16,7 @@ use tokio::process::Command as AsyncCommand;
 fn repo() -> tempfile::TempDir {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(["init", "-q"])
         .current_dir(dir.path())
         .status()

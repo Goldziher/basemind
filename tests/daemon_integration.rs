@@ -193,7 +193,7 @@ async fn hosted_tool_call(
 
 /// Run a git command in `cwd`, asserting success.
 fn git(args: &[&str], cwd: &Path) {
-    let out = Command::new("git")
+    let out = basemind::testing::git_command()
         .args(["-c", "commit.gpgsign=false"])
         .args(args)
         .current_dir(cwd)

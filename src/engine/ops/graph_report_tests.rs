@@ -83,13 +83,9 @@ pub(in crate::engine::ops) fn write(root: &std::path::Path, rel: &str, body: &st
 
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 pub(in crate::engine::ops) fn git(root: &std::path::Path, args: &[&str]) {
-    let status = std::process::Command::new("git")
+    let status = crate::testing::git_command()
         .args(args)
         .current_dir(root)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .status()
         .expect("git in PATH");
     assert!(status.success(), "git {args:?} failed");
