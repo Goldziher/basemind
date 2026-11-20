@@ -869,10 +869,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git worktree list` no longer lists it; it is recognised in a directory that holds the
   repository's live worktrees and no other repository. A Codex reply that calls no tool right
   after a fork point now counts its output tokens: a copied token count is told by its cumulative
-  totals, not by the call before it. A Claude Code project directory whose slug is exactly 200
+  totals within the thread it descends from, not by the call before it, so unrelated conversations
+  with equal totals each count theirs. A Claude Code project directory whose slug is exactly 200
   characters is matched whole, as Claude Code keeps it, and a longer one only by its first 200
-  characters followed by `-`. The transcript roots are under `HOME`, or under `USERPROFILE` on
-  Windows when it is set.
+  characters followed by `-`. The transcript roots are under the home directory: `HOME` on Unix,
+  else the account's home directory; on Windows `USERPROFILE` when it is set, else the account's
+  profile directory. An empty home is refused rather than read as the current directory.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
