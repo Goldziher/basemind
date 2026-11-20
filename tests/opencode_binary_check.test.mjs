@@ -7,7 +7,13 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { checkBinary, packageVersion, versionMinor } from "../opencode-plugin/binary-check.js";
+import {
+  checkBinary,
+  isNotFound,
+  packageVersion,
+  versionInvocation,
+  versionMinor,
+} from "../opencode-plugin/binary-check.js";
 
 const posix = { skip: process.platform === "win32" && "the stub binary is a POSIX shell script" };
 
@@ -86,3 +92,33 @@ test("a binary that hangs is stopped and not registered", posix, async () => {
     message: `basemind: \`basemind --version\` failed (no answer within 200 ms), so the basemind MCP server is not registered. Reinstall it with ${install}, then restart OpenCode.`,
   });
 });
+
+test("a binary that ignores SIGTERM is killed at the timeout and not registered", posix, async () => {
+  assert.deepEqual(await check("trap '' TERM\nexec /bin/sleep 10", { timeoutMs: 200 }), {
+    status: "missing",
+    message: `basemind: \`basemind --version\` failed (no answer within 200 ms), so the basemind MCP server is not registered. Reinstall it with ${install}, then restart OpenCode.`,
+  });
+});
+
+for (const [platform, invocation] of [
+  ["win32", { file: "basemind --version", args: [], shell: true }],
+  ["linux", { file: "basemind", args: ["--version"], shell: false }],
+  ["darwin", { file: "basemind", args: ["--version"], shell: false }],
+]) {
+  test(`on ${platform} the version probe runs ${invocation.shell ? "through" : "without"} a shell`, () => {
+    assert.deepEqual(versionInvocation(platform), invocation);
+  });
+}
+
+for (const [error, shell, notFound] of [
+  [{ code: "ENOENT" }, false, true],
+  [{ code: "ENOENT" }, true, true],
+  [{ code: 9009 }, true, true],
+  [{ code: 9009 }, false, false],
+  [{ code: 1 }, true, false],
+  [null, true, false],
+]) {
+  test(`a spawn error ${JSON.stringify(error)} with shell ${shell} is ${notFound ? "" : "not "}a missing binary`, () => {
+    assert.equal(isNotFound(error, shell), notFound);
+  });
+}
