@@ -94,8 +94,10 @@ skip = []
 skip-tree = []
 
 [sources]
-unknown-registry = "warn"
-unknown-git = "warn"
+# crates.io refuses a crate with a git or other-registry dependency, so one fails here, not on
+# release day. Cargo.lock uses crates.io only; allow a new source here deliberately.
+unknown-registry = "deny"
+unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
 
