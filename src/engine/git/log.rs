@@ -15,6 +15,7 @@ use super::show::{budget_commits, budget_commits_with_files, run_show};
 use crate::engine::budget::budget;
 use crate::engine::error::EngineError;
 use crate::engine::timing::elapsed_us;
+use crate::engine::types::UNINDEXED_SCAN;
 use crate::engine::types::git::{
     BlameFileParams, BlameSymbolParams, CommitView, CommitsTouchingParams, CommitsTouchingResponse, DiffFileParams,
     DiffOutlineParams, FindCommitsByPathParams, GitBlameParams, GitBlameResult, GitDiffParams, GitDiffResult,
@@ -660,7 +661,7 @@ fn by_author(
 /// The `search` operation: full-text search over git history. Uses the git-history inverted
 /// index when it is fresh (`last_indexed_head == HEAD`), searching author name + email + summary +
 /// full body; otherwise degrades to a bounded live walk over the recent window, flagged
-/// `truncated` with reason `live_walk` (author + summary only, no body). Pagination and the HEAD-scoped cursor mirror `recent`.
+/// `truncated` with reason `unindexed_scan` (author + summary only, no body). Pagination and the HEAD-scoped cursor mirror `recent`.
 fn run_search(ws: &Workspace, params: SearchGitHistoryParams) -> Result<SearchGitHistoryResponse, EngineError> {
     let repo = require_git_repo(ws)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
@@ -725,7 +726,7 @@ fn run_search(ws: &Workspace, params: SearchGitHistoryParams) -> Result<SearchGi
                 .take(want)
                 .cloned()
                 .collect();
-            (matched, Some("live_walk"))
+            (matched, Some(UNINDEXED_SCAN))
         }
     };
 

@@ -110,6 +110,14 @@ pub(crate) fn default_true() -> bool {
 /// `truncated_reason` of a scan that stopped at its cap before the end of the matches.
 pub(crate) const SCAN_CAP: &str = "scan_cap";
 
+/// `truncated_reason` of a git answer that the git-history index could not serve, so a bounded
+/// scan of the newest commits answered instead.
+pub(crate) const UNINDEXED_SCAN: &str = "unindexed_scan";
+
+/// `truncated_reason` of a history page that used up its span of commits before filling: older
+/// commits were not inspected, and `next_cursor` continues with them.
+pub(crate) const SPAN_LIMIT: &str = "span_limit";
+
 #[cfg(test)]
 mod tests {
     #[test]

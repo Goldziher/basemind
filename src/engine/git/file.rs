@@ -15,6 +15,7 @@ use super::log::{history_page, reject_external_path, walk_cursor};
 use crate::engine::error::EngineError;
 use crate::engine::pick::pick_symbol;
 use crate::engine::timing::elapsed_us;
+use crate::engine::types::SPAN_LIMIT;
 use crate::engine::types::code::{kind_to_str, parse_kind};
 use crate::engine::types::git::{
     BlameFileParams, BlameHunks, BlameResponse, BlameSymbolParams, BlameSymbolResponse, DiffFileParams,
@@ -591,7 +592,7 @@ pub(super) fn run_symbol_history(
     };
     let window_edge = window_exhausted && offsets.len() <= page.len();
     let truncated_reason = if window_edge {
-        Some("window")
+        Some(SPAN_LIMIT)
     } else if repo.is_shallow() {
         Some("shallow_clone")
     } else {

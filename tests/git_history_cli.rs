@@ -261,7 +261,7 @@ mod with_daemon {
     }
 
     /// The honest fallback survives: when the daemon has no index it can read for the repo, the CLI
-    /// live-walks — and SAYS SO (`truncated`, reason `live_walk`) rather than pretending the answer is
+    /// live-walks — and SAYS SO (`truncated`, reason `unindexed_scan`) rather than pretending the answer is
     /// complete.
     ///
     /// "Never indexed" alone is not that state: the forwarded call makes the daemon host the
