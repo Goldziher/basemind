@@ -1,6 +1,5 @@
 //! Read ranges: hit lines grouped by file and widened into the fewest line spans that cover them,
-//! so an agent reads each region around its hits once (`code_grep` / `code_refs` with `ranges`,
-//! `code_read` with `ranges`, the migration check and the briefing call).
+//! so an agent reads each region around its hits once (the migration check's `ranges`).
 //!
 //! The contract later callers rely on:
 //!
@@ -15,20 +14,19 @@
 //! - A line budget keeps whole spans in order until the next one does not fit; that one is cut to
 //!   the lines left when the cut still covers one of its hits, and every later span is left out.
 //!   A cut sets [`MergedRanges::truncated`] and counts what it left out in
-//!   [`MergedRanges::omitted_hits`]. The byte cut of a read stays with `code_read` (128 KiB a
-//!   response); a span list carries no bytes.
+//!   [`MergedRanges::omitted_hits`]. A span list carries no bytes.
 
 #![cfg_attr(
     not(test),
     allow(
         dead_code,
-        reason = "foundation C: the range options of code_grep, code_refs and code_read use it"
+        reason = "the migration check reads only the merged spans; the line budget and the counts are the \
+                  merger's tested contract"
     )
 )]
 
 use ahash::AHashMap;
 
-use super::EngineError;
 use crate::path::RelPath;
 
 /// Lines of context each side of a hit when the caller names none.
@@ -46,14 +44,6 @@ impl LineSpan {
     pub(crate) fn lines(self) -> u32 {
         self.end - self.start + 1
     }
-
-    /// The span cut to a file of `line_count` lines, or `None` when it starts past the end.
-    pub(crate) fn clamp(self, line_count: u32) -> Option<Self> {
-        (self.start <= line_count).then(|| Self {
-            start: self.start,
-            end: self.end.min(line_count),
-        })
-    }
 }
 
 /// One merged span and the number of hits it covers.
@@ -68,8 +58,6 @@ pub(crate) struct ReadRange {
 pub(crate) struct FileRanges {
     pub(crate) path: RelPath,
     pub(crate) ranges: Vec<ReadRange>,
-    /// The file changed since it was indexed, so the ranges are lines of the indexed version.
-    pub(crate) stale: bool,
 }
 
 impl FileRanges {
@@ -166,11 +154,7 @@ pub(crate) fn merge_hits(
             }
         }
         if !ranges.is_empty() {
-            out.files.push(FileRanges {
-                path,
-                ranges,
-                stale: false,
-            });
+            out.files.push(FileRanges { path, ranges });
         }
     }
     out
@@ -217,61 +201,7 @@ fn count(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// Sorts `spans` and merges those that overlap or touch.
-pub(crate) fn merge_spans(mut spans: Vec<LineSpan>) -> Vec<LineSpan> {
-    spans.sort_unstable();
-    let mut out: Vec<LineSpan> = Vec::with_capacity(spans.len());
-    for span in spans {
-        match out.last_mut() {
-            Some(last) if span.start <= last.end.saturating_add(1) => last.end = last.end.max(span.end),
-            _ => out.push(span),
-        }
-    }
-    out
-}
-
-/// Parses a span list as `code_read` takes it, `"120-148,310-322"`: comma-separated items, each a
-/// line `n` or an inclusive `a-b`, 1-based with `a <= b`. The spans come back sorted and merged.
-/// An empty list, an empty item, line 0, a reversed span or anything but digits is refused, the
-/// message naming the accepted shape.
-pub(crate) fn parse_spans(text: &str) -> Result<Vec<LineSpan>, EngineError> {
-    let refuse = |item: &str, why: &str| {
-        EngineError::invalid_argument(format!(
-            "ranges item `{item}` {why}; pass 1-based lines or inclusive spans separated by commas, \
-             e.g. \"120-148,310\""
-        ))
-    };
-    let mut spans = Vec::new();
-    for raw in text.split(',') {
-        let item = raw.trim();
-        if item.is_empty() {
-            return Err(refuse(item, "is empty"));
-        }
-        let (start, end) = item.split_once('-').unwrap_or((item, item));
-        let line = |part: &str| {
-            let part = part.trim();
-            if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
-                return Err(refuse(item, "is not a line number or span"));
-            }
-            match part.parse::<u32>() {
-                Ok(0) => Err(refuse(item, "names line 0")),
-                Ok(n) => Ok(n),
-                Err(_) => Err(refuse(item, "is past the last possible line")),
-            }
-        };
-        let span = LineSpan {
-            start: line(start)?,
-            end: line(end)?,
-        };
-        if span.start > span.end {
-            return Err(refuse(item, "ends before it starts"));
-        }
-        spans.push(span);
-    }
-    Ok(merge_spans(spans))
-}
-
-/// The inverse of [`parse_spans`]: `"a-b,c"`, a one-line span written as its line.
+/// `spans` as a list, `"a-b,c"`: comma-separated, a one-line span written as its line.
 pub(crate) fn format_spans(spans: &[LineSpan]) -> String {
     let mut out = String::new();
     for (index, span) in spans.iter().enumerate() {
@@ -285,37 +215,6 @@ pub(crate) fn format_spans(spans: &[LineSpan]) -> String {
         }
     }
     out
-}
-
-/// Writes `files` as a hit list does with ranges: `{"<path>": {"ranges": [[start, end], ...],
-/// "hits": n}}`, plus `"stale": true` for a file changed since it was indexed; lines 1-based
-/// inclusive, files in their order. A path that is not UTF-8 is written lossily, since a JSON key is
-/// a string.
-pub(crate) fn serialize_files<S: serde::Serializer>(files: &[FileRanges], serializer: S) -> Result<S::Ok, S::Error> {
-    use serde::ser::SerializeMap;
-
-    struct Row<'a>(&'a FileRanges);
-
-    impl serde::Serialize for Row<'_> {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            use serde::ser::SerializeMap;
-
-            let spans: Vec<[u32; 2]> = self.0.ranges.iter().map(|r| [r.span.start, r.span.end]).collect();
-            let mut map = serializer.serialize_map(None)?;
-            map.serialize_entry("ranges", &spans)?;
-            map.serialize_entry("hits", &self.0.hits())?;
-            if self.0.stale {
-                map.serialize_entry("stale", &true)?;
-            }
-            map.end()
-        }
-    }
-
-    let mut map = serializer.serialize_map(Some(files.len()))?;
-    for file in files {
-        map.serialize_entry(&file.path.to_str_lossy(), &Row(file))?;
-    }
-    map.end()
 }
 
 #[cfg(test)]

@@ -25,10 +25,6 @@
           "description": "Lines before and after each hit, 0-10.",
           "type": "integer"
         },
-        "ranges": {
-          "description": "Merged ±5-line read spans per file, for `code_read`.",
-          "type": "boolean"
-        },
         "limit": {
           "description": "Default 100.",
           "type": "integer"
@@ -126,10 +122,6 @@
         "end_line": {
           "description": "Last line of a span, inclusive (default: `line`). Not with `symbol`.",
           "type": "integer"
-        },
-        "ranges": {
-          "description": "Spans like `120-148,310`, alone; read on with `next_ranges`.",
-          "type": "string"
         }
       },
       "required": [
@@ -210,10 +202,6 @@
         "resolution": {
           "description": "`callers` only: keep rows of these resolutions, comma-separated.",
           "type": "string"
-        },
-        "ranges": {
-          "description": "`callers` only: merged ±5-line read spans per file, for `code_read`.",
-          "type": "boolean"
         },
         "changed": {
           "description": "`callers` only: files changed since rev (empty: HEAD) or in A..B; +importers adds importers.",

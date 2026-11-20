@@ -76,12 +76,11 @@ these arguments and fields:
 |---|---|---|
 | `code_refs` | `resolution` filter; per-row `resolution` | #125 |
 | `code_refs` | `relation` gains `cycles`; `depth` (with `importers` and `path`); `name` optional, its shapes enforced in the body | #121, #135 |
-| `code_refs` | `changed`; `ranges`; route linking (`path_match`) | #122, #129, ADR-0048 |
-| `code_grep` | `changed`; `ranges` | #122, #129 |
+| `code_refs` | `changed`; route linking (`path_match`) | #122, ADR-0048 |
+| `code_grep` | `changed` | #122 |
 | `code_symbols` | `changed`; `kind` value `route` | #122, ADR-0048 |
 | `find_files` | `changed`; `min_lines` | #122, #127 |
 | `code_search` | `changed` | #122 |
-| `code_read` | `ranges` (a string such as `"120-148,310-322"`) | #129 |
 | `index_status` | response fields `large_files`, `most_imported`, `deps_unavailable` (no argument) | #127, #131, ADR-0049 |
 
 `docs_search` gains nothing: dependency documents are filtered by its existing `path` glob

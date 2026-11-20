@@ -60,8 +60,6 @@ fn grep_answers_the_block_cannot_carry_stay_json() {
     assert_eq!(round_trip("code_grep", &carriage), carriage.to_string());
     let unnumbered = json!({"hits": {"a.rs": {"": ["x: a"]}}});
     assert_eq!(round_trip("code_grep", &unnumbered), unnumbered.to_string());
-    let ranges = json!({"hits": {"a.rs": {"ranges": [[1, 10]], "hits": 2}}});
-    assert_eq!(round_trip("code_grep", &ranges), ranges.to_string());
     let empty = json!({"hits": {}, "scope_files": 0});
     assert_eq!(round_trip("code_grep", &empty), empty.to_string());
 }

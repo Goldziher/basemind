@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use super::{LifecycleNotice, is_zero};
 use crate::engine::cursor::Cursor;
-use crate::engine::ranges::FileRanges;
 use crate::path::RelPath;
 
 /// Most lines of context `code_grep` writes on each side of a hit.
@@ -28,9 +27,6 @@ pub struct CodeGrepParams {
     /// Lines before and after each hit, 0-10.
     #[serde(default)]
     pub context: Option<u32>,
-    /// Merged ±5-line read spans per file, for `code_read`.
-    #[serde(default)]
-    pub ranges: Option<bool>,
     /// Default 100.
     #[serde(default)]
     pub limit: Option<u32>,
@@ -69,9 +65,6 @@ pub struct WorkspaceGrepParams {
     /// Lines of context before and after each hit, at most [`GREP_CONTEXT_MAX`]; 0 for none.
     #[serde(default)]
     pub context: u32,
-    /// Answer each file's hits as merged read ranges instead of lines.
-    #[serde(default)]
-    pub ranges: bool,
     /// Match `pattern` as literal text instead of compiling it as a regex.
     #[serde(default)]
     pub literal: bool,
@@ -113,9 +106,6 @@ pub(crate) struct GrepHit {
     /// The file changed since it was indexed. The hit is from the file as it is now, and `symbol`
     /// is left out: the indexed outline describes other bytes until `index_rescan`.
     pub stale: bool,
-    /// Lines in the file the hit was read from; bounds its read range, not part of the response.
-    #[schemars(skip)]
-    pub file_lines: u32,
 }
 
 impl crate::engine::by_path::Located for GrepHit {
@@ -276,25 +266,17 @@ impl Serialize for GroupMap<'_> {
     }
 }
 
-/// The hits of a `code_grep` page: one row per matching line, or with `ranges` each file's hits
-/// merged into read ranges (`{"<path>": {"ranges": [[start, end], ...], "hits": n}}`, lines 1-based
-/// inclusive).
+/// The hits of a `code_grep` page, one row per matching line, written by [`serialize_rows`].
 #[derive(Debug)]
-pub(crate) enum GrepHits {
-    Rows(Vec<GrepHit>),
-    Ranges(Vec<FileRanges>),
-}
+pub(crate) struct GrepHits(pub(crate) Vec<GrepHit>);
 
 impl GrepHits {
-    /// The files edited since the scan whose rows were read from disk, in the order listed. Ranges
-    /// mark their own (`"stale": true` on the file).
+    /// The files edited since the scan whose rows were read from disk, in the order listed.
     pub(crate) fn stale_files(&self) -> Vec<RelPath> {
         let mut stale: Vec<RelPath> = Vec::new();
-        if let Self::Rows(rows) = self {
-            for hit in rows.iter().filter(|hit| hit.stale) {
-                if !stale.contains(&hit.path) {
-                    stale.push(hit.path.clone());
-                }
+        for hit in self.0.iter().filter(|hit| hit.stale) {
+            if !stale.contains(&hit.path) {
+                stale.push(hit.path.clone());
             }
         }
         stale
@@ -303,10 +285,7 @@ impl GrepHits {
 
 impl Serialize for GrepHits {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Rows(rows) => serialize_rows(rows, serializer),
-            Self::Ranges(files) => crate::engine::ranges::serialize_files(files, serializer),
-        }
+        serialize_rows(&self.0, serializer)
     }
 }
 

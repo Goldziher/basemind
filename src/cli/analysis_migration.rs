@@ -25,7 +25,7 @@ pub enum MigrationCmd {
         /// Exit 1 when an old form remains or an `expect` found nothing, for CI.
         #[arg(long)]
         fail_on_remaining: bool,
-        /// Give each file's remaining uses as merged read ranges for `code read --ranges`.
+        /// Give each file's remaining uses as merged line spans, each one `code read --line --end-line`.
         #[arg(long)]
         ranges: bool,
     },

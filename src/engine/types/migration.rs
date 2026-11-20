@@ -92,8 +92,8 @@ pub(crate) struct FileUses {
     pub count: u32,
     /// The first [`LINES_MAX`] of those lines, 1-based and ascending.
     pub lines: Vec<u32>,
-    /// With `ranges`: every one of those lines widened by 5 lines of context and merged, as
-    /// `code_read` takes them (`"12-20,31-40"`).
+    /// With `ranges`: every one of those lines widened by 5 lines of context and merged
+    /// (`"12-20,31-40"`), each span one `code_read` of `line` to `end_line`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ranges: Option<String>,
 }

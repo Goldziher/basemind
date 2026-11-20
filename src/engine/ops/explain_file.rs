@@ -222,7 +222,7 @@ fn calls_in(ws: &Workspace, briefing: &mut Briefing, path: &RelPath, loaded: &Lo
         if page.next_cursor.is_some() || page.truncated || page.budgeted {
             partial.push(format!("`{}` has more call sites than were read", symbol.name));
         }
-        for hit in page.hits.rows().iter().filter(|hit| hit.path != *path) {
+        for hit in page.hits.iter().filter(|hit| hit.path != *path) {
             if hit.resolution == Resolution::Elsewhere {
                 continue;
             }

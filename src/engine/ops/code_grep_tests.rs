@@ -532,7 +532,7 @@ fn rows_with_context(source: &str, pattern: &str, context: u32, take: usize) -> 
         .into_iter()
         .map(|(_, hit)| hit)
         .collect();
-    let body = serde_json::to_value(GrepHits::Rows(hits)).expect("json");
+    let body = serde_json::to_value(GrepHits(hits)).expect("json");
     serde_json::from_value(body["a.rs"][""].clone()).expect("rows outside every symbol")
 }
 
@@ -604,7 +604,7 @@ fn the_budget_charges_context_rows_once() {
             .iter()
             .map(|hit| hit.context_before.len() + hit.context_after.len())
             .sum();
-        let rows = serde_json::to_value(GrepHits::Rows(hits)).expect("json")["a.rs"][""]
+        let rows = serde_json::to_value(GrepHits(hits)).expect("json")["a.rs"][""]
             .as_array()
             .map_or(0, Vec::len);
         let matches = 11;

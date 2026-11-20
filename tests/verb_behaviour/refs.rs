@@ -389,7 +389,7 @@ pub async fn call(client: &reqwest::Client) {
 
 /// A route's callers are the HTTP calls whose method and path it matches best (ADR-0048): exact
 /// before suffix, a literal segment before a parameter. They are graded `path_match` once, as the
-/// page's default, and `ranges` merges them into read spans.
+/// page's default.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_route_is_called_by_the_http_requests_its_path_matches() {
     let (_dir, client) = started_with(&[("src/routes.rs", ROUTES_RS), ("src/requests.rs", REQUESTS_RS)]).await;
@@ -417,17 +417,6 @@ async fn a_route_is_called_by_the_http_requests_its_path_matches() {
         pinned["hits"],
         json!({ "src/requests.rs": [{ "line": 3 }] }),
         "the literal route takes `/users/me`: {pinned}"
-    );
-
-    let ranged = call(
-        &client,
-        "code_refs",
-        json!({ "name": "GET /users/:param", "ranges": true }),
-    )
-    .await;
-    assert_eq!(
-        ranged["hits"],
-        json!({ "src/requests.rs": { "ranges": [[1, 5]], "hits": 2 } })
     );
 
     let definition = call(
@@ -524,9 +513,9 @@ async fn a_route_is_pinned_in_any_parameter_syntax() {
 }
 
 /// An HTTP call is located by a line of the indexed file: once the file is edited, `definition` is
-/// refused as for any other reference, and read ranges over it are flagged `stale`.
+/// refused as for any other reference, and its call sites are flagged `stale`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_edited_client_file_is_refused_for_definition_and_its_ranges_are_stale() {
+async fn an_edited_client_file_is_refused_for_definition_and_its_call_sites_are_stale() {
     let (dir, client) = started_with(&[("src/routes.rs", ROUTES_RS), ("src/requests.rs", REQUESTS_RS)]).await;
     let path = dir.path().join("src/requests.rs");
     let source = std::fs::read_to_string(&path).unwrap();
@@ -543,14 +532,13 @@ async fn an_edited_client_file_is_refused_for_definition_and_its_ranges_are_stal
         "{message}"
     );
 
-    let ranged = call(
-        &client,
-        "code_refs",
-        json!({ "name": "GET /users/:param", "ranges": true }),
-    )
-    .await;
+    let callers = call(&client, "code_refs", json!({ "name": "GET /users/:param" })).await;
     assert_eq!(
-        ranged["hits"],
-        json!({ "src/requests.rs": { "ranges": [[1, 5]], "hits": 2, "stale": true } })
+        callers["hits"],
+        json!({ "src/requests.rs": [
+            { "line": 2, "callee": "GET /users/42", "stale": true },
+            { "line": 4, "callee": "GET /v2/users/7", "stale": true }
+        ] }),
+        "{callers}"
     );
 }

@@ -84,7 +84,6 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                 cursor: None,
                 resolution: None,
                 scope: None,
-                ranges: false,
             },
             || None,
             |_| {},
@@ -114,7 +113,6 @@ fn find_callers_reports_cross_file_callers_resolution_cannot_see() {
                 cursor: None,
                 resolution: None,
                 scope: None,
-                ranges: false,
             },
             || None,
         )
@@ -200,7 +198,6 @@ fn find_callers_reports_namespace_import_callers_the_js_resolver_cannot_bind() {
                 cursor: None,
                 resolution: None,
                 scope: None,
-                ranges: false,
             },
             || None,
         )
@@ -308,7 +305,6 @@ fn find_callers_annotates_resolved_edges_without_dropping_same_name_sites() {
                 cursor: None,
                 resolution: None,
                 scope: None,
-                ranges: false,
             },
             || None,
         )
@@ -446,7 +442,6 @@ fn a_renamed_import_caller_is_listed_when_the_in_ram_map_lacks_its_file() {
                     cursor: None,
                     resolution: None,
                     scope: None,
-                    ranges: false,
                 },
                 || None,
             )
@@ -503,7 +498,6 @@ fn a_changed_scope_cuts_the_resolved_callers_to_its_files() {
                     cursor: None,
                     resolution: None,
                     scope,
-                    ranges: false,
                 },
                 || None,
             )
@@ -564,7 +558,6 @@ fn a_references_cursor_cut_before_an_edit_is_refused_after_it() {
                 cursor,
                 resolution: None,
                 scope: None,
-                ranges: false,
             },
             || None,
             |_| {},

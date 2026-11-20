@@ -177,17 +177,9 @@ pub(crate) struct BudgetedCallPage {
 /// listed for a query of `name` ([`ReferenceHit::named`]) before it is costed, so the budget charges
 /// what is written.
 ///
-/// A page answered as read `ranges` writes no row: each hit is costed as the span it adds and each
-/// file as its entry ([`range_cost`]), so the budget does not cut a page for text it never writes.
-///
 /// The kept hits are then sorted by path (ADR-0036 rule 6): the scan's key order is by content
 /// key, which says nothing to a reader. The sort is stable, so one file's hits stay in offset order.
-pub(crate) fn budget_call_page(
-    page: CallScanPage,
-    name: &str,
-    max_tokens: Option<u32>,
-    ranges: bool,
-) -> BudgetedCallPage {
+pub(crate) fn budget_call_page(page: CallScanPage, name: &str, max_tokens: Option<u32>) -> BudgetedCallPage {
     let hits: Vec<ReferenceHit> = page.hits.into_iter().map(|hit| hit.named(name)).collect();
     let mut budgeted = if max_tokens.is_none() {
         BudgetedCallPage {
@@ -196,12 +188,7 @@ pub(crate) fn budget_call_page(
             budgeted: false,
         }
     } else {
-        let budget = if ranges {
-            let mut files: ahash::AHashSet<RelPath> = ahash::AHashSet::new();
-            crate::engine::budget::keep_prefix(hits, max_tokens, |hit| range_cost(hit, &mut files))
-        } else {
-            crate::engine::budget::apply_budget_by_path(hits, max_tokens)
-        };
+        let budget = crate::engine::budget::apply_budget_by_path(hits, max_tokens);
         if budget.budgeted {
             let kept = budget.items.len();
             BudgetedCallPage {
@@ -219,23 +206,6 @@ pub(crate) fn budget_call_page(
     };
     budgeted.hits.sort_by(|a, b| a.path.cmp(&b.path));
     budgeted
-}
-
-/// Bytes a file's entry in a range answer writes besides its path and spans:
-/// `"":{"ranges":[],"hits":NNNN},`.
-const RANGE_FILE_BYTES: u64 = 30;
-
-/// Tokens a hit costs in a range answer: at most one span `[start,end],`, plus its file's entry the
-/// first time `files` meets the file.
-fn range_cost(hit: &ReferenceHit, files: &mut ahash::AHashSet<RelPath>) -> u64 {
-    let digits = u64::from(hit.line.max(1).ilog10() + 1);
-    let span = 2 * digits + 4;
-    let file = if files.insert(hit.path.clone()) {
-        hit.path.as_bytes().len() as u64 + RANGE_FILE_BYTES
-    } else {
-        0
-    };
-    (span + file).div_ceil(4)
 }
 
 /// Set [`ReferenceHit::shared_line`] on each hit of a page, in scan order with its `hit_keys`:

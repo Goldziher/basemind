@@ -122,26 +122,9 @@ fn a_budget_that_fits_everything_cuts_nothing() {
 }
 
 #[test]
-fn span_lists_parse_sorted_and_merged() {
-    assert_eq!(
-        parse_spans("310-322, 120-148,149,7").expect("parse"),
-        vec![span(7, 7), span(120, 149), span(310, 322)]
-    );
+fn spans_format_as_a_comma_list_a_one_line_span_as_its_line() {
     assert_eq!(format_spans(&[span(7, 7), span(120, 149)]), "7,120-149");
-}
-
-#[test]
-fn malformed_span_lists_are_refused_naming_the_shape() {
-    for bad in ["", "1,,2", "0", "5-3", "a-b", "1-", "-4", "+3", "1-2-3", "99999999999"] {
-        let error = parse_spans(bad).expect_err(bad).to_string();
-        assert!(error.contains("separated by commas"), "{bad}: {error}");
-    }
-}
-
-#[test]
-fn a_span_clamps_to_the_file_and_one_past_the_end_is_none() {
-    assert_eq!(span(5, 50).clamp(20), Some(span(5, 20)));
-    assert_eq!(span(21, 30).clamp(20), None);
+    assert_eq!(format_spans(&[]), "");
 }
 
 fn arb_hits() -> impl Strategy<Value = Vec<(u8, u32)>> {
@@ -218,11 +201,5 @@ proptest! {
                 prop_assert!(r.span.end <= fr.span.end && r.hits >= 1);
             }
         }
-    }
-
-    #[test]
-    fn formatting_and_parsing_round_trip(raw in prop::collection::vec((1u32..500, 0u32..20), 1..20)) {
-        let spans = merge_spans(raw.iter().map(|&(start, len)| span(start, start + len)).collect());
-        prop_assert_eq!(parse_spans(&format_spans(&spans)).expect("parse"), spans);
     }
 }

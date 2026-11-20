@@ -69,8 +69,10 @@ The text block of a verb tool is written in the encoding that measured fewest to
    leading or trailing whitespace or holds a control character, and then it is a JSON string. A
    row always starts with its line number, so it is never read as a header, and a TOON line never
    starts with `#`, so the block starts at the first file header. An answer whose rows the block cannot
-   carry (a row with a line break or carriage return, or one not starting with its line), a
-   `ranges` answer and an answer with no hits are compact JSON.
+   carry (a row with a line break or carriage return, or one not starting with its line) and an
+   answer with no hits are compact JSON. The `ranges` argument of `code_grep`, `code_refs` and
+   `code_read` is removed, since `code_grep` with `context: N` returns the lines around each hit in
+   one call.
 2. **TOON for `code_outline`, `git_diff` and a `find_files` list**, through the `toon-format` crate
    (MIT, the toon-format organisation's Rust implementation, without its default `cli` feature).
 3. **Compact JSON for every other tool and shape**: TOON measured no shorter (`code_symbols`,

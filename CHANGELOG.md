@@ -121,9 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the files a change touched: a revision against the working tree (empty: `HEAD`) or `A..B`, with a
   `+importers` suffix adding the files that import a changed file directly. The answer carries
   `scope_files`, so a change that touched nothing reads apart from one without a hit.
-- `code_refs` call sites take `changed` (#122) and `ranges` (#129) as `code_grep` does; both are
-  refused for relations other than `callers`. With `ranges`, a file edited since the scan is
-  `stale` and call sites with no indexed line are counted in `omitted`. `code_refs` links HTTP
+- `code_refs` call sites take `changed` (#122) as `code_grep` does; it is refused for relations
+  other than `callers`. `code_refs` links HTTP
   calls to routes (#126, ADR-0048): a `METHOD /path` name in any parameter syntax, or `path`
   pinning a route symbol, lists the calls with a literal URL whose method and normalized path match
   that route best (a literal segment before a catch-all, exact, then the longest suffix), graded
@@ -582,6 +581,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING: `ranges` on `code_grep`, `code_refs` and `code_read`** (#129), and the CLI's
+  `code grep --ranges`, `code refs --ranges` and `code read --ranges`. `code_grep {context: N}`
+  returns the N lines around each hit in one call, which is what the span list was read for; a
+  call that still passes `ranges` is refused as an unknown argument (ADR-0053). `code migration
+  check --ranges` stays.
 - `BASEMIND_MCP_LEAN` and its three wrapper tools (`list_tools`, `get_tool_schema`,
   `invoke_tool`). The verb tools are the surface (ADR-0018); the wrapper path skipped the task
   offload and cancel handling of a direct call and advertised no `destructiveHint`.

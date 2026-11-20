@@ -284,7 +284,6 @@ mod tests {
             context_after: after.iter().map(|s| (*s).to_string()).collect(),
             start_byte: 0,
             stale: false,
-            file_lines: 1000,
         };
         let hits = vec![
             hit("a b/x.rs", 9, None, &["b1", ""], &["a1"]),
@@ -294,7 +293,7 @@ mod tests {
         ];
         let mut seen = GrepSeen::default();
         let charged: u64 = hits.iter().map(|h| grep_hit_bytes(h, &mut seen)).sum();
-        let value = serde_json::json!({"hits": serde_json::to_value(GrepHits::Rows(hits)).expect("rows")});
+        let value = serde_json::json!({"hits": serde_json::to_value(GrepHits(hits)).expect("rows")});
         let text = crate::wire::encode("code_grep", &value);
         assert_eq!(
             charged,

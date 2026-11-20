@@ -106,6 +106,11 @@ needs no tool-search round trip, so call them directly. `tools/list` for them is
 - `field` on commit search: pass `query` for messages or `author` for authors to `git_log`.
 - `full` on `index_rescan`, and `basemind rescan --full`. `index_rescan {}` (`basemind rescan` with
   no path) already walks the whole workspace, and `full` beside `paths` silently discarded them.
+- `ranges` on `code_grep`, `code_refs` and `code_read` (a 0.34 pre-release argument), and `code
+  grep --ranges`, `code refs --ranges` and `code read --ranges`. To read the lines around each hit,
+  pass `code_grep {pattern, context: N}` (`code grep --context N`, 0 to 10): it writes the N lines
+  before and after each hit, overlapping windows once, in one call. For a call site of `code_refs`,
+  grep its line with `context: N`, or read the span with `code_read {path, line, end_line}`.
 
 ### CLI changes
 
@@ -269,7 +274,7 @@ beside `next_cursor`. The CLI's `--json` output has the same shapes.
 | Tool | Removed or changed | Now |
 | --- | --- | --- |
 | `code_symbols` | a row's `column` and `match`; a row's `path`, `line`, `kind`, `name` and `signature` fields; `total` without `next_cursor` | a row is the string `"<path>:<line>: <signature>"`, as `git grep -n` prints it, in rank order; a signature lacking the name, or none, is written `"<path>:<line>: <kind> <name>[; <signature>]"`; `stale` lists files edited since the scan |
-| `code_grep` | `pattern`, `regex`, `total_files_matched`; a hit's `path`, `column` and `symbol.kind`; `context_before` / `context_after` | `hits` is `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, grouped by innermost enclosing symbol (`""` outside every symbol); matches on one line are a row `"<line>:<col>,<col>: <text>"` (a clipped line writes its column `"<line>:<col>: ..."`); `context: N` (0-10 lines, an integer where it was a boolean) adds rows `"<line>- <text>"`, each written once; `stale` lists edited files, their rows under `""`; `total` (was `total_matches`) only beside `next_cursor`; `ranges` mode unchanged |
+| `code_grep` | `pattern`, `regex`, `total_files_matched`; a hit's `path`, `column` and `symbol.kind`; `context_before` / `context_after` | `hits` is `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, grouped by innermost enclosing symbol (`""` outside every symbol); matches on one line are a row `"<line>:<col>,<col>: <text>"` (a clipped line writes its column `"<line>:<col>: ..."`); `context: N` (0-10 lines, an integer where it was a boolean) adds rows `"<line>- <text>"`, each written once; `stale` lists edited files, their rows under `""`; `total` (was `total_matches`) only beside `next_cursor` |
 | `code_refs` | `name` and `match` echoes; a hit's `path`, and its `column` unless another call of the same callee is on its line; `callee` equal to `name`; `trait_name` equal to `name` | `hits` is `{"<path>": [hit, ...]}`; `importers` drops its `module` echo |
 | `find_files` | `returned`; a file's `language`, `size_bytes`, `score`; `total` without `next_cursor` | `files` is a list of paths (with `min_lines`, `{"<path>": <lines>}`); files git tracks that are not indexed (images, fonts) are listed too |
 | `git_log` lists | `short_sha`; `path` and `pattern` echoes; a search hit's `body`, `author_email`, `body_truncated`, `body_bytes`; a commit's `author` and `author_time_unix` | each commit is a string `"<sha12> <summary>"`, or `"<sha12> <author>: <summary>"` in a search by `author`; the recent list (`{}`) and a directory history put their files in a top-level `files: {"<sha>": {"<path>": "<change>"}}`; `rev` still shows the whole commit with `author`, `author_email`, time, `body` and `files` |
@@ -307,7 +312,7 @@ and the CLI's `--json` output stay JSON for every tool, with the shapes above.
 | --- | --- |
 | `code_grep` (rows) | the other fields as `key: value` lines, then `# <path>`, `## <symbol>` (bare `##`: outside every symbol) and the rows as `"<line>: <text>"` rows read without the quotes; rows before any symbol header are outside every symbol |
 | `code_outline`, `git_diff`, `find_files` (a list) | [TOON](https://toonformat.dev): `key: value` lines, a list of flat objects as a table `name[N]{field,...}:` with one comma-separated row each, a list of scalars inline `name[N]: a,b` |
-| every other tool, `code_grep` with `ranges`, `find_files` with `min_lines` | compact JSON, as before |
+| every other tool, `find_files` with `min_lines` | compact JSON, as before |
 
 A client that parsed the text block as JSON reads `structuredContent` instead, or decodes the text
 with `basemind::wire::decode` (Rust) or a TOON decoder plus the `code_grep` header rules. A path or

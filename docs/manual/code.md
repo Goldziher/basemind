@@ -46,9 +46,7 @@ symbol or span you need. Paths are repository-relative with forward slashes.
   `code-search` feature; without it the call is an error naming the feature.
 - `code_refs` matches the whole identifier: `bar` finds `Foo::bar()` and `bar()`, not `bar_baz()`.
   `match: "substring"` widens it. Each call site carries a `resolution` grade; see
-  `basemind manual resolution`. `ranges` answers the call sites as each file's merged read spans
-  (`{"<path>": {"ranges": [[start, end], ...], "hits": n}}`, every site widened by 5 lines), to pass
-  to `code_read` `ranges`.
+  `basemind manual resolution`.
 - `code_refs` with a `METHOD /path` name (`GET /users/:param`, any parameter syntax) lists the
   HTTP calls with a literal URL that reach that route, graded `path_match`; with `path` pinning a
   route symbol (again in any parameter syntax) it lists that route's calls. With `path` pinning a
@@ -56,8 +54,6 @@ symbol or span you need. Paths are repository-relative with forward slashes.
   file is `ambiguous` when more than one file defines the handler's name. `relation: "definition"`
   with the call's own `METHOD /path` (its row's `callee`) and its `line` returns the route it
   reaches; the file must be unchanged since the scan. A URL built from variables is out of reach.
-- `ranges` flags a file edited since the scan `stale` (its spans are lines of the indexed file) and
-  counts call sites with no indexed line in `omitted`.
 - `code_refs` `importers` with `path` and no `name` walks the file-level import graph: the files
   importing that file, grouped `by_depth`, `depth` hops out (default 1, at most 5). `cycles` lists
   the import cycles, smallest first; with `path`, only that file's own. Both report per-language
@@ -129,5 +125,6 @@ These read the index (the daemon answers them when one runs) and have no MCP too
   `.basemind/migrations/<name>.toml` names (a `call`, `import`, `identifier` or `text` pattern),
   per rule and file, with the share migrated and the progress across runs; the history is kept in
   the workspace cache directory, never the repository. `--fail-on-remaining` exits 1 while an old
-  form remains, for CI; `--ranges` gives each file's uses as spans for `code read --ranges`.
+  form remains, for CI; `--ranges` gives each file's uses as merged spans (5 lines of context), each
+  one `code read --line A --end-line B`.
 - `basemind code chunk` fetches one semantic-search chunk body by path.
