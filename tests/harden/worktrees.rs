@@ -21,6 +21,7 @@ use basemind::store::{
     DATA_HOME_ENV, INDEX_FILE, Store, VIEW_WORKING, VIEWS_DIR, global_blobs_dir, workspace_cache_dir,
 };
 
+use super::worktree_growth::exceeds_growth_bound;
 use super::{dir_size, human_bytes, on_disk_size};
 
 /// Worktrees added when `BASEMIND_HARDEN_WORKTREES` does not parse as a count.
@@ -31,10 +32,10 @@ const DEFAULT_COMMIT_STEP: usize = 50;
 /// How often the scan's phase breadcrumb is read. A phase shorter than this can be missed.
 const PHASE_POLL: Duration = Duration::from_micros(500);
 /// Upper bound, in percent of the bytes the main checkout's scan put on disk, on the bytes each added
-/// worktree adds: the bound `tests/worktree_lifecycle_cli.rs` holds identical worktrees to. On ripgrep
-/// at the pinned commit, with worktrees 50 commits apart, an added worktree peaks at 45% of the first
-/// scan (one 2 MiB journal segment over 4.6 MB, `benchmarks/index/harden-worktrees-2026-11-16.md`).
-const MAX_ADDED_WORKTREE_PERCENT: u64 = 50;
+/// worktree adds. Allocated journal bytes grow in whole segments, so on ripgrep an added worktree adds
+/// either nothing or one segment plus its file map; the bound passes one segment with room for a much
+/// smaller first scan and fails two segments or a second copy of the index (`benchmarks/index/README.md`).
+const MAX_ADDED_WORKTREE_PERCENT: u64 = 75;
 /// Directory name of the Fjall index inside a view directory.
 const INDEX_DB_DIR: &str = "index.fjall";
 /// Directory name of the workspace's LanceDB store. The library exports it only on a build with
@@ -217,12 +218,6 @@ fn measure_worktree(root: &Path, label: &str, commit: &str, diff_files: usize) -
         disk: disk_bytes(&cache_dir, root, group_before),
         new_blob_bytes: dir_size(&global_blobs_dir()).saturating_sub(blobs_before),
     }
-}
-
-/// Whether an added worktree's `added` bytes exceed [`MAX_ADDED_WORKTREE_PERCENT`] of the main
-/// checkout's `first`.
-fn exceeds_added_worktree_bound(added: u64, first: u64) -> bool {
-    u128::from(added) * 100 > u128::from(first) * u128::from(MAX_ADDED_WORKTREE_PERCENT)
 }
 
 fn git(repo: &Path, args: &[&str]) -> Option<String> {
@@ -426,7 +421,7 @@ fn harden_worktrees() {
     let first = rows[0].disk.total();
     for row in &rows[1..] {
         let added = row.disk.total();
-        if exceeds_added_worktree_bound(added, first) {
+        if exceeds_growth_bound(added, first, MAX_ADDED_WORKTREE_PERCENT) {
             failures.push(format!(
                 "{}: added {} on disk, over {MAX_ADDED_WORKTREE_PERCENT}% of the main checkout's {}",
                 row.label,
@@ -442,20 +437,33 @@ fn harden_worktrees() {
     );
 }
 
+/// What the main checkout's scan put on disk in the recorded ripgrep run
+/// (`benchmarks/index/harden-worktrees-2026-11-16.ndjson`).
+const RECORDED_FIRST_SCAN: u64 = 4_780_032;
+/// One allocated Fjall journal segment: the step by which the recorded journals grew.
+const JOURNAL_SEGMENT: u64 = 2 * 1024 * 1024;
+/// The recorded file map and other bytes of a worktree's own cache directory.
+const RECORDED_OWN_BYTES: u64 = 28_672 + 12_288;
+
 #[test]
-fn an_added_worktree_over_half_the_first_scan_fails_the_bound() {
-    let first = 4_780_032;
+fn the_nightly_bound_passes_one_journal_segment_and_fails_two() {
+    let within = |added| !exceeds_growth_bound(added, RECORDED_FIRST_SCAN, MAX_ADDED_WORKTREE_PERCENT);
+    let one_segment = JOURNAL_SEGMENT + RECORDED_OWN_BYTES;
+    assert!(within(RECORDED_OWN_BYTES), "an added worktree that grew no segment");
     assert!(
-        !exceeds_added_worktree_bound(2_138_112, first),
-        "the recorded ripgrep peak, 45%"
+        within(one_segment),
+        "the recorded peak: one segment, 44.7% of the first scan"
     );
+    assert!(within(3_585_024), "exactly 75% is within it");
+    assert!(!within(3_585_025));
     assert!(
-        !exceeds_added_worktree_bound(first / 2, first),
-        "exactly 50% is within it"
+        !within(one_segment + JOURNAL_SEGMENT),
+        "two segments, 88.6% of the first scan"
     );
-    assert!(exceeds_added_worktree_bound(first / 2 + 1, first));
+    assert!(!within(RECORDED_FIRST_SCAN), "a second full copy of the index");
     assert!(
-        exceeds_added_worktree_bound(first, first),
-        "a second full copy of the index"
+        !exceeds_growth_bound(one_segment, 2_850_816, MAX_ADDED_WORKTREE_PERCENT),
+        "one segment passes down to a first scan of 2.85 MB, 40% under the recorded one"
     );
+    assert!(exceeds_growth_bound(one_segment, 2_850_815, MAX_ADDED_WORKTREE_PERCENT));
 }

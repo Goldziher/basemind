@@ -2,7 +2,9 @@
 //! worktrees scanned by `basemind scan` share one group database and keep per-view file maps, each
 //! extra worktree adds a bounded number of bytes to it, and once a worktree is removed and
 //! `basemind cache gc` has run, the next full pass retires its view and drops the rows of the
-//! contents only it held, while the other worktrees still answer `code symbols`.
+//! contents only it held, while the other worktrees still answer `code symbols`. While the removed
+//! worktree's view directory is still on disk (its absence is the sweep's only signal that the view
+//! is gone), the same pass retires nothing and the retirement check reads red.
 //!
 //! The single test owns the isolated data home of this binary, so the group count it asserts is
 //! exact.
@@ -18,11 +20,20 @@ use basemind::index::keys::{CONTENT_KEY_LEN, ContentKey};
 use basemind::store::{INDEX_FILE, Index, Store, VIEW_WORKING, VIEWS_DIR, workspace_cache_dir};
 use basemind::store_layout::{GROUPS_DIR, group_index_dir};
 use serde_json::Value;
+use worktree_growth::exceeds_growth_bound;
+
+#[path = "support/worktree_growth.rs"]
+mod worktree_growth;
 
 /// Upper bound, in percent of the group database after the first worktree's scan, on the bytes each
-/// extra worktree of the same tree adds to it. Every extra view shares the content-keyed rows and
-/// writes only its own view-scoped rows.
+/// extra worktree of this fixture adds to it. An extra worktree that shared nothing would write every
+/// row of the first scan again, about 100%; one that shares writes the rows of its one file of its
+/// own and its view-scoped rows. The sizes are logical lengths, so journal preallocation does not
+/// step them. Half the first scan sits between the two with room on either side.
 const EXTRA_WORKTREE_GROWTH_PERCENT: u64 = 50;
+
+/// Keyspaces whose rows the sweep drops with the last content that names them.
+const SWEPT_KEYSPACES: [&str; 4] = ["symbols_by_path", "symbols_by_name", "calls_by_path", "calls_by_callee"];
 
 /// Rust files every worktree holds byte for byte.
 const SHARED_FILES: usize = 24;
@@ -177,6 +188,27 @@ fn symbols(root: &Path, name: &str) -> Value {
     basemind_json(root, &["code", "symbols", name])["results"].clone()
 }
 
+/// What the retirement of a view changes in its group: the views with rows of their own, the rows
+/// of each [`SWEPT_KEYSPACES`] keyspace that name a content only the retired view held, and the
+/// shared `symbols_by_path` rows.
+#[derive(Debug, PartialEq, Eq)]
+struct Retirement {
+    views_with_rows: BTreeSet<u32>,
+    rows_of_its_content: Vec<(&'static str, usize)>,
+    shared_symbols: usize,
+}
+
+fn retirement(rows: &GroupRows, content: &ContentKey) -> Retirement {
+    Retirement {
+        views_with_rows: rows.views_with_rows.clone(),
+        rows_of_its_content: SWEPT_KEYSPACES
+            .iter()
+            .map(|keyspace| (*keyspace, rows_naming(rows, keyspace, content)))
+            .collect(),
+        shared_symbols: rows.shared["symbols_by_path"].len(),
+    }
+}
+
 #[test]
 fn a_removed_worktree_is_retired_from_the_shared_group_and_its_siblings_keep_answering() {
     basemind::store::init_isolated_cache();
@@ -221,7 +253,7 @@ fn a_removed_worktree_is_retired_from_the_shared_group_and_its_siblings_keep_ans
     for (extra, pair) in sizes.windows(2).enumerate() {
         let added = pair[1].saturating_sub(pair[0]);
         assert!(
-            added * 100 < first * EXTRA_WORKTREE_GROWTH_PERCENT,
+            !exceeds_growth_bound(added, first, EXTRA_WORKTREE_GROWTH_PERCENT),
             "extra worktree {} added {added} bytes to a {first}-byte group (sizes {sizes:?}); the bound is \
              {EXTRA_WORKTREE_GROWTH_PERCENT}% of the first",
             extra + 1
@@ -246,6 +278,7 @@ fn a_removed_worktree_is_retired_from_the_shared_group_and_its_siblings_keep_ans
 
     // Keyed by the canonical root, which cannot be resolved once the worktree is gone. ~keep
     let c_cache = workspace_cache_dir(&c);
+    let c_map = fs::read(file_map_path(&c)).expect("read the file map");
     git(&["worktree", "remove", "--force", c.to_str().expect("utf-8")], &main);
     let gc = basemind_json(&main, &["cache", "gc"]);
     assert_eq!(
@@ -253,25 +286,30 @@ fn a_removed_worktree_is_retired_from_the_shared_group_and_its_siblings_keep_ans
         "cache gc reaps the removed worktree's workspace: {gc}"
     );
     assert!(!c_cache.exists(), "the removed worktree's workspace is gone");
-    scan(&main);
 
-    let after = group_rows(&main);
+    let retired = Retirement {
+        views_with_rows: [views[0], views[1]].into_iter().collect(),
+        rows_of_its_content: SWEPT_KEYSPACES.iter().map(|keyspace| (*keyspace, 0)).collect(),
+        shared_symbols: before.shared["symbols_by_path"].len() - 1,
+    };
+    let c_view = c_cache.join(VIEWS_DIR).join(VIEW_WORKING);
+    fs::create_dir_all(&c_view).expect("put the removed worktree's view directory back");
+    fs::write(c_view.join(INDEX_FILE), &c_map).expect("put its file map back");
+    scan(&main);
+    let kept = retirement(&group_rows(&main), &only_c);
     assert_eq!(
-        after.views_with_rows,
-        [views[0], views[1]].into_iter().collect::<BTreeSet<_>>(),
-        "the removed worktree's view is retired with its rows"
+        kept,
+        retirement(&before, &only_c),
+        "a view whose directory is on disk is not retired, and the contents its file map names stay"
     );
-    for keyspace in ["symbols_by_path", "symbols_by_name", "calls_by_path", "calls_by_callee"] {
-        assert_eq!(
-            rows_naming(&after, keyspace, &only_c),
-            0,
-            "{keyspace} keeps no row of a content only the removed worktree held"
-        );
-    }
+    assert_ne!(kept, retired, "the retirement check reads red when no view is retired");
+
+    fs::remove_dir_all(&c_cache).expect("remove the removed worktree's workspace again");
+    scan(&main);
     assert_eq!(
-        after.shared["symbols_by_path"].len(),
-        before.shared["symbols_by_path"].len() - 1,
-        "only the removed worktree's own content is dropped"
+        retirement(&group_rows(&main), &only_c),
+        retired,
+        "the removed worktree's view is retired with its rows, and only its own content is dropped"
     );
 
     assert_eq!(
