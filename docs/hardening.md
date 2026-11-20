@@ -141,6 +141,31 @@ daemon's RSS climbed +4.7 MiB/min on Linux (913 -> 992 MiB), its footprint +4.8 
 (levelled off in the second half) and +4.1 MiB/min on Windows (616 -> 793 MiB), each rise inside
 the 296 MiB the caches can hold, while the whole data dir, journals aside, is 31-42 MiB on disk.
 
+#### The other growth the soak reported (#200)
+
+Read from hardening runs 44549696936 (`ec67738c`, 4 judged minutes) and 44748515889 (`2e23216a`, 18):
+
+- **Data dir (R8):** a warm-up, not a leak. Journals and telemetry aside, it grows 2.5-6 MiB over the
+  first 4 minutes of load (+0.6 to +1.7 MiB/min) and is flat after it (-0.2 to +0.3 MiB/min per
+  4-minute window on every OS). The 4-minute load at `ec67738c` judged only that warm-up and failed
+  at +1.7 MiB/min; the 18-minute one passed with a levelled second half (+0.01 MiB/min on Linux).
+- **Descriptors (R3):** the daemon's count steps up rather than climbing per call: on Linux
+  56-58 through the first 11.7 minutes of load, then 57 -> 72 in one sample while the index
+  database grew 2.3 MiB, 68-77 for the rest of load and 67 at idle. It does not move with the short
+  sessions and CLI one-shots every cycle runs, and a SIGKILLed `serve` returns it to its count
+  before the session. R3 judges it net of live tables; R3t names the kinds that moved.
+- **Threads (R4):** no basemind thread grew. R4 passed on every OS in both runs (Linux: floor
+  42 before load, 41 after). The `bm-watch` thread climbing 0 -> 7 in #200 came from the
+  selftest's synthetic `thread-leak` case, whose invented thread is named `selftest-leak`; no
+  basemind thread is named `bm-watch`.
+- **Windows processes (R5):** the census counted system processes (`csrss.exe`, `winlogon.exe`,
+  `dwm.exe`, `fontdrvhost.exe`) whose parent pid a run's process had reused, and the ownership
+  check drops them; without them the maximum is 5 in both halves of both runs. The run's own
+  children are a `git.exe` and its `conhost.exe`, each seen in a single sample.
+- **`server_busy` (#217):** the soak saw none (0 of 171,724 calls). The functional sweep did: a
+  `docs_search` past its 180 s deadline kept the heavy-admission slot, and every later `docs_search`,
+  `index_rescan` and CLI `code_search` was refused.
+
 ### Reading a failure
 
 The report (`soak.report.md` beside the NDJSON) lists each rule with the measurement it judged,
@@ -242,7 +267,7 @@ The workflow runs the whole pass on `ubuntu-latest`, `macos-26` and `windows-202
 Windows release is built on): selftest, functional sweep, soak plus `analyze.py`, and the leak
 check (`valgrind` on Linux, `leaks` on macOS; on Windows a visible notice says it was skipped).
 It runs nightly, on a pull request or a push to main that touches `scripts/hardening/**` or the
-workflow (5-minute soak), and on demand:
+workflow (10-minute soak), and on demand:
 
 ```bash
 gh workflow run hardening.yaml --ref main -f soak_minutes=60 -f features=full
