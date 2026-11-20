@@ -24,13 +24,17 @@ pub(crate) type Op<P, R> = fn(&Workspace, P) -> Result<R, EngineError>;
 /// Key of the `data` field that marks a tool error as contention for the workspace writer lock.
 pub(crate) const BUSY_DATA: &str = "busy";
 
-/// Each variant keeps its message; the code is what the CLI turns into an exit status.
+/// A wrapped store, index, git or I/O error is first worded for the caller (`EngineError::settled`);
+/// then each variant keeps its message, and the code is what the CLI turns into an exit status. An
+/// unavailable index shares its JSON-RPC code with an unavailable operation, so its `data` names its
+/// `ErrorKind`.
 impl From<EngineError> for McpError {
     fn from(error: EngineError) -> Self {
-        match error {
+        match error.settled() {
             EngineError::InvalidArgument(message) => McpError::invalid_params(message, None),
-            EngineError::Unavailable(message) | EngineError::IndexUnavailable(message) => {
-                McpError::invalid_request(message, None)
+            EngineError::Unavailable(message) => McpError::invalid_request(message, None),
+            EngineError::IndexUnavailable(message) => {
+                McpError::invalid_request(message, Some(super::error_kind::ErrorKind::IndexUnavailable.data()))
             }
             EngineError::Busy(message) => {
                 McpError::invalid_request(message, Some(serde_json::json!({ BUSY_DATA: true })))
@@ -72,7 +76,28 @@ async fn blocking_answer(
         body()
     })
     .await
-    .unwrap_or_else(|join| Err(McpError::internal_error(format!("tool task failed: {join}"), None)))
+    .unwrap_or_else(|join| Err(task_failed(&join)))
+}
+
+/// Numbers the failures [`task_failed`] logs, so a reported message finds its log line.
+static FAILURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The answer of a tool body that panicked or was stopped by a runtime shutdown. The payload can carry
+/// host paths and library internals, so it goes to the log, under a reference the message names.
+fn task_failed(join: &tokio::task::JoinError) -> McpError {
+    let reference = format!(
+        "{}-{}",
+        std::process::id(),
+        FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    tracing::error!(reference = %reference, error = %join, "a tool task failed");
+    McpError::internal_error(
+        format!(
+            "basemind failed inside this call; the server log holds the cause as failure {reference} \
+             (`basemind comms doctor` prints the daemon log's path)"
+        ),
+        None,
+    )
 }
 
 /// `op`'s answer as a tool result.
@@ -188,8 +213,19 @@ mod tests {
             .await
             .expect_err("a panic is an error");
         assert_eq!(failed.code, ErrorCode::INTERNAL_ERROR);
-        assert!(failed.message.starts_with("tool task failed: "), "{}", failed.message);
-        assert!(failed.message.contains("resolve pass exploded"), "{}", failed.message);
+        let reference = failed
+            .message
+            .strip_prefix("basemind failed inside this call; the server log holds the cause as failure ")
+            .and_then(|rest| rest.strip_suffix(" (`basemind comms doctor` prints the daemon log's path)"))
+            .unwrap_or_else(|| panic!("a fixed message: {}", failed.message));
+        let (pid, number) = reference.split_once('-').expect("pid-number");
+        assert_eq!(pid, std::process::id().to_string());
+        assert!(number.parse::<u64>().is_ok(), "{reference}");
+        assert!(
+            !failed.message.contains("exploded"),
+            "the payload stays in the log: {}",
+            failed.message
+        );
         let answered = blocking_answer(|| Ok(CallToolResult::success(Vec::new())))
             .await
             .expect("a body that returns is answered");
@@ -235,7 +271,6 @@ mod tests {
         let cases = [
             (EngineError::invalid_argument("bad path"), ErrorCode::INVALID_PARAMS),
             (EngineError::unavailable("no git"), ErrorCode::INVALID_REQUEST),
-            (EngineError::index_unavailable("busy"), ErrorCode::INVALID_REQUEST),
             (EngineError::internal("broken"), ErrorCode::INTERNAL_ERROR),
         ];
         for (error, code) in cases {
@@ -245,6 +280,13 @@ mod tests {
             assert_eq!(mapped.message, message);
             assert!(mapped.data.is_none());
         }
+        let unreadable = McpError::from(EngineError::index_unavailable("the index is empty"));
+        assert_eq!(unreadable.code, ErrorCode::INVALID_REQUEST);
+        assert_eq!(unreadable.message, "the index is empty");
+        assert_eq!(
+            unreadable.data,
+            Some(serde_json::json!({ "error": "index_unavailable" }))
+        );
         let busy = McpError::from(EngineError::busy("held"));
         assert_eq!(busy.code, ErrorCode::INVALID_REQUEST);
         assert_eq!(busy.message, "held");

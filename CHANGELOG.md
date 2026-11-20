@@ -143,6 +143,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** every `isError` tool result carries `structuredContent: {"error", "retryable"}`
+  next to its unchanged text (#256). `error` is one of `invalid_argument`, `unavailable`,
+  `index_unavailable`, `busy`, `cancelled` and `internal`; `retryable` is true for
+  `index_unavailable`, `busy` and `cancelled`. The overload refusal says `busy` where it said
+  `server_busy`: in its code, at the start of its text and as the message of the JSON-RPC error a
+  resource read gets; it keeps `retry_after_ms`. A CLI command that fails prints the error's code
+  and message without its JSON `data`.
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
   `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`
@@ -421,7 +428,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `memory_save` reports `embedded`. When the note cannot be embedded the save still succeeds, with a
     `notice`, instead of answering with an error after the write.
   - A call rejected because the server is at its limit of heavy calls is an `isError` result
-    (`server_busy`) that says to retry, not a JSON-RPC error.
+    (`busy`) that says to retry, not a JSON-RPC error.
   - `docs_search` takes `entity` and `keywords` in place of `entity_category` and `keywords_contains`.
   - Annotations are exact per tool: everything is read-only except `memory_save` and `index_rescan`, and
     nothing is destructive.
@@ -720,6 +727,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A tool error names no absolute host path (#257). A data-home path is written
+  `$BASEMIND_DATA_HOME/…`, a repository path repository-relative and any other path under the home
+  directory `~/…`; the full text goes to the server log. A store or index that cannot be read (an
+  I/O error, a corrupt or undecodable blob, an unreadable file map, a damaged index), and an index a
+  rescan cannot write (a full disk, a failed write), is `index_unavailable` and says "run `basemind
+  doctor`; `basemind scan` rebuilds it" in place of the library's message, on an in-process and a
+  daemon-hosted rescan alike, and a held index is `busy`. A panicking tool body answers with a fixed message
+  naming its failure reference in the log, not the panic payload.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

@@ -173,6 +173,8 @@ src/
 │   ├── tool_contract.rs    — answer(): a body's error becomes an isError result naming the
 │   │                         fix; the alwaysLoad meta and schema compaction applied to every
 │   │                         advertised definition
+│   ├── error_kind.rs       — ErrorKind: the error code and retry flag of an isError result
+│   ├── error_text.rs       — Redaction: no absolute host path in a tool error's text
 │   ├── adapter.rs          — runs an engine operation for a shim or a CLI command: a blocking
 │   │                         thread, EngineError → McpError, the cursor bound to its query
 │   │                         (cursor_bind.rs), the telemetry row
@@ -689,11 +691,16 @@ Contract of the 15 verb tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
   budget of 6000 applies; a trimmed list sets `budgeted`. Index scans use `scan_cap = limit * 8` to
   bound work on common names. The ranked tools (`code_search`, `docs_search`) page by offset over a
   larger top-k (`src/engine/ranked.rs`).
-- **Errors.** A failure the caller can fix is a tool result with `isError: true` whose text names the
-  fix: a path that is not indexed says whether it is a document (use `docs_search`) or needs
-  `index_rescan`; an empty index says to run `index_rescan` or `basemind scan`; a compiled-out
-  feature names the Cargo feature. An empty index is never a plain empty result: responses carry a
-  `notice` with `state: "empty_index"`.
+- **Errors.** A failure is a tool result with `isError: true` whose `structuredContent` is
+  `{"error": <code>, "retryable": <bool>}` (`src/mcp/error_kind.rs`; the codes are listed in
+  `docs/UPGRADING.md`) and whose text names the fix: a path that is not indexed says whether it is
+  a document (use `docs_search`) or needs `index_rescan`; an empty index says to run `index_rescan`
+  or `basemind scan`; a store or index that cannot be read says to run `basemind doctor`
+  (`EngineError::settled`, `src/engine/error.rs`); a compiled-out feature names the Cargo feature.
+  An empty index is never a plain empty result: responses carry a `notice` with
+  `state: "empty_index"`. The text names no absolute host path (`src/mcp/error_text.rs`): a
+  data-home path is written `$BASEMIND_DATA_HOME/…` and a repository path repository-relative, and
+  the full text is logged. A panicking tool body answers with a fixed message and a log reference.
 - **Inline results.** Every call is answered inline. For a client that declared the Tasks extension,
   `index_rescan`, `code_search` and `docs_search` run on their own task and are handed to the task
   manager only when still running after 3 s (`TASK_THRESHOLD` in `src/mcp/tasks.rs`); until then the

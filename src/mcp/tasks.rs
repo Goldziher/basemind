@@ -47,7 +47,7 @@ pub(super) fn is_cancel_aware_read(name: &str, arguments: Option<&serde_json::Ma
 }
 
 /// JSON-RPC code for a request the client cancelled (the LSP `RequestCancelled` code).
-const REQUEST_CANCELLED_CODE: i32 = -32800;
+pub(super) const REQUEST_CANCELLED_CODE: i32 = -32800;
 
 pub(super) fn request_cancelled() -> McpError {
     McpError::new(

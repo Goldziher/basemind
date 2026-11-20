@@ -38,10 +38,11 @@ impl ScanObserver for RescanPaths {
 
 /// The error a refused or failed rescan answers with. Another process writing this workspace is the
 /// caller's to retry or rescan through: [`EngineError::Busy`], which the CLI exits `3` for as it does
-/// for every other lock contention.
+/// for every other lock contention. A store that cannot be read and an index that cannot be written
+/// name their repair (`scan_error` in `src/engine/error.rs`).
 pub(crate) fn rescan_error(error: &ScanError) -> EngineError {
     match error {
-        ScanError::Store(store) if store.is_lock_contention() => EngineError::busy(format!("rescan: {error}")),
+        ScanError::Store(_) | ScanError::IndexFault(_) => super::error::scan_error(error).in_context("rescan"),
         _ => EngineError::internal(format!("rescan: {error}")),
     }
 }

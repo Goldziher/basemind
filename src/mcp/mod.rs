@@ -22,12 +22,14 @@ pub(crate) use crate::engine::cursor;
 mod cursor_bind;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;
+mod error_kind;
+mod error_text;
 mod helpers;
 pub(crate) use adapter::BUSY_DATA;
 
 /// The overload refusal a CLI session answers with ([`admission::ServerBusy::into_cli_error`]).
 #[cfg(all(test, feature = "comms", any(unix, windows)))]
-pub(crate) fn server_busy_for_cli() -> rmcp::ErrorData {
+pub(crate) fn busy_for_cli() -> rmcp::ErrorData {
     admission::ServerBusy.into_cli_error()
 }
 #[cfg(all(test, feature = "comms", feature = "code-intel-js", any(unix, windows)))]
