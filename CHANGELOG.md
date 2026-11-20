@@ -587,6 +587,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - JavaScript dependency upgrades: OpenCode plugin wrappers `@opencode/plugin` 2.3.2, npm wrapper
   `tar` 7.5.23, website `astro` 7.4.13 and `@astrojs/starlight` 0.43.1.
 
+- Rust dependency upgrades: `parking_lot` 0.13, `rmcp` 3.11, `agent-client-protocol` 5.4, `xberg` 1.4.2,
+  `regex` 1.13.2, plus in-range lock updates (`datafusion` 54.2, `arrow` 58.4.2). `fjall` 3.1.13 and
+  `lsm-tree` 3.1.10 stay put until a release carries the block-cache eviction fix (#164), `lance`
+  stays at the 14.0.2 that `lancedb` 0.41 pins, and `bincode` at 2.0.1 (3.0.0 is a placeholder).
+
 ### Removed
 
 - `BASEMIND_MCP_LEAN` and its three wrapper tools (`list_tools`, `get_tool_schema`,

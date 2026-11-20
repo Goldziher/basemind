@@ -60,7 +60,7 @@ members = [
 ]
 
 [workspace.dependencies]
-agent-client-protocol = "5.3.0"
+agent-client-protocol = "5.4.0"
 
 [workspace.lints.clippy]
 all = "warn"
@@ -214,11 +214,11 @@ oxc_span = { version = "0.159.0", optional = true }
 oxc_syntax = { version = "0.159.0", optional = true }
 # ~keep The engine store lock: sync, task-fair, unpoisoned like the async lock it replaced, with
 # ~keep owned `Send` read guards for adapter calls that hold a read across an `.await` (ADR-0039).
-parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+parking_lot = { version = "0.13", features = ["arc_lock", "send_guard"] }
 rayon = "1"
-regex = "1.13.1"
+regex = "1.13.2"
 regex-syntax = "0.8"
-rmcp = { version = "3.10", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
+rmcp = { version = "3.11", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
 rmp-serde = "1"
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
@@ -249,7 +249,7 @@ tree-sitter = "0.27"
 tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.1", path = "crates/tree-sitter-graph", optional = true }
 tree-sitter-language-pack = "1.25.2"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.1", path = "crates/tree-sitter-stack-graphs", optional = true }
-xberg = { version = "1.4.0", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+xberg = { version = "1.4.2", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 zstd = "0.14.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -265,7 +265,7 @@ criterion = { version = "0.8", features = ["html_reports"] }
 dunce = "1"
 proc-macro2 = "1"
 proptest = "1"
-rmcp = { version = "3.10", features = ["client", "transport-async-rw", "transport-child-process"] }
+rmcp = { version = "3.11", features = ["client", "transport-async-rw", "transport-child-process"] }
 syn = { version = "3", features = ["full", "visit"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
 
