@@ -740,7 +740,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pass that leaves more directories unwatched instead of once per directory. A refused directory is
   retried whenever its subtree is armed again.
 - `BASEMIND_GRAMMAR_OFFLINE=false` turned offline mode on: any value but `0` and the empty string
-  did. It now reads `1`, `true` and `yes` as on and everything else as off, as the manual says (#208).
+  did. It and `BASEMIND_OFFLINE` now read `1`, `true`, `yes` and `on` as on and `0`, `false`, `no` and
+  `off` as off, in any case, with blank as unset; any other value stops basemind with an error naming
+  the variable, the rule the plugin launcher applies to `BASEMIND_OFFLINE` (#208).
 - Offline mode did not stop the grammar download a file in a language not yet cached triggers on
   first use; only the scan's bootstrap and `basemind lang install` honoured it. The file's grammar is
   now refused with the same error (#208).

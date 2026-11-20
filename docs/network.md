@@ -31,7 +31,8 @@ downloaded once per cache.
 ## Offline mode
 
 `BASEMIND_OFFLINE=1` turns every download above off, except the npm and pip installers, which run
-before basemind does. basemind exports `HF_HUB_OFFLINE=1` to the Hugging Face client, for its own
+before basemind does. `1`, `true`, `yes` or `on` turns it on and `0`, `false`, `no` or `off` leaves it
+off, in any case; any other value stops basemind and the launcher with an error naming the variable. basemind exports `HF_HUB_OFFLINE=1` to the Hugging Face client, for its own
 process and the daemon it starts. A grammar, model or binary missing from its cache is then an error
 that names it:
 

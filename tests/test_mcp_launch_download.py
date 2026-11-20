@@ -244,7 +244,7 @@ class DownloadTests(unittest.TestCase):
     def test_basemind_offline_downloads_nothing_and_names_what_is_missing(self) -> None:
         self.pin("9.9.0")
         self.publish("9.9.0")
-        for value in ("1", "true", " YES ", "on"):
+        for value in ("1", "true", " YES ", "on", "On"):
             with self.subTest(value=value):
                 result = self.launch("serve", extra={"BASEMIND_OFFLINE": value})
                 self.assertNotEqual(result.returncode, 0)
@@ -268,7 +268,7 @@ class DownloadTests(unittest.TestCase):
     def test_a_false_basemind_offline_downloads_as_usual(self) -> None:
         self.pin("9.9.0")
         self.publish("9.9.0")
-        for value in ("", "0", "false", "No", "off"):
+        for value in ("", "  ", "0", "false", "No", "off", "OFF"):
             with self.subTest(value=value):
                 shutil.rmtree(self.root / "cache", ignore_errors=True)
                 result = self.launch("serve", extra={"BASEMIND_OFFLINE": value})

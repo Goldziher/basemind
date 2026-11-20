@@ -57,6 +57,40 @@ fn grant(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> bool {
     text(lookup, name).is_some_and(|value| is_truthy(&value))
 }
 
+/// The spellings an offline switch accepts, as its error names them: those of every boolean
+/// `BASEMIND_*` variable (#317).
+const OFFLINE_SPELLINGS: &str = "1, true, yes, on or 0, false, no, off";
+
+/// The offline switch `name`: `Ok(None)` when it is unset or blank, `1` / `true` / `yes` / `on` or
+/// `0` / `false` / `no` / `off` in any case and surrounded by any whitespace, and for any other value
+/// an error naming the variable. A value that is not Unicode is read lossily, so it is refused like
+/// any other non-boolean instead of counting as unset. The plugin launcher reads `BASEMIND_OFFLINE`
+/// by the same rule.
+fn offline_switch(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Result<Option<bool>, String> {
+    let Some(raw) = lookup(name).map(|value| value.to_string_lossy().into_owned()) else {
+        return Ok(None);
+    };
+    let value = raw.trim();
+    let is = |words: [&str; 4]| words.iter().any(|word| value.eq_ignore_ascii_case(word));
+    if value.is_empty() {
+        Ok(None)
+    } else if is(["1", "true", "yes", "on"]) {
+        Ok(Some(true))
+    } else if is(["0", "false", "no", "off"]) {
+        Ok(Some(false))
+    } else {
+        Err(format!("{name}={raw:?} is not a boolean: use {OFFLINE_SPELLINGS}"))
+    }
+}
+
+/// Whether `lookup` turns the grammar downloads off: `BASEMIND_OFFLINE` or
+/// `BASEMIND_GRAMMAR_OFFLINE` set true. Either set to a value that is not a boolean is an error.
+fn grammars_offline(lookup: &impl Fn(&str) -> Option<OsString>) -> Result<bool, String> {
+    let all = offline_switch(lookup, OFFLINE_ENV)?.unwrap_or(false);
+    let grammars = offline_switch(lookup, GRAMMAR_OFFLINE_ENV)?.unwrap_or(false);
+    Ok(all || grammars)
+}
+
 /// The engine configuration the process environment describes.
 pub fn engine_config_from_env() -> EngineConfig {
     crate::config::trust::warn_removed_variables(|name| std::env::var_os(name).is_some());
@@ -82,7 +116,8 @@ pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineCo
     if let Some(millis) = text(&lookup, PARSE_TIMEOUT_MS_ENV).and_then(|raw| raw.parse::<u64>().ok()) {
         config.parse_timeout = Duration::from_millis(millis);
     }
-    config.grammars.offline = grant(&lookup, OFFLINE_ENV) || grant(&lookup, GRAMMAR_OFFLINE_ENV);
+    // A switch that is not a boolean keeps the downloads off; `install_from_env` refuses it. ~keep
+    config.grammars.offline = grammars_offline(&lookup).unwrap_or(true);
     // Blank counts as unset, as the language pack reads it. ~keep
     config.grammars.cache_dir = lookup(GRAMMAR_CACHE_DIR_ENV)
         .filter(|value| value.to_str().is_none_or(|value| !value.trim().is_empty()))
@@ -159,10 +194,14 @@ fn absolute(value: OsString) -> PathBuf {
 }
 
 /// The variable and value to set so the model downloads stay offline, when `lookup` sets
-/// `BASEMIND_OFFLINE`. The models are fetched by the Hugging Face client, which reads only its own
+/// `BASEMIND_OFFLINE` true, or to a value that is not a boolean, which `install_from_env` then
+/// refuses. The models are fetched by the Hugging Face client, which reads only its own
 /// `HF_HUB_OFFLINE`; set, a model missing from the local cache is an error naming its file.
 pub fn model_hub_offline(lookup: impl Fn(&str) -> Option<OsString>) -> Option<(&'static str, &'static str)> {
-    grant(&lookup, OFFLINE_ENV).then_some((HF_HUB_OFFLINE_ENV, "1"))
+    offline_switch(&lookup, OFFLINE_ENV)
+        .unwrap_or(Some(true))
+        .unwrap_or(false)
+        .then_some((HF_HUB_OFFLINE_ENV, "1"))
 }
 
 /// Apply [`model_hub_offline`] to this process's environment, which the processes it starts inherit.
@@ -178,9 +217,11 @@ pub unsafe fn export_model_hub_offline() {
     }
 }
 
-/// Build this process's engine from its environment. A variable with a value it cannot use, or
-/// one of a removed setting, is warned about once per process.
+/// Build this process's engine from its environment. An offline switch set to a value that is not a
+/// boolean is an error naming it; another variable with a value it cannot use, or one of a removed
+/// setting, is warned about once per process.
 pub fn install_from_env() -> Result<Engine, EngineError> {
+    grammars_offline(&|name: &str| std::env::var_os(name)).map_err(EngineError::invalid_argument)?;
     Engine::new(engine_config_from_env())
 }
 
@@ -310,14 +351,14 @@ mod tests {
     }
 
     #[test]
-    fn either_offline_variable_keeps_grammars_offline_on_a_truthy_value_only() {
+    fn either_offline_variable_keeps_grammars_offline_on_a_true_value_only() {
         let offline = |vars: &[(&str, &str)]| config_of(vars).grammars.offline;
         assert!(!offline(&[]));
         for name in [GRAMMAR_OFFLINE_ENV, OFFLINE_ENV] {
-            for word in ["1", "true", " TRUE ", "yes"] {
+            for word in ["1", "true", " TRUE ", "yes", "on", "On"] {
                 assert!(offline(&[(name, word)]), "{name}={word:?} is offline");
             }
-            for word in ["", "0", "false", "no", "off"] {
+            for word in ["", " ", "0", "false", "No", "off", "OFF", "\toff\n"] {
                 assert!(!offline(&[(name, word)]), "{name}={word:?} is online");
             }
         }
@@ -328,10 +369,42 @@ mod tests {
     }
 
     #[test]
+    fn an_offline_switch_that_is_not_a_boolean_is_an_error_naming_it_and_keeps_downloads_off() {
+        for name in [GRAMMAR_OFFLINE_ENV, OFFLINE_ENV] {
+            for value in ["maybe", "2", "enabled", "y"] {
+                let vars = [(name, value)];
+                assert_eq!(
+                    grammars_offline(&lookup_of(&vars)),
+                    Err(format!(
+                        "{name}={value:?} is not a boolean: use 1, true, yes, on or 0, false, no, off"
+                    )),
+                    "{name}={value:?}"
+                );
+                assert!(
+                    config_of(&vars).grammars.offline,
+                    "{name}={value:?} keeps grammars offline"
+                );
+            }
+        }
+        assert_eq!(
+            grammars_offline(&lookup_of(&[(OFFLINE_ENV, "1"), (GRAMMAR_OFFLINE_ENV, "maybe")])),
+            Err(format!(
+                "{GRAMMAR_OFFLINE_ENV}=\"maybe\" is not a boolean: use 1, true, yes, on or 0, false, no, off"
+            )),
+            "a true BASEMIND_OFFLINE does not hide a bad grammar switch"
+        );
+        assert_eq!(
+            model_hub_offline(lookup_of(&[(OFFLINE_ENV, "maybe")])),
+            Some(("HF_HUB_OFFLINE", "1"))
+        );
+    }
+
+    #[test]
     fn the_offline_variable_turns_the_model_hub_offline() {
         let export = |vars: &[(&str, &str)]| model_hub_offline(lookup_of(vars));
         assert_eq!(export(&[(OFFLINE_ENV, "1")]), Some(("HF_HUB_OFFLINE", "1")));
         assert_eq!(export(&[(OFFLINE_ENV, "yes")]), Some(("HF_HUB_OFFLINE", "1")));
+        assert_eq!(export(&[(OFFLINE_ENV, " ON ")]), Some(("HF_HUB_OFFLINE", "1")));
         assert_eq!(
             export(&[(OFFLINE_ENV, "true"), (HF_HUB_OFFLINE_ENV, "0")]),
             Some(("HF_HUB_OFFLINE", "1")),
@@ -340,6 +413,8 @@ mod tests {
         assert_eq!(export(&[]), None);
         assert_eq!(export(&[(OFFLINE_ENV, "false")]), None);
         assert_eq!(export(&[(OFFLINE_ENV, "0")]), None);
+        assert_eq!(export(&[(OFFLINE_ENV, "off")]), None);
+        assert_eq!(export(&[(OFFLINE_ENV, " ")]), None);
         assert_eq!(
             export(&[(GRAMMAR_OFFLINE_ENV, "1")]),
             None,
