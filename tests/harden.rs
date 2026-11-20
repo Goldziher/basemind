@@ -32,6 +32,8 @@ use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::{ServiceExt, service::RoleClient, service::RunningService};
 use serde_json::{Value, json};
 
+#[path = "support/worktree_growth.rs"]
+mod worktree_growth;
 #[path = "harden/worktrees.rs"]
 mod worktrees;
 
