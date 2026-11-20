@@ -327,6 +327,8 @@ fn a_scoped_rescan_of_a_touched_file_maps_its_new_stamp() {
     crate::store::init_isolated_cache();
     let (tmp, git_cache) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let root = tmp.path();
+    // A workspace rescans only a root the root guard admits as a project.
+    std::fs::write(root.join("basemind.toml"), "").unwrap();
     let file = root.join("a.rs");
     std::fs::write(&file, source("delta_touch", 0)).unwrap();
     set_mtime(&file, std::time::Duration::from_secs(1_000_000_000));
