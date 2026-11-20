@@ -7,7 +7,10 @@ repository.
 Every boolean variable, including the `BASEMIND_DOCUMENTS_*` switches and the status line's, reads
 `1`, `true`, `yes` or `on` as true and `0`, `false`, `no` or `off` as false, in any case. A blank
 value counts as unset. Any other value is an error that names the variable: the command refuses to
-run, and the status line shows the error in place of its output.
+run, and the status line shows the error in place of its output. `BASEMIND_ALLOW_EXTRA_ROOTS` and
+`BASEMIND_ALLOW_DEPENDENCY_ROOTS` are the exceptions: they also take a path list, so any other value
+is read as that list, and a misspelling such as `tru` is a relative entry, ignored with a warning,
+that grants nothing.
 
 ## Locations
 
