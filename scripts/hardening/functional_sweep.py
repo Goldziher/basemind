@@ -4,10 +4,11 @@ with a planted document set, asserting structural fields and that document RAG r
 fact for a planted question, with and without filters.
 
 Skips are explicit (a tool answering that its Cargo feature is not compiled in) and counted; a run
-that checked nothing fails.
+that checked nothing fails, and so does a skip in a `--features full` build, which compiles every
+feature in.
 
 Usage:
-    functional_sweep.py --binary target/release/basemind [--out DIR]
+    functional_sweep.py --binary target/release/basemind [--features full] [--out DIR]
 """
 
 from __future__ import annotations
@@ -393,6 +394,17 @@ class Outcome:
     secs: float = 0.0
 
 
+FULL = "full"
+
+
+def sweep_passes(outcomes: list[Outcome], uncovered: list[str], features: str) -> bool:
+    """Something passed, nothing failed, every advertised tool was called, and nothing skipped in a
+    `full` build: there a skip is a feature the shipped binary lost."""
+    statuses = {o.status for o in outcomes}
+    skipped_in_full = FULL in features.replace(" ", ",").split(",") and "skip" in statuses
+    return "pass" in statuses and "fail" not in statuses and not uncovered and not skipped_in_full
+
+
 def feature_missing_text(text: str) -> bool:
     low = text.lower()
     return "cargo feature" in low and "not compiled" in low
@@ -453,6 +465,9 @@ def main() -> int:  # noqa: PLR0915
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--binary", type=Path, required=True)
     ap.add_argument("--out", type=Path)
+    ap.add_argument(
+        "--features", default="", help="Cargo features the binary was built with; with `full` a skip fails the run"
+    )
     ap.add_argument(
         "--docs-timeout", type=float, default=600, help="seconds to wait for documents to become searchable"
     )
@@ -521,11 +536,11 @@ def main() -> int:  # noqa: PLR0915
     passed = sum(o.status == "pass" for o in outcomes)
     failed = [o for o in outcomes if o.status == "fail"]
     skipped = [o for o in outcomes if o.status == "skip"]
-    ok = passed > 0 and not failed and not uncovered
+    ok = sweep_passes(outcomes, uncovered, args.features)
     lines = [
         f"# Functional sweep: {'PASS' if ok else 'FAIL'}",
         "",
-        f"- binary: `{binary}` ({version})",
+        f"- binary: `{binary}` ({version}), features `{args.features or 'unknown'}`",
         f"- checks: {len(outcomes)}, passed {passed}, failed {len(failed)}, skipped {len(skipped)}",
         f"- documents readiness: {docs_state}",
         f"- advertised tools not exercised: {uncovered or 'none'}",

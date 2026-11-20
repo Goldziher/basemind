@@ -11,7 +11,7 @@ They need Python 3.10+ and nothing outside the standard library.
 | `leak_check.py` | no leaks in one-shot `basemind scan` (macOS `leaks`); no definitely-lost blocks (Linux valgrind); on a `system-allocator` build | 1-2 min for the fixtures (`leaks`); about 20 min under valgrind on a 4-core runner; longer with `--repo` |
 | `selftest_analyze.py` | `analyze.py`'s rules fire on known-bad input and pass known-good input | seconds |
 | `selftest_leak_check.py` | `leak_check.py` names a definite leak's owning frame, judges clean and uninspected reports, and fails a run killed at its timeout | seconds |
-| `selftest_sweep.py` | the sweep's matchers read the shipped answer shapes | seconds |
+| `selftest_sweep.py` | the sweep's matchers read the shipped answer shapes, and its verdict fails a skip in a `full` build | seconds |
 
 Build first, outside the repository's `target/` if you like:
 
@@ -156,7 +156,7 @@ real run proves R7 fires.
 ## Functional sweep
 
 ```bash
-python3 scripts/hardening/functional_sweep.py --binary "$CARGO_TARGET_DIR/release/basemind"
+python3 scripts/hardening/functional_sweep.py --binary "$CARGO_TARGET_DIR/release/basemind" --features full
 ```
 
 Builds a fixture repository (Rust + Python, two commits, an uncommitted edit) with five documents,
@@ -171,9 +171,10 @@ the planted document among the top five with the answer in its text; a `mime_typ
 the PDF fact and an excluding filter must drop it.
 
 A case answering that its Cargo feature is not compiled in is a counted skip. The run fails when any
-case fails, when nothing passed, or when the server advertises a verb tool the sweep did not call.
-`selftest_sweep.py` runs the matchers on answers in the shipped shapes (`code_grep` hits grouped by
-file and symbol, `code_refs` hits by file).
+case fails, when nothing passed, when the server advertises a verb tool the sweep did not call, or
+when `--features full` (every feature compiled in) skipped a case. `selftest_sweep.py` runs the
+matchers on answers in the shipped shapes (`code_grep` hits grouped by file and symbol, `code_refs`
+hits by file) and the verdict on synthetic outcomes.
 
 ## One-shot leak check (macOS, Linux)
 
