@@ -7,7 +7,6 @@
 //! the first dropped commit), and `git_log {rev}` is the way to the whole message.
 
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 use rmcp::ServiceExt;
@@ -20,13 +19,9 @@ const BIG_BODY_BYTES: usize = 200_000;
 const COMMITS: usize = 4;
 
 fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .status()
         .expect("git in PATH");
     assert!(status.success(), "git {args:?} failed");

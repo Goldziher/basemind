@@ -119,7 +119,7 @@ async fn http_get(addr: &str, target: &str, bearer: Option<&str>) -> (u16, Strin
 /// Make `dir` a project root the workspace-root allow-list accepts (issue #62). `.git/` is
 /// invisible to the scanner, so the fixtures' indexed content is unchanged by the init.
 fn git_init(dir: &std::path::Path) {
-    let status = std::process::Command::new("git")
+    let status = basemind::testing::git_command()
         .args(["init", "--quiet"])
         .current_dir(dir)
         .status()

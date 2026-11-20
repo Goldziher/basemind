@@ -12,7 +12,7 @@ use basemind::config::{CONFIG_FILE_NAME, discover_root_with_basemind, init_root}
 
 /// `git init` a directory so it becomes its own git repo workdir.
 fn git_init(dir: &std::path::Path) {
-    let status = std::process::Command::new("git")
+    let status = basemind::testing::git_command()
         .arg("init")
         .current_dir(dir)
         .status()

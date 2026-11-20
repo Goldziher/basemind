@@ -20,13 +20,9 @@ fn bin() -> &'static str {
 }
 
 fn git(repo: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .output()
         .expect("git in PATH");
     assert!(

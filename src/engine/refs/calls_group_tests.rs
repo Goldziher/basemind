@@ -4,7 +4,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use super::{budget_call_page, calls_in_content_fjall, scan_calls_by_name};
 use crate::config::ConfigV1;
@@ -34,7 +33,7 @@ const SYMBOLS: [&str; 6] = [
 const PAGE: usize = 3;
 
 fn git(args: &[&str], cwd: &Path) {
-    let out = Command::new("git")
+    let out = crate::testing::git_command()
         .args(args)
         .current_dir(cwd)
         .output()

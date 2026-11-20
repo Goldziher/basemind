@@ -6,7 +6,7 @@ use crate::store::{VIEW_WORKING, init_isolated_cache};
 
 pub(super) fn one_file_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
-    let status = std::process::Command::new("git")
+    let status = crate::testing::git_command()
         .args(["init", "--quiet"])
         .current_dir(dir.path())
         .status()

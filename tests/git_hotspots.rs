@@ -14,14 +14,12 @@ const DAY: i64 = 86_400;
 
 fn git(root: &Path, args: &[&str], email: &str, days_before_head: i64) {
     let date = format!("@{} +0000", HEAD_TIME - days_before_head * DAY);
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(root)
         .env("GIT_AUTHOR_NAME", email)
         .env("GIT_AUTHOR_EMAIL", email)
         .env("GIT_AUTHOR_DATE", &date)
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .env("GIT_COMMITTER_DATE", &date)
         .status()
         .expect("git in PATH");

@@ -9,7 +9,6 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use basemind::config::ConfigV1;
 use basemind::scanner::{EmbedMode, ScanSource, scan, scan_paths};
@@ -45,7 +44,10 @@ fn fixture() -> (TempDir, ConfigV1) {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    let _ = Command::new("git").args(["init", "-q"]).current_dir(root).status();
+    let _ = basemind::testing::git_command()
+        .args(["init", "-q"])
+        .current_dir(root)
+        .status();
     fs::write(root.join("a.rs"), "pub fn alpha() -> u32 {\n    1\n}\n").unwrap();
     let salt = root.display().to_string();
     for name in NON_CODE {

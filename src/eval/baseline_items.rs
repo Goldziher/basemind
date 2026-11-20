@@ -460,13 +460,9 @@ a1b2c3d Jane 2026-01-01T00:00:00+00:00 fix(rt): call wake()
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
+        let out = crate::testing::git_command()
             .args(args)
             .current_dir(dir)
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@e.x")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@e.x")
             .output()
             .unwrap();
         assert!(

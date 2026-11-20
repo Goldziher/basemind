@@ -64,13 +64,9 @@ impl Env {
 }
 
 fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .status()
         .expect("git in PATH");
     assert!(status.success(), "git {args:?} failed");
@@ -474,7 +470,7 @@ fn a_view_independent_git_call_on_another_view_is_forwarded_and_answers_alike() 
         let scan = env.run(args);
         assert_eq!(code(&scan), 0, "{}", text(&scan));
     }
-    let head = Command::new("git")
+    let head = basemind::testing::git_command()
         .args(["rev-parse", "--short=7", "HEAD"])
         .current_dir(env.root())
         .output()

@@ -5,7 +5,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use basemind::config::ConfigV1;
 use basemind::scanner::{EmbedMode, ScanSource, scan};
@@ -21,7 +20,7 @@ const QUERIES: [&str; 5] = [
 ];
 
 fn git(args: &[&str], cwd: &Path) {
-    let out = Command::new("git")
+    let out = basemind::testing::git_command()
         .args(args)
         .current_dir(cwd)
         .output()

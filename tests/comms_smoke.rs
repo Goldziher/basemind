@@ -131,7 +131,7 @@ fn refusal(result: Result<impl std::fmt::Debug, CommsClientError>) -> CommsError
 /// Run a git command in `cwd`, asserting success. Used to build a real repo the daemon's machine
 /// registry can enumerate when a client Hello auto-registers its cwd.
 fn git(args: &[&str], cwd: &Path) {
-    let out = Command::new("git")
+    let out = basemind::testing::git_command()
         .args(args)
         .current_dir(cwd)
         .output()

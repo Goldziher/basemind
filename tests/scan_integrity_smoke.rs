@@ -28,7 +28,7 @@ fn no_headroom() {
 }
 
 fn seed_repo(root: &Path) {
-    let status = std::process::Command::new("git")
+    let status = basemind::testing::git_command()
         .args(["init", "--quiet"])
         .current_dir(root)
         .status()

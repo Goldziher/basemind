@@ -8,7 +8,6 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use basemind::config::ConfigV1;
 use basemind::git::Repo;
@@ -18,13 +17,9 @@ use basemind::store::{Store, VIEW_STAGED, VIEW_WORKING};
 use tempfile::TempDir;
 
 fn run(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .status()
         .expect("git in PATH");
     assert!(status.success(), "git {args:?} failed");
@@ -189,7 +184,7 @@ fn scan_skips_submodule_paths_by_default() {
     run(root, &["commit", "-qm", "init parent"]);
 
     let url = format!("file://{}", inner.path().display());
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args([
             "-c",
             "protocol.file.allow=always",
@@ -200,10 +195,6 @@ fn scan_skips_submodule_paths_by_default() {
             "vendored",
         ])
         .current_dir(root)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .status()
         .expect("git in PATH");
     assert!(status.success(), "git submodule add failed");
@@ -476,7 +467,7 @@ fn a_commit_missing_from_the_object_store_fails_the_history_walk() {
         run(root, &["add", "a.rs"]);
         run(root, &["commit", "-qm", &format!("round {round}")]);
     }
-    let middle = Command::new("git")
+    let middle = basemind::testing::git_command()
         .args(["rev-parse", "HEAD~1"])
         .current_dir(root)
         .output()

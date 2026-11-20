@@ -218,7 +218,7 @@ async fn concurrent_rescan_and_blob_gc_never_reaps_a_referenced_blob() {
     // The workspace-root allow-list (issue #62) only opens a project root; `.git/` is invisible to
     // the scanner, so the blob accounting this test asserts is unchanged by the init.
     let ws = tempfile::tempdir().expect("workspace");
-    let status = std::process::Command::new("git")
+    let status = crate::testing::git_command()
         .args(["init", "--quiet"])
         .current_dir(ws.path())
         .status()

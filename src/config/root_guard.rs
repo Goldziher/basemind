@@ -280,7 +280,7 @@ mod tests {
     fn git_repo() -> (tempfile::TempDir, PathBuf) {
         let dir = plain_dir();
         let root = dir.path().canonicalize().expect("canonicalize");
-        let status = std::process::Command::new("git")
+        let status = crate::testing::git_command()
             .args(["init", "--quiet"])
             .current_dir(&root)
             .status()
