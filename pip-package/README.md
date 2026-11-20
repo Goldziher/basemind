@@ -20,7 +20,8 @@ pip install basemind
 On first invocation, the pre-compiled Rust binary for your platform (macOS on Apple
 Silicon, Linux on x86_64 and arm64, Windows on x86_64) is downloaded from
 [GitHub Releases](https://github.com/Goldziher/basemind/releases) and cached under
-`~/.cache/basemind/<version>/`.
+`$XDG_CACHE_HOME/basemind/<version>/` (`~/.cache/basemind/<version>/` when `XDG_CACHE_HOME` is
+unset). [Data and uninstall](https://basemind.ai/start/uninstall/) lists what to remove.
 
 Override the binary location with `BASEMIND_BINARY=/path/to/basemind`.
 

@@ -70,6 +70,7 @@ export default defineConfig({
             { label: "Installation", slug: "start/installation" },
             { label: "Quickstart", slug: "start/quickstart" },
             { label: "Upgrading", slug: "start/upgrading" },
+            { label: "Data and uninstall", slug: "start/uninstall" },
           ],
         },
         {

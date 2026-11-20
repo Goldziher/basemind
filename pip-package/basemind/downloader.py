@@ -248,7 +248,9 @@ LAST_USED = ".last-used"
 
 
 def _cache_root() -> Path:
-    return Path.home() / ".cache" / "basemind"
+    """``$XDG_CACHE_HOME/basemind``, else ``~/.cache/basemind``: the plugin launcher's rule."""
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    return Path(xdg_cache_home) / "basemind" if xdg_cache_home else Path.home() / ".cache" / "basemind"
 
 
 def _cache_dir(version: str) -> Path:

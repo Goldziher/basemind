@@ -40,6 +40,7 @@ pages!(
     "indexing",
     "paging",
     "setup",
+    "data",
     "exit-codes",
     "environment",
     "troubleshooting",

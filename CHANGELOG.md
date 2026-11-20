@@ -141,6 +141,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- `basemind manual data` and the website's "Data and uninstall" page list every directory and file
+  basemind writes, per platform, and how to remove each install channel; the Homebrew formula's
+  caveats point at the page.
 
 ### Changed
 
@@ -1231,6 +1234,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it syncs the journal, flushes only once 8 MiB of rows sit unflushed, and merges only a small
   keyspace holding more than one table. A one-commit append on a 2.7k-commit history went from
   about 530 ms to 23 ms (debug build); a full rebuild still compacts every keyspace.
+- The pip wrapper caches its binary under `$XDG_CACHE_HOME/basemind/<version>/` when
+  `XDG_CACHE_HOME` is set, as the plugin launcher does, instead of always under `~/.cache`. A binary
+  cached under `~/.cache/basemind/` before is downloaded again and the old directory stays until
+  you remove it.
 
 ## [0.33.0] - 2026-11-14
 
