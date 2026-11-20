@@ -166,9 +166,10 @@ fn render_usage_rules(out: &mut String, caps: &[Capability]) {
     );
     out.push_str(
         "The Basemind tools are always loaded: call them directly, there is no tool search to run \
-         first. The agent tools `agent_post`, `agent_inbox` and `agent_threads` are the exception: \
-         they are deferred, so find them by tool search. Arguments are exact (an unknown argument is rejected, not ignored), paths are \
-         repository-relative, and `line` / `end_line` are 1-based.\n\n",
+         first. The agent tools `agent_post`, `agent_inbox` and `agent_threads` are listed separately; \
+         they are needed only when collaborating with other agents. Arguments are exact (an unknown \
+         argument is rejected, not ignored), paths are repository-relative, and `line` / `end_line` \
+         are 1-based.\n\n",
     );
     out.push_str("| Task | First call |\n|---|---|\n");
     for cap in &Capability::ALL {

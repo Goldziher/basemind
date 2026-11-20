@@ -38,12 +38,12 @@ tokio::task_local! {
 /// (or the vector store) and write nothing durable, so dropping the handler future on client
 /// cancellation loses only recomputable work. NEVER add a call that writes (`index_rescan`,
 /// `memory_save`, a registry mutation): dropping those at an await point could strand a
-/// half-applied write. Keyed like [`SLOW_CALLS`].
+/// half-applied write.
 pub(super) const CANCEL_AWARE_READS: &[&str] = &["code_grep", "code_search", "docs_search"];
 
-/// Whether this call is one of the [`CANCEL_AWARE_READS`].
-pub(super) fn is_cancel_aware_read(name: &str, arguments: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
-    matches_call(CANCEL_AWARE_READS, name, arguments)
+/// Whether the tool `name` is one of the [`CANCEL_AWARE_READS`].
+pub(super) fn is_cancel_aware_read(name: &str) -> bool {
+    CANCEL_AWARE_READS.contains(&name)
 }
 
 /// JSON-RPC code for a request the client cancelled (the LSP `RequestCancelled` code).
@@ -73,32 +73,11 @@ pub(super) async fn run_until_cancelled<T>(
 /// Calls that CAN dominate the transport for seconds, and so are eligible to become a task when
 /// they outlive [`TASK_THRESHOLD`]. Eligibility only decides whether the call runs on its own task
 /// with a deadline; a fast one is still answered inline.
-///
-/// Entries are keyed the way telemetry is: a bare tool name matches every call of that tool, and a
-/// `domain:mode` key matches one mode of the mode-dispatched domain tool (`agents`).
 pub(super) const SLOW_CALLS: &[&str] = &["index_rescan", "code_search", "docs_search"];
 
-/// Whether this call is one of the [`SLOW_CALLS`] eligible for task offload.
-pub(super) fn is_slow_tool(name: &str, arguments: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
-    matches_call(SLOW_CALLS, name, arguments)
-}
-
-/// Whether the call `name` (with its `mode` argument, for a domain tool) is listed in `table`.
-fn matches_call(table: &[&str], name: &str, arguments: Option<&serde_json::Map<String, serde_json::Value>>) -> bool {
-    if table.contains(&name) {
-        return true;
-    }
-    let Some(mode) = arguments
-        .and_then(|args| args.get("mode"))
-        .and_then(serde_json::Value::as_str)
-    else {
-        return false;
-    };
-    table.iter().any(|entry| {
-        entry
-            .split_once(':')
-            .is_some_and(|(tool, entry_mode)| tool == name && entry_mode == mode)
-    })
+/// Whether the tool `name` is one of the [`SLOW_CALLS`] eligible for task offload.
+pub(super) fn is_slow_tool(name: &str) -> bool {
+    SLOW_CALLS.contains(&name)
 }
 
 /// Dispose of the tool's child task after a cancellation. The tool's token is always cancelled so a
@@ -151,7 +130,7 @@ pub(super) async fn run_slow_tool(
     let request_ct = context.ct.clone();
     let tool_ct = request_ct.child_token();
     context.ct = tool_ct.clone();
-    let cancel_aware = is_cancel_aware_read(&request.name, request.arguments.as_ref());
+    let cancel_aware = is_cancel_aware_read(&request.name);
     // `TaskManager` is a cheap Arc clone sharing the same store; taken out before `server` moves.
     let manager = server.tasks.clone();
     let slot = TaskSlot::default();
@@ -199,34 +178,20 @@ pub(super) async fn run_slow_tool(
 mod tests {
     use super::*;
 
-    fn args(json: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
-        json.as_object().expect("object").clone()
-    }
-
     #[test]
     fn should_offer_offload_only_to_the_tools_that_can_run_long() {
         for tool in ["index_rescan", "code_search", "docs_search"] {
-            assert!(is_slow_tool(tool, None), "{tool}");
+            assert!(is_slow_tool(tool), "{tool}");
         }
         for tool in ["index_status", "code_outline", "code_grep", "git_log", "memory_search"] {
-            assert!(!is_slow_tool(tool, None), "{tool}");
+            assert!(!is_slow_tool(tool), "{tool}");
         }
-    }
-
-    /// A `mode` only selects within a mode-dispatched domain tool; it must not turn a verb tool
-    /// that is not listed into a slow one.
-    #[test]
-    fn should_not_match_a_mode_argument_on_a_verb_tool() {
-        assert!(!is_slow_tool(
-            "code_outline",
-            Some(&args(serde_json::json!({ "mode": "index_rescan" })))
-        ));
     }
 
     #[test]
     fn should_race_cancellation_only_for_the_pure_reads() {
         for tool in ["code_grep", "code_search", "docs_search"] {
-            assert!(is_cancel_aware_read(tool, None), "{tool}");
+            assert!(is_cancel_aware_read(tool), "{tool}");
         }
         // A waiting agent_inbox marks what it returns read, so dropping it is not free.
         for tool in [
@@ -236,7 +201,7 @@ mod tests {
             "agent_inbox",
             "agent_post",
         ] {
-            assert!(!is_cancel_aware_read(tool, None), "{tool}");
+            assert!(!is_cancel_aware_read(tool), "{tool}");
         }
     }
 

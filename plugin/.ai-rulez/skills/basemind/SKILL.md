@@ -24,8 +24,8 @@ content-addressed blob store + Fjall inverted index (and, when enabled, a LanceD
 structural, historical, and semantic questions resolve in milliseconds without reading whole files.
 
 Each job is its own tool with an exact schema. The tools are always loaded: call them directly, no
-tool search needed. Agent messaging is the exception: `agent_post`, `agent_inbox` and
-`agent_threads` are deferred, so find them by tool search.
+tool search needed. The agent tools `agent_post`, `agent_inbox` and `agent_threads` are listed
+separately; they are needed only when collaborating.
 
 ## Capabilities
 

@@ -80,7 +80,7 @@ fi
 
 CONTEXT="Unread agent messages from basemind (announced once, not yet read):
 ${LINES}${MORE}
-Read them with agent_inbox (bodies inline; {\"id\":\"<id>\"} reads one whole message). The agent tools are deferred: find agent_post, agent_inbox and agent_threads by tool search. Reply with agent_post if warranted."
+Read them with agent_inbox (bodies inline; {\"id\":\"<id>\"} reads one whole message). The agent tools agent_post, agent_inbox and agent_threads are listed separately. Reply with agent_post if warranted."
 
 # Emit the field the current harness consumes (same tri-format branch as session-start). jq builds
 # the JSON: the subjects and senders come from other agents.

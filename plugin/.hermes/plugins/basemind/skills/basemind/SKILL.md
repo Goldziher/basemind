@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:963975b86c644b84228ad38dab363b6fdb52d3326d3bab8ba9905d0556674e52
-Source-Hash: blake3:9671938c539719311a274b3a1ddafa49af5b3c535d32416ee51e6b597b8751f3
+Content-Hash: blake3:3fad41a7f2d5734328963416a904dc0105ebb8cc41ec1ec6dbafb323a5ab95f4
+Source-Hash: blake3:00a77c68bd7bb6c1cab200e2d36a9f97291cc4d2f4c88bbeeb7c31d6c545ef37
 Schema-Version: v1
 -->
 
@@ -21,8 +21,8 @@ content-addressed blob store + Fjall inverted index (and, when enabled, a LanceD
 structural, historical, and semantic questions resolve in milliseconds without reading whole files.
 
 Each job is its own tool with an exact schema. The tools are always loaded: call them directly, no
-tool search needed. Agent messaging is the exception: `agent_post`, `agent_inbox` and
-`agent_threads` are deferred, so find them by tool search.
+tool search needed. The agent tools `agent_post`, `agent_inbox` and `agent_threads` are listed
+separately; they are needed only when collaborating.
 
 ## Capabilities
 

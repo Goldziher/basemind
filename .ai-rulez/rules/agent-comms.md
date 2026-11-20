@@ -22,8 +22,8 @@ take exact arguments; they return paths, 1-based lines, and signatures — a fra
 of reading source. basemind first; shell is the fallback.
 
 **Communicate with other agents.** You may be one of several agents working this repo at once.
-Messaging is opt-in and secondary to code navigation: three deferred MCP tools (`--features comms`),
-found by tool search, not loaded at session start. `agent_post {body, subject?, thread?, reply_to?,
+Messaging is opt-in and secondary to code navigation: three MCP tools (`--features comms`), listed
+separately from the others and needed only when collaborating. `agent_post {body, subject?, thread?, reply_to?,
 to?, paths?}` sends: `subject` starts a thread, `thread` or `reply_to` continues one, and `to` makes a
 new thread invitation-only (without it the thread is open to the repository). `agent_inbox {}` reads
 unread messages with bodies inline and marks them read; `peek: true` does not, `unread: false` reads

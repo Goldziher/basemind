@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# basemind PreToolUse hook for the deferred agent tools (agent_post, agent_inbox, agent_threads).
+# basemind PreToolUse hook for the agent tools (agent_post, agent_inbox, agent_threads).
 #
 # Pipes the hook event to `basemind agent hook pre-tool-use`, which names the caller's sub-identity
 # (the subagent, or else the session) and, when the call carries no `as`, answers with

@@ -55,7 +55,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 The code, git, memory, document and index rows are 15 tools, one per job, each with its own exact
 schema; there is no `mode` argument. They are always loaded (`_meta["anthropic/alwaysLoad"]`), so a host that defers MCP tools
 needs no tool-search round trip: call them directly. Their `tools/list` entry is about 20 KB (about
-5k tokens). The three agent tools (`comms` builds) are deferred: a host finds them by tool search, and the session-start hook and the server instructions name them. An unknown argument is
+5k tokens). The three agent tools (`comms` builds) carry no such marker, so a host that defers tools loads them only on demand; the session-start hook and the server instructions name them. An unknown argument is
 rejected with a did-you-mean suggestion, every line number is 1-based, and a failure the caller can
 fix comes back as an `isError` result that names the fix. Arguments, examples and the mapping from
 the previous `code` / `git` / `memory` / `admin` tools: the
@@ -604,7 +604,7 @@ stdio transport and need none of this.
 <summary><strong>How agents coordinate</strong></summary>
 
 A single shared service in the background lets agents talk to each other — even across different
-tools and different repos on the same machine. Three deferred tools carry it (`agent_post`,
+tools and different repos on the same machine. Three tools carry it (`agent_post`,
 `agent_inbox`, `agent_threads`; the CLI mirror is `basemind agent post|inbox|threads`). A post with
 a `subject` opens a **thread**: open to every agent of the repository, or invitation-only when it
 names recipients (`to`). Each agent has an **inbox**: reading returns unread messages with their
