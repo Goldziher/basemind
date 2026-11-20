@@ -4,6 +4,8 @@ This document acknowledges sources of forked/copied code and rule data used in t
 project. Ordinary crates.io dependencies are tracked in `Cargo.toml` / `Cargo.lock` and governed by
 `deny.toml`; this file covers code and data files that were **copied into the repository** — either
 rule data, query files or workspace crates under `crates/` that basemind now maintains as forks.
+The [model weights](#model-weights-downloaded-at-runtime) basemind downloads at runtime are listed
+at the end.
 
 ## stack-graphs name-binding rules (`.tsg`)
 
@@ -374,3 +376,76 @@ DEALINGS IN THE SOFTWARE.
 ```
 
 MIT is compatible with basemind's MIT license.
+
+---
+
+## Model weights downloaded at runtime
+
+basemind ships no model weights. A build with the `documents`, `documents-ner`, `documents-ocr` or
+`tokenizer` feature downloads them on first use through xberg 1.4.0, which fetches each file from a
+Hugging Face mirror at the pinned revision below and checks it against a SHA-256 manifest in the
+xberg source. Every model below, default or opt-in, is licensed MIT or Apache-2.0, so commercial use
+is permitted. The licence of each is the one in its upstream model card.
+
+### Defaults
+
+| Setting | Default | Model | Upstream | License |
+|---|---|---|---|---|
+| `[documents] embedding_preset` (on whenever documents are embedded) | `balanced` | `bge-base-en-v1.5` | [BAAI/bge-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) | MIT |
+| `[documents.reranker] preset`, `[code_search.reranker] preset` (off by default) | `bge-reranker-base` | `bge-reranker-base` | [BAAI/bge-reranker-base](https://huggingface.co/BAAI/bge-reranker-base) | MIT |
+| `[documents.ner] model` (off by default; unset means xberg's `balanced`) | `balanced` | `gliner_medium-v2.5` | [gliner-community/gliner_medium-v2.5](https://huggingface.co/gliner-community/gliner_medium-v2.5) | Apache-2.0 |
+| `[documents.ocr]` (`documents-ocr` builds) | Tesseract, `eng` | `eng.traineddata` | [tesseract-ocr/tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast) (`main`) | Apache-2.0 |
+| `basemind admin tokens`, token savings (`tokenizer` builds) | o200k tokenizer | `tokenizer.json` | [Xenova/gpt-4o](https://huggingface.co/Xenova/gpt-4o) at `7956d98f2a83b2751a98ea7136fdf7fe6cf54e69` | MIT |
+
+### Mirrors and pinned revisions
+
+| Mirror | Revision | Mirror licence statement |
+|---|---|---|
+| [xberg-io/embedding-models](https://huggingface.co/xberg-io/embedding-models/blob/4b127809f88a5aa1569d1238032b5ff40e5879bc/README.md) | `4b127809f88a5aa1569d1238032b5ff40e5879bc` | README: unmodified weights, all Apache-2.0 or MIT |
+| [xberg-io/reranker-models](https://huggingface.co/xberg-io/reranker-models/blob/3d655b40f2e1e087460434a143b11afac4947318/README.md) | `3d655b40f2e1e087460434a143b11afac4947318` | README: unmodified weights, all Apache-2.0 or MIT |
+| [xberg-io/gliner-models](https://huggingface.co/xberg-io/gliner-models/blob/afb0faaa3c8e7d0de7796bd37e625026ff635fe0/README.md) | `afb0faaa3c8e7d0de7796bd37e625026ff635fe0` | `license: apache-2.0`; ONNX exports of unmodified weights |
+
+The embedding and reranker mirrors state their licences in the README only, not in Hugging Face
+`license` metadata; the table above takes each model's licence from its upstream card.
+
+### Opt-in presets
+
+Embedding presets (`[documents] embedding_preset`), from `xberg-io/embedding-models`:
+
+| Preset | Model | Upstream | License |
+|---|---|---|---|
+| `fast` | `all-MiniLM-L6-v2` (quantized) | [sentence-transformers/all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) | Apache-2.0 |
+| `quality` | `bge-large-en-v1.5` | [BAAI/bge-large-en-v1.5](https://huggingface.co/BAAI/bge-large-en-v1.5) | MIT |
+| `multilingual` | `multilingual-e5-base` | [intfloat/multilingual-e5-base](https://huggingface.co/intfloat/multilingual-e5-base) | MIT |
+| `gte-modernbert-base` | `gte-modernbert-base` | [Alibaba-NLP/gte-modernbert-base](https://huggingface.co/Alibaba-NLP/gte-modernbert-base) | Apache-2.0 |
+| `lightweight` | `potion-base-8m` | [minishlab/potion-base-8M](https://huggingface.co/minishlab/potion-base-8M) | MIT |
+| `arctic-embed-m-v2.0` | `arctic-embed-m-v2.0` | [Snowflake/snowflake-arctic-embed-m-v2.0](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v2.0) | Apache-2.0 |
+| `qwen3-embedding-0.6b` | `qwen3-embedding-0.6b` | [Qwen/Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) | Apache-2.0 |
+
+Reranker presets (`preset` of `[documents.reranker]` and `[code_search.reranker]`), from
+`xberg-io/reranker-models`; the aliases `fast`, `balanced`, `quality` and `multilingual` resolve to
+`jina-reranker-v1-turbo-en`, `ettin-reranker-150m`, `bge-reranker-v2-m3` and `bge-reranker-v2-m3`:
+
+| Preset | Upstream | License |
+|---|---|---|
+| `bge-reranker-v2-m3` | [BAAI/bge-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3) | Apache-2.0 |
+| `jina-reranker-v1-turbo-en` | [jinaai/jina-reranker-v1-turbo-en](https://huggingface.co/jinaai/jina-reranker-v1-turbo-en) | Apache-2.0 |
+| `ettin-reranker-150m` | [cross-encoder/ettin-reranker-150m-v1](https://huggingface.co/cross-encoder/ettin-reranker-150m-v1) | Apache-2.0 |
+| `qwen3-reranker-0.6b` | [Qwen/Qwen3-Reranker-0.6B](https://huggingface.co/Qwen/Qwen3-Reranker-0.6B) | Apache-2.0 |
+
+NER models (`[documents.ner] model`), from `xberg-io/gliner-models`:
+
+| Model (alias) | Upstream | License |
+|---|---|---|
+| `gliner_small-v2.5` (`fast`) | [gliner-community/gliner_small-v2.5](https://huggingface.co/gliner-community/gliner_small-v2.5) | Apache-2.0 |
+| `gliner_large-v2.5` (`quality`) | [gliner-community/gliner_large-v2.5](https://huggingface.co/gliner-community/gliner_large-v2.5) | Apache-2.0 |
+
+`[documents.ner] model` accepts only these three GLiNER v2.5 checkpoints (and their aliases); the
+non-commercial GLiNER lines (such as `urchade/gliner_base` and `urchade/gliner_multi`, CC BY-NC 4.0)
+cannot be selected.
+
+### License Compatibility
+
+MIT and Apache-2.0 permit commercial use and are compatible with basemind's MIT license. A model
+change in a future xberg release must be checked against its upstream card before it becomes a
+default.

@@ -144,6 +144,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- `ATTRIBUTIONS.md` lists every model basemind downloads (#294): the default and opt-in embedding,
+  reranker and NER presets, the Tesseract `eng` data and the o200k tokenizer, each with its upstream
+  model card, pinned mirror revision and licence. All are MIT or Apache-2.0, so no default changes.
 
 ### Changed
 
