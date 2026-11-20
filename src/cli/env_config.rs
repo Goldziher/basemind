@@ -258,7 +258,7 @@ mod tests {
 
     /// Every boolean variable the environment configures, comms ones included.
     fn boolean_variables() -> Vec<&'static str> {
-        let mut names = vec![
+        let engine = [
             ALLOW_REPO_CREDENTIALS_ENV,
             ALLOW_ANY_ROOT_ENV,
             ALLOW_FOLLOW_SYMLINKS_ENV,
@@ -268,11 +268,13 @@ mod tests {
             HISTORY_INDEX_ENV,
         ];
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        names.extend([
+        let comms = [
             crate::comms::http_auth::ALLOW_HTTP_ENV,
             crate::comms::singleton::NO_AUTOSPAWN_ENV,
-        ]);
-        names
+        ];
+        #[cfg(not(all(feature = "comms", any(unix, windows))))]
+        let comms: [&'static str; 0] = [];
+        engine.into_iter().chain(comms).collect()
     }
 
     #[test]
