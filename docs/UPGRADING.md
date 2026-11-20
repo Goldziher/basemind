@@ -88,8 +88,7 @@ needs no tool-search round trip, so call them directly. `tools/list` for them is
 
 | Old | New | Where |
 | --- | --- | --- |
-| `path_contains` | `path` | `code_grep` (still a literal substring of the repo-relative path, never a glob) |
-| `path_contains` | `path_prefix` | `find_files` (now a prefix) |
+| `path_contains` | `path` | `code_grep`, `find_files` (a prefix, or a glob when it holds `*`; no longer a substring) |
 | `include_context` | `context` | `code_grep` (default off) |
 | `line_start` / `line_end` | `line` / `end_line` | `git_blame` |
 | `rev_old` / `rev_new` | `from` / `to` | `git_diff` |
@@ -122,7 +121,7 @@ JSON.
 | `code expand <path> <name>` | `code read <path> --symbol <name>` (`expand` stays as an alias of `read`), or `code read <path> --line <n> --end-line <m>` |
 | `code grep <regex>` | `code grep <pattern>` is literal; add `--regex` |
 | `code grep --path-contains <s>` | `code grep --path <s>` |
-| `code files --path-contains <s>` | `code files --path-prefix <s>` / `code find [query] --path-prefix <s>` |
+| `code files --path-contains <s>` | `code files --path <s>` / `code find [query] --path <s>` |
 | `code references <name>` | `code refs <name>` (`references` stays as an alias) |
 | `code semantic <query>` | `code search <query>` (`semantic` stays as an alias) |
 | `code definition <path> <line> [--column]` | `code definition <path> <line> <name> [--column]` |
@@ -144,6 +143,11 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
 
 ### Behaviour changes
 
+- **`path` is a prefix, or a glob when it holds `*`.** `code_grep`, `find_files` and `docs_search`
+  read their `path` filter one way: a repo-relative prefix (`src/mcp/`), or a glob over the whole
+  path when the value holds `*` (`src/**/*.rs`; `*` stays within one segment, `**` crosses `/`).
+  `path_contains` was a substring, so `mcp` matched `src/mcp/tools.rs`; pass `src/mcp/` or
+  `**/mcp/**`. A `docs_search` `path` without `*` is now a prefix: `docs/` where it was `docs/**`.
 - **`code_grep` is literal by default.** The pattern is plain text unless `regex: true` (`--regex`).
   A script that passed a regex must add the flag, or it searches for the regex source text.
 - **Lines are 1-based everywhere**, in arguments and in responses (`line`, `end_line`, `column`).

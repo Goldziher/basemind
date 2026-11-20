@@ -30,7 +30,7 @@ tool's body, before changing one.
 | `code_grep` | `pattern`, `regex?`, `path?`, `language?`, `context?`, `limit?`, `cursor?`, `max_tokens?` | exact text search over indexed code and text documents |
 | `code_search` | `query`, `lane?`, `limit?`, `cursor?`, `max_tokens?` | search code by meaning; pointers, not bodies |
 | `code_refs` | `name`, `relation?`, `path?`, `line?`, `column?`, `match?`, `limit?`, `cursor?`, `max_tokens?` | call sites, callers, implementations, importers, or the definition a reference binds to |
-| `find_files` | `query?`, `path_prefix?`, `language?`, `limit?`, `cursor?`, `max_tokens?` | fuzzy file-name search, or a listing |
+| `find_files` | `query?`, `path?`, `language?`, `limit?`, `cursor?`, `max_tokens?` | fuzzy file-name search, or a listing |
 | `docs_search` | `query`, `mime_type?`, `kind?`, `path?`, `keywords?`, `entity?`, `limit?`, `cursor?`, `max_tokens?` | semantic search over indexed documents |
 | `git_log` | `path?`, `query?`, `author?`, `symbol?`, `line?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | recent commits, a path's or symbol's history, a commit search, or one commit |
 | `git_blame` | `path`, `line?` + `end_line?`, `symbol?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | per-line authorship of a file, a span, or one symbol |

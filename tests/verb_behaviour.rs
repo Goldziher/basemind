@@ -31,6 +31,8 @@ mod grep;
 mod history;
 #[path = "verb_behaviour/outline.rs"]
 mod outline;
+#[path = "verb_behaviour/path_filter.rs"]
+mod path_filter;
 #[path = "verb_behaviour/read.rs"]
 mod read;
 #[path = "verb_behaviour/refs.rs"]

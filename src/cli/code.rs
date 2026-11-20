@@ -84,7 +84,7 @@ pub enum CodeCmd {
         /// Treat the pattern as a Rust regex.
         #[arg(long)]
         regex: bool,
-        /// Substring of the repository-relative path (not a glob).
+        /// Repository-relative prefix, or a glob when it holds `*` (`src/`, `src/**/*.rs`).
         #[arg(long)]
         path: Option<String>,
         #[arg(long)]
@@ -228,8 +228,9 @@ pub enum CodeCmd {
     /// is omitted. Covers code and documents.
     Find {
         query: Option<String>,
+        /// Repository-relative prefix, or a glob when it holds `*` (`src/`, `src/**/*.rs`).
         #[arg(long)]
-        path_prefix: Option<String>,
+        path: Option<String>,
         #[arg(long)]
         language: Option<String>,
         #[arg(long)]
@@ -250,8 +251,9 @@ pub enum CodeCmd {
     },
     /// List indexed files. Shorthand for `find` with no query.
     Files {
+        /// Repository-relative prefix, or a glob when it holds `*` (`src/`, `src/**/*.rs`).
         #[arg(long)]
-        path_prefix: Option<String>,
+        path: Option<String>,
         #[arg(long)]
         language: Option<String>,
         #[arg(long)]
@@ -523,7 +525,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
         }
         CodeCmd::Find {
             query,
-            path_prefix,
+            path,
             language,
             limit,
             cursor,
@@ -537,7 +539,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                     "find_files",
                     FindFilesToolParams {
                         query,
-                        path_prefix,
+                        path,
                         language,
                         limit,
                         cursor: cursor.map(Cursor),
@@ -550,7 +552,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                 .await,
         ),
         CodeCmd::Files {
-            path_prefix,
+            path,
             language,
             limit,
             cursor,
@@ -562,7 +564,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                     "find_files",
                     FindFilesToolParams {
                         query: None,
-                        path_prefix,
+                        path,
                         language,
                         limit,
                         cursor: cursor.map(Cursor),

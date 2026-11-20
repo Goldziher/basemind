@@ -69,8 +69,8 @@ fn a_projection_widens_until_enough_live_hits_and_says_when_it_gave_up() {
 fn filters_are_checked_before_anything_runs() {
     let unknown_kind = Filters::parse(&request("q", Some("slides"), None, None), None);
     assert!(matches!(unknown_kind, Err(DocsSearchError::InvalidArgument(text)) if text.contains("markdown")));
-    let bad_glob = Filters::parse(&request("q", None, None, Some("docs/[x")), None);
-    assert!(matches!(bad_glob, Err(DocsSearchError::InvalidArgument(text)) if text.contains("glob")));
+    let bad_glob = Filters::parse(&request("q", None, None, Some("docs/[*")), None);
+    assert!(matches!(bad_glob, Err(DocsSearchError::InvalidArgument(text)) if text.contains("read as a glob")));
     let entity = DocsRequest {
         entity: Some("person".to_string()),
         ..request("q", None, None, None)
@@ -90,8 +90,12 @@ fn filters_are_checked_before_anything_runs() {
     .unwrap();
     assert_eq!(ok.kind.as_deref(), Some("pdf"));
     assert_eq!(ok.keywords, vec!["flood".to_string(), "barrier".to_string()]);
-    assert!(ok.path.as_ref().unwrap().is_match("docs/a/b.pdf"));
-    assert!(!ok.path.as_ref().unwrap().is_match("other/b.pdf"));
+    assert!(ok.path.as_ref().unwrap().matches(b"docs/a/b.pdf"));
+    assert!(!ok.path.as_ref().unwrap().matches(b"other/b.pdf"));
+    // Brackets without a `*` are literal: the filter is the prefix of the Next.js-style route.
+    let prefix = Filters::parse(&request("q", None, None, Some("docs/[id]/")), None).unwrap();
+    assert!(prefix.path.as_ref().unwrap().matches(b"docs/[id]/notes.md"));
+    assert!(!prefix.path.as_ref().unwrap().matches(b"docs/i/notes.md"));
 }
 
 #[test]

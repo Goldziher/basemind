@@ -270,7 +270,7 @@ class AnalysisGenerators(unittest.TestCase):
         at200 = next(t for t in tasks if t["args"]["min_lines"] == 200)
         self.assertEqual(at200["gold"], ["src/big.rs"])
         self.assertEqual(at200["args"]["language"], "rust")
-        self.assertNotIn("path_prefix", at200["args"])
+        self.assertNotIn("path", at200["args"])
         wc = subprocess.run(["wc", "-l", "src/big.rs"], cwd=self.repo, capture_output=True, text=True, check=True)
         self.assertEqual(int(wc.stdout.split()[0]), 199, "the fixture really ends without a newline")
         rows = [re.match(r"\s*(\d+) (.*)", line).groups() for line in self.baseline_output(at200).splitlines()]

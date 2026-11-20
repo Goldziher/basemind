@@ -18,7 +18,7 @@ pub struct CodeGrepParams {
     /// Treat `pattern` as a Rust regex; `^` and `$` match at every line.
     #[serde(default)]
     pub regex: Option<bool>,
-    /// Literal substring of the repo-relative path, e.g. `src/mcp/`; not a glob.
+    /// Prefix, or a glob when it has `*`, e.g. `src/`.
     #[serde(default)]
     pub path: Option<String>,
     /// Language filter, e.g. `rust`.
@@ -49,12 +49,13 @@ pub struct WorkspaceGrepParams {
     /// `list_files`.
     #[serde(default)]
     pub language: Option<String>,
-    /// Optional substring filter on path. Same convention as `list_files`.
+    /// Optional `path` filter: a repo-relative prefix, or a glob when it holds `*`
+    /// ([`PathFilter`](crate::path_filter::PathFilter)). Same convention as `find_files`.
     #[serde(default)]
-    pub path_contains: Option<String>,
+    pub path: Option<String>,
     /// Max number of HITS returned. Default 100, max 1000. It does not bound the files scanned:
-    /// grep always sweeps the whole indexed corpus (after the `language` / `path_contains`
-    /// filters), so a rare token is found wherever it lives.
+    /// grep always sweeps the whole indexed corpus (after the `language` / `path` filters), so a
+    /// rare token is found wherever it lives.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Optional token budget bounding the returned `hits` list (not the whole envelope).
@@ -294,7 +295,7 @@ impl Serialize for GrepHits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum GrepTruncation {
-    /// The corpus was larger than one call may read. Narrow with `path_contains` / `language`, or
+    /// The corpus was larger than one call may read. Narrow with `path` / `language`, or
     /// page with `next_cursor`. Only reachable on workspaces of multiple gigabytes of source.
     ByteBudget,
 }

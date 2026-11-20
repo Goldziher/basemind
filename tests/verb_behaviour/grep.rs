@@ -182,7 +182,7 @@ fn code_grep_searches_the_text_documents_the_document_tier_indexed() {
         .expect("runtime");
     runtime.block_on(async {
         let client = super::serve(root).await;
-        let listed = call(&client, "find_files", json!({ "path_prefix": "docs/" })).await;
+        let listed = call(&client, "find_files", json!({ "path": "docs/" })).await;
         assert_eq!(listed["files"][0], "docs/guide.md", "{listed}");
 
         for arguments in [
