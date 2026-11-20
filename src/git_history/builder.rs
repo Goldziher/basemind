@@ -1,8 +1,9 @@
 //! Build, incrementally append to, and revalidate the git-history index.
 //!
 //! Parity guarantee: the index is built from [`Repo::commit_record`], which returns the same
-//! union-across-parents, exact-path, no-rename-follow relation the live history tools filter on —
-//! so an indexed query result is identical to the live walk it replaces.
+//! exact-path, no-rename-follow relation the live history tools filter on (a merge lists only the
+//! files it changed against every parent, as `git log --cc` does), so an indexed query result is
+//! identical to the live walk it replaces.
 
 use std::path::Path;
 
