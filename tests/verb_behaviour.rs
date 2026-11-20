@@ -971,8 +971,9 @@ fn docs_search_pages_as_json_when_the_config_asks_for_toon() {
             let _ = client.cancel().await;
             return;
         }
-        let body: Value = serde_json::from_str(&text)
-            .unwrap_or_else(|error| panic!("the page must be JSON, not TOON ({error}): {text}"));
+        let body = basemind::wire::decode(&text)
+            .unwrap_or_else(|error| panic!("docs_search: unreadable page ({error}): {text}"));
+        assert_eq!(text, body.to_string(), "docs_search answers compact JSON, not TOON");
         let hits = body["hits"].as_array().expect("hits");
         if hits.is_empty() {
             skip_without_embedder(&format!("the scan produced no document vectors: {body}"));
