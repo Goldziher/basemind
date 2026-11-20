@@ -56,16 +56,16 @@ Prebuilt downloads (Homebrew, npm, pip, GitHub releases) ship the build with `co
 
 ```bash
 basemind code outline <path> [--limit --cursor --max-tokens]
-basemind code symbols <name> [--kind --fuzzy --limit --cursor --max-tokens]
+basemind code symbols <name> [--kind --fuzzy --changed --limit --cursor --max-tokens]
 basemind code read <path> [--symbol <name> [--kind] | --line <n> [--end-line <m>]]
-basemind code grep <pattern> [--regex --path --language --context N --limit --cursor --max-tokens]
+basemind code grep <pattern> [--regex --path --language --context N --changed --limit --cursor --max-tokens]
 basemind code search <query> [--lane --limit --cursor --max-tokens]
-basemind code refs <name> [--relation --path --line --column --match --limit --cursor --max-tokens]
+basemind code refs <name> [--relation --path --line --column --match --changed --limit --cursor --max-tokens]
 basemind code callers <path> <name> [--limit --cursor --max-tokens]
 basemind code implementations <name> [--limit --cursor --max-tokens]
 basemind code dependents <module> [--limit --cursor]
 basemind code definition <path> <line> <name> [--column]
-basemind code find [query] [--path-prefix --language --limit --cursor --max-tokens]
+basemind code find [query] [--path-prefix --language --min-lines --changed --limit --cursor --max-tokens]
 basemind code files [--path-prefix --language --limit --cursor --max-tokens]
 basemind code chunk <path> [--chunk-id --byte-start]
 basemind code impact (<path|symbol> | --symbol <name> | --diff <rev|A..B> | --changed) [--depth --include-type-imports --include-module-decls]
@@ -87,8 +87,9 @@ basemind code migration check [name] [--fail-on-remaining --ranges]
 | `implementations <name>` | Shorthand for `refs <name> --relation implementations`. |
 | `dependents <module>` | Shorthand for `refs <module> --relation importers`. |
 | `definition <path> <line> <name> [--column]` | Shorthand for `refs <name> --relation definition --path <path> --line <line>`: the definition the reference binds to. |
-| `find [query] [--path-prefix --language]` | Fuzzy file-name or path search, ranked by score; a listing when the query is omitted. Covers documents as well as code. |
+| `find [query] [--path-prefix --language --min-lines]` | Fuzzy file-name or path search, ranked by score; a listing when the query is omitted. Covers documents as well as code. `--min-lines N` lists the code files of at least N lines instead, largest first, with their line counts. |
 | `files [--path-prefix --language]` | List indexed files, code and documents alike. |
+| `--changed <rev\|A..B>` on `symbols`, `grep`, `refs` (call sites) and `find` | Only the files changed since that revision (`HEAD`: the uncommitted changes) or in `A..B`; append `+importers` to add the files importing them. |
 | `chunk <path> [--chunk-id --byte-start]` | Fetch one code-search chunk body. CLI only. Needs `--features code-search`. |
 | `impact <path\|symbol> [--depth]` / `impact --diff <rev\|A..B>` / `impact --changed` | Files that import a file, a symbol's defining files or a change's files, transitively through the file-level import graph, each with its depth and whether it is in a cycle. CLI only. |
 | `cycles [--path --max-size]` / `cycles --check <from> <to>` | Import cycles, smallest first, each with an import chain that closes it; or whether `from` importing `to` would close one. Type-only imports and Rust `mod` declarations count only with `--include-type-imports` / `--include-module-decls`. CLI only. |
