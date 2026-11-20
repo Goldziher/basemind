@@ -155,7 +155,10 @@ impl Repo {
     /// (staged or not). Same return shape as [`diff_file`](Self::diff_file).
     ///
     /// The working-tree side is read from disk, so a path that leaves the repository (absolute,
-    /// `..`, or a symlink pointing outside) is [`GitError::OutsideRepo`], never read.
+    /// `..`, or a symlink pointing outside) is [`GitError::OutsideRepo`], never read. It is compared
+    /// in the form git would store for it, as `git diff` compares it: a CRLF checkout of an LF blob
+    /// is unchanged, and a clean-filtered file (Git LFS) diffs pointer against pointer. A filter
+    /// that fails is [`GitError::Convert`].
     pub fn diff_file_worktree(&self, rev_old: &str, path: impl AsRef<Path>) -> Result<Option<FileDiff>, GitError> {
         let path = path.as_ref();
         let rel = crate::path::RelPath::from(path);
@@ -163,8 +166,17 @@ impl Repo {
             crate::path::contained_file(self.workdir(), &rel).map_err(|_| GitError::OutsideRepo(rel.clone()))?;
         Ok(FileDiff::of(
             self.diff_side_at_rev(rev_old, path)?,
-            Side::on_disk(&on_disk),
+            self.worktree_side(path, &on_disk)?,
         ))
+    }
+
+    /// The working-tree file at `on_disk` in the form git stores for the repo-relative `rel`, held
+    /// to the same ceiling after conversion as before it.
+    fn worktree_side(&self, rel: &Path, on_disk: &Path) -> Result<Side, GitError> {
+        match Side::on_disk(on_disk) {
+            Side::Bytes(bytes) => self.read_git_form(rel, &bytes, |converted| Side::read(converted)),
+            unread => Ok(unread),
+        }
     }
 
     /// Whether `rel` names a directory (a tree) at `rev`. `false` for a revision that cannot be

@@ -837,6 +837,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `impl ToSocketAddrs for (Ipv4Addr, u16)`, `impl FromStreamPriv<()> for ()`, a slice, array, pointer
   or `str`) is an implementation: `code_refs` with `relation: "implementations"` lists it, its
   `impl_type` the type as written on one line. They were missing. `EXTRACT_EPOCH` is 6.
+- `git_diff` against the working tree compares the file in the form git stores for it (#295): line
+  endings converted per `core.autocrlf`, `core.eol` and `.gitattributes`, `ident` collapsed, and
+  clean filters such as Git LFS run. An unchanged file in a CRLF checkout showed every line as
+  changed, and an LFS file diffed its pointer against the payload. A filter that fails is an error
+  naming the file instead of a whole-file hunk. A `changed` scope against a revision compares a
+  restored file the same way.
 - The watcher no longer discards the OS's "events were dropped" signal (FSEvents `MustScanSubDirs`,
   inotify queue overflow). A signal naming a subdirectory rescans that subtree; one naming the root,
   or none, runs the whole-tree stat-and-hash pass of `index_rescan {}`; a burst of signals is one

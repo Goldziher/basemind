@@ -35,7 +35,9 @@ repository.
   further back.
 - `git_diff` with `path` diffs against HEAD by default (`from`) and the working tree (`to`). A diff
   stops at 200 hunks or 128 KiB and sets `truncated`; it has no cursor, so narrow `from` / `to`. A
-  structural diff compares `from` with the indexed working tree and takes no `to`.
+  structural diff compares `from` with the indexed working tree and takes no `to`. The working
+  tree is compared in the form git stores, as `git diff` does: line endings per `core.autocrlf` and
+  `.gitattributes`, clean filters such as Git LFS run. A filter that fails is an error.
 - A shallow clone sets `truncated` with `truncated_reason: "shallow_clone"`: an absent commit is
   then inconclusive.
 

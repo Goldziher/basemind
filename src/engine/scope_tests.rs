@@ -109,6 +109,17 @@ fn a_file_restored_on_disk_to_the_revision_is_out_of_its_scope_only() {
 }
 
 #[test]
+fn a_file_restored_with_crlf_endings_under_autocrlf_is_out_of_the_scope() {
+    let (dir, _) = fixture();
+    let root = dir.path();
+    git(root, &["config", "core.autocrlf", "true"]);
+    write(root, "edit.rs", "one\r\n");
+    let repo = Repo::discover(root).expect("repo");
+    let since_first = scope_of(&repo, "HEAD~2").expect("scope");
+    assert_eq!(sorted(&since_first), ["added.rs", "gone.rs", "new.rs", "old.rs"]);
+}
+
+#[test]
 fn a_range_scope_names_deletions_and_both_sides_of_a_move() {
     let (_dir, repo) = fixture();
     let scope = scope_of(&repo, "HEAD~2..HEAD").expect("scope");
