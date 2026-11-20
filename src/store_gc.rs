@@ -521,12 +521,15 @@ pub fn reap_gc_and_enforce_budget(data: &DataRoot) -> Result<GcReport, GcError> 
     Ok(report)
 }
 
-/// Blob GC entry point for the offline CLI `cache gc`: the cross-workspace reference-counted sweep
-/// ([`gc_global_blobs`]) over every workspace under `data`. It reference-counts against every
-/// workspace's indexes, so it cannot reap a blob another workspace still needs, honours the same
-/// young-blob grace and machine-wide sweep lock as the daemon's, and reports what it removed.
+/// Entry point for the offline CLI `cache gc`: the daemon's reaping and blob sweep
+/// ([`reap_and_gc_global`]) over every workspace under `data`, recorded where `cache stats` reports
+/// it. It reaps the workspace dirs whose worktree root is gone and then the group directories no
+/// workspace names, skipping every dir whose lock another process holds, so a live writer's dir is
+/// never removed; then it reference-counts against the remaining workspaces' indexes, so it cannot
+/// reap a blob another workspace still needs, with the daemon's young-blob grace and machine-wide
+/// sweep lock. Cache-budget enforcement stays with the daemon ([`reap_gc_and_enforce_budget`]).
 pub fn run_gc(data: &DataRoot) -> Result<GcReport, GcError> {
-    let report = gc_global_blobs(data)?;
+    let report = reap_and_gc_global(data)?;
     persist_gc_state(data, &report);
     Ok(report)
 }
@@ -579,6 +582,10 @@ pub(crate) fn read_dir(dir: &Path) -> Result<std::fs::ReadDir, GcError> {
         source,
     })
 }
+
+#[cfg(test)]
+#[path = "store_gc_cli_tests.rs"]
+mod cli_tests;
 
 #[cfg(test)]
 #[path = "store_gc_tier_tests.rs"]
