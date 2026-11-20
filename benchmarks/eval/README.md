@@ -173,10 +173,11 @@ over 1 ms), errors increase, or a mode disappeared. Use the same task file for b
 
 ## Tests
 
-`uv run --no-project --with pytest python -m pytest benchmarks/eval -q` runs the generator, gate-summary and fetch tests
-(throwaway git repositories with known gold, determinism across hash seeds, the cross-language guard). The harness is
-covered by `cargo test --lib eval::`, `cargo test --test eval_smoke` and `cargo test --test eval_gate_smoke` (every
-kind and its baseline on a hand-worked fixture, and the same tasks with a wrong gold scoring zero), `rust_gold` by
+`mise run eval:pytest` (`uv run --no-project --with pytest python -m pytest benchmarks/eval -q`, run by `ci` on every
+push) runs the generator, gate-summary and fetch tests (throwaway git repositories with known gold, determinism across
+hash seeds, the cross-language guard). The harness is covered by `cargo test --lib eval::`,
+`cargo test --test eval_smoke` and `cargo test --test eval_gate_smoke` (every kind and its baseline on a hand-worked
+fixture, and the same tasks with a wrong gold scoring zero), `rust_gold` by
 `cargo test --offline --manifest-path benchmarks/eval/rust_gold/Cargo.toml`. `test_analysis_generators.py` covers the
 analysis kinds' gold, edge resolution and baselines on a fixture with a known module graph.
 
