@@ -637,6 +637,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `libstdc++.so.6`. CI no longer installs or builds libheif, and packaging a release fails, naming
   each one, when a library outside the per-platform allowlist in `scripts/check-bundled-libs.sh`
   would be bundled.
+- A watcher batch patches the in-RAM file view, term index and document paths instead of copying
+  them (#279). They are sorted maps of shared pages of about 256 entries, so the map a batch derives
+  shares every page the batch did not touch, and one saved file in a 100k-file workspace rebuilds
+  one page of each rather than allocating every entry again.
 
 - `basemind init` says, when it writes the rules to `AGENTS.local.md`, that no agent host loads that
   file by itself and that OpenCode reads it once `~/.config/opencode/opencode.json` lists it under
