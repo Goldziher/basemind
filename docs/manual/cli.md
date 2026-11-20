@@ -24,7 +24,9 @@ unquoted backslash as an escape, and PowerShell takes `'C:\work\checkout'` as wr
 
 - The directory named is widened to its workspace: the nearest directory at or above it holding a
   `basemind.toml` (or `.config/basemind.toml`), up to the top of its git repository, else that
-  top. A subdirectory therefore queries the whole checkout's index, and each worktree has its own.
+  top. A subdirectory with no `basemind.toml` between it and that top therefore queries the whole
+  checkout's index, one under a nested `basemind.toml` queries that workspace's, and each worktree
+  has its own.
   `basemind doctor --root /work/checkout` prints the root it resolved.
 - A root must be a git repository or hold a `basemind.toml` (`basemind manual indexing`); a scan
   refuses any other directory, and so does a daemon a query is forwarded to.
@@ -38,11 +40,15 @@ unquoted backslash as an escape, and PowerShell takes `'C:\work\checkout'` as wr
    `4` an unreachable daemon (`basemind manual exit-codes`).
 2. **Stdout is the answer.** With `--json` stdout holds only the response; read diagnostics from
    stderr, never mixed into it.
-3. **Index state.** In `basemind status`, a `file_count` of 0 means this root has no index, and
-   `rescan_needed`, `partial`, `degraded`, `rebuild_in_progress` or a `notice` say the index is not
-   whole. Status describes the index, not each file: a file edited since the scan comes back listed
-   in `stale`, re-read as it is now. A missing, stale or busy index is a finding to report, not a
-   reason to rebuild: building is a write. When one is allowed,
+3. **Index state.** In `basemind status`, read the flags before the counts: `rebuild_in_progress`,
+   `rescan_needed`, `partial`, `degraded` or a `notice` say the index is not whole, and while a
+   rebuild holds the index `file_count` is 0 because the count is unavailable. With none of them
+   set, a `file_count` of 0 means this root has no indexed files. Status describes the index, not
+   each file: a query result lists a file edited since the scan in `stale`, and what that means
+   depends on the command. `code outline` and `code read` answer from the file as it is now; a
+   `code callers` or `code refs` hit keeps the line it had at the scan, so read the current source
+   with `basemind code read` before using a stale call site. A missing, stale or busy index is a
+   finding to report, not a reason to rebuild: building is a write. When one is allowed,
    `basemind scan --root /work/checkout` rebuilds the workspace (it takes no path) and
    `basemind rescan src/a.rs --root /work/checkout` re-indexes named files.
 4. **Complete, partial or not ready.** A `notice` of `warming_up`, `building_index` or
