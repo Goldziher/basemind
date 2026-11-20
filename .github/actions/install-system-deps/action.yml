@@ -14,57 +14,10 @@ runs:
 
         sudo apt-get update || true
 
-        # Core build + image libraries
-        # ~keep On Ubuntu 26.04 the libaom-dev CMake targets reference /usr/bin/aomdec (aom-tools) and link
-        # ~keep yuv and webm, none of which libaom-dev pulls in.
         sudo apt-get install -y \
           tesseract-ocr tesseract-ocr-eng \
           libssl-dev pkg-config build-essential cmake \
-          libmagic-dev libde265-dev libaom-dev aom-tools libyuv-dev libwebm-dev \
-          libx265-dev libdav1d-dev libnuma-dev \
-          protobuf-compiler patchelf
-
-        echo "::endgroup::"
-
-        echo "::group::Building libheif from source (1.23.0)"
-
-        LIBHEIF_VERSION="1.23.0"
-        LIBHEIF_PREFIX="/usr/local"
-
-        # Check if already cached
-        if [ -f "$LIBHEIF_PREFIX/lib/pkgconfig/libheif.pc" ] && \
-           pkg-config --modversion libheif 2>/dev/null | grep -q "^${LIBHEIF_VERSION}$"; then
-          echo "✓ libheif ${LIBHEIF_VERSION} already installed (cached)"
-        else
-          echo "Building libheif ${LIBHEIF_VERSION} from source..."
-          build_dir="$(mktemp -d)"
-          trap "rm -rf '$build_dir'" EXIT
-
-          cd "$build_dir"
-          curl -fsSL -o libheif.tar.gz \
-            "https://github.com/strukturag/libheif/releases/download/v${LIBHEIF_VERSION}/libheif-${LIBHEIF_VERSION}.tar.gz"
-          echo "4c9182b18897617182eed12ab5eb9f9d855b3aa3a736d6bdb31abc034ec7d393  libheif.tar.gz" | sha256sum -c -
-          tar xzf libheif.tar.gz
-          cd "libheif-${LIBHEIF_VERSION}"
-          mkdir build && cd build
-
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$LIBHEIF_PREFIX" \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DWITH_EXAMPLES=OFF \
-            -DWITH_GDK_PIXBUF=OFF \
-            -DBUILD_TESTING=OFF
-
-          make -j"$(nproc)"
-          sudo make install
-          sudo ldconfig
-
-          echo "✓ libheif ${LIBHEIF_VERSION} installed"
-        fi
-
-        echo "PKG_CONFIG_PATH=$LIBHEIF_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> $GITHUB_ENV
-        echo "LD_LIBRARY_PATH=$LIBHEIF_PREFIX/lib:${LD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+          libmagic-dev protobuf-compiler patchelf
 
         echo "::endgroup::"
 
@@ -90,10 +43,9 @@ runs:
 
         # A failed install fails the job: a leg without tesseract would run the OCR tests against
         # whatever the image happens to carry.
-        brew install cmake tesseract tesseract-lang libheif libmagic pkg-config protobuf
+        brew install cmake tesseract tesseract-lang libmagic pkg-config protobuf
         tesseract --version | head -n 1
         protoc --version
-        pkg-config --modversion libheif
 
         echo "::endgroup::"
 
@@ -147,54 +99,6 @@ runs:
 
           $env:TESSDATA_PREFIX = $tessdataPath
           Add-Content -Path $env:GITHUB_ENV -Value "TESSDATA_PREFIX=$tessdataPath"
-        }
-
-        # Force libz-sys (pulled in by xberg-libwpd for WordPerfect decompression) to build its
-        # bundled zlib from source and link it statically, so it never probes vcpkg for zlib.
-        Add-Content -Path $env:GITHUB_ENV -Value "LIBZ_SYS_STATIC=1"
-
-        # Install libheif via vcpkg (heif/x265/de265 image codecs).
-        $vcpkgRoot = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
-        $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
-        if (Test-Path $vcpkgExe) {
-          Write-Host "Installing libheif via vcpkg..."
-          & $vcpkgExe install "libheif:x64-windows-static-md" --recurse
-          if ($LASTEXITCODE -ne 0) { throw "vcpkg install libheif failed ($LASTEXITCODE)" }
-
-          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
-        }
-
-        # libheif-sys resolves libheif's zlib dependency through the `vcpkg` crate and emits either
-        # `-l zlib` or `-l zlibstatic`, so the final basemind.exe link opens the matching import
-        # library off a LIBPATH. But vcpkg
-        # builds a freshly-requested zlib into a per-port staging dir, submits it to its binary
-        # cache, and cleans up — so NO zlib.lib survives on disk in the installed tree by link
-        # time, and the link dies with LNK1181 (cannot open 'zlib.lib'). Build a static zlib.lib
-        # from source ourselves (timing-independent of vcpkg's cache dance) and add its directory
-        # to this target's linker search path via CARGO_TARGET_*_RUSTFLAGS (the same target-scoped
-        # mechanism the Linux glibc-floor step uses — it never clobbers the global LIB/RUSTFLAGS).
-        $zlibVersion = "1.3.1"
-        $zlibSrc = Join-Path $env:RUNNER_TEMP "zlib-src"
-        $zlibBuild = Join-Path $env:RUNNER_TEMP "zlib-build"
-        $zlibFix = "C:\zlibfix"
-        Remove-Item -Recurse -Force $zlibSrc, $zlibBuild -ErrorAction SilentlyContinue
-        git clone --depth 1 --branch "v$zlibVersion" https://github.com/madler/zlib.git $zlibSrc
-        cmake -S $zlibSrc -B $zlibBuild -A x64 -DCMAKE_BUILD_TYPE=Release -DZLIB_BUILD_EXAMPLES=OFF
-        cmake --build $zlibBuild --config Release --target zlibstatic
-        $built = Get-ChildItem -Path $zlibBuild -Recurse -Filter "zlibstatic*.lib" -ErrorAction SilentlyContinue |
-          Where-Object { $_.Name -notmatch 'd\.lib$' } | Select-Object -First 1
-        if ($built) {
-          New-Item -ItemType Directory -Path $zlibFix -Force | Out-Null
-          Copy-Item -Path $built.FullName -Destination (Join-Path $zlibFix "zlib.lib") -Force
-          Copy-Item -Path $built.FullName -Destination (Join-Path $zlibFix "zlibstatic.lib") -Force
-          Add-Content -Path $env:GITHUB_ENV `
-            -Value "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-L native=$($zlibFix -replace '\\','/')"
-          Write-Host "Built zlib.lib and zlibstatic.lib from $($built.FullName) -> $zlibFix"
-        } else {
-          Write-Host "::error::Failed to build static zlib import libraries from source"
-          Get-ChildItem -Path $zlibBuild -Recurse -Filter "*.lib" -ErrorAction SilentlyContinue |
-            ForEach-Object { Write-Host "  $($_.FullName)" }
-          throw "no static zlib import library was built"
         }
 
         Write-Host "::endgroup::"

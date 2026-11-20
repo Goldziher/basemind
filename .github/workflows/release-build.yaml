@@ -57,22 +57,6 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/install-system-deps
 
-      # workflow_dispatch checks out the requested tag, whose dependency action may predate the
-      # dual-name fix. Keep this bridge in the current workflow while tagged source stays immutable.
-      - name: Ensure both Windows zlib import-library names exist
-        if: matrix.triple == 'x86_64-pc-windows-msvc'
-        shell: pwsh
-        run: |
-          $zlibFix = "C:\zlibfix"
-          $zlib = Join-Path $zlibFix "zlib.lib"
-          $zlibStatic = Join-Path $zlibFix "zlibstatic.lib"
-          if (-not (Test-Path $zlibStatic) -and (Test-Path $zlib)) {
-            Copy-Item -Path $zlib -Destination $zlibStatic -Force
-          }
-          if (-not (Test-Path $zlibStatic)) {
-            throw "zlibstatic.lib was not produced in $zlibFix"
-          }
-
       # ~keep ort-sys's build script links against libonnxruntime.a in its download dir and never
       # ~keep reruns when that dir is gone, so a target/ saved by a failed build must carry it (see
       # ~keep ci.yaml). %LOCALAPPDATA%\ort.pyke.io on Windows, ~/Library/Caches/ort.pyke.io on macOS.
@@ -177,14 +161,12 @@ jobs:
           set -euo pipefail
           dnf install -y epel-release
           dnf install -y dnf-plugins-core
-          # Core build + image/text libraries. Some codecs (libde265, x265, dav1d)
-          # and libmagic-devel are unavailable on AlmaLinux 8; libaom is via EPEL.
-          # tesseract-langpack-eng conflicts with tesseract, so install tesseract only.
+          # libmagic-devel is unavailable on AlmaLinux 8. tesseract-langpack-eng conflicts with
+          # tesseract, so install tesseract only.
           dnf install -y \
             gcc gcc-c++ make cmake pkgconfig \
             openssl-devel \
             tesseract \
-            libaom-devel \
             patchelf \
             git curl wget unzip
           echo "gcc: $(gcc --version | head -1)"
@@ -206,40 +188,6 @@ jobs:
           ln -sf /usr/local/protoc/bin/protoc /usr/local/bin/protoc
           echo "PROTOC=/usr/local/bin/protoc" >> "$GITHUB_ENV"
           protoc --version
-
-      - name: Build libheif from source (1.23.0)
-        shell: bash
-        run: |
-          set -euo pipefail
-          ver="1.23.0"
-          d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
-          cd "$d"
-          curl -fsSL -o libheif.tar.gz \
-            "https://github.com/strukturag/libheif/releases/download/v${ver}/libheif-${ver}.tar.gz"
-          echo "4c9182b18897617182eed12ab5eb9f9d855b3aa3a736d6bdb31abc034ec7d393  libheif.tar.gz" | sha256sum -c -
-          tar xzf libheif.tar.gz
-          cd "libheif-${ver}"
-          mkdir build && cd build
-          # Disable codecs unavailable on AlmaLinux 8 (libde265, x265, dav1d);
-          # libaom is present via EPEL.
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/usr/local \
-            -DCMAKE_INSTALL_LIBDIR=lib \
-            -DWITH_EXAMPLES=OFF \
-            -DWITH_GDK_PIXBUF=OFF \
-            -DBUILD_TESTING=OFF \
-            -DWITH_LIBDE265=OFF \
-            -DWITH_X265=OFF \
-            -DWITH_DAV1D=OFF \
-            -DWITH_AOM=ON
-          make -j"$(nproc)"
-          make install
-          ldconfig
-          {
-            echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-            echo "LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}"
-          } >> "$GITHUB_ENV"
 
       - name: Build release binary (native gcc + glibc-2.28 compat shim)
         shell: bash

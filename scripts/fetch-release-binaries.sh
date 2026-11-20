@@ -108,9 +108,9 @@ for requested in "$@"; do
   [ -f "$stage/basemind" ] && [ ! -L "$stage/basemind" ] || die "basemind not found as a regular file in $ASSET v$version"
   chmod +x "$stage/basemind"
   # A Linux release loads the libraries bundled in its lib/ through its RUNPATH, which
-  # LD_LIBRARY_PATH outranks: a job that exports one for its own build (CI's libheif under
-  # /usr/local/lib) would mix that build's libraries with the bundled libstdc++, and the loader
-  # refuses. tests/upgrade_from_release.rs runs it with the variable removed as well.
+  # LD_LIBRARY_PATH outranks: a job that exports one for its own build would mix that build's
+  # libraries with the bundled ones, and the loader refuses. tests/upgrade_from_release.rs runs it
+  # with the variable removed as well.
   if ! reported="$(reported_version "$stage/basemind")"; then
     die "v$version $TRIPLE binary cannot run here: $(head -n 1 "$SANDBOX/version.err")"
   fi
