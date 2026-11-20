@@ -2,7 +2,12 @@
 
 Configuration that belongs to a repository lives in its `basemind.toml`. These variables are the
 operator's: a repository cannot set them, so the grants among them cannot be turned on by a cloned
-repository. A truthy value is `1`, `true` or `yes`.
+repository.
+
+Every boolean variable, including the `BASEMIND_DOCUMENTS_*` switches and the status line's, reads
+`1`, `true`, `yes` or `on` as true and `0`, `false`, `no` or `off` as false, in any case. A blank
+value counts as unset. Any other value is an error that names the variable: the command refuses to
+run, and the status line shows the error in place of its output.
 
 ## Locations
 
@@ -16,8 +21,8 @@ repository. A truthy value is `1`, `true` or `yes`.
 | Variable | Effect |
 |---|---|
 | `BASEMIND_ALLOW_ANY_ROOT` | Index a directory that is neither a git repository nor holds a `basemind.toml`. A filesystem root is refused regardless. |
-| `BASEMIND_ALLOW_EXTRA_ROOTS` | Honour `[scan] extra_roots`, directories outside the repository. |
-| `BASEMIND_ALLOW_DEPENDENCY_ROOTS` | Read `[documents.dependencies]` package roots outside the repository: truthy for every workspace, or a list of workspace roots. |
+| `BASEMIND_ALLOW_EXTRA_ROOTS` | Honour `[scan] extra_roots`, directories outside the repository: true for every workspace, or a list of workspace roots. |
+| `BASEMIND_ALLOW_DEPENDENCY_ROOTS` | Read `[documents.dependencies]` package roots outside the repository: true for every workspace, or a list of workspace roots. |
 | `BASEMIND_ALLOW_FOLLOW_SYMLINKS` | Honour `[scan] follow_symlinks = true`. |
 | `BASEMIND_ALLOW_REPO_CREDENTIALS` | Let `[scan] floor_allow` index credential files (`.env`, `*.pem`, keys). |
 | `BASEMIND_ALLOW_HTTP` | Bind the daemon's streamable-HTTP MCP front-end on loopback. |
@@ -36,7 +41,7 @@ repository. A truthy value is `1`, `true` or `yes`.
 
 | Variable | Effect |
 |---|---|
-| `BASEMIND_GH_INDEX` | `0` turns the git-history index off; history queries then walk git. |
+| `BASEMIND_GH_INDEX` | False turns the git-history index off; history queries then walk git. |
 | `BASEMIND_GRAMMAR_OFFLINE` | Never download a grammar; a missing one is reported instead. |
 | `BASEMIND_PARSE_TIMEOUT_MS` | Time after which parsing one file is abandoned. |
 | `BASEMIND_MIN_FREE_MB` | Headroom, on top of 1.5 times the index size, a scan needs free on disk or it refuses. |

@@ -29,6 +29,10 @@ is cleaned up.
    prefix and `mcp__basemind__`. `memory_save`, `index_rescan` and the agent tools keep asking.
 6. Update scripts and prompts for the tool renames ("Tool mapping" below) and the `basemind agent`
    CLI ("Upgrading to agent comms v2").
+7. Check every boolean `BASEMIND_*` variable you set reads `1`, `true`, `yes`, `on` or `0`, `false`,
+   `no`, `off` ([Environment variables](manual/environment.md)). Any other value now stops the
+   command with an error naming the variable, and `false` now means false where it used to mean
+   true (`BASEMIND_GRAMMAR_OFFLINE`, `BASEMIND_GIT_DISCOVER_PARENTS`).
 
 ## Upgrading to the verb tools (ADR-0018)
 

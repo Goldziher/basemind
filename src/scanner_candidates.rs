@@ -51,8 +51,9 @@ const TOP_CONTRIBUTORS: usize = 5;
 const ROOT_FILES_LABEL: &str = "(files in the root)";
 
 /// Operator opt-in for `scan.extra_roots`, mirroring the `BASEMIND_ALLOW_ANY_ROOT`
-/// style. Truthy (`1`, `true`, `yes`) enables the feature; unset or
-/// anything else makes every configured extra root a no-op, logged once per scan.
+/// style. True ([`parse_bool`](crate::config::engine::parse_bool)) or a list of workspace roots
+/// enables the feature; unset or false makes every configured extra root a no-op, logged once per
+/// scan.
 ///
 /// **Why the feature needs a grant at all.** `scan.extra_roots` names directories *outside* the
 /// repository, and it is read from `<repo>/basemind.toml` — a file inside the tree being scanned,
@@ -698,16 +699,6 @@ mod tests {
             vet_extra_root(&link, &repo).is_none(),
             "a symlink to / resolves to / and is refused"
         );
-    }
-
-    #[test]
-    fn truthy_grant_values() {
-        for yes in ["1", "true", " TRUE ", "yes"] {
-            assert!(crate::config::engine::is_truthy(yes), "{yes:?}");
-        }
-        for no in ["0", "false", "no", ""] {
-            assert!(!crate::config::engine::is_truthy(no), "{no:?}");
-        }
     }
 
     fn covers(value: &str, repo_root: &Path) -> bool {

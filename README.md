@@ -1079,11 +1079,13 @@ reach outside the process are gated on the operator's environment:
 |---|---|
 | `[scan] follow_symlinks = true` | `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`; otherwise reset to `false` with a warning (a tracked link can point at `~/.ssh`). |
 | `[scan] floor_allow` (a credential entry: `.env`, `*.pem`, `id_rsa`, ...) | `BASEMIND_ALLOW_REPO_CREDENTIALS=1`; otherwise the entry is ignored with a warning and the secret stays excluded (a clone could otherwise un-exclude your untracked `.env` and have every agent query it). Entries for build artifacts (`build`, `vendor`) need no grant. |
-| `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS=1` (every workspace this process scans) or a list of absolute workspace roots separated by `:` (`;` on Windows), which grants only those workspaces and their descendants. A relative entry is ignored with a warning, as is any other non-truthy word (`on`). A daemon is one long-lived process serving many repositories, so prefer the list form there: the bare `1` also opens `extra_roots` for any workspace it serves later. Credential directories (`.ssh`, `.aws`, `.gnupg`, `/etc`) and filesystem roots are refused even with the grant. |
+| `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS=1` (every workspace this process scans) or a list of absolute workspace roots separated by `:` (`;` on Windows), which grants only those workspaces and their descendants. A false word (`0`, `off`) grants nothing, and a relative entry is ignored with a warning. A daemon is one long-lived process serving many repositories, so prefer the list form there: the bare `1` also opens `extra_roots` for any workspace it serves later. Credential directories (`.ssh`, `.aws`, `.gnupg`, `/etc`) and filesystem roots are refused even with the grant. |
 | `[documents.dependencies] enabled = true` | Package roots inside the repository (`node_modules/`, `.venv/`, `vendor/`) need no grant. Roots outside it (the cargo registry under `CARGO_HOME`, the Go module cache under `GOMODCACHE` / `GOPATH`, a `VIRTUAL_ENV` elsewhere, or an in-tree root that resolves outside) are read only under `BASEMIND_ALLOW_DEPENDENCY_ROOTS`, in the same forms as `BASEMIND_ALLOW_EXTRA_ROOTS`; otherwise those packages are listed under `deps_unavailable` as `not_granted`. No setting in the file names a root, and a package that resolves out of its root through a symlink is refused even with the grant. |
 
-Grant variables accept `1`, `true` or `yes` (case-insensitive). They are read from the process
-environment; the env and CLI override layers are operator-supplied and never gated.
+Grant variables, like every boolean variable, accept `1`, `true`, `yes`, `on` or `0`, `false`,
+`no`, `off` (case-insensitive); any other value is an error naming the variable. They are read
+from the process environment; the env and CLI override layers are operator-supplied and never
+gated.
 
 Credential and key files are not indexed by default: the exclude floor (see `[scan]` above) drops
 `.env`, `.env.*` (which includes `.env.example`), `.aws/`, `.ssh/`, `.gnupg/`, `.npmrc`, `.pypirc`,

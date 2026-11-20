@@ -82,7 +82,7 @@ async fn git_log_matches_author_terms_against_the_author_only() {
 
     // The server is meant to build the git-history index, unless `BASEMIND_GH_INDEX=0` turns it off
     // and every answer is the live walk; an index that never comes up fails the test.
-    if std::env::var("BASEMIND_GH_INDEX").is_ok_and(|value| value == "0") {
+    if history_index_off() {
         return;
     }
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -122,7 +122,7 @@ async fn indexed_search(client: &Client, query: &str) -> Value {
 /// new HEAD instead of leaving every later history call on the live walk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_log_index_catches_up_with_a_commit_made_after_the_server_started() {
-    if std::env::var("BASEMIND_GH_INDEX").is_ok_and(|value| value == "0") {
+    if history_index_off() {
         return;
     }
     let (dir, client) = started().await;
@@ -142,7 +142,7 @@ async fn git_log_index_catches_up_with_a_commit_made_after_the_server_started() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_log_of_a_directory_without_its_slash_lists_the_commits_under_it() {
     let (_dir, client) = started().await;
-    if std::env::var("BASEMIND_GH_INDEX").is_ok_and(|value| value == "0") {
+    if history_index_off() {
         return;
     }
     indexed_search(&client, "init").await;
@@ -516,4 +516,10 @@ async fn git_blame_of_a_symbol_does_not_parse_a_blob_over_the_scan_limit() {
     );
     let span = call(&client, "git_blame", json!({ "path": "src/big.rs", "line": 1 })).await;
     assert_eq!(blame_hunks(&span)[0].1, "init", "{span}");
+}
+
+/// Whether `BASEMIND_GH_INDEX` turns the git-history index off for this run, read as the binary
+/// reads it.
+fn history_index_off() -> bool {
+    std::env::var("BASEMIND_GH_INDEX").is_ok_and(|value| basemind::config::engine::parse_bool(&value) == Some(false))
 }

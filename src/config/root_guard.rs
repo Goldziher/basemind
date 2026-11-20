@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use super::CONFIG_FILE_NAME;
 use super::has_config_marker;
 
-/// Escape hatch: set truthy to accept any directory as a workspace root **for that invocation**.
+/// Escape hatch: set true to accept any directory as a workspace root **for that invocation**.
 /// Mirrors the `BASEMIND_ALLOW_FOLLOW_SYMLINKS` style — an env-var opt-out for a safety default. It
 /// does NOT override [`RootRefusal::FilesystemRoot`]; nothing does. Unsetting it re-refuses the
 /// root: an index minted under the hatch does not grandfather itself in (see [`ROOT_ADMISSION_FILE`]).
@@ -106,7 +106,7 @@ struct RootAdmission {
 /// 5. Grandfather: the root carries a standing admission (see [`ROOT_ADMISSION_FILE`]) → allowed.
 ///    Checked BEFORE the env hatch so a legitimately grandfathered root is never re-stamped as
 ///    hatch-admitted just because someone happened to have the variable set.
-/// 6. [`ALLOW_ANY_ROOT_ENV`] is truthy → allowed for this invocation only, and recorded as such.
+/// 6. [`ALLOW_ANY_ROOT_ENV`] is true → allowed for this invocation only, and recorded as such.
 pub fn workspace_root_verdict(root: &Path) -> Result<PathBuf, RootRefusal> {
     verdict(root, allow_any_root())
 }

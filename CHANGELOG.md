@@ -143,6 +143,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** every boolean `BASEMIND_*` variable reads `1`, `true`, `yes`, `on` as true and `0`,
+  `false`, `no`, `off` as false, case-insensitive, and a blank value as unset (#293). Any other value
+  is an error naming the variable: the command exits before it runs, the `--documents-*` boolean
+  flags and their `BASEMIND_DOCUMENTS_*` variables included, and the status line shows the error for
+  `BASEMIND_STATUSLINE_CONTEXT` / `BASEMIND_STATUSLINE_VERSION`. A misspelt grant such as
+  `BASEMIND_ALLOW_HTTP=enabled` used to read silently as false. `BASEMIND_ALLOW_EXTRA_ROOTS` and
+  `BASEMIND_ALLOW_DEPENDENCY_ROOTS` still take a list of workspace roots in place of a boolean.
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
   `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`
@@ -726,6 +733,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current limit (`limit`) and a `note` naming the sysctl to raise. The daemon log warns once per
   pass that leaves more directories unwatched instead of once per directory. A refused directory is
   retried whenever its subtree is armed again.
+- `BASEMIND_GRAMMAR_OFFLINE=false` (or `no`, `off`) no longer means offline: any value but `0` or
+  blank turned grammar downloads off. Likewise `BASEMIND_GIT_DISCOVER_PARENTS`, `BASEMIND_GH_INDEX`
+  and `BASEMIND_GREP_BLOOM` honoured only `0` as false, and `BASEMIND_NO_AUTOSPAWN`, `BASEMIND_ALLOW_*`
+  ignored `on` (#293).
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
