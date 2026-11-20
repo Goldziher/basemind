@@ -21,8 +21,8 @@ impl BasemindServer {
     #[tool(
         title = "Search documents",
         description = "Use to find where a topic is discussed in the repository's documents \
-        (markdown, PDFs, Office, HTML, email, notebooks) instead of opening them. Ranks passages by \
-        meaning and words, filters first, and cites each hit (path, pages, section, lines). Code: \
+        (markdown, PDFs, Office, HTML, email, notebooks) instead of opening them. Ranks passages \
+        by meaning and words after the filters, citing path, pages, section and lines. Code: \
         `code_grep`/`code_search`. \
         Example: {\"query\":\"how releases are versioned\"}",
         annotations(
@@ -42,7 +42,7 @@ impl BasemindServer {
     #[tool(
         title = "Save a note",
         description = "Use to remember a decision, convention or finding for later sessions and \
-        other agents working in this repository. Saving an existing `key` replaces it. \
+        other agents in this repository. Saving an existing `key` replaces it. \
         Example: {\"key\":\"decision/auth-tokens\",\"value\":\"Tokens rotate every 24h.\",\"tags\":[\"auth\"]}",
         annotations(
             read_only_hint = false,
@@ -60,9 +60,9 @@ impl BasemindServer {
 
     #[tool(
         title = "Recall notes",
-        description = "Use to recall what was saved with `memory_save`: `query` searches notes by \
-        meaning, `key` reads one, `prefix` lists by key prefix, and no arguments lists everything. \
-        Lists show 200 characters of a value; `key` reads it whole. \
+        description = "Use to recall notes saved with `memory_save`: `query` searches by meaning, \
+        `key` reads one, `prefix` lists by key prefix, no arguments lists all. Lists show 200 \
+        characters of a value; `key` reads it whole. \
         Example: {\"query\":\"token rotation\"}",
         annotations(
             read_only_hint = true,

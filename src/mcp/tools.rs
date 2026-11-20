@@ -35,10 +35,9 @@ tokio::task_local! {
 impl BasemindServer {
     #[tool(
         title = "Outline a file",
-        description = "Use to see what a file contains before, or instead of, reading it: every \
-        symbol with its kind, signature and 1-based `line`/`end_line`, plus the file's imports. \
-        Feed a span to `code_read`. Code files only. `stale` means the file changed since it was \
-        indexed and is outlined as it is now. \
+        description = "Use to see what a file contains before, or instead of, reading it: each \
+        symbol's kind, signature and 1-based `line`/`end_line`, plus its imports. Feed a span to \
+        `code_read`. Code files only. `stale`: edited since indexing; outlined as it is now. \
         Example: {\"path\":\"src/store.rs\"}",
         annotations(
             read_only_hint = true,
@@ -57,10 +56,9 @@ impl BasemindServer {
     #[tool(
         title = "Find a definition",
         description = "Use for \"where is X defined\" when you know (part of) the name: finds \
-        functions, types, constants and other symbols by name across the repository; a row is \
-        `\"<path>:<line>: <signature>\"`. Ranked: the exact name first, then \
-        prefix, then substring, then (with `fuzzy`) fuzzy matches; `stale`: files edited since the \
-        scan (lines current). Definitions only: for any text use `code_grep`. \
+        functions, types, constants and other symbols; a row is `\"<path>:<line>: <signature>\"`. \
+        Ranked exact, prefix, substring, then `fuzzy`; `stale`: files edited since indexing (lines \
+        current). Definitions only; for other text, `code_grep`. \
         Example: {\"name\":\"parse_config\",\"kind\":\"function\"}",
         annotations(
             read_only_hint = true,
@@ -78,11 +76,9 @@ impl BasemindServer {
 
     #[tool(
         title = "Read a symbol or line span",
-        description = "Use to read the source of one function or type, or an exact line span, \
-        instead of the whole file. Pass `symbol` (plus `line` when several share the name), or a \
-        `line`..`end_line` span. A body over 128 KiB is cut, at a line end if it can, and flagged \
-        `truncated`: read on from `end_line` + 1. `stale`: the file changed since indexing and was \
-        parsed as it is now. \
+        description = "Use to read one function or type, or an exact line span, instead of the \
+        whole file. A body over 128 KiB is cut (at a line end if it can) and flagged `truncated`: \
+        read on from `end_line` + 1. `stale`: edited since indexing; parsed as it is now. \
         Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
         annotations(
             read_only_hint = true,
@@ -100,13 +96,11 @@ impl BasemindServer {
 
     #[tool(
         title = "Search code and text files",
-        description = "Use instead of `rg`/`grep` to find exact text (a string, identifier or \
-        comment) in indexed code and text files (markdown, config, data; not PDFs). `pattern` is \
-        literal unless `regex` is true. Rows `<line>: <text>` (`<line>:<col>,<col>: ...`: matches \
-        sharing a line; `<line>- ...`: context) sit under `# <file>` and `## <symbol>` (`##`: none) \
-        headers, after `key: value` lines: `stale` (edited since indexing), `skipped_files` \
-        (unsearchable), `total` (with `next_cursor`: hits from `cursor` on). A `path` or \
-        `language` no indexed file has is an error. \
+        description = "Use instead of `rg`/`grep` for exact text (a string, identifier or comment) \
+        in indexed code and text files (markdown, config, data; not PDFs). Rows `<line>: <text>` \
+        (`<line>-`: context) sit under `# <file>` and `## <symbol>` headers, after `stale` (edited \
+        since indexing), `skipped_files` (unsearchable) and `total` (with `next_cursor`: hits from \
+        `cursor` on). A `path` or `language` matching no indexed file is an error. \
         Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
         annotations(
             read_only_hint = true,
@@ -128,9 +122,9 @@ impl BasemindServer {
     #[tool(
         title = "Search code by meaning",
         description = "Use when you know what the code does but not a name or string in it: \
-        searches code chunks by meaning and returns pointers (path, `line`/`end_line`, symbol), \
-        not bodies; copies of a file share one hit (`also_at`). `lanes_unavailable` names lanes \
-        that did not run. Read a hit with `code_read`. \
+        searches code by meaning and returns pointers (path, `line`/`end_line`, symbol), not \
+        bodies; copies of a file share a hit (`also_at`). `lanes_unavailable`: lanes that did not \
+        run. Read a hit with `code_read`. \
         Example: {\"query\":\"retry a failed upload with backoff\"}",
         annotations(
             read_only_hint = true,
@@ -148,16 +142,14 @@ impl BasemindServer {
 
     #[tool(
         title = "Find call sites, implementations and importers",
-        description = "Use for what calls, implements or imports X, or which definition a use binds to \
-        (`relation`). Callers are call sites, not type uses or `use` lines. `match` \
-        `exact`: the name or a path ending in it; `substring`: any name holding it. `hits` maps files \
-        to rows: `line`, `callee` if not `name`, `stale` if edited since. `path` pins the definition \
-        there. Row `resolution` (omitted if `resolution_default`, else name_only): \
-        same_file, imported, scope_resolved (local binding), elsewhere (binds another), name_only \
-        (unchecked: `resolution_note`), external (not indexed), path_match (HTTP call to route \
-        `name` like `GET /a/{id}`, or a pinned handler's routes and calls; literal URLs; \
-        `ambiguous`: routes tie; `definition` of a call: its route). `importers`+`path`, \
-        no `name`: its importers `by_depth`. `cycles`: import cycles (`path`: its own). \
+        description = "Use for what calls, implements or imports X, or which definition a use \
+        binds to (`relation`). Callers are call sites, not type uses or `use` lines. `hits` maps \
+        files to rows: `line`, `callee` if not `name`, `stale` if edited since. A row without \
+        `resolution` has the page's `resolution_default` (none: name_only). Resolutions: \
+        same_file, imported, scope_resolved (a local binding), elsewhere (not the pinned \
+        definition), name_only (unchecked; see `resolution_note`), external (not indexed), \
+        path_match (HTTP call by literal URL to route `name`, e.g. `GET /a/{id}`, or a pinned \
+        handler; `ambiguous`: routes tie). \
         Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
         annotations(
             read_only_hint = true,
@@ -176,9 +168,8 @@ impl BasemindServer {
     #[tool(
         title = "Find files",
         description = "Use instead of `find`/`fd`/`ls -R` to locate a file by a fuzzy fragment of \
-        its name or path, or to list files when `query` is omitted; `files` holds paths. Covers \
-        code, documents and every other file git tracks; a query with one typo still finds its \
-        file. A `path_prefix` or `language` no listed file has is an error. \
+        its name or path (one typo allowed), or to list files without `query`. Covers every file \
+        git tracks. A `path_prefix` or `language` no listed file has is an error. \
         Example: {\"query\":\"readme\"}",
         annotations(
             read_only_hint = true,

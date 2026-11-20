@@ -15,35 +15,36 @@ pub struct CodeRefsParams {
     /// Name called, implemented or defined; for `importers`, whole segments of the import path.
     #[serde(default)]
     pub name: Option<String>,
-    /// What to list (default `callers`).
+    /// What to list (default `callers`). `definition` takes no `limit`, `cursor` or `max_tokens`.
     #[serde(default)]
     #[schemars(extend("enum" = ["callers", "implementations", "importers", "definition", "cycles"]))]
     pub relation: Option<String>,
-    /// `callers`: file defining `name`, pinning that definition. `definition`: file holding the
-    /// reference (required). `importers`/`cycles`: that file (no `name`).
+    /// `callers`: the file defining `name`, to pin it. `definition`: the reference's file (required).
+    /// `importers`/`cycles`: that file (no `name`).
     #[serde(default)]
     pub path: Option<RelPath>,
-    /// Needs `path`. `callers`: 1-based line inside the definition meant, when several share the
-    /// name. `definition`: line of the reference (required).
+    /// Needs `path`. `callers`: a 1-based line inside the definition meant. `definition`: the
+    /// reference's line (required).
     #[serde(default)]
     pub line: Option<u32>,
-    /// `definition` only: 1-based column (default: where `name` occurs on the line).
+    /// `definition` only: 1-based column (default: where `name` is on the line).
     #[serde(default)]
     pub column: Option<u32>,
     /// `importers`+`path`: hops (default 1, max 5); `deeper`: more beyond.
     #[serde(default)]
     pub depth: Option<u32>,
-    /// Name matching (default `exact`). Not with `importers` or `definition`.
+    /// `exact` (default): the name or a path ending in it; `substring`: names holding it. Not with
+    /// `importers`/`definition`.
     #[serde(default, rename = "match")]
     #[schemars(extend("enum" = ["exact", "substring"]))]
     pub match_mode: Option<String>,
-    /// Default 100. Not with `definition`.
+    /// Default 100.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// A prior `next_cursor`. Not with `definition`.
+    /// A prior `next_cursor`.
     #[serde(default)]
     pub cursor: Option<Cursor>,
-    /// Default 6000. Not with `definition`.
+    /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
     /// `callers` only: keep rows of these resolutions, comma-separated.

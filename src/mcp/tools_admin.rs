@@ -20,9 +20,9 @@ use crate::engine::ops::index::RescanProgress;
 impl BasemindServer {
     #[tool(
         title = "Index status",
-        description = "Use when a result is unexpectedly empty or says \"not indexed\": reports how \
-        many files are indexed per language, whether a scan is running or the index is degraded, \
-        the cache directory, and the repository's branch and HEAD. \
+        description = "Use when a result is unexpectedly empty or says \"not indexed\": reports \
+        files indexed per language, whether a scan is running or the index is degraded, the cache \
+        directory, and the branch and HEAD. \
         Example: {}",
         annotations(
             read_only_hint = true,

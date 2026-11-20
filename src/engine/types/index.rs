@@ -17,8 +17,7 @@ pub struct IndexStatusParams {}
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct IndexRescanParams {
-    /// Repo-relative files or directories to re-index (default: the whole workspace, skipping
-    /// unchanged files).
+    /// Repo-relative files or directories to re-index (default: the whole workspace).
     #[serde(default)]
     pub paths: Option<Vec<String>>,
 }
