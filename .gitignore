@@ -6,6 +6,7 @@
 
 # Release build artifacts
 /dist
+/THIRD_PARTY_LICENSES
 # Binary the plugin MCP launcher (scripts/mcp-launch.sh) downloads on demand
 /bin/
 /pip-package/build

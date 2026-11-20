@@ -43,12 +43,29 @@ for bin in "${BINARIES[@]}"; do
   fi
 done
 
+# THIRD_PARTY_LICENSES is generated, not tracked: `mise run release:licenses` writes it.
+if [ ! -f THIRD_PARTY_LICENSES ]; then
+  echo "THIRD_PARTY_LICENSES not found; generate it with: mise run release:licenses" >&2
+  exit 1
+fi
+
 STAGING_DIR="basemind-staging-${TRIPLE}"
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR/lib"
 
 # The licence and the third-party notices travel with the binary and its bundled libraries.
-cp LICENSE ATTRIBUTIONS.md "$STAGING_DIR/"
+cp LICENSE ATTRIBUTIONS.md THIRD_PARTY_LICENSES "$STAGING_DIR/"
+
+# Copies licenses/<basename>.txt into the archive for each bundled library given. Run after
+# check-bundled-libs.sh, which guarantees every allowlisted library has one.
+ship_library_licenses() {
+  local lib
+  for lib in "$@"; do
+    [ -e "$lib" ] || continue
+    mkdir -p "$STAGING_DIR/licenses"
+    cp "licenses/$(basename "$lib").txt" "$STAGING_DIR/licenses/"
+  done
+}
 
 BINS_IN_STAGING=()
 for bin in "${BINARIES[@]}"; do
@@ -82,6 +99,7 @@ linux)
     done
   fi
   bash "$SCRIPT_DIR/check-bundled-libs.sh" linux "$STAGING_DIR"
+  ship_library_licenses "$STAGING_DIR"/lib/*
 
   for bin_in_staging in "${BINS_IN_STAGING[@]}"; do
     # shellcheck disable=SC2016  # literal $ORIGIN is intended — patchelf/ld expands it at load time
@@ -131,6 +149,7 @@ macos)
     rm -f /tmp/_otool_$$
   done
   bash "$SCRIPT_DIR/check-bundled-libs.sh" macos "$STAGING_DIR"
+  ship_library_licenses "$STAGING_DIR"/lib/*
 
   idx=0
   while [ "$idx" -lt ${#copied_bases[@]} ]; do
@@ -184,6 +203,7 @@ windows)
     done
   done
   bash "$SCRIPT_DIR/check-bundled-libs.sh" windows "$STAGING_DIR"
+  ship_library_licenses "$STAGING_DIR"/*.dll
 
   (cd "$STAGING_DIR" && {
     7z a -tzip "../basemind-${TRIPLE}.zip" . >/dev/null 2>&1 ||

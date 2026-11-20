@@ -1,4 +1,5 @@
-"""A release archive may bundle only the native libraries allowlisted for its platform."""
+"""A release archive may bundle only the native libraries allowlisted for its platform, and every
+allowlisted library must have its licence notice in the repository."""
 
 import subprocess
 import tempfile
@@ -8,8 +9,27 @@ from pathlib import Path
 CHECK = Path(__file__).resolve().parents[1] / "check-bundled-libs.sh"
 
 
-def run_check(system: str, staging: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["bash", str(CHECK), system, str(staging)], capture_output=True, text=True, check=False)
+def run_check(system: str, staging: Path, check: Path = CHECK) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["bash", str(check), system, str(staging)], capture_output=True, text=True, check=False)
+
+
+def repo_copy(root: Path, *, notices: tuple[str, ...], attributed: tuple[str, ...], extra_macos: str = "") -> Path:
+    """A repository holding the check script, ``licenses/<name>.txt`` for each of ``notices`` and an
+    ATTRIBUTIONS.md naming ``attributed``; ``extra_macos`` is added to the macOS allowlist."""
+    script = root / "scripts" / CHECK.name
+    script.parent.mkdir(parents=True)
+    source = CHECK.read_text(encoding="utf-8")
+    if extra_macos:
+        assert "ALLOWED_MACOS=''" in source
+        source = source.replace("ALLOWED_MACOS=''", f"ALLOWED_MACOS='\n{extra_macos}\n'", 1)
+    script.write_text(source, encoding="utf-8")
+    (root / "licenses").mkdir()
+    for name in notices:
+        (root / "licenses" / f"{name}.txt").write_text("licence text\n", encoding="utf-8")
+    (root / "ATTRIBUTIONS.md").write_text(
+        "".join(f"- `licenses/{name}.txt`\n" for name in attributed), encoding="utf-8"
+    )
+    return script
 
 
 class BundledLibsTests(unittest.TestCase):
@@ -70,6 +90,62 @@ class BundledLibsTests(unittest.TestCase):
         result = run_check("windows", self.staging)
         self.assertEqual(result.returncode, 1)
         self.assertIn("\n  heif.dll\n", result.stderr)
+
+    def test_an_allowlisted_library_without_its_notice_fails(self) -> None:
+        cases = (
+            ((), ("libstdc++.so.6",), ("licenses/libstdc++.so.6.txt is missing",)),
+            (("libstdc++.so.6",), (), ("ATTRIBUTIONS.md does not name licenses/libstdc++.so.6.txt",)),
+            (
+                (),
+                (),
+                (
+                    "licenses/libstdc++.so.6.txt is missing",
+                    "ATTRIBUTIONS.md does not name licenses/libstdc++.so.6.txt",
+                ),
+            ),
+        )
+        for index, (notices, attributed, problems) in enumerate(cases):
+            with self.subTest(notices=notices, attributed=attributed):
+                script = repo_copy(self.staging / f"repo-{index}", notices=notices, attributed=attributed)
+                result = run_check("linux", self.staging / "empty", script)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(
+                    result.stderr,
+                    f"error: libraries allowlisted in {script} lack a licence notice:\n"
+                    + "".join(f"  {problem}\n" for problem in problems)
+                    + "Add each library's licence text as licenses/<library>.txt and name it in ATTRIBUTIONS.md.\n",
+                )
+
+    def test_a_new_entry_on_another_platform_needs_its_own_notice(self) -> None:
+        """An entry cannot be added without its notice, even when this platform does not bundle it."""
+        script = repo_copy(
+            self.staging / "repo",
+            notices=("libstdc++.so.6",),
+            attributed=("libstdc++.so.6",),
+            extra_macos="libomp.dylib",
+        )
+        result = run_check("linux", self.staging / "empty", script)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            result.stderr,
+            f"error: libraries allowlisted in {script} lack a licence notice:\n"
+            "  licenses/libomp.dylib.txt is missing\n"
+            "  ATTRIBUTIONS.md does not name licenses/libomp.dylib.txt\n"
+            "Add each library's licence text as licenses/<library>.txt and name it in ATTRIBUTIONS.md.\n",
+        )
+
+    def test_a_copy_with_every_notice_passes(self) -> None:
+        script = repo_copy(
+            self.staging / "repo",
+            notices=("libstdc++.so.6", "libomp.dylib"),
+            attributed=("libstdc++.so.6", "libomp.dylib"),
+            extra_macos="libomp.dylib",
+        )
+        self.bundle("lib/libomp.dylib")
+        result = run_check("macos", self.staging, script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "✓ Bundled macos libraries are all allowlisted\n")
 
     def test_an_unknown_system_is_a_usage_error(self) -> None:
         result = run_check("freebsd", self.staging)
