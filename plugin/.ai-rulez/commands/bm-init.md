@@ -77,9 +77,8 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
   owns governance (then tell the user to run `ai-rulez generate`; do NOT run it for them), otherwise
   to the gitignored `CLAUDE.local.md` (or `AGENTS.local.md` when the repo uses AGENTS). Choosing
   `claude` / `agents` / `ai-rulez` explicitly opts into the corresponding committed file.
-- The block is wrapped in an idempotent `<!-- BEGIN basemind … -->` … `<!-- END basemind -->`
-  block that is replaced in place on re-run, never duplicated. Content outside the markers is
-  never touched.
+- The block sits between HTML-comment markers (`BEGIN basemind` … `END basemind`) and is
+  replaced in place on re-run, never duplicated. Content outside the markers is never touched.
 - **`.gitignore` coverage**: whenever `init` is about to write one of the files that are
   gitignored by convention (`CLAUDE.local.md`, `AGENTS.local.md`, `.claude/settings.local.json`,
   anything under `.ai-rulez/local/`), it checks whether an existing `.gitignore` already covers
