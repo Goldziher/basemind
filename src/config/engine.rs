@@ -153,7 +153,8 @@ impl Default for GcPolicy {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GrammarPolicy {
-    /// Never download a missing grammar; a scan that needs one fails (`BASEMIND_GRAMMAR_OFFLINE`).
+    /// Never download a missing grammar; a scan that needs one fails (`BASEMIND_OFFLINE`,
+    /// `BASEMIND_GRAMMAR_OFFLINE`).
     pub offline: bool,
     /// Base directory of the downloaded grammar cache (`TREE_SITTER_LANGUAGE_PACK_CACHE_DIR`).
     /// `None` keeps it under the data home, at [`DataRoot::grammars_dir`].

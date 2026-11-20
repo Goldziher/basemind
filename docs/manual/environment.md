@@ -48,6 +48,16 @@ The three admission settings apply to the whole daemon, which serves every works
 machine, so they have no `basemind.toml` key. `index_status` reports each class's `limit`, `in_use`
 and `queued` under `admission`.
 
+## Network
+
+| Variable | Effect |
+|---|---|
+| `BASEMIND_OFFLINE` | Never download a grammar or a model, for this process and the daemon it starts; a missing one is an error naming it. Sets `HF_HUB_OFFLINE` for the models. |
+| `HF_ENDPOINT` | The Hugging Face server the models are downloaded from (default `https://huggingface.co`), for a mirror. |
+| `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL` | Where the grammar manifest is fetched from, for a mirror (`https://` or `file://`). |
+
+Every outbound host, and what triggers each download, is listed in `docs/network.md`.
+
 ## Indexing and cache
 
 | Variable | Effect |

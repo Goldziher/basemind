@@ -11,6 +11,39 @@ fn grammars_offline() -> bool {
     crate::config::engine::with(|config| config.grammars.offline)
 }
 
+/// Why the grammars `missing` were not downloaded into the grammar cache `cache_dir`: offline mode is on.
+fn offline_refusal(missing: &[&str], cache_dir: Option<&std::path::Path>) -> String {
+    let cache_dir = cache_dir.map_or_else(|| "the grammar cache".to_string(), |dir| dir.display().to_string());
+    format!(
+        "offline mode: missing grammars {missing:?} and BASEMIND_OFFLINE or BASEMIND_GRAMMAR_OFFLINE is \
+         set; copy a grammar cache that holds them into {cache_dir}"
+    )
+}
+
+/// Refuse to let the language pack download the grammar `lang` while offline mode is on: it fetches
+/// a grammar it does not have on first use, so [`crate::lang::language`] asks here first.
+pub(crate) fn refuse_offline_download(lang: &str) -> Result<(), LangError> {
+    offline_gate(
+        grammars_offline(),
+        || tree_sitter_language_pack::has_parser(lang),
+        || offline_refusal(&[lang], grammar_cache_dir().as_deref()),
+    )
+    .map_err(LangError::Download)
+}
+
+/// `refusal` when `offline` and the grammar is not `installed`; `installed` is asked only offline.
+fn offline_gate(
+    offline: bool,
+    installed: impl FnOnce() -> bool,
+    refusal: impl FnOnce() -> String,
+) -> Result<(), String> {
+    if offline && !installed() {
+        Err(refusal())
+    } else {
+        Ok(())
+    }
+}
+
 /// Point the language pack at this process's grammar cache, once, before its first use: the
 /// configured [`crate::config::engine::GrammarPolicy::cache_dir`], else
 /// [`crate::data_root::DataRoot::grammars_dir`]. Every entry into the pack that can load or
@@ -86,9 +119,9 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
             }
             if !missing.is_empty() {
                 if grammars_offline() {
-                    return Err(Arc::new(LangError::Download(format!(
-                        "offline mode: missing grammars {missing:?} and \
-                         BASEMIND_GRAMMAR_OFFLINE is set",
+                    return Err(Arc::new(LangError::Download(offline_refusal(
+                        &missing,
+                        Some(cache_dir.as_path()),
                     ))));
                 }
                 tree_sitter_language_pack::prefetch(&missing)
@@ -120,8 +153,9 @@ pub fn ensure_extra_grammars(names: &[LangId]) -> Result<Vec<String>, LangError>
         return Ok(Vec::new());
     }
     if grammars_offline() {
-        return Err(LangError::Download(format!(
-            "offline mode: missing grammars {missing:?} and BASEMIND_GRAMMAR_OFFLINE is set",
+        return Err(LangError::Download(offline_refusal(
+            &missing,
+            grammar_cache_dir().as_deref(),
         )));
     }
     tree_sitter_language_pack::prefetch(&missing).map_err(|e| LangError::Download(format!("{e}")))?;
@@ -144,4 +178,36 @@ pub fn grammar_cache_dir() -> Option<PathBuf> {
 pub fn clean_grammar_cache() -> Result<(), LangError> {
     configure_grammar_dir();
     tree_sitter_language_pack::clean_cache().map_err(|e| LangError::Pack(format!("{e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_offline_refusal_names_the_missing_grammars_both_switches_and_the_cache() {
+        let expected = |cache: &str| {
+            format!(
+                "offline mode: missing grammars [\"rust\", \"python\"] and BASEMIND_OFFLINE or \
+                 BASEMIND_GRAMMAR_OFFLINE is set; copy a grammar cache that holds them into {cache}"
+            )
+        };
+        let dir = std::path::Path::new("grammars");
+        assert_eq!(offline_refusal(&["rust", "python"], Some(dir)), expected("grammars"));
+        assert_eq!(
+            offline_refusal(&["rust", "python"], None),
+            expected("the grammar cache")
+        );
+    }
+
+    #[test]
+    fn offline_a_grammar_that_is_not_installed_is_refused_and_online_nothing_is_asked() {
+        let refusal = || "refused".to_string();
+        assert_eq!(offline_gate(true, || false, refusal), Err("refused".to_string()));
+        assert_eq!(offline_gate(true, || true, refusal), Ok(()));
+        assert_eq!(
+            offline_gate(false, || panic!("online, the cache is not probed"), refusal),
+            Ok(())
+        );
+    }
 }
