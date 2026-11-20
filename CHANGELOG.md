@@ -12,9 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- An unknown `basemind.toml` key names its TOML table and suggests the closest known key within two
-  edits (#249): ``unknown key `folow_symlinks` in [scan]; did you mean `follow_symlinks`?``. With no
-  close match the error lists the table's keys instead of the raw JSON-schema message.
+- An unknown `basemind.toml` key names its TOML table (`[scan]`, `[[x]]` for an array-of-tables
+  entry) and lists the keys that table allows instead of the raw JSON-schema message, preceded by the
+  closest known key when one is within two edits (#249):
+  ``unknown key `folow_symlinks` in [scan]; did you mean `follow_symlinks`? allowed keys: ...``.
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
   lists the files importing that file `by_depth`, up to `depth` hops (default 1, max 5), names those
   in an import cycle with it and says when the walk was cut; `relation: "cycles"` lists the import

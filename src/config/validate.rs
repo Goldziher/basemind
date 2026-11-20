@@ -47,24 +47,26 @@ fn describe_error(error: &ValidationError<'_>) -> Vec<String> {
 }
 
 /// Render an instance JSON pointer as the TOML table a user wrote (`/documents/reranker` →
-/// `[documents.reranker]`); the document root is the top-level table.
+/// `[documents.reranker]`); the document root is the top-level table. An object inside an array is
+/// an array-of-tables entry (`/plugins/0` → `[[plugins]]`), and a table below one is written by its
+/// dotted name alone, as TOML headers name it (`/plugins/0/env` → `[plugins.env]`).
 fn table_name(instance_path: &Location) -> String {
-    let mut name = String::new();
+    let mut names: Vec<String> = Vec::new();
+    let mut in_array = false;
     for segment in instance_path.segments() {
         match segment {
             LocationSegment::Property(key) => {
-                if !name.is_empty() {
-                    name.push('.');
-                }
-                name.push_str(&key);
+                names.push(key.into_owned());
+                in_array = false;
             }
-            LocationSegment::Index(index) => name.push_str(&format!("[{index}]")),
+            LocationSegment::Index(_) => in_array = true,
         }
     }
-    if name.is_empty() {
-        "the top-level table".to_string()
-    } else {
-        format!("[{name}]")
+    let name = names.join(".");
+    match (name.is_empty(), in_array) {
+        (true, _) => "the top-level table".to_string(),
+        (false, true) => format!("[[{name}]]"),
+        (false, false) => format!("[{name}]"),
     }
 }
 
@@ -83,18 +85,20 @@ fn known_keys(schema_path: &Location) -> Vec<&'static str> {
 }
 
 fn unknown_key_message(key: &str, table: &str, known: &[&str]) -> String {
+    if known.is_empty() {
+        return format!("unknown key `{key}` in {table}");
+    }
+    let allowed = known.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(", ");
     let closest = known
         .iter()
         .map(|candidate| (strsim::levenshtein(key, candidate), *candidate))
         .filter(|(distance, _)| *distance <= MAX_SUGGESTION_DISTANCE)
         .min_by_key(|(distance, _)| *distance);
     match closest {
-        Some((_, suggestion)) => format!("unknown key `{key}` in {table}; did you mean `{suggestion}`?"),
-        None if known.is_empty() => format!("unknown key `{key}` in {table}"),
-        None => {
-            let allowed: Vec<String> = known.iter().map(|k| format!("`{k}`")).collect();
-            format!("unknown key `{key}` in {table}; allowed keys: {}", allowed.join(", "))
+        Some((_, suggestion)) => {
+            format!("unknown key `{key}` in {table}; did you mean `{suggestion}`? allowed keys: {allowed}")
         }
+        None => format!("unknown key `{key}` in {table}; allowed keys: {allowed}"),
     }
 }
 
@@ -121,30 +125,38 @@ mod tests {
         }
     }
 
+    const TOP_LEVEL_KEYS: &str = "`$schema`, `scan`, `code_intel`, `analysis`, `watch`, `cache`, `mcp`, `languages`, `documents`, `resources`, `code_search`, `memory`, `comms`, `crawl`, `shells`, `llm`";
+    const SCAN_KEYS: &str = "`include`, `exclude`, `floor_allow`, `respect_gitignore`, `follow_symlinks`, `max_file_bytes`, `skip_submodules`, `eager_l2`, `extra_roots`, `max_candidates`";
+    const RERANKER_KEYS: &str = "`enabled`, `preset`, `top_k`";
+
     #[test]
-    fn should_suggest_closest_key_for_scan_typo() {
+    fn should_suggest_closest_key_and_list_allowed_keys_for_scan_typo() {
         let value = json!({ "$schema": "v1", "scan": { "folow_symlinks": true } });
         assert_eq!(
             schema_error(&value),
-            "  unknown key `folow_symlinks` in [scan]; did you mean `follow_symlinks`?"
+            format!(
+                "  unknown key `folow_symlinks` in [scan]; did you mean `follow_symlinks`? allowed keys: {SCAN_KEYS}"
+            )
         );
     }
 
     #[test]
-    fn should_suggest_closest_key_for_nested_table_typo() {
+    fn should_suggest_closest_key_and_list_allowed_keys_for_nested_table_typo() {
         let value = json!({ "$schema": "v1", "documents": { "reranker": { "enabeld": true } } });
         assert_eq!(
             schema_error(&value),
-            "  unknown key `enabeld` in [documents.reranker]; did you mean `enabled`?"
+            format!(
+                "  unknown key `enabeld` in [documents.reranker]; did you mean `enabled`? allowed keys: {RERANKER_KEYS}"
+            )
         );
     }
 
     #[test]
-    fn should_suggest_closest_key_for_top_level_typo() {
+    fn should_suggest_closest_key_and_list_allowed_keys_for_top_level_typo() {
         let value = json!({ "$schema": "v1", "scna": {} });
         assert_eq!(
             schema_error(&value),
-            "  unknown key `scna` in the top-level table; did you mean `scan`?"
+            format!("  unknown key `scna` in the top-level table; did you mean `scan`? allowed keys: {TOP_LEVEL_KEYS}")
         );
     }
 
@@ -153,7 +165,7 @@ mod tests {
         let value = json!({ "$schema": "v1", "documents": { "reranker": { "zzz": 1 } } });
         assert_eq!(
             schema_error(&value),
-            "  unknown key `zzz` in [documents.reranker]; allowed keys: `enabled`, `preset`, `top_k`"
+            format!("  unknown key `zzz` in [documents.reranker]; allowed keys: {RERANKER_KEYS}")
         );
     }
 
@@ -162,9 +174,41 @@ mod tests {
         let value = json!({ "$schema": "v1", "documents": { "reranker": { "top_kk": 5, "zzz": 1 } } });
         assert_eq!(
             schema_error(&value),
-            "  unknown key `top_kk` in [documents.reranker]; did you mean `top_k`?\n  \
-             unknown key `zzz` in [documents.reranker]; allowed keys: `enabled`, `preset`, `top_k`"
+            format!(
+                "  unknown key `top_kk` in [documents.reranker]; did you mean `top_k`? allowed keys: {RERANKER_KEYS}\n  \
+                 unknown key `zzz` in [documents.reranker]; allowed keys: {RERANKER_KEYS}"
+            )
         );
+    }
+
+    #[test]
+    fn should_name_only_the_unknown_key_when_the_table_declares_none() {
+        assert_eq!(unknown_key_message("zzz", "[scan]", &[]), "unknown key `zzz` in [scan]");
+    }
+
+    #[test]
+    fn should_render_table_names_in_toml_form() {
+        let cases = [
+            (Location::new(), "the top-level table"),
+            (Location::new().join("scan"), "[scan]"),
+            (
+                Location::new().join("documents").join("reranker"),
+                "[documents.reranker]",
+            ),
+            (Location::new().join("plugins").join(0usize), "[[plugins]]"),
+            (Location::new().join("plugins").join(2usize), "[[plugins]]"),
+            (
+                Location::new().join("plugins").join(0usize).join("env"),
+                "[plugins.env]",
+            ),
+            (
+                Location::new().join("plugins").join(1usize).join("hooks").join(0usize),
+                "[[plugins.hooks]]",
+            ),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(table_name(&path), expected, "path {path}");
+        }
     }
 
     #[test]

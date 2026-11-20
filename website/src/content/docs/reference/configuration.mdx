@@ -15,9 +15,9 @@ Create `basemind.toml` at the repo root to customize behavior. `basemind init` (
 [Get started](/start/installation/#get-started)) writes a fully-commented starter file there if
 one doesn't already exist — optional, since all settings have sensible defaults. The file is
 validated against a JSON Schema and **rejects unknown keys**, so a typo fails loudly rather than
-being silently ignored. The error names the table and the closest known key
-(``unknown key `folow_symlinks` in [scan]; did you mean `follow_symlinks`?``), or lists the table's
-keys when none is within two edits.
+being silently ignored. The error names the table and lists the keys it allows, preceded by the
+closest known key when one is within two edits
+(``unknown key `folow_symlinks` in [scan]; did you mean `follow_symlinks`? allowed keys: ...``).
 
 The config can also live under the project-level
 [`.config/` convention](https://github.com/pi0/config-dir), either flat (`.config/basemind.toml`)
