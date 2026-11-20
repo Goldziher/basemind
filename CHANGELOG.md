@@ -146,6 +146,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- The `PreToolUse` guard steers `git diff` to `git_diff {"path":"…"}` and `git status` to
+  `git_diff {}` (#263); a diff of the staged index (`--cached`, `--staged`) or `--no-index` is left
+  alone. Its `code_grep` suggestion for a `Grep` call carries that call's `path` (relative to the
+  repository root, a directory as `dir/`) and `glob` (a glob without `/` as `**/<glob>`) in `path`.
 
 ### Changed
 
