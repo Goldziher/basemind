@@ -22,7 +22,10 @@ PUBLISH_WORKFLOWS = [
     ".github/workflows/release-build.yaml",
     ".github/workflows/plugin-artifacts.yaml",
 ]
-USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(?P<ref>[^\s#]+)\s*(?P<comment>#.*)?$")
+USES = re.compile(
+    r"""(?:^|[\s{,])(?P<quote>["']?)uses(?P=quote)\s*:\s*(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s#,}]+))"""
+)
+COMMENT = re.compile(r"(?:^|\s)(?P<comment>#.*)$")
 PINNED = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 TAG_COMMENT = re.compile(r"^#\s*v?\d[\w.-]*$")
 
@@ -50,17 +53,39 @@ def problems(root: Path, files: list[str]) -> list[str]:
         seen.add(path)
         rel = path.relative_to(root).as_posix()
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            match = USES.match(line)
-            if match is None:
-                continue
-            ref, comment = match["ref"], (match["comment"] or "").strip()
-            if ref.startswith("./"):
-                queue.append(local_target(root, ref))
-            elif not PINNED.match(ref):
-                found.append(f"{rel}:{number}: {ref} is not pinned to a full commit SHA")
-            elif not TAG_COMMENT.match(comment):
-                found.append(f"{rel}:{number}: {ref} needs the tag it pins in a comment (# v1.2.3)")
+            for ref, comment in references(line):
+                problem = check_reference(root, ref, comment, queue)
+                if problem:
+                    found.append(f"{rel}:{number}: {problem}")
     return found
+
+
+def references(line: str) -> list[tuple[str, str]]:
+    """Return each ``uses`` value on ``line``, unquoted, with the line's trailing comment.
+
+    Block (``- uses: x``), flow (``- {uses: x}``) and quoted-key (``"uses": x``) forms are read; a
+    whole-line comment holds none.
+    """
+    if line.lstrip().startswith("#"):
+        return []
+    found = []
+    for match in USES.finditer(line):
+        ref = next(value for value in (match["dq"], match["sq"], match["bare"]) if value is not None)
+        comment = COMMENT.search(line[match.end() :])
+        found.append((ref, comment["comment"].strip() if comment else ""))
+    return found
+
+
+def check_reference(root: Path, ref: str, comment: str, queue: list[Path]) -> str:
+    """Return the problem with one ``uses`` reference, or ``""``; queue a local target to check."""
+    if ref.startswith("./"):
+        queue.append(local_target(root, ref))
+        return ""
+    if not PINNED.match(ref):
+        return f"{ref} is not pinned to a full commit SHA"
+    if not TAG_COMMENT.match(comment):
+        return f"{ref} needs the tag it pins in a comment (# v1.2.3)"
+    return ""
 
 
 def main(argv: list[str]) -> int:

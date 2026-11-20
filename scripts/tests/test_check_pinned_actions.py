@@ -69,6 +69,34 @@ class PinnedActionsTests(unittest.TestCase):
             ],
         )
 
+    def test_quoted_pins_in_every_mapping_form_pass(self) -> None:
+        body = (
+            "jobs:\n  a:\n    steps:\n"
+            f'      - uses: "actions/checkout@{SHA}" # v4\n'
+            f"      - {{uses: 'actions/cache@{SHA}', with: {{key: a}}}} # v4.2.0\n"
+            f'      - "uses": actions/setup-node@{SHA} # v5\n'
+            "      # - uses: actions/checkout@v4\n"
+        )
+        self.assertEqual(self.check(body), [])
+
+    def test_tags_in_flow_mappings_and_quoted_keys_are_reported(self) -> None:
+        body = (
+            "jobs:\n  a:\n    steps:\n"
+            "      - {uses: actions/checkout@v7}\n"
+            "      - {name: c, uses: actions/cache@v4} # v4\n"
+            '      - "uses": actions/setup-node@v5\n'
+            "      - 'uses': 'actions/upload-artifact@main'\n"
+        )
+        self.assertEqual(
+            self.check(body),
+            [
+                ".github/workflows/publish.yaml:4: actions/checkout@v7 is not pinned to a full commit SHA",
+                ".github/workflows/publish.yaml:5: actions/cache@v4 is not pinned to a full commit SHA",
+                ".github/workflows/publish.yaml:6: actions/setup-node@v5 is not pinned to a full commit SHA",
+                ".github/workflows/publish.yaml:7: actions/upload-artifact@main is not pinned to a full commit SHA",
+            ],
+        )
+
     def test_a_tag_inside_a_called_local_action_is_reported(self) -> None:
         body = "jobs:\n  a:\n    steps:\n      - uses: ./.github/actions/setup\n"
         action = "runs:\n  steps:\n    - uses: Swatinem/rust-cache@v2\n"
