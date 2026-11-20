@@ -154,6 +154,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that cannot report its version within 5 seconds, it skips the MCP server; with one from another
   minor version it warns. Either way OpenCode shows one message naming the install command
   (`pnpm add -g basemind@<version>`, or `pip install basemind==<version>`).
+  count as this repository's.
 
 ### Changed
 
@@ -863,6 +864,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   variable unset a hook ran `./hooks/run-hook.cmd` from the opened repository; it also started the
   MCP server without `--root` and wired `agent-as`, which Cursor does not run. `plugin:verify`
   (`sync_legacy_plugin_exports.py --check`) fails on a shipped hook whose root falls back to a path.
+- `basemind sessions` (#162): a session that ran in a worktree since removed counts under that
+  worktree's name instead of `other_directories`. A worktree is removed when its gitdir is gone and
+  `git worktree list` no longer lists it; it is recognised in a directory that holds the
+  repository's live worktrees and no other repository. A Codex reply that calls no tool right
+  after a fork point now counts its output tokens: a copied token count is told by its cumulative
+  totals, not by the call before it. A Claude Code project directory whose slug is exactly 200
+  characters is matched whole, as Claude Code keeps it, and a longer one only by its first 200
+  characters followed by `-`. The transcript roots are under `HOME`, or under `USERPROFILE` on
+  Windows when it is set.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
