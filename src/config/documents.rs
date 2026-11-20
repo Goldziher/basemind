@@ -701,13 +701,16 @@ impl ApiKey {
     /// performs an `env::var` lookup and returns `None` if the variable is
     /// missing or empty; `Unset` always returns `None`.
     pub fn resolve(&self) -> Option<SecretString> {
+        self.resolve_with(|name| std::env::var(name).ok())
+    }
+
+    /// [`Self::resolve`] with `lookup` reading the `Env` variable in place of the process
+    /// environment.
+    fn resolve_with(&self, lookup: impl FnOnce(&str) -> Option<String>) -> Option<SecretString> {
         match self {
             Self::Literal(s) if !s.is_empty() => Some(SecretString(s.clone())),
             Self::Literal(_) => None,
-            Self::Env { env } => match std::env::var(env) {
-                Ok(v) if !v.is_empty() => Some(SecretString(v)),
-                _ => None,
-            },
+            Self::Env { env } => lookup(env).filter(|v| !v.is_empty()).map(SecretString),
             Self::Unset => None,
         }
     }
@@ -776,31 +779,34 @@ mod tests {
     }
 
     #[test]
-    fn api_key_env_reads_environment() {
-        // SAFETY: scoped to this single test; the env var name is uniquely
-        unsafe {
-            std::env::set_var("BASEMIND_TEST_API_KEY_PRESENT", "value-123");
-        }
+    fn api_key_env_reads_the_named_variable() {
         let k = ApiKey::Env {
-            env: "BASEMIND_TEST_API_KEY_PRESENT".to_string(),
+            env: "BASEMIND_TEST_API_KEY".to_string(),
         };
-        let resolved = k.resolve().expect("env resolves");
+        let resolved = k
+            .resolve_with(|name| (name == "BASEMIND_TEST_API_KEY").then(|| "value-123".to_string()))
+            .expect("env resolves");
         assert_eq!(resolved.expose(), "value-123");
-        unsafe {
-            std::env::remove_var("BASEMIND_TEST_API_KEY_PRESENT");
-        }
     }
 
     #[test]
-    fn api_key_env_missing_resolves_to_none() {
-        // SAFETY: the variable is removed before the test so the env lookup
-        unsafe {
-            std::env::remove_var("BASEMIND_TEST_API_KEY_MISSING");
-        }
+    fn api_key_env_missing_or_empty_resolves_to_none() {
         let k = ApiKey::Env {
-            env: "BASEMIND_TEST_API_KEY_MISSING".to_string(),
+            env: "BASEMIND_TEST_API_KEY".to_string(),
         };
-        assert!(k.resolve().is_none());
+        assert!(k.resolve_with(|_| None).is_none());
+        assert!(k.resolve_with(|_| Some(String::new())).is_none());
+    }
+
+    #[test]
+    fn api_key_resolve_reads_the_process_environment() {
+        let k = ApiKey::Env {
+            env: "PATH".to_string(),
+        };
+        assert_eq!(
+            k.resolve().map(|secret| secret.expose().to_string()),
+            Some(std::env::var("PATH").expect("PATH is set"))
+        );
     }
 
     #[test]

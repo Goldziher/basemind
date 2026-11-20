@@ -38,7 +38,13 @@ fn absolute_daemon_binary(exe: PathBuf) -> std::io::Result<PathBuf> {
 /// [`DAEMON_BINARY_ENV`] is the escape hatch for a legitimate non-`basemind` caller, and it is what
 /// a test should set (to `env!("CARGO_BIN_EXE_basemind")`) when it genuinely wants a real daemon.
 fn resolve_daemon_binary() -> std::io::Result<PathBuf> {
-    if let Some(explicit) = std::env::var_os(DAEMON_BINARY_ENV) {
+    daemon_binary(std::env::var_os(DAEMON_BINARY_ENV))
+}
+
+/// The [`resolve_daemon_binary`] decision for a given [`DAEMON_BINARY_ENV`] value, split out so the
+/// override can be tested without mutating the process environment.
+fn daemon_binary(explicit: Option<std::ffi::OsString>) -> std::io::Result<PathBuf> {
+    if let Some(explicit) = explicit {
         return Ok(PathBuf::from(explicit));
     }
     daemon_binary_for(&std::env::current_exe()?)
@@ -602,15 +608,8 @@ mod tests {
     /// beside one.
     #[test]
     fn should_use_the_explicit_binary_override_when_set() {
-        let previous = std::env::var_os(DAEMON_BINARY_ENV);
         let explicit = std::path::PathBuf::from("/opt/somewhere/basemind-wrapper");
-        // SAFETY: single-threaded within this test; the previous value is restored before asserting.
-        unsafe { std::env::set_var(DAEMON_BINARY_ENV, &explicit) };
-        let resolved = resolve_daemon_binary();
-        match previous {
-            Some(value) => unsafe { std::env::set_var(DAEMON_BINARY_ENV, value) },
-            None => unsafe { std::env::remove_var(DAEMON_BINARY_ENV) },
-        }
+        let resolved = daemon_binary(Some(explicit.clone().into_os_string()));
 
         assert_eq!(resolved.expect("the override resolves"), explicit);
     }
