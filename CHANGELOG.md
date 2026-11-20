@@ -853,9 +853,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Codex config `.mcp.json` runs the launcher of the enabled plugin, not the most recently
   modified `codex-mcp-launch.mjs` in any marketplace's cache (#246). It reads the
   `[plugins."basemind@<marketplace>"]` tables of `$CODEX_HOME/config.toml`, passes over one with
-  `enabled = false`, searches only those marketplaces (only `basemind` when the config names none)
-  and runs the highest version, a release ahead of its prereleases. A stale or foreign copy no longer
-  wins, and the chosen path is logged to stderr.
+  `enabled = false` (bare or quoted key), searches only those marketplaces (only `basemind` when the
+  config names none, and no cache when every table it names is disabled) and runs the highest SemVer
+  version: a release ahead of its prereleases, and prereleases ordered by their identifiers
+  (`rc.10` above `rc.2`). File age breaks only a tie. A stale or foreign copy no longer wins, and the
+  chosen path is logged to stderr.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

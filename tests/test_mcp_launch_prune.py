@@ -639,6 +639,23 @@ class McpJsonCachedLauncherTests(unittest.TestCase):
         self.install("basemind", "1.0.0-rc.1")
         self.assert_runs(release, "basemind 1.0.0")
 
+    def clear_cache(self) -> None:
+        shutil.rmtree(self.codex_home / "plugins/cache", ignore_errors=True)
+
+    def test_prereleases_rank_by_their_identifiers_rather_than_file_age(self) -> None:
+        for higher, lower in (
+            ("1.0.0-rc.2", "1.0.0-rc.1"),
+            ("1.0.0-rc.10", "1.0.0-rc.2"),
+            ("1.0.0-rc.1.1", "1.0.0-rc.1"),
+            ("1.0.0-beta", "1.0.0-alpha"),
+            ("1.0.0-alpha", "1.0.0-1"),
+        ):
+            with self.subTest(higher=higher, lower=lower):
+                self.clear_cache()
+                expected = self.install("basemind", higher, modified_ago=DAY)
+                self.install("basemind", lower)
+                self.assert_runs(expected, f"basemind {higher}")
+
     def test_without_a_config_only_the_basemind_marketplace_is_searched(self) -> None:
         expected = self.install("basemind", "1.0.0", modified_ago=DAY)
         self.install("foreign", "9.9.9")
@@ -657,6 +674,29 @@ class McpJsonCachedLauncherTests(unittest.TestCase):
             '[plugins."basemind@curated"]\nenabled = false\n\n[plugins."basemind@basemind"]\nenabled = true\n'
         )
         self.assert_runs(enabled, "basemind 1.0.0")
+
+    def test_a_quoted_enabled_key_disables_the_plugin(self) -> None:
+        for key in ('"enabled"', "'enabled'"):
+            with self.subTest(key=key):
+                self.clear_cache()
+                self.install("curated", "9.9.9")
+                enabled = self.install("basemind", "1.0.0", modified_ago=DAY)
+                self.configure(
+                    f'[plugins."basemind@curated"]\n{key} = false\n\n[plugins."basemind@basemind"]\nenabled = true\n'
+                )
+                self.assert_runs(enabled, "basemind 1.0.0")
+
+    def test_when_every_configured_plugin_is_disabled_no_cached_launcher_runs(self) -> None:
+        self.install("basemind", "1.0.0")
+        self.install("curated", "1.0.0")
+        local = self.work / "scripts/mcp-launch.sh"
+        local.parent.mkdir()
+        local.write_text('#!/bin/sh\nprintf "local %s" "$*"\n')
+        local.chmod(0o755)
+        self.configure('[plugins."basemind@curated"]\nenabled = false\n')
+        result = self.launch()
+        self.assertEqual(result.stdout, "local serve")
+        self.assertEqual(result.stderr, "")
 
     def test_the_highest_version_of_the_enabled_plugin_runs(self) -> None:
         self.install("basemind", "9.9.9")

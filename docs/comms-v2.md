@@ -42,7 +42,8 @@ code follows this document. Where the document leaves a point open, the code doe
   before it runs `scripts/codex-mcp-launch.mjs`, the launcher or a bare `basemind`. It runs the
   `codex-mcp-launch.mjs` of the highest version cached for a `[plugins."basemind@<marketplace>"]`
   table of `$CODEX_HOME/config.toml` that does not set `enabled = false` (the `basemind`
-  marketplace when the config has none), and logs the path it runs to stderr.
+  marketplace when the config has none; none when every table is disabled), ranked by SemVer
+  precedence with file age as the tie-breaker, and logs the path it runs to stderr.
 
 ## Terms
 
