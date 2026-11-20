@@ -205,6 +205,34 @@ fn archives_are_executed_before_upload() {
     );
 }
 
+/// Every archive is packaged with the generated THIRD_PARTY_LICENSES: one job renders it from the
+/// locked graph, and each build job waits for it and downloads it before packaging.
+#[test]
+fn every_archive_is_packaged_with_the_third_party_licenses() {
+    let build = read_workflow("release-build.yaml");
+    assert!(
+        job_block(&build, "third-party-licenses").contains("run: mise run release:licenses"),
+        "release-build.yaml must generate THIRD_PARTY_LICENSES with the release:licenses task",
+    );
+    for job in ["build-native", "build-linux"] {
+        let block = job_block(&build, job);
+        assert!(
+            block.contains("needs: third-party-licenses"),
+            "{job} must wait for THIRD_PARTY_LICENSES"
+        );
+        let download = block
+            .find("name: third-party-licenses")
+            .unwrap_or_else(|| panic!("{job} must download THIRD_PARTY_LICENSES"));
+        let package = block
+            .find("scripts/package-release.sh")
+            .unwrap_or_else(|| panic!("{job} must package the release"));
+        assert!(
+            download < package,
+            "{job} must download THIRD_PARTY_LICENSES before packaging"
+        );
+    }
+}
+
 /// Promotion (which flips the release public and lets `latest` move) must require the full
 /// platform-asset set plus checksums, not a partial draft.
 #[test]

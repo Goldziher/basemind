@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# Fails when a release archive's staging directory bundles a native library that is not allowlisted.
+# Fails when a release archive's staging directory bundles a native library that is not allowlisted,
+# or when an allowlisted library has no licence notice in the repository.
 #
 # Usage: check-bundled-libs.sh <linux|macos|windows> <staging-dir>
 #
 # Linux and macOS bundle libraries under <staging-dir>/lib/; Windows puts DLLs next to the binary.
 set -euo pipefail
 
-# One basename per line. Every entry needs a licence check and its licence text shipped with the
-# archive (#232) before it is added. Basenames are exact, so a soname bump fails the build and gets
-# the same review. Libraries the loader takes from the host (glibc, libgcc_s, /usr/lib, /System) are
-# never bundled and so never listed.
+# One basename per line. Every entry needs a licence check, its licence text in
+# licenses/<basename>.txt (package-release.sh ships it beside the library) and an ATTRIBUTIONS.md
+# entry naming that file; this script fails for any entry, on any platform, that lacks either.
+# Basenames are exact, so a soname bump fails the build and gets the same review. Libraries the
+# loader takes from the host (glibc, libgcc_s, /usr/lib, /System) are never bundled and so never
+# listed.
 ALLOWED_LINUX='
 libstdc++.so.6
 '
@@ -42,6 +45,22 @@ windows)
   exit 2
   ;;
 esac
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+unnoticed=()
+while IFS= read -r entry; do
+  [ -n "$entry" ] || continue
+  notice="licenses/$entry.txt"
+  [ -f "$root/$notice" ] || unnoticed+=("$notice is missing")
+  grep -Fq -- "$notice" "$root/ATTRIBUTIONS.md" 2>/dev/null || unnoticed+=("ATTRIBUTIONS.md does not name $notice")
+done < <(printf '%s\n' "$ALLOWED_LINUX" "$ALLOWED_MACOS" "$ALLOWED_WINDOWS")
+
+if [ ${#unnoticed[@]} -gt 0 ]; then
+  echo "error: libraries allowlisted in $0 lack a licence notice:" >&2
+  printf '  %s\n' "${unnoticed[@]}" >&2
+  echo "Add each library's licence text as licenses/<library>.txt and name it in ATTRIBUTIONS.md." >&2
+  exit 1
+fi
 
 unlisted=()
 for path in "${bundled[@]}"; do

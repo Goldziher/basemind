@@ -13,6 +13,7 @@ uv = "0.13.6"
 node = "26.13.0"
 pnpm = "12.16.1"
 "github:taiki-e/cargo-hack" = "0.6.46"
+"github:EmbarkStudios/cargo-about" = "0.9.3"
 ripgrep = "15.2.0"
 
 [tasks.setup]
@@ -99,9 +100,13 @@ run = [
   "cargo test --test config_schema --features full -- --ignored regenerate_schema",
 ]
 
+[tasks."release:licenses"]
+description = "Generate THIRD_PARTY_LICENSES, the notice file every release archive ships (cargo-about over the `full` graph)"
+run = "cargo about generate --locked --fail --features full --output-file THIRD_PARTY_LICENSES about.hbs"
+
 [tasks."release:dry-run"]
-description = "Dry-run the real release packaging path for the host platform (build + package-release.sh + checksums + launcher smoke)"
-run = "./scripts/release-dry-run.sh"
+description = "Dry-run the real release packaging path for the host platform (licences + build + package-release.sh + checksums + launcher smoke)"
+run = [{ task = "release:licenses" }, "./scripts/release-dry-run.sh"]
 
 [task_config]
 includes = ["mise-tasks", "mise-tasks/shared.toml"]
