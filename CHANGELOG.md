@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The cache budget can be set in a user settings file (#204): `[cache] budget_mb` in `settings.toml`
+  in basemind's user configuration directory (`~/.config/basemind/` on Linux,
+  `~/Library/Application Support/basemind/` on macOS), read by every basemind process at start, the
+  daemon an MCP host spawns included. A set `BASEMIND_CACHE_BUDGET_MB` wins over it; `0` disables
+  enforcement in either. `basemind cache stats` reports `budget_warning` when a set budget is larger
+  than the cache plus the free space on its volume, which the disk fills before eviction starts.
+
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
   lists the files importing that file `by_depth`, up to `depth` hops (default 1, max 5), names those
   in an import cycle with it and says when the walk was cut; `relation: "cycles"` lists the import
