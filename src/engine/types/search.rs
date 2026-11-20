@@ -41,7 +41,7 @@ pub struct DocsSearchParams {
     /// Format: pdf, office, html, markdown, email, notebook, text or other.
     #[serde(default)]
     pub kind: Option<String>,
-    /// Glob over document paths (`docs/**/*.md`).
+    /// Prefix, or a glob when it has `*`, e.g. `src/`.
     #[serde(default)]
     pub path: Option<String>,
     /// Whole keywords, comma-separated; any one matches.

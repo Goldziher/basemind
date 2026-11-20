@@ -83,7 +83,7 @@ pub enum MemoryCmd {
         /// Format family: pdf, office, html, markdown, email, notebook, text, other.
         #[arg(long)]
         kind: Option<String>,
-        /// Glob over document paths, e.g. `docs/**/*.md`.
+        /// Repository-relative prefix, or a glob when it holds `*` (`docs/`, `docs/**/*.md`).
         #[arg(long)]
         path: Option<String>,
         /// Keep documents with any of these whole keywords (comma-separated).

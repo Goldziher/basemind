@@ -51,7 +51,7 @@ impl BasemindServer {
              1. `index_status` for the language mix, file count, branch and index state.\n\
              2. `git_log` with no arguments to see what has been happening lately and which \
              files keep changing.\n\
-             3. `find_files` with a `path_prefix` to see how the tree is laid out.\n\
+             3. `find_files` with a `path` to see how the tree is laid out.\n\
              4. For each file that keeps changing, `code_outline` (don't read it whole) and \
              summarize its role.\n\
              Then give me a short map of the codebase: its main components, where the activity is, \

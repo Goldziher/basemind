@@ -32,7 +32,7 @@ tasks:
   - name: find_admin_cli_file
     tier: code_search
     description: "Locate the file implementing the admin CLI subcommand group"
-    basemind: "code find admin --path-prefix src/cli"
+    basemind: "code find admin --path src/cli"
     baseline: "find . \\( -path './target' -o -path './.git' \\) -prune -o -iname '*admin*' -path '*/cli/*' -print"
 
   - name: bm_init_doc_settings_mention

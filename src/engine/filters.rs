@@ -9,60 +9,27 @@
 
 use std::collections::BTreeSet;
 
-use memchr::memmem::Finder;
-
 use crate::engine::MapCache;
 use crate::engine::error::EngineError;
 use crate::engine::types::LifecycleNotice;
 use crate::engine::workspace::Workspace;
+use crate::path_filter::PathFilter;
 
 /// Languages named in a "no such language" refusal before the rest are counted.
 const LANGUAGES_LISTED_MAX: usize = 30;
 
-/// Wildcards that suggest a `path` filter was meant as a glob. `[` and `{` are not in the list:
-/// they occur in real paths (`app/[id]/page.tsx`).
-const GLOB_WILDCARDS: [char; 2] = ['*', '?'];
-
-/// How a tool matches its path filter against a repo-relative path.
-pub(crate) enum PathFilter<'a> {
-    /// `code_grep`'s `path`: a literal substring. The finder is boxed: on x86_64 it carries its
-    /// vector searcher inline (~300 bytes), against 16 for a prefix.
-    Contains(&'a str, Box<Finder<'a>>),
-    /// `find_files`' `path_prefix`.
-    Prefix(&'a str),
-}
-
-impl<'a> PathFilter<'a> {
-    pub(crate) fn contains(needle: &'a str) -> Self {
-        Self::Contains(needle, Box::new(Finder::new(needle.as_bytes())))
-    }
-
-    pub(crate) fn matches(&self, path: &[u8]) -> bool {
-        match self {
-            Self::Contains(_, finder) => finder.find(path).is_some(),
-            Self::Prefix(prefix) => path.starts_with(prefix.as_bytes()),
-        }
-    }
-
-    fn value(&self) -> &'a str {
-        match self {
-            Self::Contains(value, _) | Self::Prefix(value) => value,
-        }
-    }
-
-    /// `(as a predicate, as a participle)`: "no path contains", "a path containing".
-    fn verbs(&self) -> (&'static str, &'static str) {
-        match self {
-            Self::Contains(..) => ("contains", "containing"),
-            Self::Prefix(_) => ("starts with", "starting with"),
-        }
-    }
+/// Parse `tool`'s `path` argument ([`PathFilter`]); a value holding `*` that is no glob is an
+/// invalid argument.
+pub(crate) fn parse_path(tool: &str, value: Option<&str>) -> Result<Option<PathFilter>, EngineError> {
+    value
+        .map(|value| PathFilter::parse(value).map_err(|why| EngineError::invalid_argument(format!("`{tool}`: {why}."))))
+        .transpose()
 }
 
 /// The filters of one call.
 pub(crate) struct Filters<'a> {
     pub tool: &'a str,
-    pub path: Option<PathFilter<'a>>,
+    pub path: Option<&'a PathFilter>,
     pub language: Option<&'a str>,
 }
 
@@ -146,27 +113,25 @@ impl Filters<'_> {
                 )
             }
             (Some(filter), _) if !listed.path_seen => {
-                let (verb, _) = filter.verbs();
-                let value = filter.value();
-                if matches!(filter, PathFilter::Contains(..)) && value.contains(GLOB_WILDCARDS) {
+                let value = filter.as_str();
+                if filter.is_glob() {
                     format!(
-                        "`{tool}`: `path` is a substring of the repo-relative path, not a glob, and no indexed \
-                         path contains `{value}`. Pass a fragment such as `src/mcp/` or `.rs`; use `language` to \
-                         filter by language."
+                        "`{tool}`: no indexed path matches the glob `{value}`; `*` stays within one segment and \
+                         `**` crosses `/`. List what is indexed with `find_files`."
                     )
                 } else {
                     format!(
-                        "`{tool}`: no indexed path {verb} `{value}`. The filter is literal text, not a glob; \
-                         list what is indexed with `find_files`."
+                        "`{tool}`: no indexed path starts with `{value}`; `path` is a repo-relative prefix, or a \
+                         glob when it holds `*`. List what is indexed with `find_files`."
                     )
                 }
             }
             (Some(filter), Some(wanted)) => {
-                let (_, participle) = filter.verbs();
+                let participle = if filter.is_glob() { "matching" } else { "starting with" };
                 format!(
                     "`{tool}`: no indexed `{wanted}` file has a path {participle} `{}`; each filter matches \
                      files on its own. Drop one of them.",
-                    filter.value()
+                    filter.as_str()
                 )
             }
             _ => return None,
@@ -263,10 +228,14 @@ mod tests {
         assert_eq!(doc_language("LICENSEFILE"), "document");
     }
 
-    fn grep<'a>(path: Option<&'a str>, language: Option<&'a str>) -> Filters<'a> {
+    fn filter(value: &str) -> PathFilter {
+        PathFilter::parse(value).expect("filter parses")
+    }
+
+    fn grep<'a>(path: Option<&'a PathFilter>, language: Option<&'a str>) -> Filters<'a> {
         Filters {
             tool: "code_grep",
-            path: path.map(PathFilter::contains),
+            path,
             language,
         }
     }
@@ -288,7 +257,8 @@ mod tests {
 
     #[test]
     fn filters_that_a_listed_file_passes_are_not_refused() {
-        let filters = grep(Some("src/"), Some("rust"));
+        let src = filter("src/");
+        let filters = grep(Some(&src), Some("rust"));
         assert!(filters.refusal(&tally(&filters, CODE), None).is_none());
         let unfiltered = grep(None, None);
         assert!(unfiltered.refusal(&tally(&unfiltered, CODE), None).is_none());
@@ -296,7 +266,8 @@ mod tests {
 
     #[test]
     fn an_empty_index_is_not_a_filter_mistake() {
-        let filters = grep(Some("src/"), None);
+        let src = filter("src/");
+        let filters = grep(Some(&src), None);
         assert!(
             filters
                 .refusal(&Tally::default(), Some(&tally(&filters, DOCS)))
@@ -306,7 +277,8 @@ mod tests {
 
     #[test]
     fn filters_that_match_only_documents_name_the_document_tool() {
-        let by_path = grep(Some("docs/"), None);
+        let docs = filter("docs/");
+        let by_path = grep(Some(&docs), None);
         let text = message(by_path.refusal(&tally(&by_path, CODE), Some(&tally(&by_path, DOCS))));
         assert!(
             text.contains("match only documents (2 indexed, e.g. `docs/guide.md`)"),
@@ -321,7 +293,8 @@ mod tests {
 
     #[test]
     fn a_document_language_under_a_path_no_document_has_still_names_the_document_tool() {
-        let filters = grep(Some("src/"), Some("markdown"));
+        let src = filter("src/");
+        let filters = grep(Some(&src), Some("markdown"));
         let text = message(filters.refusal(&tally(&filters, CODE), Some(&tally(&filters, DOCS))));
         assert!(text.contains("no indexed file has language `markdown`"), "{text}");
         assert!(text.contains("Indexed languages: python, rust."), "{text}");
@@ -329,35 +302,53 @@ mod tests {
     }
 
     #[test]
-    fn a_glob_shaped_path_gets_the_glob_hint_and_a_plain_one_the_listing_hint() {
-        let glob = grep(Some("src/*.rs"), None);
-        let text = message(glob.refusal(&tally(&glob, CODE), None));
-        assert!(
-            text.contains("not a glob, and no indexed path contains `src/*.rs`"),
-            "{text}"
+    fn a_path_no_file_has_is_refused_with_the_rule_it_was_read_by() {
+        let glob = filter("src/*.py");
+        let filters = grep(Some(&glob), None);
+        assert_eq!(
+            message(filters.refusal(&tally(&filters, CODE), None)),
+            "`code_grep`: no indexed path matches the glob `src/*.py`; `*` stays within one \
+             segment and `**` crosses `/`. List what is indexed with `find_files`."
         );
 
-        let plain = grep(Some("nope/"), None);
-        let text = message(plain.refusal(&tally(&plain, CODE), None));
-        assert!(text.contains("no indexed path contains `nope/`"), "{text}");
-        assert!(text.contains("`find_files`"), "{text}");
-
-        let prefix = Filters {
-            tool: "find_files",
-            path: Some(PathFilter::Prefix("nope/")),
-            language: None,
-        };
-        let text = message(prefix.refusal(&tally(&prefix, CODE), None));
-        assert!(text.contains("no indexed path starts with `nope/`"), "{text}");
+        // A substring of an indexed path is not its prefix.
+        let fragment = filter("a.rs");
+        let filters = grep(Some(&fragment), None);
+        assert_eq!(
+            message(filters.refusal(&tally(&filters, CODE), None)),
+            "`code_grep`: no indexed path starts with `a.rs`; `path` is a repo-relative \
+             prefix, or a glob when it holds `*`. List what is indexed with `find_files`."
+        );
     }
 
     #[test]
     fn filters_that_each_match_alone_say_so() {
-        let filters = grep(Some("src/"), Some("python"));
+        let src = filter("src/");
+        let filters = grep(Some(&src), Some("python"));
         let text = message(filters.refusal(&tally(&filters, CODE), None));
         assert!(
-            text.contains("no indexed `python` file has a path containing `src/`"),
+            text.contains("no indexed `python` file has a path starting with `src/`"),
             "{text}"
         );
+
+        let glob = filter("**/*.rs");
+        let filters = grep(Some(&glob), Some("python"));
+        let text = message(filters.refusal(&tally(&filters, CODE), None));
+        assert!(
+            text.contains("no indexed `python` file has a path matching `**/*.rs`"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_star_value_that_is_no_glob_is_an_invalid_argument_naming_the_tool() {
+        let error = parse_path("find_files", Some("src/[*.rs")).expect_err("no glob");
+        assert!(
+            error
+                .to_string()
+                .starts_with("`find_files`: `path` holds `*`, so it is read as a glob"),
+            "{error}"
+        );
+        assert!(parse_path("find_files", None).expect("no filter").is_none());
     }
 }

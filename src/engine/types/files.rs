@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::LifecycleNotice;
 use crate::engine::cursor::Cursor;
 use crate::path::RelPath;
+use crate::path_filter::PathFilter;
 
 /// Arguments of `find_files`.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -14,9 +15,9 @@ pub struct FindFilesToolParams {
     /// Fuzzy fragment of a file name or path; omit to list.
     #[serde(default)]
     pub query: Option<String>,
-    /// Only paths starting with this, e.g. `src/mcp/`.
+    /// Prefix, or a glob when it has `*`, e.g. `src/`.
     #[serde(default)]
-    pub path_prefix: Option<String>,
+    pub path: Option<String>,
     /// Language filter, e.g. `rust`, `markdown`.
     #[serde(default)]
     pub language: Option<String>,
@@ -40,10 +41,8 @@ pub struct FindFilesToolParams {
 /// `find_files` without a `query`: the listing's own arguments.
 #[derive(Debug)]
 pub(crate) struct ListFilesParams {
-    /// Optional substring matched against the path. Cheaper than reading a glob crate.
-    pub path_contains: Option<String>,
-    /// Optional prefix the path must start with.
-    pub path_prefix: Option<String>,
+    /// Optional `path` filter: a prefix, or a glob when it holds `*`.
+    pub path: Option<PathFilter>,
     /// Filter by language (e.g. "rust", "python").
     pub language: Option<String>,
     /// Cap. Default 200, max 5000.
@@ -63,8 +62,8 @@ pub(crate) struct FindFilesParams {
     /// Fuzzy query matched as a subsequence against each indexed path (fzf/fd-style — letters
     /// of `query` must appear in order in the path, not necessarily contiguous). Case-insensitive.
     pub query: String,
-    /// Optional prefix filter applied before scoring (e.g. "src/mcp/").
-    pub path_prefix: Option<String>,
+    /// Optional `path` filter (a prefix, or a glob when it holds `*`) applied before scoring.
+    pub path: Option<PathFilter>,
     /// Filter by language (e.g. "rust", "python"), applied before scoring.
     pub language: Option<String>,
     /// Cap. Default 200, max 5000 (same convention as `list_files`).

@@ -15,13 +15,14 @@ use crate::engine::budget::{apply_budget, apply_budget_toon, budget};
 use crate::engine::changed::admits;
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
-use crate::engine::filters::{Filters, PathFilter, Tally, grep_selects_no_file, language_of_doc, selects_no_file};
+use crate::engine::filters::{Filters, Tally, grep_selects_no_file, language_of_doc, parse_path, selects_no_file};
 use crate::engine::scope::ChangeScope;
 use crate::engine::types::files::{
     FileHit, FileList, FilesResponse, FindFilesParams, FindFilesToolParams, ListFilesParams, SizedFile,
 };
 use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
+use crate::path_filter::PathFilter;
 
 /// Files one `find_files` page holds when the caller passes no `limit`.
 pub(crate) const LIST_LIMIT_DEFAULT: u32 = 200;
@@ -53,15 +54,16 @@ impl Workspace {
 
     /// [`find_files`](Self::find_files) over the files `scope` admits.
     fn find_files_in(&self, p: FindFilesToolParams, scope: Option<&ChangeScope>) -> Result<FilesResponse, EngineError> {
+        let path = parse_path("find_files", p.path.as_deref())?;
         if let Some(min_lines) = p.min_lines {
-            return run_large_files(self, p, min_lines, scope);
+            return run_large_files(self, p, path.as_ref(), min_lines, scope);
         }
         match p.query.filter(|query| !query.trim().is_empty()) {
             Some(query) => run_find_files(
                 self,
                 FindFilesParams {
                     query,
-                    path_prefix: p.path_prefix,
+                    path,
                     language: p.language,
                     limit: p.limit,
                     max_tokens: budget(p.max_tokens),
@@ -72,8 +74,7 @@ impl Workspace {
             None => run_list_files(
                 self,
                 ListFilesParams {
-                    path_contains: None,
-                    path_prefix: p.path_prefix,
+                    path,
                     language: p.language,
                     limit: p.limit,
                     max_tokens: budget(p.max_tokens),
@@ -159,8 +160,8 @@ fn snapshot(generation: u32, stamp: u32) -> u32 {
     generation ^ stamp
 }
 
-/// Body of `find_files` without a query: enumerate the workspace's files with optional substring
-/// (`path_contains`), prefix and `language` filters, then paginate. A file git tracks that is not
+/// Body of `find_files` without a query: enumerate the workspace's files with optional `path` and
+/// `language` filters, then paginate. A file git tracks that is not
 /// indexed has no language, so a `language` filter leaves it out.
 fn run_list_files(
     ws: &Workspace,
@@ -191,11 +192,7 @@ fn run_list_files(
     };
     let store = ws.store_read();
 
-    let path_finder = params
-        .path_contains
-        .as_ref()
-        .map(|n| memchr::memmem::Finder::new(n.as_bytes()));
-    let prefix_filter = params.path_prefix.as_deref().map(str::as_bytes);
+    let path_filter = params.path.as_ref();
 
     // Code map first, then the document tier (markdown, config, data, PDFs ...), then the tracked
     // files neither holds, each in sorted order. The index map iterates in hash order, which
@@ -211,8 +208,7 @@ fn run_list_files(
     let mut total: usize = 0;
     let mut seen: usize = 0;
     for (p, language) in code.chain(docs).chain(others) {
-        let path_ok = path_finder.as_ref().is_none_or(|f| f.find(p.as_bytes()).is_some())
-            && prefix_filter.is_none_or(|prefix| p.as_bytes().starts_with(prefix));
+        let path_ok = path_filter.is_none_or(|filter| filter.matches(p.as_bytes()));
         let lang_ok = lang_filter.is_none_or(|l| language.as_deref() == Some(l));
         if !(path_ok && lang_ok && admits(scope, p)) {
             continue;
@@ -230,7 +226,7 @@ fn run_list_files(
     if total == 0 && skip == 0 {
         let filters = Filters {
             tool: "find_files",
-            path: params.path_prefix.as_deref().map(PathFilter::Prefix),
+            path: path_filter,
             language: lang_filter,
         };
         let listed = || {
@@ -294,7 +290,7 @@ fn respond(
 }
 
 /// Body of `find_files` with a query: fuzzy subsequence match over the workspace's files
-/// (fzf/fd-style), ranked by `nucleo-matcher` score, with optional `path_prefix` / `language`
+/// (fzf/fd-style), ranked by `nucleo-matcher` score, with optional `path` / `language`
 /// pre-filters. A query no path contains as typed may be a typo: files it names up to one edit
 /// ([`within_one_edit`]) rank first.
 ///
@@ -308,7 +304,7 @@ fn run_find_files(
 ) -> Result<FilesResponse, EngineError> {
     ws.wait_map_ready();
     let (limit, limit_clamped) = effective_list_limit(params.limit);
-    let prefix_filter = params.path_prefix.as_deref();
+    let path_filter = params.path.as_ref();
     let lang_filter = params.language.as_deref();
     let cache = ws.cache.load_full();
     let generation = ws.cache_generation.load(Ordering::Relaxed);
@@ -342,7 +338,7 @@ fn run_find_files(
         .chain(others)
         .filter(|(p, language)| {
             lang_filter.is_none_or(|l| language.as_deref() == Some(l))
-                && prefix_filter.is_none_or(|pre| p.as_bytes().starts_with(pre.as_bytes()))
+                && path_filter.is_none_or(|filter| filter.matches(p.as_bytes()))
         })
         .map(|(p, _)| p)
         .collect();
@@ -353,7 +349,7 @@ fn run_find_files(
     if none_passed {
         let filters = Filters {
             tool: "find_files",
-            path: prefix_filter.map(PathFilter::Prefix),
+            path: path_filter,
             language: lang_filter,
         };
         let listed = || {
@@ -398,11 +394,12 @@ fn run_find_files(
 }
 
 /// Body of `find_files` with `min_lines`: the code files of at least `min_lines` lines that pass the
-/// `path_prefix`, `language` and (fuzzy) `query` filters, largest first, each with its line and byte
+/// `path`, `language` and (fuzzy) `query` filters, largest first, each with its line and byte
 /// count. Only the code map knows a file's lines, so documents and unindexed files are left out.
 fn run_large_files(
     ws: &Workspace,
     p: FindFilesToolParams,
+    path_filter: Option<&PathFilter>,
     min_lines: u32,
     scope: Option<&ChangeScope>,
 ) -> Result<FilesResponse, EngineError> {
@@ -420,14 +417,13 @@ fn run_large_files(
         }
         None => 0,
     };
-    let prefix_filter = p.path_prefix.as_deref();
     let lang_filter = p.language.as_deref();
     let mut selected = false;
     let mut rows: Vec<(&RelPath, u32, u64)> = cache
         .file_metas()
         .filter(|(path, meta)| {
             let passes = lang_filter.is_none_or(|l| &*meta.language == l)
-                && prefix_filter.is_none_or(|pre| path.as_bytes().starts_with(pre.as_bytes()));
+                && path_filter.is_none_or(|filter| filter.matches(path.as_bytes()));
             selected |= passes;
             passes && meta.lines >= min_lines && admits(scope, path)
         })
@@ -436,7 +432,7 @@ fn run_large_files(
     if !selected {
         let filters = Filters {
             tool: "find_files",
-            path: prefix_filter.map(PathFilter::Prefix),
+            path: path_filter,
             language: lang_filter,
         };
         if let Some(refusal) = grep_selects_no_file(ws, &cache, &filters) {

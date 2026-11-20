@@ -43,6 +43,7 @@ pub mod lead;
 pub mod mcp;
 mod once_map;
 pub mod path;
+pub mod path_filter;
 pub mod process_start;
 pub mod query;
 pub mod registry;

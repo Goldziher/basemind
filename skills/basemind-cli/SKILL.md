@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:fe427a1bf267bc1c8811e278c57d6ec884b738c881289fa7c7892ecb530267c3
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:ada9045231f43d697f3408f6f1ef466c260ba6621844bed3b0c2cd31344c95fe
+Source-Hash: blake3:239a6957fcdb4f1307ce987e61d7aa5f3383345466cb0a8f5958a640b9559c9e
 Schema-Version: v1
 -->
 
@@ -72,8 +72,8 @@ command covers the question.
 | "What implements / extends X?" | `basemind code implementations "X"` | Shorthand for `refs X --relation implementations`. |
 | "What imports module M?" | `basemind code dependents "M"` | Shorthand for `refs M --relation importers`. |
 | "Which definition does this reference bind to?" | `basemind code definition path line name [--column C]` | Shorthand for `refs name --relation definition`. |
-| "Which file is named like X?" | `basemind code find "X" [--path-prefix P --language L]` | Fuzzy; code and documents. |
-| "What files are indexed?" | `basemind code files [--path-prefix P --language L]` | `find` with no query. |
+| "Which file is named like X?" | `basemind code find "X" [--path P --language L]` | Fuzzy; code and documents. `P`: a prefix, or a glob with `*`. |
+| "What files are indexed?" | `basemind code files [--path P --language L]` | `find` with no query. |
 | "What changed recently?" | `basemind git log [--limit N]` | Shorthand `git recent`. |
 | "Which commits touched a path?" | `basemind git log --path P` | Shorthand `git touching P`; a trailing `/` means a directory. |
 | "Which commit mentions X?" | `basemind git log --query "X" [--author A]` | Shorthand `git search`. |

@@ -1,6 +1,6 @@
 """Gold for `find_large`: a line threshold (and a directory) -> every file at least that long.
 
-`find_files {min_lines, language, path_prefix?}` (#127) lists the indexed files with at least
+`find_files {min_lines, language, path?}` (#127) lists the indexed files with at least
 `min_lines` lines, largest first. A file's line count follows the scanner's convention
 (`src/scanner_lines.rs`): every `\\n` ends a line and a final line without one still counts, so
 `a\\nb` has 2 lines where `wc -l` says 1. Thresholds are round numbers from 200 to 10000, over the
@@ -56,7 +56,7 @@ def main() -> None:
     for scope, threshold, gold in sorted(c.sample(rng, candidates, a.n), key=lambda t: (t[0], t[1])):
         args = {"min_lines": threshold, "language": LANGUAGES[a.ext]}
         if scope:
-            args["path_prefix"] = scope + "/"
+            args["path"] = scope + "/"
         spec = c.shell_quote(f"{scope}/*.{a.ext}" if scope else f"*.{a.ext}")
         cmd = f"git ls-files -z -- {spec} | xargs -0 {AWK_COUNT} | sort -rn | awk '$1>={threshold}'"
         tasks.append(

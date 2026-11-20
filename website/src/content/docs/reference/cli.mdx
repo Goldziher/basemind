@@ -65,8 +65,8 @@ basemind code callers <path> <name> [--limit --cursor --max-tokens]
 basemind code implementations <name> [--limit --cursor --max-tokens]
 basemind code dependents <module> [--limit --cursor]
 basemind code definition <path> <line> <name> [--column]
-basemind code find [query] [--path-prefix --language --limit --cursor --max-tokens]
-basemind code files [--path-prefix --language --limit --cursor --max-tokens]
+basemind code find [query] [--path --language --limit --cursor --max-tokens]
+basemind code files [--path --language --limit --cursor --max-tokens]
 basemind code chunk <path> [--chunk-id --byte-start]
 ```
 
@@ -75,15 +75,15 @@ basemind code chunk <path> [--chunk-id --byte-start]
 | `outline <path>` | A file's structure: symbols with kind, signature and 1-based lines, plus imports. Read this instead of the file. Code files only; documents are searched with `memory documents`. |
 | `symbols <name> [--kind --fuzzy]` | Find a definition by name across every indexed file. Ranked: exact, prefix, substring, then (with `--fuzzy`) fuzzy subsequence. |
 | `read <path> --symbol <name> [--kind]` / `read <path> --line <n> [--end-line <m>]` | One symbol's source body, or a 1-based inclusive line span. Alias `expand`. |
-| `grep <pattern> [--regex --path --language --context N]` | Text search over the indexed code. The pattern is literal unless `--regex`. `--path` is a substring of the repo-relative path, not a glob. `--context N` (0-10) adds the N lines before and after each hit. |
+| `grep <pattern> [--regex --path --language --context N]` | Text search over the indexed code. The pattern is literal unless `--regex`. `--path` is a repo-relative prefix, or a glob when it holds `*`. `--context N` (0-10) adds the N lines before and after each hit. |
 | `search <query> [--lane hybrid\|semantic\|keyword]` | Search code by meaning; returns pointers, read a hit with `code read`. Alias `semantic`. Needs `--features code-search`. |
 | `refs <name> [--relation callers\|implementations\|importers\|definition --path --line --column --match exact\|substring]` | Usages of a name. Without `--path`, every call site of the exact identifier; with `--path`, callers of the definition in that file. Alias `references`. |
 | `callers <path> <name>` | Shorthand for `refs <name> --path <path>`. |
 | `implementations <name>` | Shorthand for `refs <name> --relation implementations`. |
 | `dependents <module>` | Shorthand for `refs <module> --relation importers`. |
 | `definition <path> <line> <name> [--column]` | Shorthand for `refs <name> --relation definition --path <path> --line <line>`: the definition the reference binds to. |
-| `find [query] [--path-prefix --language]` | Fuzzy file-name or path search, ranked by score; a listing when the query is omitted. Covers documents as well as code. |
-| `files [--path-prefix --language]` | List indexed files, code and documents alike. |
+| `find [query] [--path --language]` | Fuzzy file-name or path search, ranked by score; a listing when the query is omitted. Covers documents as well as code. |
+| `files [--path --language]` | List indexed files, code and documents alike. |
 | `chunk <path> [--chunk-id --byte-start]` | Fetch one code-search chunk body. CLI only. Needs `--features code-search`. |
 
 ## `git` — git history

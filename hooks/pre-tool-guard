@@ -57,7 +57,7 @@ classify_bash() {
     bash_alt='basemind git_log {"rev":"…"} (one commit in full) or git_diff {"path":"…","from":"…","to":"…"} (one file between revisions)'
   elif printf '%s' "${cmd}" | grep -Eq "${lead}find[[:space:]].*-(i?name|i?path|i?regex)([[:space:]]|\$)"; then
     bash_kind="find"
-    bash_alt='basemind find_files {"query":"…"} (fuzzy file name or path; omit "query" and pass "path_prefix" or "language" to list)'
+    bash_alt='basemind find_files {"query":"…"} (fuzzy file name or path; omit "query" and pass "path" (a prefix, or a glob with *) or "language" to list)'
   fi
 }
 
@@ -86,7 +86,7 @@ Grep)
   alt="basemind ${grep_call} (indexed code), code_symbols {\"name\":\"…\"} for a definition or code_refs {\"name\":\"…\"} for usages; markdown, config and data files: docs_search {\"query\":\"…\"}"
   ;;
 Glob)
-  alt='basemind find_files {"query":"…"} (fuzzy file name or path; omit "query" and pass "path_prefix" or "language" to list)'
+  alt='basemind find_files {"query":"…"} (fuzzy file name or path; omit "query" and pass "path" (a prefix, or a glob with *) or "language" to list)'
   ;;
 *)
   exit 0

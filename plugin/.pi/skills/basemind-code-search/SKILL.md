@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:8119de89f6686713f6c6b78ae02eb616e9f10050d1fff43914c6a7882738f7f5
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:44e8d8722c9fefa6ac85ca6d707fafa764e832b8d623324c6828ad1291dfacbf
+Source-Hash: blake3:239a6957fcdb4f1307ce987e61d7aa5f3383345466cb0a8f5958a640b9559c9e
 Schema-Version: v1
 -->
 
@@ -58,7 +58,7 @@ no tool covers the question.
 | "What imports module M?" | `code_refs {"name":"tokio::sync","relation":"importers"}` | `basemind code dependents tokio::sync` |
 | "Which definition does this reference bind to?" | `code_refs {"name":"open_store","relation":"definition","path":"src/main.rs","line":42}` | `basemind code definition src/main.rs 42 open_store` |
 | "Which file is named like X?" | `find_files {"query":"readme"}` | `basemind code find readme` |
-| "What files are indexed under a directory?" | `find_files {"path_prefix":"src/mcp/"}` | `basemind code files --path-prefix src/mcp/` |
+| "What files are indexed under a directory?" | `find_files {"path":"src/mcp/"}` | `basemind code files --path src/mcp/` |
 | "What's indexed?" | `index_status {}` | `basemind status` |
 | "Refresh the index after editing?" | `index_rescan {"paths":["src/store.rs"]}` | `basemind rescan src/store.rs` |
 | "Fetch the next page?" | pass the response's `next_cursor` back as `cursor` | `--cursor <next_cursor>` |
@@ -93,7 +93,8 @@ code_outline {"path":"src/mcp/tools.rs"}
   `index_rescan`.
 - `code_outline` omits `imports` when the file has none.
 - `code_grep`: `pattern` is literal text unless `"regex":true`, and a regex anchors `^` / `$` at
-  every line. `path` is a substring of the repo-relative path, never a glob; a `path` or `language`
+  every line. `path` is a repo-relative prefix (`src/mcp/`), or a glob over the whole path when it
+  holds `*` (`src/**/*.rs`; `*` stays within one segment); a `path` or `language`
   that no indexed code file has is an error (it names `docs_search` when only documents match).
   `skipped_files` counts files that could not be searched. The answer is `key: value` lines, then
   each file as `# <path>` and each innermost enclosing symbol as `## <symbol>` over its rows

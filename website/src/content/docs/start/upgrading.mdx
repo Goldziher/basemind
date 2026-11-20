@@ -68,7 +68,7 @@ trip. See the [MCP tools reference](/reference/mcp-tools/) for every argument.
 |---|---|---|
 | `code_grep` | `path_contains` | `path` |
 | `code_grep` | `include_context` (default on) | `context` (default off) |
-| `find_files` | `path_contains` | `path_prefix` |
+| `find_files` | `path_contains` | `path` |
 | `docs_search` | `entity_category` | `entity` |
 | `docs_search` | `keywords_contains` | `keywords` |
 | `git_blame` | `line_start` / `line_end` | `line` / `end_line` |
@@ -97,7 +97,7 @@ The command groups keep their names, and the old subcommands stay as shorthands 
 | `code grep --path-contains <p>` | `code grep --path <p>` |
 | `code grep <regex>` | `code grep <regex> --regex` (the pattern is literal by default) |
 | `code grep --no-context` | default; `--context N` adds the N lines around each hit |
-| `code files --path-contains <p>` | `code files --path-prefix <p>` |
+| `code files --path-contains <p>` | `code files --path <p>` |
 | `code definition <path> <line>` | `code definition <path> <line> <name>` |
 | `git blame --line-start <n> --line-end <m>` | `git blame --line <n> --end-line <m>` |
 | `git diff <path> <old> <new>` | `git diff <path> --from <old> --to <new>` |
@@ -108,7 +108,10 @@ The command groups keep their names, and the old subcommands stay as shorthands 
 ### Behaviour changes
 
 - **`code_grep` is literal by default.** A pattern that relied on regex syntax needs `regex: true`
-  (`--regex`). `path` is a substring of the repo-relative path; a glob is rejected.
+  (`--regex`).
+- **`path` is a prefix, or a glob when it holds `*`**, in `code_grep`, `find_files` and
+  `docs_search`: `src/mcp/` is a prefix, `src/**/*.rs` a glob (`*` stays within one segment, `**`
+  crosses `/`). `path_contains` was a substring; `mcp` no longer selects `src/mcp/tools.rs`.
 - **Lines are 1-based everywhere**: `line`, `end_line` and `column`, in arguments and results.
   Outline, symbol and caller rows used to be 0-based.
 - **`code_refs` matches the exact identifier.** `name: "open"` no longer counts call sites of
@@ -129,8 +132,8 @@ The command groups keep their names, and the old subcommands stay as shorthands 
 - **An empty index is reported**, never returned as a plain empty result: the response carries a
   `notice` with `state: "empty_index"`.
 - **`limit: 0` is refused** by every tool that takes `limit`.
-- **A filter that selects no file is an error.** A `path` / `path_prefix` / `language` that no
-  indexed file passes is refused with what would match (`code_grep`, `find_files`), as is a
+- **A filter that selects no file is an error.** A `path` / `language` that no indexed file
+  passes is refused with what would match (`code_grep`, `find_files`), as is a
   `git_log` `path` that no commit touches and that is not on disk. While the index is still being
   built the empty page comes back with its `notice` instead.
 - **`code_grep {regex: true}` anchors `^` / `$` at every line.**

@@ -74,8 +74,8 @@ command covers the question.
 | "What implements / extends X?" | `basemind code implementations "X"` | Shorthand for `refs X --relation implementations`. |
 | "What imports module M?" | `basemind code dependents "M"` | Shorthand for `refs M --relation importers`. |
 | "Which definition does this reference bind to?" | `basemind code definition path line name [--column C]` | Shorthand for `refs name --relation definition`. |
-| "Which file is named like X?" | `basemind code find "X" [--path-prefix P --language L]` | Fuzzy; code and documents. |
-| "What files are indexed?" | `basemind code files [--path-prefix P --language L]` | `find` with no query. |
+| "Which file is named like X?" | `basemind code find "X" [--path P --language L]` | Fuzzy; code and documents. `P`: a prefix, or a glob with `*`. |
+| "What files are indexed?" | `basemind code files [--path P --language L]` | `find` with no query. |
 | "What changed recently?" | `basemind git log [--limit N]` | Shorthand `git recent`. |
 | "Which commits touched a path?" | `basemind git log --path P` | Shorthand `git touching P`; a trailing `/` means a directory. |
 | "Which commit mentions X?" | `basemind git log --query "X" [--author A]` | Shorthand `git search`. |
