@@ -6,6 +6,14 @@
 
 (type_declaration (type_spec name: (type_identifier) @symbol.name)) @symbol.type
 
+;; `type A = B` is a `type_alias`, not a `type_spec`.
+(type_declaration (type_alias name: (type_identifier) @symbol.name)) @symbol.type
+
+;; The method set of a named interface.
+(type_spec
+  type: (interface_type
+    (method_elem name: (field_identifier) @symbol.name) @symbol.method))
+
 (const_declaration (const_spec name: (identifier) @symbol.name)) @symbol.const
 
 (var_declaration (var_spec name: (identifier) @symbol.name)) @symbol.const

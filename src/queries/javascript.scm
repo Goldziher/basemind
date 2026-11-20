@@ -21,15 +21,91 @@
     name: (identifier) @symbol.name
     value: (function_expression))) @symbol.function
 
+;; `var` declarations: kind `variable`, promoted to `function` like a `const` when it holds a function.
+(variable_declaration
+  (variable_declarator name: (identifier) @symbol.name)) @symbol.variable
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @symbol.name
+    value: [(arrow_function) (function_expression)])) @symbol.function
+
+;; Class fields are `field`; one holding an arrow function or function expression (a React class
+;; component's `handleClick = () => …`) is promoted to `method`.
+(field_definition property: (property_identifier) @symbol.name) @symbol.field
+
+(field_definition
+  property: (property_identifier) @symbol.name
+  value: [(arrow_function) (function_expression)]) @symbol.method
+
+;; CommonJS exports. `exports.x = …` and `module.exports.x = …` define `x`; `module.exports = …`
+;; defines `module.exports`. Kind `const`, promoted to `function` when the value is a function.
+(expression_statement
+  (assignment_expression
+    left: (member_expression
+      object: (identifier) @_exports
+      property: (property_identifier) @symbol.name)
+    (#eq? @_exports "exports")) @symbol.const)
+
+(expression_statement
+  (assignment_expression
+    left: (member_expression
+      object: (identifier) @_exports
+      property: (property_identifier) @symbol.name)
+    right: [(arrow_function) (function_expression)]
+    (#eq? @_exports "exports")) @symbol.function)
+
+(expression_statement
+  (assignment_expression
+    left: (member_expression
+      object: (member_expression
+        object: (identifier) @_module
+        property: (property_identifier) @_exports)
+      property: (property_identifier) @symbol.name)
+    (#eq? @_module "module")
+    (#eq? @_exports "exports")) @symbol.const)
+
+(expression_statement
+  (assignment_expression
+    left: (member_expression
+      object: (member_expression
+        object: (identifier) @_module
+        property: (property_identifier) @_exports)
+      property: (property_identifier) @symbol.name)
+    right: [(arrow_function) (function_expression)]
+    (#eq? @_module "module")
+    (#eq? @_exports "exports")) @symbol.function)
+
+(expression_statement
+  (assignment_expression
+    left: (member_expression
+      object: (identifier) @_module
+      property: (property_identifier) @_exports) @symbol.name
+    (#eq? @_module "module")
+    (#eq? @_exports "exports")) @symbol.const)
+
+(expression_statement
+  (assignment_expression
+    left: (member_expression
+      object: (identifier) @_module
+      property: (property_identifier) @_exports) @symbol.name
+    right: [(arrow_function) (function_expression)]
+    (#eq? @_module "module")
+    (#eq? @_exports "exports")) @symbol.function)
+
 ;; section: implementations
 ;;
 ;; `class Foo extends Bar` — JavaScript only supports single inheritance via extends.
-;; No implements keyword in JS. One pattern captures the parent identifier.
+;; No implements keyword in JS. The parent is an identifier or a member expression
+;; (`React.Component`), named by its last segment.
 
 (class_declaration
   name: (identifier) @impl.implementor
   (class_heritage
-    (identifier) @impl.trait_name)) @impl.range
+    [
+      (identifier) @impl.trait_name
+      (member_expression property: (property_identifier) @impl.trait_name)
+    ])) @impl.range
 
 ;; section: imports
 
