@@ -926,6 +926,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `thread_archived_by_cap`, which says the cap archived it and to continue in a new thread by
   posting with `subject` and `to`. A thread archived by its creator, or by its last member leaving,
   is unchanged.
+- Python imports other than `from m import x` now reach the files they name (#307). `import a.b`
+  resolved nowhere and `import a.b.c` counted one external import per name; it is now one import of
+  `a/b/c.py` bound to `a`. Aliased imports (`import a.b as n`, `from m import x as y`) were dropped
+  and now bind the alias, so a `y()` call resolves into `m`, and a package `__init__.py` that
+  re-exports with `from .impl import helper as helper` forwards `helper`. A `from` import of a
+  submodule (`from . import views`) is an import of `views.py`. For Python this changes the
+  `code_refs` `importers` and `cycles` relations, `code impact`, `code cycles` and the unreachable
+  files of `code deadcode`. `RESOLVE_EPOCH` is 2: the next scan resolves every file again once.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

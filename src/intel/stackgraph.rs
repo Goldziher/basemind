@@ -426,35 +426,40 @@ fn extract_exports(lang: LangId, source: &[u8], root: tree_sitter::Node<'_>, out
 }
 
 /// Extract import local-name bindings with a cached per-language tree-sitter query.
+///
+/// Each match yields one [`ImportEdge`] from three captures: `@local` (required) is the identifier
+/// the import binds in this file, `@module` the module specifier, and `@imported` the name bound in
+/// that module. A match without `@imported` imports the module itself (Python `import a.b`), so its
+/// `imported` is `None`.
 fn extract_imports(lang: LangId, source: &[u8], root: tree_sitter::Node<'_>, out: &mut FileResolvedRefs) {
     use crate::intel::model::ImportEdge;
     use streaming_iterator::StreamingIterator;
 
     let Some(query) = import_query(lang) else { return };
-
-    let local_idx = query.capture_index_for_name("local");
+    let Some(local_idx) = query.capture_index_for_name("local") else {
+        return;
+    };
     let module_idx = query.capture_index_for_name("module");
-    let Some(local_idx) = local_idx else { return };
+    let imported_idx = query.capture_index_for_name("imported");
 
     let mut cursor = tree_sitter::QueryCursor::new();
     let mut matches = cursor.matches(&query, root, source);
     while let Some(m) = matches.next() {
-        let local_node = m.captures().iter().find(|c| c.index == local_idx).map(|c| c.node);
-        let Some(local_node) = local_node else { continue };
-        let local = match local_node.utf8_text(source) {
-            Ok(t) => t.to_string(),
-            Err(_) => continue,
+        let node_of = |idx: Option<u32>| {
+            idx.and_then(|idx| m.captures().iter().find(|c| c.index == idx))
+                .map(|c| c.node)
         };
-        let module_node = module_idx.and_then(|mi| m.captures().iter().find(|c| c.index == mi));
-        let specifier = module_node
-            .and_then(|c| c.node.utf8_text(source).ok())
-            .unwrap_or("")
-            .to_string();
-        let imported = module_node.map(|_| local.clone());
+        let text_of = |idx: Option<u32>| node_of(idx).and_then(|node| node.utf8_text(source).ok());
+        let Some(local_node) = node_of(Some(local_idx)) else {
+            continue;
+        };
+        let Ok(local) = local_node.utf8_text(source) else {
+            continue;
+        };
         out.imports.push(ImportEdge {
-            local,
-            specifier,
-            imported,
+            local: local.to_string(),
+            specifier: text_of(module_idx).unwrap_or("").to_string(),
+            imported: text_of(imported_idx).map(str::to_string),
             is_type: false,
             local_start: local_node.start_byte() as u32,
             module_only: false,
@@ -471,10 +476,13 @@ fn import_query(lang: LangId) -> Option<Arc<tree_sitter::Query>> {
 fn build_import_query(lang: LangId) -> Option<Arc<tree_sitter::Query>> {
     let src = match lang {
         "python" => {
-            "(import_from_statement module_name: (_) @module name: (dotted_name (identifier) @local))\n\
-             (import_statement name: (dotted_name (identifier) @local))"
+            "(import_from_statement module_name: (_) @module name: (dotted_name . (identifier) @local .) @imported)\n\
+             (import_from_statement module_name: (_) @module \
+                name: (aliased_import name: (dotted_name) @imported alias: (identifier) @local))\n\
+             (import_statement name: (dotted_name . (identifier) @local) @module)\n\
+             (import_statement name: (aliased_import name: (dotted_name) @module alias: (identifier) @local))"
         }
-        "java" => "(import_declaration (scoped_identifier name: (identifier) @local) @module)",
+        "java" => "(import_declaration (scoped_identifier name: (identifier) @local @imported) @module)",
         _ => return None,
     };
     let ts_language = crate::lang::language(lang).ok()?;
@@ -851,3 +859,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "code-intel-stack"))]
+#[path = "stackgraph_import_tests.rs"]
+mod import_tests;

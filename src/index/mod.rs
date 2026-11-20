@@ -107,8 +107,9 @@ const META_IMPORT_PROBE_VER: &[u8] = b"import_probe_ver";
 /// the file-edge row ([`keys::FILE_EDGES_START`]); revision 3 added JS/TS module-only imports to it;
 /// revision 4 added the Rust and Go rows; revision 5 replaced the edge's type-only flag with its
 /// [`keys::EdgeKinds`] (module-only imports and Rust `mod` declarations become visible) and placed
-/// Rust paths into workspace crates.
-const IMPORT_PROBE_VER: u8 = 5;
+/// Rust paths into workspace crates; revision 6 added Python dotted and aliased imports and `from`
+/// imports of a submodule.
+const IMPORT_PROBE_VER: u8 = 6;
 
 /// `meta` rows carrying the corpus-global BM25 stats — recomputed at the end of each scan by
 /// [`IndexDb::recompute_bm25_stats`] and read at query time. `N` = number of indexed code chunks;
