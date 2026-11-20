@@ -5,14 +5,14 @@ description: Complete catalog of basemind's MCP tools, one tool per job, with ar
 
 import { Aside, Badge } from '@astrojs/starlight/components';
 
-basemind exposes **one tool per job** over stdio MCP: fifteen tools for code, documents, git history,
-memory and the index. Each has its own exact schema; none takes a `mode` argument. Builds with the
+basemind exposes **one tool per job** over stdio MCP: the verb tools `VERB_TOOLS` (`src/mcp/types_tools.rs`)
+lists, for code, documents, git history, memory and the index. Each has its own exact schema; none takes a `mode` argument. Builds with the
 `comms` feature add three deferred coordination tools, `agent_post`, `agent_inbox` and `agent_threads`;
 they have no `mode` either.
 
 Every tool definition carries `_meta["anthropic/alwaysLoad"]: true`, so a host that defers MCP tools
 loads the schemas at session start: the tools are always loaded and are called directly, with no
-tool-search round trip. `tools/list` for the fifteen tools is about 20 KB (about 5k tokens), down
+tool-search round trip. `tools/list` for the verb tools is about 20 KB (about 5k tokens), down
 from about 25 KB (about 6.3k tokens) for the four domain tools they replace; a test holds it under
 20,000 bytes.
 
@@ -177,7 +177,7 @@ index_rescan  {"paths":["src/store.rs"]}
 
 ## `agent_post`, `agent_inbox`, `agent_threads` — multi-agent coordination
 
-A shared chat layer for agents on the same repo. Requires `--features comms`. Unlike the fifteen
+A shared chat layer for agents on the same repo. Requires `--features comms`. Unlike the verb
 tools above these are **deferred**: they carry no always-load marker, so a host finds them by tool
 search, and the session-start hook and the server instructions name them. Every tool takes an
 optional `as` (`[a-z0-9_-]{1,32}`), a sub-identity `<principal>.<name>`. A field that does not apply
