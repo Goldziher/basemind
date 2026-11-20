@@ -145,6 +145,12 @@ impl TermIndex {
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&RelPath, &FileTerms)> {
         self.files.iter()
     }
+
+    /// The pages and the entries of this index that it does not share with `base`.
+    #[cfg(test)]
+    pub(crate) fn unshared_with(&self, base: &Self) -> (usize, usize) {
+        self.files.unshared_with(&base.files)
+    }
 }
 
 #[cfg(test)]

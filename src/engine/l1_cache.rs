@@ -161,6 +161,12 @@ impl FileIndexView {
         }
     }
 
+    /// The pages and the entries of this view that it does not share with `base`.
+    #[cfg(test)]
+    pub(crate) fn unshared_with(&self, base: &Self) -> (usize, usize) {
+        self.files.unshared_with(&base.files)
+    }
+
     /// Derive the next view from this one for a scoped (watcher) rescan: drop `removed`, re-project
     /// `updated` from the reopened store, and share every other entry with this view.
     pub(crate) fn with_delta(&self, store: &crate::store::Store, updated: &[RelPath], removed: &[RelPath]) -> Self {
