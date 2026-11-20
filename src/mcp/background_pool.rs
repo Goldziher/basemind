@@ -8,9 +8,29 @@
 use std::sync::mpsc;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
-/// Threads for background builds: a read-stack build (one at a time, by its gate) and a term warm
-/// run side by side.
-const BACKGROUND_THREADS: usize = 2;
+/// Cores per read-stack build that may run at once.
+const CORES_PER_BUILD: usize = 4;
+
+/// Read-stack builds that may run at once, at most. Each holds an O(corpus) map while it runs, and
+/// the daemon keeps three read stacks warm, so a fourth build at once would build a stack the warm
+/// cap drops as soon as it lands.
+const MAX_BUILD_SLOTS: usize = 3;
+
+/// How many read-stack builds may run at once: one per [`CORES_PER_BUILD`] cores, at least one and
+/// at most [`MAX_BUILD_SLOTS`]. The daemon's read-stack build gate holds this many permits.
+pub(crate) fn build_slots() -> usize {
+    build_slots_for(std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get))
+}
+
+fn build_slots_for(cores: usize) -> usize {
+    (cores / CORES_PER_BUILD).clamp(1, MAX_BUILD_SLOTS)
+}
+
+/// Threads for background builds: one per build slot, and one more so a term warm runs while every
+/// build slot is taken.
+fn background_threads() -> usize {
+    build_slots() + 1
+}
 
 type Job = Box<dyn FnOnce() + Send>;
 
@@ -19,7 +39,7 @@ pub(crate) struct BackgroundPool {
     jobs: mpsc::Sender<Job>,
 }
 
-static BACKGROUND: LazyLock<BackgroundPool> = LazyLock::new(|| BackgroundPool::new(BACKGROUND_THREADS));
+static BACKGROUND: LazyLock<BackgroundPool> = LazyLock::new(|| BackgroundPool::new(background_threads()));
 
 /// The process's background pool.
 pub(crate) fn background() -> &'static BackgroundPool {
@@ -151,6 +171,58 @@ mod tests {
                 .is_some_and(|name| name.starts_with("basemind-background-"))),
             "{done:?}"
         );
+    }
+
+    #[test]
+    fn build_slots_grow_with_the_cores_within_their_bounds() {
+        assert_eq!(
+            [1, 2, 4, 7, 8, 12, 16, 64].map(build_slots_for),
+            [1, 1, 1, 1, 2, 3, 3, 3]
+        );
+    }
+
+    /// With a build in every build slot, a term warm still finds a thread.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_warm_runs_while_every_build_slot_is_taken() {
+        let pool = Arc::new(BackgroundPool::new(background_threads()));
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let running = Arc::new(AtomicUsize::new(0));
+        let builds: Vec<_> = (0..build_slots())
+            .map(|_| {
+                let (pool, release, running) = (Arc::clone(&pool), Arc::clone(&release), Arc::clone(&running));
+                tokio::spawn(async move {
+                    pool.run(move || {
+                        running.fetch_add(1, Ordering::SeqCst);
+                        let (open, opened) = &*release;
+                        let mut open = open.lock().expect("release");
+                        while !*open {
+                            open = opened.wait(open).expect("release");
+                        }
+                    })
+                    .await
+                })
+            })
+            .collect();
+        for _ in 0..1000 {
+            if running.load(Ordering::SeqCst) == build_slots() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            running.load(Ordering::SeqCst),
+            build_slots(),
+            "every build slot holds a build"
+        );
+
+        let warm = tokio::time::timeout(Duration::from_secs(30), pool.run(|| "warmed")).await;
+        assert_eq!(warm.expect("the warm waited behind the builds"), Some("warmed"));
+
+        *release.0.lock().expect("release") = true;
+        release.1.notify_all();
+        for build in builds {
+            assert_eq!(build.await.expect("join"), Some(()));
+        }
     }
 
     /// A job that panics answers `None`, and its thread runs the next job.

@@ -67,6 +67,9 @@ pub mod http_auth;
 pub mod http_frontend;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod protocol;
+/// The gate that bounds how many hosted read-stack builds run at once.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) mod read_stack_gate;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod relay;
 /// Dialing the daemon's relay endpoint.
