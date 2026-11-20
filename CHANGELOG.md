@@ -1248,6 +1248,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the index warms, builds, rescans, rebuilds after a partial scan or is empty, the answer carries the
   same `notice` object (`state`, `message`, `retry`). On `docs_search` it takes the place of the
   document store's own `notice` text, so an answer has one.
+- Closing stdin during the `basemind init` capability prompt (#328) accepts the default for that
+  capability and every later one. It advertised the capability being asked about and dropped the
+  rest.
 
 ## [0.33.0] - 2026-11-14
 

@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
 
+use super::init_capability_prompt::prompt_capabilities;
 use super::init_gitignore;
 use super::init_rules::{self, BlockSections, Capability};
 use super::init_settings;
@@ -470,31 +471,6 @@ fn parse_capabilities(slugs: &[String]) -> Result<Vec<Capability>> {
             })
         })
         .collect()
-}
-
-/// Interactive yes/no prompt per capability. Hand-rolled over stdin — no new crate dependency.
-/// A blank answer accepts the default (yes).
-fn prompt_capabilities() -> Result<Vec<Capability>> {
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    println!("Select basemind capabilities to advertise (Y/n, blank = yes):");
-    let mut selected = Vec::new();
-    for cap in Capability::ALL {
-        write!(stdout, "  {} [Y/n] ", cap.label()).context("write prompt")?;
-        stdout.flush().context("flush prompt")?;
-        let mut line = String::new();
-        let read = stdin.read_line(&mut line).context("read stdin")?;
-        // ~keep EOF mid-prompt: accept the default for this and every remaining capability.
-        let answer = line.trim().to_ascii_lowercase();
-        let yes = answer.is_empty() || answer == "y" || answer == "yes";
-        if yes {
-            selected.push(cap);
-        }
-        if read == 0 {
-            break;
-        }
-    }
-    Ok(selected)
 }
 
 /// Plan the `basemind.toml` write: scaffold when absent, keep when present.
