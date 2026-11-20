@@ -10,30 +10,31 @@ is cleaned up.
 
 0.34 bumps the release minor, replaces the MCP tools and the agent messaging protocol. In order:
 
-1. Update the plugin and the binary together, then restart every session. The marketplace plugins,
+1. Before anything else, check every boolean `BASEMIND_*` variable you set reads `1`, `true`,
+   `yes`, `on` or `0`, `false`, `no`, `off` ([Environment variables](manual/environment.md)). Any
+   other value now stops every command below with an error naming the variable
+   (`BASEMIND_ALLOW_EXTRA_ROOTS` and `BASEMIND_ALLOW_DEPENDENCY_ROOTS` read it as a path list
+   instead), and `false` now means false where it used to mean true (`BASEMIND_GRAMMAR_OFFLINE`,
+   `BASEMIND_GIT_DISCOVER_PARENTS`).
+2. Update the plugin and the binary together, then restart every session. The marketplace plugins,
    npm and pip run the binary their manifest pins. OpenCode's `basemind-opencode` package, Hermes and
    the status line run `basemind` from `PATH`, so update that binary too.
-2. Run `basemind comms stop`, so the 0.33 daemon is replaced (see "Upgrading to agent comms v2").
-3. Run `basemind scan`. The index is wiped and rebuilt at its first open, and the blob store moves to
+3. Run `basemind comms stop`, so the 0.33 daemon is replaced (see "Upgrading to agent comms v2").
+4. Run `basemind scan`. The index is wiped and rebuilt at its first open, and the blob store moves to
    `cache/blobs/v34/`, so every file is re-extracted and every document re-embedded once (see "What
    changes on upgrade").
-4. Re-run `basemind init` (or `/bm-init`) in each repository that has a basemind rules block. A block
+5. Re-run `basemind init` (or `/bm-init`) in each repository that has a basemind rules block. A block
    written by 0.33 or earlier routes agents to `code` mode `outline` and the other retired tools;
    init replaces the block in place with the verb-tool routing. Pass `--yes` when running it
    without a terminal, or it only prints what it would change.
-5. Replace `permissions.allow` entries in `.claude/settings.json` and `.claude/settings.local.json`
+6. Replace `permissions.allow` entries in `.claude/settings.json` and `.claude/settings.local.json`
    that name a retired tool (`mcp__plugin_basemind_basemind__code`, `__git`, `__memory`, `__admin`,
    `__graph`, `__web`, `__shell`, `__workspace`, `__agents`) or the `mcp__plugin_basemind_basemind__*`
    wildcard, which also approves the tools that write. `basemind init --settings-target local` (or
    `shared`) does this: it removes those entries and lists each read-only tool, under both the plugin
    prefix and `mcp__basemind__`. `memory_save`, `index_rescan` and the agent tools keep asking.
-6. Update scripts and prompts for the tool renames ("Tool mapping" below) and the `basemind agent`
+7. Update scripts and prompts for the tool renames ("Tool mapping" below) and the `basemind agent`
    CLI ("Upgrading to agent comms v2").
-7. Check every boolean `BASEMIND_*` variable you set reads `1`, `true`, `yes`, `on` or `0`, `false`,
-   `no`, `off` ([Environment variables](manual/environment.md)). Any other value now stops the
-   command with an error naming the variable (`BASEMIND_ALLOW_EXTRA_ROOTS` and
-   `BASEMIND_ALLOW_DEPENDENCY_ROOTS` read it as a path list instead), and `false` now means false
-   where it used to mean true (`BASEMIND_GRAMMAR_OFFLINE`, `BASEMIND_GIT_DISCOVER_PARENTS`).
 
 ## Upgrading to the verb tools (ADR-0018)
 
