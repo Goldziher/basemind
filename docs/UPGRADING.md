@@ -12,7 +12,10 @@ is cleaned up.
 
 1. Update the plugin and the binary together, then restart every session. The marketplace plugins,
    npm and pip run the binary their manifest pins. OpenCode's `basemind-opencode` package, Hermes and
-   the status line run `basemind` from `PATH`, so update that binary too.
+   the status line run `basemind` from `PATH`, so update that binary too. On a team, everyone who
+   shares a checked-in `basemind.toml` upgrades before anyone adds a key new in 0.34 (`[analysis]`
+   `entry_points`, `[documents.dependencies]`): 0.33 rejects unknown keys, so a file that uses one
+   stops loading for a teammate still on 0.33.
 2. Run `basemind comms stop`, so the 0.33 daemon is replaced (see "Upgrading to agent comms v2").
 3. Run `basemind scan`. The index is wiped and rebuilt at its first open, and the blob store moves to
    `cache/blobs/v34/`, so every file is re-extracted and every document re-embedded once (see "What
@@ -550,7 +553,7 @@ Also check scripts for these behaviour changes:
 | Release-minor schema bump (`0.28.x` to `0.29.x`) | `RELEASE_MINOR` mismatch: each view's `index.msgpack` and fjall index are reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
 | `grep_bloom` index keyspace (per-file trigram bloom for `code_grep`) | A new keyspace, so `INDEX_SCHEMA_VER` is not bumped. An index without it opens with an empty `grep_bloom` and greps correctly at once (every file is a candidate); the next scan builds the rows from the bytes it reads, and an unchanged file with no row is read once to backfill it | One read per unchanged file, once; about 12.8 % of the indexed code bytes on disk |
 | Blob store namespaced by blob schema: `cache/blobs/v<schema>/` instead of `cache/blobs/` | Nothing is moved. A file map records the layout it was written for (`blob_layout`); one from before the namespaces is discarded with its index at the first open, so the first scan re-extracts into the new namespace and embeds every document and code chunk again (the embeddings live in the blobs). The blob GC removes un-namespaced blob files and the namespaces of older schemas once a file is past the 6 hour grace period, and never touches, counts or evicts for the namespace of a newer schema, so two installed versions no longer overwrite each other's blobs. This ships with the 0.34 release-minor bump: an older basemind left installed finds its blobs gone and re-extracts on its next scan | Full re-extraction and re-embedding, once |
-| Memory vectors live in `cache/repos/<group>/memory.lance/<model>-<dim>-<hash>/`, beside `memory.fjall`, instead of the workspace's `lance/` | Not migrated. A `memory_search` by meaning embeds the notes that have no current vector row, from `memory.fjall`, up to 256 per call, and says so in `notice` until every note has one; the same happens for an embedding preset used for the first time and after a release-minor bump empties the table. The old `memory` table goes with the workspace's `lance/`, which the release-minor bump wipes at its first open. A store of a preset no longer used is not removed | One embedding per note, once per preset |
+| Memory vectors live in `cache/repos/<group>/memory.lance/<model>-<dim>-<hash>/`, beside `memory.fjall`, instead of the workspace's `lance/` | Not migrated. A `memory_search` by meaning embeds the notes that have no current vector row, from `memory.fjall`, up to 256 per call, and says so in `notice` until every note has one; the same happens for an embedding preset used for the first time and after a `VECTOR_STORE_VER` bump empties the table. `VECTOR_STORE_VER` is independent of the release minor ([ADR-0037](adr/0037-retrieval-store-amendments.md)): a minor that changes no table leaves the stores in place. The old `memory` table goes with the workspace's `lance/`, which 0.34 wipes at its first open only because 0.33 stamped its stores with the minor (33), older than the 0.34 `VECTOR_STORE_VER` (1001). A store of a preset no longer used is not removed | One embedding per note, once per preset |
 | `index.msgpack` fields `rebuild_pending` and `rebuild_pins`; `pending-vectors.msgpack` and `vector-store-id` beside it; `store-id` in the workspace's `lance/` | Additive: a file map written before them reads as owing no rebuild, and a view without the files as owing no vector rows. Vector rows that a development build of this release recorded as owed inside the file map are not carried over: the first scan after the upgrade embeds and writes every row again | none |
 | `memory.fjall` keyspace `store_meta` (the notes store's own version) | Written at the first open that holds the workspace lock, by a version that has it. Notes are never wiped. A store stamped by a newer basemind is refused for memory operations with "written by a newer basemind"; the code index of the workspace still opens | none |
 | `verify-blobs` marker in the workspace cache directory; `hosting/<pid>` under the data directory, holding the boot the daemon was started in and its process start | The marker is written when a scan of the workspace is found to have died without finishing, or when a process about to scan finds the `hosting/<pid>` of a daemon from an earlier boot of the machine (then for every workspace at once). A daemon that was killed while the machine stayed up leaves no request. The next scan of that workspace is a full one that decodes each combined and document blob instead of trusting it for existing, rewrites the vector rows from the blobs, then removes the marker | One blob read per file and one rewrite of the vector rows, for that one scan |
@@ -606,10 +609,24 @@ component the migration touches; the term index and name dictionaries are memory
 removed by `all`: the daemon holds it open. `cache clear` refuses while a writer holds the workspace
 lock (and `blobs` while the daemon runs), and everything except `git-cache` needs `--yes` off a terminal.
 
-Opening upgraded data with an older binary fails safe. The index extras are ignored, a binary on the same
-schema minor re-maps the files it still treats as code (and drops their document entries), and one on a
-different minor resets the view and re-extracts, as for any schema change. Going back and forth costs
-re-extraction, never correctness; the next sweep reclaims what is left.
+Opening upgraded data with an older binary fails safe. The index extras are ignored, and a binary on
+the same schema minor re-maps the files it still treats as code (and drops their document entries).
+
+A binary on an older minor never wipes data a newer one wrote. From 0.34 on, each store checks its
+schema on open and refuses a newer one instead of resetting it: the file map, the blobs and the
+group index ("index written by a newer basemind (schema N); this binary understands M — upgrade
+basemind"), the git history and the LanceDB stores ("… written by a newer basemind … upgrade
+basemind"). The memory notes are refused for memory operations the same way. So:
+
+- 0.34 to 0.33 resets and re-extracts: 0.33 predates the check and wipes a view on any schema
+  mismatch, as for any schema change.
+- A later minor back to 0.34 is refused until you upgrade again. To stay on the older binary, give it
+  a data directory of its own (`BASEMIND_DATA_HOME=<empty dir>`) and run `basemind scan`, which
+  builds every store from scratch there; notes saved in the original data directory are not visible
+  from it. `basemind cache clear --component views|lance` clears only the workspace's file maps and
+  vector stores, not the group index (`cache/groups/<group>/index.fjall`) or the git history.
+
+Going back and forth costs re-extraction, never correctness; the next sweep reclaims what is left.
 
 ## Per-version binaries
 
