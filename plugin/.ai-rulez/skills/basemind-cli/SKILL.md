@@ -204,7 +204,8 @@ the caller can fix is a tool result with `isError` whose text names the fix.
 
 - `basemind hook install` resolves the hooks dir through git (`core.hooksPath` and linked worktrees
   work), never overwrites a pre-commit hook it did not write unless `--force` (the old one is kept
-  as `pre-commit.bak`), and the installed hook fails open: it can never block a commit.
+  as `pre-commit.bak`, or `pre-commit.bak.1`, `.bak.2`, ... when earlier backups exist), and the
+  installed hook fails open: it can never block a commit.
 - Memory, `refs`/`callers`, the grep prefilter, `scan` and `rescan` are forwarded to a running daemon
   when there is one, so they work alongside a live server.
 - All paths are repository-relative with forward-slash separators.
