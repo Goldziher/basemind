@@ -279,7 +279,7 @@ impl Workspace {
         )?)
     }
 
-    /// Delete one note and, best effort, its vector row.
+    /// Delete one note and, best effort, its vector rows in every model's store.
     pub(crate) fn memory_delete_note(&self, params: MemoryDeleteParams) -> Result<MemoryDeleteResponse, EngineError> {
         let (vis_byte, owner) = self.memory_namespace(params.visibility);
         let deleted = {
@@ -287,7 +287,7 @@ impl Workspace {
             let idx = store.index_handle().ok_or_else(index_unavailable)?;
             ops::delete_core(&idx, &self.scope, vis_byte, owner, &params.key)?
         };
-        vectors::delete_vector_row(self, params.visibility, owner, &params.key);
+        vectors::purge_vector_rows(self, params.visibility, owner, &params.key);
         Ok(MemoryDeleteResponse { deleted })
     }
 }

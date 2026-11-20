@@ -306,6 +306,40 @@ pub(crate) fn delete_vector_row(ws: &Workspace, visibility: Visibility, owner: &
     }
 }
 
+/// Best-effort removal of a deleted note's rows from every model's store of the repo group, each
+/// table purged after ([`LanceStore::purge_memory`]): a store of a preset no longer configured
+/// still holds the rows embedded under it, and a delete only hides a row until the table's files
+/// are rewritten. A store that cannot be opened or purged is logged, never an error.
+pub(crate) fn purge_vector_rows(ws: &Workspace, visibility: Visibility, owner: &str, key: &str) {
+    let Ok(tables) = std::fs::read_dir(crate::store_layout::memory_vectors_dir(&ws.root)) else {
+        return;
+    };
+    let visibility = lance_visibility(visibility);
+    for table in tables.flatten() {
+        let dir = table.path();
+        if !table.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let lance = match ws.memory_lance.get().filter(|lance| lance.dir() == dir.as_path()) {
+            Some(lance) => Arc::clone(lance),
+            None => match LanceStore::open_recorded(&dir) {
+                Ok(Some(lance)) => Arc::new(lance),
+                Ok(None) => continue,
+                Err(error) => {
+                    tracing::warn!(%key, %error, store = %dir.display(), "a memory vector store was not opened to purge a note");
+                    continue;
+                }
+            },
+        };
+        let purged = on_store(&lance, "purge_memory", |lance| {
+            lance.purge_memory(&ws.scope, visibility, owner, key)
+        });
+        if let Err(error) = purged {
+            tracing::warn!(%key, %error, store = %dir.display(), "the note's vector rows were not purged");
+        }
+    }
+}
+
 /// The notes to embed, given the rows the table holds: those with no row, a row embedded from an
 /// earlier write, or more than one row. A note with no text cannot be embedded and is never behind.
 pub(crate) fn notes_behind(notes: Vec<WireMemoryEntry>, rows: &MemoryStamps) -> Vec<WireMemoryEntry> {

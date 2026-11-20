@@ -224,14 +224,35 @@ impl LanceStore {
 
 async fn optimize_table(table: &Table, compact: bool, retention: Duration) -> Result<()> {
     if compact {
-        table
-            .optimize(OptimizeAction::Compact {
-                options: CompactionOptions::default(),
-                remap_options: None,
-            })
-            .await
-            .context("compact")?;
+        compact_table(table, CompactionOptions::default()).await?;
     }
+    prune_table(table, retention).await
+}
+
+/// Remove the rows a delete only marked: rewrite every fragment that holds one, however few, then
+/// drop every version but the latest, so no data file of the table holds them any longer. A
+/// reader in another process pinned on an older version fails that read.
+pub(super) async fn purge_table(table: &Table) -> Result<()> {
+    let every_deletion = CompactionOptions {
+        materialize_deletions_threshold: 0.0,
+        ..CompactionOptions::default()
+    };
+    compact_table(table, every_deletion).await?;
+    prune_table(table, Duration::ZERO).await
+}
+
+async fn compact_table(table: &Table, options: CompactionOptions) -> Result<()> {
+    table
+        .optimize(OptimizeAction::Compact {
+            options,
+            remap_options: None,
+        })
+        .await
+        .context("compact")?;
+    Ok(())
+}
+
+async fn prune_table(table: &Table, retention: Duration) -> Result<()> {
     let older_than = ChronoDuration::try_seconds(i64::try_from(retention.as_secs()).unwrap_or(i64::MAX))
         .unwrap_or_else(ChronoDuration::zero);
     table

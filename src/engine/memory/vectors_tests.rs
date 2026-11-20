@@ -550,6 +550,54 @@ fn a_delete_does_not_create_a_store() {
     assert!(!memory_lance_dir(root.path(), "fake", DIM).exists());
 }
 
+/// A note saved under one preset, then again under another, has a row in both stores. The delete
+/// removes it from both, and leaves neither a marked row nor an earlier version that still holds it.
+#[test]
+fn a_delete_purges_the_note_from_every_models_store() {
+    let root = tempfile::tempdir().unwrap();
+    let first = server(root.path(), "model-a");
+    put(&first, "doomed", "a note", true);
+    put(&first, "kept", "another note", true);
+    drop(first);
+    let second = server(root.path(), "model-b");
+    put(&second, "doomed", "a note", true);
+    put(&second, "kept", "another note", true);
+
+    let params = MemoryDeleteParams {
+        key: "doomed".into(),
+        visibility: Visibility::Group,
+    };
+    assert!(second.memory_delete_note(params).unwrap().deleted);
+    assert_eq!(hit_keys(&search_json(&second, "a note", 10)), ["kept"]);
+    drop(second);
+
+    let scope = format!("path:{}", root.path().display());
+    for model in ["model-a", "model-b"] {
+        let dir = memory_lance_dir(root.path(), model, DIM);
+        let scope = scope.clone();
+        let (keys, marked, versions) = off(move || {
+            let store = LanceStore::open(&dir, DIM, model).unwrap();
+            let keys: Vec<String> = store
+                .memory_stamps(&scope, "group", "")
+                .unwrap()
+                .stamps
+                .keys()
+                .cloned()
+                .collect();
+            let versions = store.version_counts().unwrap();
+            (keys, store.memory_rows_marked_deleted().unwrap(), versions)
+        });
+        assert_eq!(keys, ["kept"], "{model}");
+        assert_eq!(marked, Some(0), "{model}");
+        let memory_versions: Vec<usize> = versions
+            .into_iter()
+            .filter(|(table, _)| table == "memory")
+            .map(|(_, count)| count)
+            .collect();
+        assert_eq!(memory_versions, [1], "{model}");
+    }
+}
+
 fn put_params(key: &str, value: &str, embed: bool) -> crate::engine::types::memory::MemoryPutParams {
     crate::engine::types::memory::MemoryPutParams {
         key: key.into(),
