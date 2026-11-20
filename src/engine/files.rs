@@ -203,10 +203,15 @@ fn not_indexed_because(root: &std::path::Path, tool: &str, path: &RelPath, facts
         format!("`{tool}`: {EMPTY_INDEX_FIX}")
     } else if on_disk.is_err() {
         return outside_repository(tool, path);
-    } else if facts.is_document {
+    } else if facts.is_document && is_text_document(path) {
         format!(
             "`{tool}`: `{path}` is a document, not code, so it has no outline or symbols. Find exact text in \
              it with `code_grep`, search it by meaning with `docs_search`, or read a line span with `code_read`."
+        )
+    } else if facts.is_document {
+        format!(
+            "`{tool}`: `{path}` is a document, not code, so it has no outline or symbols. Search it by meaning \
+             with `docs_search`."
         )
     } else if facts.blob_lost {
         format!(
@@ -222,6 +227,11 @@ fn not_indexed_because(root: &std::path::Path, tool: &str, path: &RelPath, facts
         format!("`{tool}`: no file `{path}` in this repository. Locate it with `find_files {{\"query\":\"…\"}}`.")
     };
     EngineError::invalid_argument(message)
+}
+
+fn is_text_document(path: &RelPath) -> bool {
+    path.as_str()
+        .is_some_and(|path| crate::engine::grep_text::text_document_language(std::path::Path::new(path)).is_some())
 }
 
 /// What to do about an index with no files in it.
@@ -258,6 +268,26 @@ mod tests {
              text in it with `code_grep`, search it by meaning with `docs_search`, or read a line span with \
              `code_read`."
         );
+    }
+
+    /// `code_grep` does not search PDFs or Office files, so their guidance names `docs_search` alone.
+    #[test]
+    fn a_binary_document_is_sent_to_docs_search_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for path in ["docs/report.pdf", "docs/plan.docx", "docs/budget.xlsx"] {
+            let facts = IndexFacts {
+                is_document: true,
+                ..IndexFacts::default()
+            };
+            let error = not_indexed_because(dir.path(), "code_outline", &RelPath::from(path), facts);
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "`code_outline`: `{path}` is a document, not code, so it has no outline or symbols. Search it \
+                     by meaning with `docs_search`."
+                )
+            );
+        }
     }
 
     #[cfg(unix)]
