@@ -624,7 +624,7 @@
   {
     "name": "memory_save",
     "title": "Save a note",
-    "description": "Use to remember a decision, convention or finding for later sessions and other agents working in this repository. Saving an existing `key` replaces it. Example: {\"key\":\"decision/auth-tokens\",\"value\":\"Tokens rotate every 24h.\",\"tags\":[\"auth\"]}",
+    "description": "Use to remember a decision, convention or finding for later sessions and other agents working in this repository. Saving an existing `key` replaces it. Notes are plain text on local disk: never save secrets. Example: {\"key\":\"decision/auth-tokens\",\"value\":\"Tokens rotate every 24h.\",\"tags\":[\"auth\"]}",
     "inputSchema": {
       "properties": {
         "key": {
@@ -671,7 +671,7 @@
   {
     "name": "memory_search",
     "title": "Recall notes",
-    "description": "Use to recall what was saved with `memory_save`: `query` searches notes by meaning, `key` reads one, `prefix` lists by key prefix, and no arguments lists everything. Lists show 200 characters of a value; `key` reads it whole. Example: {\"query\":\"token rotation\"}",
+    "description": "Use to recall what was saved with `memory_save`: `query` searches notes by meaning (by words when no model loads), `key` reads one, `prefix` lists by key prefix, and no arguments lists everything. Lists show 200 characters of a value; `key` reads it whole. Example: {\"query\":\"token rotation\"}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
