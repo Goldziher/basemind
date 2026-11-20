@@ -31,6 +31,27 @@ resolver placed an edge).
 - After a scan the git-history index is built or updated; `--no-git-history` skips it and
   `--rebuild-git-history` rebuilds it after a history rewrite.
 
+## Large repositories: the inotify watch limit
+
+On Linux the daemon watches each directory of each workspace with its own inotify watch, and the
+kernel caps one user's watches across every process with `fs.inotify.max_user_watches`. Many
+worktrees of a large repository can exhaust it: 20 worktrees of 20,000 directories each need about
+400,000 watches. A directory the kernel refuses a watch is not watched, so its edits are not
+indexed until a rescan.
+
+`index_status` reports the watches the daemon holds under `watches.held`, and once the limit is hit
+`watches.unwatched` (directories without a watch), `watches.limit` (the current value) and a
+`watches.note`; the daemon log carries the same warning. Raise the limit and make it permanent:
+
+```sh
+sudo sysctl -w fs.inotify.max_user_watches=1048576
+echo 'fs.inotify.max_user_watches=1048576' | sudo tee /etc/sysctl.d/90-basemind.conf
+```
+
+Then run `basemind comms stop` so the next call starts a daemon that watches every directory. Each
+watch costs the kernel about 1 KiB, so a million watches is about 1 GiB at most. macOS and Windows
+watch a tree with one recursive watch and have no such limit; `watches` is absent there.
+
 ## Notices
 
 An answer given before the index is ready carries a `notice` instead of, or beside, its result:
