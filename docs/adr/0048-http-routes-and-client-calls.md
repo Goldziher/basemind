@@ -1,6 +1,6 @@
 ---
-status: proposed
-date: 2026-11-18
+status: accepted
+date: 2026-11-20
 ---
 
 # ADR-0048: HTTP routes as symbols, client calls as call rows, linked by path
