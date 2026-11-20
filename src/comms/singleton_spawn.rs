@@ -99,12 +99,12 @@ const INHERITED_IDENTITY_VARS: [&str; 5] = [
 /// with.
 const INHERITED_CWD_VARS: [&str; 2] = ["PWD", "OLDPWD"];
 
-/// Grants that widen what the daemon does for every session on the machine: admit any root, extra
-/// roots or dependency roots, follow symlinks, index credential files, open the HTTP transport and
-/// where it binds. A
-/// daemon serves every session of the generation, so one that inherited them from whichever shell
-/// happened to start it applied that shell's grants to all of them. They reach the daemon only from
-/// an operator's explicit start (`comms start`, or `daemon ensure` with the HTTP grant set).
+/// Grants that widen what the daemon does for every session on the machine: admit any root or extra
+/// roots, read dependency package roots outside the repository, follow symlinks, index credential
+/// files, open the HTTP transport and where it binds. A daemon serves every session of the
+/// generation, so one that inherited them from whichever shell happened to start it applied that
+/// shell's grants to all of them. They reach the daemon only from an operator's explicit start
+/// (`comms start`, or `daemon ensure` with the HTTP grant set).
 const INHERITED_GRANT_VARS: [&str; 7] = [
     crate::config::root_guard::ALLOW_ANY_ROOT_ENV,
     crate::scanner_candidates::ALLOW_EXTRA_ROOTS_ENV,
@@ -508,7 +508,8 @@ mod tests {
     }
 
     /// One shell with `BASEMIND_ALLOW_ANY_ROOT=1` or `BASEMIND_ALLOW_HTTP=1` that happened to start
-    /// the daemon lifted the root guard, or opened TCP, for every session on the machine.
+    /// the daemon lifted the root guard, or opened TCP, for every session on the machine. The list is
+    /// exact: a grant left out of it still reaches every session.
     #[test]
     fn an_implicit_spawn_withholds_the_grants_and_an_explicit_one_passes_them() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -521,15 +522,25 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let implicit = removed(Grants::Withheld);
-        for key in [
-            "BASEMIND_ALLOW_ANY_ROOT",
-            "BASEMIND_ALLOW_HTTP",
-            "BASEMIND_ALLOW_EXTRA_ROOTS",
-            "BASEMIND_ALLOW_DEPENDENCY_ROOTS",
-        ] {
-            assert!(implicit.iter().any(|removed| removed == key), "{key}: {implicit:?}");
-        }
         let explicit = removed(Grants::Passed);
+        let mut withheld: Vec<&str> = implicit
+            .iter()
+            .filter(|key| !explicit.contains(*key))
+            .map(String::as_str)
+            .collect();
+        withheld.sort_unstable();
+        assert_eq!(
+            withheld,
+            [
+                "BASEMIND_ALLOW_ANY_ROOT",
+                "BASEMIND_ALLOW_DEPENDENCY_ROOTS",
+                "BASEMIND_ALLOW_EXTRA_ROOTS",
+                "BASEMIND_ALLOW_FOLLOW_SYMLINKS",
+                "BASEMIND_ALLOW_HTTP",
+                "BASEMIND_ALLOW_REPO_CREDENTIALS",
+                "BASEMIND_HTTP_ADDR",
+            ]
+        );
         assert!(
             INHERITED_GRANT_VARS
                 .iter()
