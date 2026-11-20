@@ -643,7 +643,7 @@
           }
         },
         "visibility": {
-          "description": "`group` (default, shared across agents) or `individual` (the caller's own).",
+          "description": "`group` (default, cross-agent) or `individual` (the workspace owner's).",
           "type": "string",
           "enum": [
             "group",
@@ -693,7 +693,7 @@
           "type": "string"
         },
         "visibility": {
-          "description": "`group` (default, shared across agents) or `individual` (the caller's own).",
+          "description": "`group` (default, cross-agent) or `individual` (the workspace owner's).",
           "type": "string",
           "enum": [
             "group",
