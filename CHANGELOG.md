@@ -841,8 +841,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endings converted per `core.autocrlf`, `core.eol` and `.gitattributes`, `ident` collapsed, and
   clean filters such as Git LFS run. An unchanged file in a CRLF checkout showed every line as
   changed, and an LFS file diffed its pointer against the payload. A filter that fails is an error
-  naming the file instead of a whole-file hunk. A `changed` scope against a revision compares a
-  restored file the same way.
+  naming the file instead of a whole-file hunk. A structural `git_diff` takes the working tree's
+  symbols from that form too, so a clean-filtered file no longer lists the payload's symbols as
+  added and the pointer's as removed. A `changed` scope against a revision compares a restored file
+  the same way; one whose filter fails stays in the scope and is logged as a warning.
 - Unshallowing or deepening a clone changes the next `git_blame`, `git_log` and `git hotspots` answer
   without a cache clear (#298). Answers computed while the clone was shallow (a blame cut at the
   graft, a walk that ends at the boundary) were cached by commit sha and outlived `git fetch

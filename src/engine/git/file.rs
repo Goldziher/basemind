@@ -185,7 +185,7 @@ pub(super) fn run_diff_outline(ws: &Workspace, params: DiffOutlineParams) -> Res
         .map_err(|e| EngineError::invalid_argument(format!("resolve_rev({rev_spec}): {e}")))?;
 
     let here = match detect_lang(ws, &params.path) {
-        Some(lang) => working_tree_outline(ws, "git_diff", &params.path, lang)?.map(|(l1, _)| {
+        Some(lang) => git_form_outline(ws, repo, &params.path, lang)?.map(|l1| {
             l1.symbols
                 .iter()
                 .map(|s| (s.name.clone(), kind_to_str(s.kind)))
@@ -272,6 +272,34 @@ pub(super) fn run_diff_outline(ws: &Workspace, params: DiffOutlineParams) -> Res
         common,
         note,
     })
+}
+
+/// The working-tree outline of `path` taken from the form git stores for it, so a structural diff
+/// against a revision compares like with like, as `git diff` does: line endings converted, clean
+/// filters such as Git LFS run. A path outside the repository has no git form and keeps its bytes.
+fn git_form_outline(
+    ws: &Workspace,
+    repo: &crate::git::Repo,
+    path: &crate::path::RelPath,
+    lang: crate::lang::LangId,
+) -> Result<Option<std::sync::Arc<crate::extract::FileMapL1>>, EngineError> {
+    let Some((l1, source)) = working_tree_outline(ws, "git_diff", path, lang)? else {
+        return Ok(None);
+    };
+    if path.is_external() {
+        return Ok(Some(l1));
+    }
+    let converted = repo
+        .to_git_form(path.as_ref(), &source)
+        .map_err(|e| EngineError::internal(format!("`git_diff`: {e}")))?;
+    if converted == *source {
+        return Ok(Some(l1));
+    }
+    let oid = gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, &converted)
+        .map_err(|e| EngineError::internal(format!("`git_diff`: hash `{path}`: {e}")))?;
+    let entry = outline_entry_for_blob(&ws.outline_cache, oid, lang, converted)
+        .ok_or_else(|| EngineError::internal(format!("`git_diff`: could not parse `{path}` in its git form")))?;
+    Ok(Some(std::sync::Arc::clone(&entry.map)))
 }
 
 /// The `blame` operation: per-line blame at `rev`, optionally clamped to a 1-based inclusive

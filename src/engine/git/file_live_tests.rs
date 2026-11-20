@@ -43,12 +43,24 @@ fn git_at(root: &Path, args: &[&str], seconds: u64) {
 /// A repository whose first commit holds `src/steady.rs`, and a workspace over it that has
 /// scanned nothing: the store has no entry for the file, as between a commit and its rescan.
 fn unscanned(root: &Path, cache: &Path) -> Workspace {
+    committed(root, cache, &[], &[("src/steady.rs", STEADY_RS)])
+}
+
+/// A repository with `config` set in its own config and a first commit holding `files`, and a
+/// workspace over it that has scanned nothing.
+fn committed(root: &Path, cache: &Path, config: &[(&str, &str)], files: &[(&str, &str)]) -> Workspace {
     crate::store::init_isolated_cache();
     let _ = crate::lang::ensure_grammars().expect("grammar bootstrap");
     git(root, &["init", "-q"]);
     git(root, &["config", "commit.gpgsign", "false"]);
-    std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("src/steady.rs"), STEADY_RS).unwrap();
+    for &(key, value) in config {
+        git(root, &["config", key, value]);
+    }
+    for &(name, content) in files {
+        let file = root.join(name);
+        std::fs::create_dir_all(file.parent().expect("parent")).unwrap();
+        std::fs::write(file, content).unwrap();
+    }
     git(root, &["add", "-A"]);
     git(root, &["commit", "-qm", "init"]);
     workspace_over(root, cache)
@@ -185,6 +197,63 @@ fn a_structural_diff_compares_the_file_as_it_is_now() {
     assert!(structural.removed.is_empty());
     assert_eq!(structural.common, 2);
     assert_eq!(structural.note, None);
+}
+
+/// The structural diff of `src/steady.rs` against HEAD as its added and removed names, its
+/// common count and its note.
+fn structural_against_head(ws: &Workspace) -> (Vec<String>, Vec<String>, usize, Option<String>) {
+    let diff = run_diff_outline(
+        ws,
+        DiffOutlineParams {
+            path: RelPath::from("src/steady.rs"),
+            rev: None,
+        },
+    )
+    .expect("diff outline");
+    let names =
+        |symbols: Vec<DiffSymbolView>| -> Vec<String> { symbols.into_iter().map(|symbol| symbol.name).collect() };
+    (names(diff.added), names(diff.removed), diff.common, diff.note)
+}
+
+#[test]
+fn a_structural_diff_of_a_crlf_checkout_under_text_auto_is_unchanged() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let root = repo_dir.path();
+    let ws = committed(
+        root,
+        cache_dir.path(),
+        &[],
+        &[(".gitattributes", "* text=auto\n"), ("src/steady.rs", STEADY_RS)],
+    );
+    std::fs::write(root.join("src/steady.rs"), STEADY_RS.replace('\n', "\r\n")).unwrap();
+
+    assert_eq!(structural_against_head(&ws), (Vec::new(), Vec::new(), 2, None));
+}
+
+/// The fake driver stands in for Git LFS: git stores `pointer` where the working tree holds
+/// `payload`, so the working tree's names differ from the blob's until it is in its git form.
+#[test]
+fn a_structural_diff_of_a_clean_filtered_file_compares_its_git_form() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let root = repo_dir.path();
+    let ws = committed(
+        root,
+        cache_dir.path(),
+        &[("filter.fake.clean", "sed s/payload/pointer/")],
+        &[
+            (".gitattributes", "*.rs filter=fake\n"),
+            ("src/steady.rs", "pub fn payload() {}\n"),
+        ],
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/steady.rs")).unwrap(),
+        "pub fn payload() {}\n",
+        "the working tree keeps the unfiltered text"
+    );
+
+    assert_eq!(structural_against_head(&ws), (Vec::new(), Vec::new(), 1, None));
 }
 
 #[test]
