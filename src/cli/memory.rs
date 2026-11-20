@@ -1,14 +1,15 @@
 //! `basemind memory` — the CLI half of `memory_save` and `memory_search`.
 //!
 //! `put` runs the body of `memory_save` and `search` / `get` / `list` the body of `memory_search`,
-//! which is what `tests/cli_parity/` asserts. `delete` has no MCP tool. The hidden `documents` is
-//! `basemind docs search` ([`super::docs`]) under its earlier name.
+//! which is what `tests/cli_parity/` asserts. `delete` and `clear` have no MCP tool. The hidden
+//! `documents` is `basemind docs search` ([`super::docs`]) under its earlier name.
 //!
 //! The tools are registered in every build and gate in the body, so these handlers always compile
 //! and a command whose feature is missing surfaces the tool's own "rebuild with --features …"
 //! error.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
+use std::path::Path;
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -76,6 +77,13 @@ pub enum MemoryCmd {
         #[arg(long)]
         individual: bool,
     },
+    /// Remove every memory note of this repository, of every tier and agent, and their vectors (CLI
+    /// only). Asks for confirmation on a terminal and requires `--yes` otherwise.
+    Clear {
+        /// Skip the confirmation prompt (required when stdin is not a terminal).
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
     /// `basemind docs search`, under the name it had before `docs` existed.
     #[command(hide = true)]
     Documents(super::docs::DocsSearchArgs),
@@ -92,6 +100,14 @@ fn recall(individual: bool) -> MemorySearchToolParams {
         limit: None,
         cursor: None,
     }
+}
+
+/// What `basemind memory clear` asks to confirm for the repository at `root`.
+fn clear_prompt(root: &Path) -> String {
+    format!(
+        "remove every memory note of this repository, of every tier and agent, and their vectors ({})",
+        crate::store_layout::repo_group_dir(root).display()
+    )
 }
 
 /// Dispatch a `memory` subcommand through the in-process server.
@@ -177,6 +193,19 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
                 "memory_delete",
                 tools
                     .call("memory_delete", p, async |s, p| s.memory_delete_call(p).await)
+                    .await,
+            )
+        }
+        MemoryCmd::Clear { yes } => {
+            if !yes {
+                super::admin::confirm(&clear_prompt(tools.root()), std::io::stdin().is_terminal())?;
+            }
+            (
+                "memory_clear",
+                tools
+                    .call("memory_clear", MemoryClearParams {}, async |s, p| {
+                        s.memory_clear_call(p).await
+                    })
                     .await,
             )
         }

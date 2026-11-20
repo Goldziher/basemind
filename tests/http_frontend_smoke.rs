@@ -269,6 +269,7 @@ async fn streamable_http_serves_initialize_and_tools_list() {
     // --- nor the lead tools, which only `serve --lead` answers, on its own stdio (ADR-0040) ---
     for (id, name) in [
         "memory_delete",
+        "memory_clear",
         "git_churn",
         "git_by_path",
         "code_chunk",

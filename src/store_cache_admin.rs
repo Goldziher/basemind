@@ -128,6 +128,11 @@ pub struct CacheStats {
     /// Recursive byte size of the memory notes' vector stores (`memory.lance/` in the repo group
     /// directory, every embedding model). `0` when the workspace has no marker naming its root.
     pub memory_vectors_bytes: u64,
+    /// The repository group directory holding this repository's memory: the notes
+    /// (`memory.fjall/`) and their vector stores (`memory.lance/`). `basemind memory clear` empties
+    /// both. Absent when the workspace has no marker naming its root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_dir: Option<PathBuf>,
     /// Recursive byte size of the **on-disk** git cache (`git-cache/`). The git cache is a
     /// two-layer cache (RAM LRU + optional disk); this counts only the disk layer. A `0`
     /// therefore means nothing has been *persisted* — either no disk-backed git tool has run
@@ -385,8 +390,10 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
 
     let blobs_bytes = dir_size(&blobs.root)?;
     let blobs_current_bytes = dir_size(blobs_dir)?;
-    let memory_vectors_bytes = match crate::store::read_workspace_marker(basemind_dir) {
-        Some(marker) => dir_size(&crate::store_layout::memory_vectors_dir(&marker.root))?,
+    let memory_dir = crate::store::read_workspace_marker(basemind_dir)
+        .map(|marker| crate::store_layout::repo_group_dir(&marker.root));
+    let memory_vectors_bytes = match &memory_dir {
+        Some(dir) => dir_size(&dir.join(crate::store_layout::MEMORY_VECTORS_DIR))?,
         None => 0,
     };
     let views_bytes = dir_size(&basemind_dir.join(VIEWS_DIR))?;
@@ -430,6 +437,7 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
         group_index_bytes,
         lance_bytes,
         memory_vectors_bytes,
+        memory_dir,
         git_cache_bytes,
         telemetry_bytes,
         git_history_bytes,

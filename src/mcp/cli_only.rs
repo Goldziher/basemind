@@ -12,12 +12,12 @@ use crate::engine::types::deadcode::DeadcodeParams;
 use crate::engine::types::explain::ExplainParams;
 use crate::engine::types::git::{FindCommitsByPathParams, HotFilesParams, HotspotsParams};
 use crate::engine::types::graph::{CyclesParams, ImpactParams};
-use crate::engine::types::memory::MemoryDeleteParams;
+use crate::engine::types::memory::{MemoryClearParams, MemoryDeleteParams};
 use crate::engine::types::migration::MigrationCheckParams;
 use crate::engine::types::overview::OverviewParams;
 use crate::engine::types::search::GetChunkParams;
 
-/// The CLI-only commands (`git churn`, `git by-path`, `code chunk`, `memory delete`, and the
+/// The CLI-only commands (`git churn`, `git by-path`, `code chunk`, `memory delete|clear`, and the
 /// analyses of ADR-0047 such as `code impact`, `code cycles`, `code explain` and `overview`), which ADR-0018 keeps
 /// off the agent surface. A CLI session ([`BasemindServer::for_cli`]) answers them by name,
 /// off `tools/list`; any other session answers them as unknown tools.
@@ -26,6 +26,7 @@ pub(super) const CLI_ONLY: &[&str] = &[
     "git_by_path",
     "code_chunk",
     "memory_delete",
+    "memory_clear",
     "code_impact",
     "code_cycles",
     "overview",
@@ -65,6 +66,10 @@ impl BasemindServer {
             },
             "memory_delete" => match params::<MemoryDeleteParams>(name, arguments) {
                 Ok(p) => self.memory_delete_call(p).await,
+                Err(error) => Err(error),
+            },
+            "memory_clear" => match params::<MemoryClearParams>(name, arguments) {
+                Ok(p) => self.memory_clear_call(p).await,
                 Err(error) => Err(error),
             },
             "code_impact" => match params::<ImpactParams>(name, arguments) {

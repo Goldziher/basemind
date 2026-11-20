@@ -213,6 +213,10 @@ pub fn table() -> Vec<Row> {
             "memory delete",
             "deleting shared memory is kept off the agent surface (ADR-0018)",
         ),
+        cli_only(
+            "memory clear",
+            "removing every note of a repository is kept off the agent surface (ADR-0018)",
+        ),
         // ---- git ----
         tool("git_log", "git log"),
         tool("git_blame", "git blame"),

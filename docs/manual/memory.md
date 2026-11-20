@@ -10,12 +10,18 @@ agent working in the same repository should know. Notes are keyed, tagged and se
 | Read one note | `memory_search {"key":"decision/auth-tokens"}` | `basemind memory get decision/auth-tokens` |
 | List by key prefix | `memory_search {"prefix":"decision/"}` | `basemind memory list --prefix decision/` |
 | Delete a note | none | `basemind memory delete decision/auth-tokens` |
+| Remove every note of the repository | none | `basemind memory clear --yes` |
+| Find where the notes are kept | none | `basemind cache stats` |
 
 ## Contracts
 
 - `memory_save` with an existing `key` replaces the note.
-- Notes are plain text on local disk, in the basemind cache. Never save a secret, a token or a
-  credential in one.
+- Notes are plain text on local disk, in the repository group directory `basemind cache stats`
+  names. Never save a secret, a token or a credential in one.
+- `basemind memory clear` removes every note of the repository, of every tier and agent, and
+  empties and purges the vector store of every embedding model. It asks for confirmation on a
+  terminal and refuses without `--yes` anywhere else. With the daemon running it runs in the daemon;
+  while another basemind process holds the workspace's index and no daemon runs, it is refused.
 - `basemind memory delete` removes the note and its vector rows from the store of every embedding
   model the repository has used, and purges those stores, so no earlier version of them still holds
   the note.

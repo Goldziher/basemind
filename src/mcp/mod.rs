@@ -180,7 +180,7 @@ pub mod params {
         DocsSearchParams, FindFilesToolParams, GitBlameParams, GitDiffParams, GitLogParams, IndexRescanParams,
         IndexStatusParams, MemorySaveParams, MemorySearchToolParams, RETIRED_TOOLS, VERB_TOOLS,
     };
-    pub use crate::engine::types::memory::{MemoryDeleteParams, Visibility};
+    pub use crate::engine::types::memory::{MemoryClearParams, MemoryDeleteParams, Visibility};
     pub use crate::engine::types::search::GetChunkParams;
 }
 

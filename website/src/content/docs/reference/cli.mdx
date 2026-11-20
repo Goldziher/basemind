@@ -8,8 +8,8 @@ import { Aside } from '@astrojs/starlight/components';
 Every MCP tool has a CLI command that builds the same arguments and prints the same answer;
 `tests/cli_parity/` enforces it. The CLI also keeps shorthands (`code callers`, `git recent`, ...) and
 administrative commands with no MCP tool (`git churn`, `git by-path`, `code chunk`, `memory delete`,
-`cache`, `admin telemetry`), each declared CLI-only. Add `--json` to any tool subcommand to print the
-tool's JSON.
+`memory clear`, `cache`, `admin telemetry`), each declared CLI-only. Add `--json` to any tool
+subcommand to print the tool's JSON.
 
 | MCP tool | CLI command |
 |---|---|
@@ -130,6 +130,7 @@ basemind memory search <query> [--limit --individual] [--tag <t>]...
 basemind memory get <key> [--individual]
 basemind memory list [--prefix --limit --individual --cursor] [--tag <t>]...
 basemind memory delete <key> [--individual]
+basemind memory clear [--yes]
 basemind memory documents <query> [--mime-type --keywords --entity --format --path --limit --cursor --max-tokens]
 ```
 
@@ -140,6 +141,7 @@ basemind memory documents <query> [--mime-type --keywords --entity --format --pa
 | `get <key> [--individual]` | Read one note by key. |
 | `list [--prefix --tag --limit --individual]` | List notes, optionally by key prefix or tags (any of them). |
 | `delete <key> [--individual]` | Remove a note by key. CLI only. |
+| `clear [--yes]` | Remove every note of this repository and their vectors. Needs `--yes` off a terminal. CLI only. |
 | `documents <query> [--mime-type --keywords --entity --format --path]` | Semantic search over indexed documents (`docs_search`) instead of opening them. |
 
 ## `admin` — administration

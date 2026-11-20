@@ -309,12 +309,29 @@ pub(crate) fn delete_vector_row(ws: &Workspace, visibility: Visibility, owner: &
 /// Best-effort removal of a deleted note's rows from every model's store of the repo group, each
 /// table purged after ([`LanceStore::purge_memory`]): a store of a preset no longer configured
 /// still holds the rows embedded under it, and a delete only hides a row until the table's files
-/// are rewritten. A store that cannot be opened or purged is logged, never an error.
+/// are rewritten.
 pub(crate) fn purge_vector_rows(ws: &Workspace, visibility: Visibility, owner: &str, key: &str) {
-    let Ok(tables) = std::fs::read_dir(crate::store_layout::memory_vectors_dir(&ws.root)) else {
-        return;
-    };
     let visibility = lance_visibility(visibility);
+    on_every_store(ws, "purge_memory", |lance| {
+        lance.purge_memory(&ws.scope, visibility, owner, key)
+    });
+}
+
+/// Best-effort removal of every row of every model's store of the repo group, each purged after
+/// ([`LanceStore::purge_all_memory`]). Returns how many stores were emptied.
+pub(crate) fn purge_every_vector_row(ws: &Workspace) -> usize {
+    on_every_store(ws, "purge_all_memory", LanceStore::purge_all_memory)
+}
+
+/// Run `work` on every model's store under the group's
+/// [`crate::store_layout::memory_vectors_dir`], the one this process has open through its handle,
+/// and return on how many it succeeded. A store that cannot be opened, or on which `work` fails,
+/// is logged, never an error.
+fn on_every_store(ws: &Workspace, what: &'static str, work: impl Fn(&LanceStore) -> anyhow::Result<u64>) -> usize {
+    let Ok(tables) = std::fs::read_dir(crate::store_layout::memory_vectors_dir(&ws.root)) else {
+        return 0;
+    };
+    let mut done = 0;
     for table in tables.flatten() {
         let dir = table.path();
         if !table.file_type().is_ok_and(|kind| kind.is_dir()) {
@@ -326,18 +343,17 @@ pub(crate) fn purge_vector_rows(ws: &Workspace, visibility: Visibility, owner: &
                 Ok(Some(lance)) => Arc::new(lance),
                 Ok(None) => continue,
                 Err(error) => {
-                    tracing::warn!(%key, %error, store = %dir.display(), "a memory vector store was not opened to purge a note");
+                    tracing::warn!(%error, store = %dir.display(), what, "a memory vector store was not opened");
                     continue;
                 }
             },
         };
-        let purged = on_store(&lance, "purge_memory", |lance| {
-            lance.purge_memory(&ws.scope, visibility, owner, key)
-        });
-        if let Err(error) = purged {
-            tracing::warn!(%key, %error, store = %dir.display(), "the note's vector rows were not purged");
+        match on_store(&lance, what, &work) {
+            Ok(_) => done += 1,
+            Err(error) => tracing::warn!(%error, store = %dir.display(), "a memory vector store was not purged"),
         }
     }
+    done
 }
 
 /// The notes to embed, given the rows the table holds: those with no row, a row embedded from an

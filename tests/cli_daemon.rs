@@ -84,6 +84,11 @@ fn text(out: &Output) -> String {
     )
 }
 
+/// The JSON document a `--json` command printed.
+fn json(out: &Output) -> serde_json::Value {
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|error| panic!("not JSON ({error}): {}", text(out)))
+}
+
 /// A real detached daemon on the env's comms dir; stopped and reaped on drop.
 struct Daemon {
     child: Child,
@@ -193,6 +198,32 @@ fn cache_clear_demands_yes_off_a_terminal_and_names_the_global_blob_store() {
     assert_eq!(code(&env.run(&["cache", "clear"])), 0);
 }
 
+/// `memory clear` off a terminal refuses without `--yes` and leaves the notes; with it, every note
+/// of the repository goes.
+#[test]
+fn memory_clear_demands_yes_off_a_terminal_and_removes_every_note() {
+    if !cfg!(feature = "memory") {
+        return;
+    }
+    let env = Env::new();
+    assert_eq!(code(&env.run(&["memory", "put", "k1", "a note"])), 0);
+    assert_eq!(code(&env.run(&["memory", "put", "k2", "another", "--individual"])), 0);
+
+    let refused = env.run(&["memory", "clear"]);
+    assert_eq!(code(&refused), 2, "{}", text(&refused));
+    assert!(text(&refused).contains("--yes"), "{}", text(&refused));
+    assert_eq!(json(&env.run(&["--json", "memory", "get", "k1"]))["value"], "a note");
+
+    let cleared = env.run(&["--json", "memory", "clear", "--yes"]);
+    assert_eq!(code(&cleared), 0, "{}", text(&cleared));
+    assert_eq!(json(&cleared)["notes_removed"], 2, "{}", text(&cleared));
+    assert_eq!(json(&env.run(&["--json", "memory", "get", "k1"]))["found"], false);
+    assert_eq!(
+        json(&env.run(&["--json", "memory", "get", "k2", "--individual"]))["found"],
+        false
+    );
+}
+
 #[test]
 fn writer_lock_collision_exits_busy_for_scan_rescan_and_cache_clear() {
     let env = Env::new();
@@ -261,6 +292,10 @@ fn live_daemon_serves_rescan_memory_and_blocks_destructive_commands() {
         let get = env.run(&["memory", "get", "k1"]);
         assert_eq!(code(&get), 0, "{}", text(&get));
         assert!(text(&get).contains("forwarded value"), "{}", text(&get));
+        let cleared = env.run(&["--json", "memory", "clear", "--yes"]);
+        assert_eq!(code(&cleared), 0, "memory clear must forward: {}", text(&cleared));
+        assert_eq!(json(&cleared)["notes_removed"], 1, "{}", text(&cleared));
+        assert_eq!(json(&env.run(&["--json", "memory", "get", "k1"]))["found"], false);
     }
 
     let callers = env.run(&["--json", "code", "callers", "a.rs", "alpha"]);
