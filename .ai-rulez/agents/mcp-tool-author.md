@@ -12,7 +12,8 @@ x-ai-rulez:
 
 # mcp-tool-author
 
-basemind's MCP surface is **one tool per job** (ADR-0018): fifteen verb tools — `code_outline`,
+basemind's MCP surface is **one tool per job** (ADR-0018): the verb tools `VERB_TOOLS`
+(`src/mcp/types_tools.rs`) lists — `code_outline`,
 `code_symbols`, `code_read`, `code_grep`, `code_search`, `code_refs`, `find_files`, `docs_search`,
 `git_log`, `git_blame`, `git_diff`, `memory_save`, `memory_search`, `index_status`,
 `index_rescan` — each with its own exact schema and no `mode` argument. You add one tool, or one

@@ -13,8 +13,8 @@ x-ai-rulez:
 
 Use this when extending basemind's MCP surface. Skipping a step leaves the tool half-wired.
 
-**The surface is one tool per job** (ADR-0018): fifteen verb tools, each with its own exact schema
-and no `mode` argument. Decide first whether the capability is an **argument on an existing tool**
+**The surface is one tool per job** (ADR-0018): the verb tools `VERB_TOOLS`
+(`src/mcp/types_tools.rs`) lists, each with its own exact schema and no `mode` argument. Decide first whether the capability is an **argument on an existing tool**
 (the same question, narrowed: `git_log` took `symbol` and `rev` instead of becoming three tools) or
 a **new tool** (a question no existing tool asks). A new tool ships only if the eval harness
 (`src/eval/`, `basemind admin eval`) shows it beats the `rg`/`git` baseline on correctness or

@@ -12,10 +12,12 @@ x-ai-rulez:
 
 `basemind serve` exposes a stdio MCP server (`rmcp`). The live contract is `tests/mcp_smoke.rs` — read it before changing any tool's response shape.
 
-The surface is **one tool per job** (ADR-0018): fifteen verb tools, each with its own exact
-schema and no `mode` argument. `src/mcp/types_tools.rs` is the authoritative list of tools
-(`VERB_TOOLS`) and of every argument; read it before writing about a tool, never infer an argument
-from prose. A `comms` build adds three deferred agent tools (ADR-0021, `docs/comms-v2.md`).
+The surface is **one tool per job** (ADR-0018): the verb tools, each with its own exact schema and
+no `mode` argument. `src/mcp/types_tools.rs` is the authoritative list of tools (`VERB_TOOLS`) and
+of every argument; read it before writing about a tool or counting them, never infer an argument
+from prose. A `comms` build adds three deferred agent tools (ADR-0021, `docs/comms-v2.md`), and a
+`basemind serve --lead` session the two lead tools `agent_launch` and `agent_stop`
+(`src/mcp/lead_tools.rs`, ADR-0040).
 
 ## Verb tools
 

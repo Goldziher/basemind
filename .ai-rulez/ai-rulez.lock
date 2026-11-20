@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.14.0'
 scope = 'all'
-tree = 'sha256:f6d50538900bf0c421acdd81c447284ff44a1bfecef3a8f74e25b0b66644ecc9'
+tree = 'sha256:6622f79a983776e9fc200f260a89e1cd5b9773621882a473d17fe2e3916c7761'
 
 [[served]]
 name = 'adr-workflow'
@@ -82,7 +82,7 @@ digest = 'sha256:5bdcc7bfa81315e82624f76fe389ad5c706d78c731dc7191ccd9fbbfc219657
 name = 'mcp-tool-checklist'
 source = '.ai-rulez/skills/mcp-tool-checklist/SKILL.md'
 commit = ''
-digest = 'sha256:341bfb040401f3f56b00eade708eab4d719a2d6c265c00f7ebeb3bcb0196a6ea'
+digest = 'sha256:93e993711ced840c76cbb3ed608a3f9e69b24b9f333d0ef4cef0f0b06f172240'
 
 [[served]]
 name = 'observability-standards'
@@ -160,7 +160,7 @@ digest = 'sha256:ada4405aa2cd8071ff0dcd12117493229d428f843925952483050a980084ff5
 kind = 'agent'
 id = 'mcp-tool-author'
 path = 'agents/mcp-tool-author.md'
-digest = 'sha256:b3ff659b856340de7d3d9c8b901daf9a67e07b969285f7a88e704511d0db20e0'
+digest = 'sha256:a5b52e972618bc059bb4413a54e493034bd413485ffd6f4b3a027729d40f00cf'
 
 [[item]]
 kind = 'agent'
@@ -178,7 +178,7 @@ digest = 'sha256:76716e24bca7307696ea06a849b375540acab5527ff650e006af3e4e5887d48
 kind = 'agent'
 id = 'surface-docs-writer'
 path = 'agents/surface-docs-writer.md'
-digest = 'sha256:356af01b0ab496f02fac7320c73110d0ae71404064bd40fa61c8c6bf20aeb434'
+digest = 'sha256:8861973cc4ca110e4a6bda86eabe09b884e95861df2ba8d14b3adb50504de4cb'
 
 [[item]]
 kind = 'command'
@@ -214,7 +214,7 @@ digest = 'sha256:22d45349602ce68e3588264925ca68027d873afa6b2878b75d44055023a722b
 kind = 'context'
 id = 'crate-layout'
 path = 'context/crate-layout.md'
-digest = 'sha256:16293d64969ec69308d82f46c5f3f09ffbf38b47c1323d1a3c722c8b7baa01e0'
+digest = 'sha256:d8a832ed59cedd20e6992dd179cf61ef2fc690e8dc2cb7055f9ad4f2a37e46c1'
 
 [[item]]
 kind = 'context'
@@ -232,7 +232,7 @@ digest = 'sha256:a403f2754ff781dd8f5e8e80077ee141564fd59774194de0b4d78b15c89453c
 kind = 'context'
 id = 'mcp-surface'
 path = 'context/mcp-surface.md'
-digest = 'sha256:33b9790ed51e38fba432f1165b36074bbd15fad3875101af1e73fd45bff08792'
+digest = 'sha256:f65393011b6366b6ad9d508b654aab1cb864cf15ea680d25278acd76ac044b6b'
 
 [[item]]
 kind = 'context'
@@ -268,7 +268,7 @@ digest = 'sha256:12df76e675515988ac7ac7fddfd3f57155409af426680eea2fd39c14caa2a77
 kind = 'rule'
 id = 'mcp-tool-conventions'
 path = 'rules/mcp-tool-conventions.md'
-digest = 'sha256:2599c9c1d1287c8f67d38fbdea5dbc5026dbf4d7d7e1bbff2e6718b0364e418f'
+digest = 'sha256:fcfcf58c4a4e33b24c0a29d100500c389daf52c869693f31f8e383995611c60e'
 
 [[item]]
 kind = 'rule'
@@ -327,7 +327,7 @@ digest = 'sha256:554dd19dc3c34106abb9d1b3c458bcae6c96e575707d44684d88c8ab2da6b4d
 kind = 'skill'
 id = 'mcp-tool-checklist'
 path = 'skills/mcp-tool-checklist'
-digest = 'sha256:e21e3f931240501c1b982f1c1c0e6ff6dcd1200fef0618772b754b6632c1e72d'
+digest = 'sha256:fa3dec8cc43ff0aeeb47ed6f8606bf8d6c71479da57b3a8a9a5863c8e70f90c9'
 
 [[item]]
 kind = 'skill'
