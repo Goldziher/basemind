@@ -59,6 +59,7 @@
 //! spawned daemon defers to whoever holds `daemon.lock`. With `BASEMIND_NO_AUTOSPAWN` set, nothing
 //! is ever asked to stop, because nothing could replace it.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -244,14 +245,16 @@ pub const NO_AUTOSPAWN_ENV: &str = "BASEMIND_NO_AUTOSPAWN";
 
 /// Whether [`NO_AUTOSPAWN_ENV`] forbids spawning a daemon from this process.
 pub fn autospawn_disabled() -> bool {
-    forbids_autospawn(std::env::var(NO_AUTOSPAWN_ENV).ok().as_deref())
+    forbids_autospawn(std::env::var_os(NO_AUTOSPAWN_ENV).as_deref())
 }
 
 /// Whether a raw [`NO_AUTOSPAWN_ENV`] value forbids spawning. The binary refuses a non-boolean
 /// value when it installs its engine; one that reaches here anyway (a library caller that never
-/// installed it) is warned about and honoured as the opt-out the operator meant to set.
-fn forbids_autospawn(value: Option<&str>) -> bool {
-    crate::config::engine::bool_env(NO_AUTOSPAWN_ENV, value).unwrap_or_else(|message| {
+/// installed it) is warned about and honoured as the opt-out the operator meant to set. A value
+/// that is not UTF-8 is not a boolean either, so it forbids spawning too.
+fn forbids_autospawn(value: Option<&OsStr>) -> bool {
+    let value = value.map(OsStr::to_string_lossy);
+    crate::config::engine::bool_env(NO_AUTOSPAWN_ENV, value.as_deref()).unwrap_or_else(|message| {
         crate::config::trust::warn_once(message);
         Some(true)
     }) == Some(true)
