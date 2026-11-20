@@ -101,7 +101,8 @@ impl Holds {
 }
 
 /// The namespaces the live daemons (`daemons/`, every generation) and hosts (`hosting/<pid>`)
-/// registered under the data home `data` read.
+/// registered under the data home `data` read. A process that refuses to be opened counts as live
+/// ([`crate::boot_identity::PidState::may_be_live`]): the hold gates a deletion.
 #[cfg(any(unix, windows))]
 fn live_namespaces(data: &DataRoot) -> Vec<BlobNamespace> {
     let daemons = crate::daemon_lock::registered_daemons(data)
