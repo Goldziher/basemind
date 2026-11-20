@@ -89,7 +89,9 @@ pub(crate) struct Holds {
     /// marker that names no build (one written before markers recorded it, or one that does not
     /// parse), or a version that does not parse. Such a process may read any superseded namespace,
     /// so it holds them all: the superseded sweep reaps nothing while it runs. The cost is disk
-    /// only, and lasts no longer than the process at that pid.
+    /// only, and lasts no longer than the process at that pid. A daemon registry that could not be
+    /// read whole ([`crate::daemon_lock::DaemonCensus::complete`]) may hide such a process, and
+    /// holds them all the same until it reads whole again.
     pub(crate) unidentified: bool,
     /// How long after the last write into it a namespace is kept.
     pub(crate) hold: Duration,
@@ -109,19 +111,21 @@ impl Holds {
 }
 
 /// The namespaces the live daemons (`daemons/`, every generation) and hosts (`hosting/<pid>`)
-/// registered under the data home `data` read, `None` for one whose namespace cannot be told. A
-/// process that refuses to be opened counts as live ([`crate::boot_identity::PidState::may_be_live`]):
-/// the hold gates a deletion.
+/// registered under the data home `data` read, `None` for one whose namespace cannot be told, and a
+/// `None` for a daemon registry that could not be read whole. A process that refuses to be opened
+/// counts as live ([`crate::boot_identity::PidState::may_be_live`]): the hold gates a deletion.
 #[cfg(any(unix, windows))]
 fn live_namespaces(data: &DataRoot) -> Vec<Option<BlobNamespace>> {
-    let daemons = crate::daemon_lock::registered_daemons(data).into_iter().map(|daemon| {
+    let census = crate::daemon_lock::registered_daemons(data);
+    let unread = (!census.complete).then_some(None);
+    let daemons = census.daemons.into_iter().map(|daemon| {
         let record = daemon.record;
         namespace_recorded(record.blob_schema, Some(&record.version), daemon.pre_generation)
     });
     let hosts = crate::scan_evidence_hosts::live_host_builds(data)
         .into_iter()
         .map(|host| namespace_recorded(host.blob_schema, host.version.as_deref(), false));
-    daemons.chain(hosts).collect()
+    daemons.chain(hosts).chain(unread).collect()
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -417,6 +421,29 @@ mod tests {
                 BlobNamespace::Unnamespaced,
                 BlobNamespace::Schema(crate::extract::SCHEMA_VER)
             ]
+        );
+    }
+
+    /// A daemon record that cannot be read may be a live daemon's: the census is incomplete and
+    /// the superseded sweep reaps nothing. A registry that does not exist is complete and empty.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn an_unreadable_daemon_record_holds_every_superseded_namespace() {
+        let home = tempfile::tempdir().unwrap();
+        let data = DataRoot::new(home.path());
+        assert!(!Holds::under(&data).unidentified, "no registry, nothing unread");
+        std::fs::create_dir_all(home.path().join("daemons/g1/comms-unreadable.pid")).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let older = plant_aged(root.path(), "v6/bb.fm.msgpack", 30 * DAY);
+
+        let holds = Holds::under(&data);
+        assert_eq!(holds.live, Vec::<BlobNamespace>::new());
+        assert!(holds.unidentified, "the unread record may be a live daemon's");
+        let report = sweep_superseded_namespaces(root.path(), CURRENT, Duration::ZERO, &holds).unwrap();
+        assert_eq!((report.scanned, report.removed), (0, 0));
+        assert!(
+            older.exists(),
+            "nothing is reaped while the registry cannot be read whole"
         );
     }
 

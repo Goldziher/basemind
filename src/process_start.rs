@@ -18,6 +18,23 @@ const SLACK_SECS: i64 = 2;
 /// started no later than the record says the daemon did, and `true` where the platform gives no
 /// start time, so the check narrows what may be signalled and never widens it.
 pub fn can_have_written(record: &DaemonRecord) -> bool {
+    is_recorded_process(record).unwrap_or_else(|| {
+        crate::boot_identity::process_started_unix(record.pid)
+            .is_none_or(|started| started <= record.started_unix + SLACK_SECS)
+    })
+}
+
+/// Whether the process now running under `record.pid` may still be the daemon that wrote `record`,
+/// for a caller that keeps what that daemon uses: only a recorded process start or boot that is
+/// not this process's rules it out. The wall-clock rule of [`can_have_written`] is not applied: a
+/// clock stepped forward makes it pass over a daemon that still runs, and keeping what a stranger
+/// given the pid holds costs only disk, for as long as that process runs.
+pub fn may_still_have_written(record: &DaemonRecord) -> bool {
+    is_recorded_process(record).unwrap_or(true)
+}
+
+/// [`crate::boot_identity::is_recorded_process`] for `record`'s pid, start and boot.
+fn is_recorded_process(record: &DaemonRecord) -> Option<bool> {
     let this_boot = crate::boot_identity::current();
     crate::boot_identity::is_recorded_process(
         record.pid,
@@ -25,10 +42,6 @@ pub fn can_have_written(record: &DaemonRecord) -> bool {
         record.boot.as_deref(),
         this_boot.as_deref(),
     )
-    .unwrap_or_else(|| {
-        crate::boot_identity::process_started_unix(record.pid)
-            .is_none_or(|started| started <= record.started_unix + SLACK_SECS)
-    })
 }
 
 #[cfg(test)]
@@ -102,6 +115,31 @@ mod tests {
                 "a start of another boot names no process of this one"
             );
         }
+    }
+
+    /// The census that keeps what daemons use passes a record over only on a recorded start that
+    /// is another process's: a record with none, which the wall clock rules out after a step, is
+    /// kept while its pid runs.
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+    #[test]
+    fn a_record_without_a_start_still_holds_where_the_wall_clock_rules_it_out() {
+        let me = std::process::id();
+        let own = crate::boot_identity::process_start(me).expect("this process has a start");
+        let started = crate::boot_identity::process_started_unix(me).expect("and a start time");
+        let stepped = record(me, started - AN_HOUR);
+        assert!(!can_have_written(&stepped), "the wall clock rules it out");
+        assert!(may_still_have_written(&stepped), "but it still holds what it uses");
+        let other = DaemonRecord {
+            process_start: Some(own.wrapping_add(1)),
+            ..record(me, now())
+        };
+        assert!(!may_still_have_written(&other), "another process given the pid");
+        let own_start = DaemonRecord {
+            process_start: Some(own),
+            boot: crate::boot_identity::current(),
+            ..record(me, started - AN_HOUR)
+        };
+        assert!(may_still_have_written(&own_start), "the daemon itself");
     }
 
     #[test]
