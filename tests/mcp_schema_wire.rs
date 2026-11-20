@@ -215,18 +215,19 @@ const STEERING_SOURCES: [&str; 6] = [
     "llms.txt",
 ];
 
-/// Wording that sends exact text in a markdown, config or data file away from `code_grep`.
-const NOT_GREPPABLE: [&str; 4] = [
-    "cover code only",
+/// Wording that sends exact text in a markdown, config or data file away from `code_grep`. "Code
+/// only" is not here: the code map covers code only, so it is a mistake only in a clause about
+/// `code_grep` or the code tools as a whole, which [`grep_steering_mistakes`] checks.
+const NOT_GREPPABLE: [&str; 3] = [
     "code tools do not cover",
     "search the files directly",
     "not the code tools",
 ];
 
 /// What in `text` sends exact text in a markdown, config or data file away from `code_grep`: a
-/// [`NOT_GREPPABLE`] phrase, a clause saying `code_grep` covers code only or that such files never
-/// appear in it, and a clause routing config files to document search that names neither
-/// `code_grep` nor a search by meaning.
+/// [`NOT_GREPPABLE`] phrase, a clause saying `code_grep` (or the code tools as a whole) covers code
+/// only or that such files never appear in it, and a clause routing config files to document search
+/// that names neither `code_grep` nor a search by meaning.
 fn grep_steering_mistakes(text: &str) -> Vec<String> {
     let lower = text.to_lowercase();
     let mut found: Vec<String> = NOT_GREPPABLE
@@ -240,7 +241,8 @@ fn grep_steering_mistakes(text: &str) -> Vec<String> {
         for clause in clause_end.split(&joined) {
             let lower = clause.to_lowercase();
             let names_grep = clause.contains("code_grep") || clause.contains("code grep");
-            let skips_text = names_grep && (lower.contains("code only") || lower.contains("never appear"));
+            let restricted = names_grep || lower.contains("code tools");
+            let skips_text = restricted && (lower.contains("code only") || lower.contains("never appear"));
             let routes_away = !names_grep
                 && (clause.contains("docs_search") || clause.contains("memory documents"))
                 && lower.contains("config")
@@ -315,10 +317,15 @@ fn the_steering_check_reports_each_way_of_sending_text_away_from_code_grep() {
     for (text, expected) in [
         (
             "`code_outline`, `code_symbols` and `code_grep` cover code only.",
-            vec![
-                "cover code only",
-                "`code_outline`, `code_symbols` and `code_grep` cover code only.",
-            ],
+            vec!["`code_outline`, `code_symbols` and `code_grep` cover code only."],
+        ),
+        (
+            "(the code tools cover code only)",
+            vec!["(the code tools cover code only)"],
+        ),
+        (
+            "`code_outline`, `code_symbols` and `code_refs` cover code only.",
+            vec![],
         ),
         (
             "for usages; markdown, config and data files: docs_search {\"query\":\"…\"}",
