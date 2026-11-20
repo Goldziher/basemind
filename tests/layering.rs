@@ -564,18 +564,19 @@ fn forbidden_for(layer: Layer) -> &'static [&'static str] {
 
 /// The library's module tree, walked from `<root>/src/lib.rs`, plus every file it reached.
 fn load_modules(root: &Path) -> (Vec<Module>, BTreeSet<PathBuf>) {
-    let src = root.join("src");
     let mut modules = Vec::new();
     let mut files = BTreeSet::new();
-    let lib = src.join("lib.rs");
-    files.insert(lib.clone());
-    let parsed = parse_file(&lib);
-    Walk {
-        out: &mut modules,
-        files: &mut files,
-    }
-    .module(Vec::new(), &lib, false, parsed.items, &src, &src);
+    walk_crate(&root.join("src").join("lib.rs"), &mut modules, &mut files);
     (modules, files)
+}
+
+/// Walk the module tree of the crate whose root file is `crate_root` into `modules`, recording every
+/// file it reaches in `files`.
+fn walk_crate(crate_root: &Path, modules: &mut Vec<Module>, files: &mut BTreeSet<PathBuf>) {
+    let dir = crate_root.parent().expect("crate root has a parent");
+    files.insert(crate_root.to_path_buf());
+    let parsed = parse_file(crate_root);
+    Walk { out: modules, files }.module(Vec::new(), crate_root, false, parsed.items, dir, dir);
 }
 
 /// `segments` as a path from the crate root, or `None` when it starts with neither `crate`, `self`,
@@ -828,16 +829,8 @@ fn every_module_is_assigned_to_a_crate_and_every_file_is_reached() {
     let stale: Vec<&str> = LAYERS.iter().map(|(p, _)| *p).filter(|p| !paths.contains(*p)).collect();
     assert!(stale.is_empty(), "LAYERS entries naming no module: {stale:?}");
 
-    let main = root.join("src/main.rs");
-    let parsed = parse_file(&main);
     let src = root.join("src");
-    let mut bin_modules = Vec::new();
-    reached.insert(main.clone());
-    Walk {
-        out: &mut bin_modules,
-        files: &mut reached,
-    }
-    .module(Vec::new(), &main, false, parsed.items, &src, &src);
+    walk_crate(&src.join("main.rs"), &mut Vec::new(), &mut reached);
 
     let mut all = BTreeSet::new();
     collect_rs_files(&src, &mut all);
@@ -1276,16 +1269,49 @@ fn is_test_hook(attrs: &[syn::Attribute]) -> bool {
         })
 }
 
-/// Collects `env::var`-family paths, through `std::env` under any alias, and the `directories`
-/// constructors that read the environment implicitly, outside test code and test hooks.
-struct EnvReads {
+/// The prefix of the environment variables only tests set.
+const TEST_VAR_PREFIX: &str = "BASEMIND_TEST_";
+
+/// The gate a `BASEMIND_TEST_` literal sits under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Gate {
+    /// None: every build compiles it.
+    Open,
+    /// The `test-support` feature (or a test build): a `test-support` binary carries it.
+    TestSupport,
+    /// A test build only.
+    Test,
+}
+
+/// Walks a module's items, tracking whether the code sits in test code or a test hook. Outside
+/// them it collects `env::var`-family paths, through `std::env` under any alias, and the
+/// `directories` constructors that read the environment implicitly; everywhere it collects the
+/// `BASEMIND_TEST_` string literals with the gate each sits under.
+#[derive(Default)]
+struct HookScan {
     hook: bool,
+    test: bool,
     found: Vec<String>,
     /// Names `std::env` is imported under (`use std::env as e;`).
     aliases: BTreeSet<String>,
+    test_vars: Vec<(String, Gate)>,
 }
 
-impl EnvReads {
+impl HookScan {
+    fn note_literal(&mut self, value: String) {
+        if !value.starts_with(TEST_VAR_PREFIX) {
+            return;
+        }
+        let gate = if self.test {
+            Gate::Test
+        } else if self.hook {
+            Gate::TestSupport
+        } else {
+            Gate::Open
+        };
+        self.test_vars.push((value, gate));
+    }
+
     fn check(&mut self, segments: &[String]) {
         if self.hook {
             return;
@@ -1318,14 +1344,30 @@ impl EnvReads {
     }
 
     fn scoped(&mut self, attrs: &[syn::Attribute], visit: impl FnOnce(&mut Self)) {
-        let saved = self.hook;
+        let saved = (self.hook, self.test);
         self.hook |= is_test_hook(attrs);
+        self.test |= is_cfg_test(attrs);
         visit(self);
-        self.hook = saved;
+        (self.hook, self.test) = saved;
     }
 }
 
-impl<'ast> Visit<'ast> for EnvReads {
+/// The string literals in a macro body, which `syn` leaves unparsed.
+fn macro_string_literals(stream: TokenStream, out: &mut Vec<String>) {
+    for tree in stream {
+        match tree {
+            TokenTree::Group(group) => macro_string_literals(group.stream(), out),
+            TokenTree::Literal(lit) => {
+                if let Ok(text) = syn::parse_str::<syn::LitStr>(&lit.to_string()) {
+                    out.push(text.value());
+                }
+            }
+            TokenTree::Ident(_) | TokenTree::Punct(_) => {}
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for HookScan {
     fn visit_item(&mut self, item: &'ast syn::Item) {
         self.scoped(item_attrs(item), |v| syn::visit::visit_item(v, item));
     }
@@ -1385,7 +1427,16 @@ impl<'ast> Visit<'ast> for EnvReads {
         syn::visit::visit_path(self, path);
     }
 
+    fn visit_lit_str(&mut self, lit: &'ast syn::LitStr) {
+        self.note_literal(lit.value());
+    }
+
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        let mut literals = Vec::new();
+        macro_string_literals(mac.tokens.clone(), &mut literals);
+        for literal in literals {
+            self.note_literal(literal);
+        }
         let mut flat = Vec::new();
         flatten(mac.tokens.clone(), &mut flat);
         for window in flat.windows(4) {
@@ -1402,24 +1453,29 @@ impl<'ast> Visit<'ast> for EnvReads {
     }
 }
 
-fn env_reads(items: &[syn::Item]) -> Vec<String> {
-    let mut reads = EnvReads {
-        hook: false,
-        found: Vec::new(),
-        aliases: BTreeSet::new(),
-    };
+fn scan_items(items: &[syn::Item]) -> HookScan {
+    let mut scan = HookScan::default();
     // A module-level alias may be declared below its first use.
     for item in items {
         if let syn::Item::Use(item) = item
             && !is_test_hook(&item.attrs)
         {
-            reads.note_aliases(&item.tree);
+            scan.note_aliases(&item.tree);
         }
     }
     for item in items {
-        reads.visit_item(item);
+        scan.visit_item(item);
     }
-    reads.found
+    scan
+}
+
+fn env_reads(items: &[syn::Item]) -> Vec<String> {
+    scan_items(items).found
+}
+
+/// The `BASEMIND_TEST_` literals of `items`, in source order, each with the gate it sits under.
+fn test_var_literals(items: &[syn::Item]) -> Vec<(String, Gate)> {
+    scan_items(items).test_vars
 }
 
 /// Core, retrieval and engine code read no environment variable (ADR-0050): the operator's settings
@@ -1482,6 +1538,118 @@ fn the_env_read_check_flags_each_shape() {
             "e::var",
             "directories::ProjectDirs::from",
             "BaseDirs::new"
+        ]
+    );
+}
+
+/// The crate roots whose code the `basemind` binary is built from and so may read a test variable.
+const BINARY_CRATE_ROOTS: &[&str] = &["src/lib.rs", "src/main.rs", "crates/basemind-agents/src/lib.rs"];
+
+/// The release-archive smoke, which sets every variable a `test-support` binary reads.
+const RELEASE_SMOKE: &str = "scripts/smoke_release_archive.py";
+
+/// Every `BASEMIND_TEST_` literal outside the test files sits under `cfg(test)` or the
+/// `test-support` feature, which only the test suite enables, so a release build neither names nor
+/// reads one. Each one a `test-support` binary reads is set by the release-archive smoke, which
+/// proves the shipped binary ignores it.
+#[test]
+fn test_variables_are_read_only_under_a_test_gate() {
+    let root = manifest_dir();
+    let mut modules = Vec::new();
+    let mut reached = BTreeSet::new();
+    for crate_root in BINARY_CRATE_ROOTS {
+        walk_crate(&root.join(crate_root), &mut modules, &mut reached);
+    }
+    let mut open = Vec::new();
+    let mut test_support = BTreeSet::new();
+    for module in modules.iter().filter(|m| !m.test) {
+        for (name, gate) in test_var_literals(&module.items) {
+            match gate {
+                Gate::Open => open.push(format!("{} names {name}", repo_relative(&root, &module.file))),
+                Gate::TestSupport => {
+                    test_support.insert(name);
+                }
+                Gate::Test => {}
+            }
+        }
+    }
+    assert!(
+        open.is_empty(),
+        "test variables named outside cfg(test) and the test-support feature:\n{}",
+        open.join("\n")
+    );
+
+    let mut sources = BTreeSet::new();
+    for entry in std::fs::read_dir(root.join("crates")).expect("read crates/") {
+        let src = entry.expect("read crates/ entry").path().join("src");
+        if src.is_dir() {
+            collect_rs_files(&src, &mut sources);
+        }
+    }
+    let unchecked: Vec<String> = sources
+        .difference(&reached)
+        .filter(|file| {
+            std::fs::read_to_string(file)
+                .unwrap_or_else(|e| panic!("read {}: {e}", file.display()))
+                .contains(TEST_VAR_PREFIX)
+        })
+        .map(|file| repo_relative(&root, file))
+        .collect();
+    assert!(
+        unchecked.is_empty(),
+        "files naming a test variable in a crate missing from BINARY_CRATE_ROOTS:\n{}",
+        unchecked.join("\n")
+    );
+
+    assert!(
+        test_support.len() >= 3,
+        "found only {test_support:?} under the test-support feature"
+    );
+    let smoke =
+        std::fs::read_to_string(root.join(RELEASE_SMOKE)).unwrap_or_else(|e| panic!("read {RELEASE_SMOKE}: {e}"));
+    let unsmoked: Vec<&String> = test_support
+        .iter()
+        .filter(|name| !smoke.contains(&format!("\"{name}\"")))
+        .collect();
+    assert!(
+        unsmoked.is_empty(),
+        "test-support variables {RELEASE_SMOKE} does not set on the release binary: {unsmoked:?}"
+    );
+}
+
+/// The check sees a test variable in a constant, a call and a macro body, and tells the gates apart.
+#[test]
+fn the_test_variable_check_tells_the_gates_apart() {
+    let file = syn::parse_file(
+        "/// Reads `BASEMIND_TEST_DOC`.\n\
+         const A: &str = \"BASEMIND_TEST_A\";\n\
+         fn b() { std::env::var(\"BASEMIND_TEST_B\"); }\n\
+         fn c() { assert!(true, \"{}\", \"BASEMIND_TEST_C\"); }\n\
+         #[cfg(feature = \"test-support\")] const D: &str = \"BASEMIND_TEST_D\";\n\
+         fn e() { #[cfg(feature = \"test-support\")] if std::env::var_os(\"BASEMIND_TEST_E\").is_some() {} }\n\
+         #[cfg(any(test, feature = \"test-support\"))] const F: &str = \"BASEMIND_TEST_F\";\n\
+         #[cfg(test)] const G: &str = \"BASEMIND_TEST_G\";\n\
+         #[cfg(all(test, unix))] fn h() { std::env::var(\"BASEMIND_TEST_H\"); }\n\
+         #[cfg(feature = \"documents\")] const I: &str = \"BASEMIND_TEST_I\";\n\
+         #[cfg(not(feature = \"test-support\"))] const J: &str = \"BASEMIND_TEST_J\";\n\
+         const K: &str = \"BASEMIND_OTHER\";\n",
+    )
+    .expect("parse");
+    let found = test_var_literals(&file.items);
+    let found: Vec<(&str, Gate)> = found.iter().map(|(name, gate)| (name.as_str(), *gate)).collect();
+    assert_eq!(
+        found,
+        [
+            ("BASEMIND_TEST_A", Gate::Open),
+            ("BASEMIND_TEST_B", Gate::Open),
+            ("BASEMIND_TEST_C", Gate::Open),
+            ("BASEMIND_TEST_D", Gate::TestSupport),
+            ("BASEMIND_TEST_E", Gate::TestSupport),
+            ("BASEMIND_TEST_F", Gate::TestSupport),
+            ("BASEMIND_TEST_G", Gate::Test),
+            ("BASEMIND_TEST_H", Gate::Test),
+            ("BASEMIND_TEST_I", Gate::Open),
+            ("BASEMIND_TEST_J", Gate::Open),
         ]
     );
 }

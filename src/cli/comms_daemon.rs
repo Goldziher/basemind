@@ -58,13 +58,24 @@ const STARTUP_GC_DELAY: std::time::Duration = std::time::Duration::from_secs(10 
 #[cfg(unix)]
 const OWNERSHIP_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Test-only hook: artificially delay the agent store open by this many milliseconds, so tests can
-/// prove the daemon answers `Ping` while the store is still opening. Unset in production.
+/// Test hook: delay the agent store open by this many milliseconds, so tests can prove the daemon
+/// answers `Ping` while the store is still opening. Compiled only under the dev-only `test-support`
+/// feature, so a release build neither reads the variable nor carries the branch.
+#[cfg(feature = "test-support")]
 const TEST_STORE_OPEN_DELAY_ENV: &str = "BASEMIND_TEST_COMMS_STORE_OPEN_DELAY_MS";
 
-fn test_store_open_delay() -> Option<std::time::Duration> {
-    let millis = std::env::var(TEST_STORE_OPEN_DELAY_ENV).ok()?.parse::<u64>().ok()?;
-    Some(std::time::Duration::from_millis(millis))
+#[cfg(feature = "test-support")]
+fn store_open_delay() -> std::time::Duration {
+    std::env::var(TEST_STORE_OPEN_DELAY_ENV)
+        .ok()
+        .and_then(|millis| millis.parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or_default()
+}
+
+#[cfg(not(feature = "test-support"))]
+fn store_open_delay() -> std::time::Duration {
+    std::time::Duration::ZERO
 }
 
 /// How often a waiting daemon tries the lock again.
@@ -167,7 +178,7 @@ pub fn run() -> Result<()> {
             crate::version::build_id();
         });
 
-        let agents = AgentHub::open_after(&paths.comms_dir, test_store_open_delay().unwrap_or_default());
+        let agents = AgentHub::open_after(&paths.comms_dir, store_open_delay());
         log_retention_policy();
         let machine_registry = open_machine_registry(
             &crate::data_root::DataRoot::current(),
