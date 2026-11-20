@@ -34,7 +34,7 @@ pub(super) fn into_tool_result(result: Result<CallToolResult, McpError>) -> Call
 
 impl BasemindServer {
     /// Answer one verb-tool call: reject inexact arguments, run the body, and report any failure as
-    /// an `isError` result.
+    /// an `isError` result whose text names no absolute host path (`super::error_text`).
     pub(super) async fn answer<T, F, Fut>(&self, args: Strict<T>, body: F) -> Result<CallToolResult, McpError>
     where
         T: ToolArgs,
@@ -44,7 +44,9 @@ impl BasemindServer {
         // ~keep A CLI session keeps the error as an error: its code is the CLI's exit status.
         match args.0 {
             Ok(params) if self.cli => body(params).await,
-            Ok(params) => Ok(into_tool_result(body(params).await)),
+            Ok(params) => Ok(into_tool_result(body(params).await.map_err(|error| {
+                super::error_text::Redaction::for_workspace(&self.state.shared.root).scrub(error)
+            }))),
             Err(message) if self.cli => Err(McpError::invalid_params(message, None)),
             Err(message) => Ok(tool_error(ErrorKind::InvalidArgument, message)),
         }
