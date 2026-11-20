@@ -551,7 +551,7 @@ pub(crate) mod test_hooks {
 
 /// The notes of `listed` with their whole text. A listing truncates a long value to a preview;
 /// only those notes are read again, and one deleted since the listing is left out.
-fn whole_notes(
+pub(crate) fn whole_notes(
     ws: &Workspace,
     vis_byte: u8,
     owner: &str,
@@ -680,15 +680,33 @@ fn read_further(wanted: usize, limit: usize, served: usize) -> usize {
     wanted.saturating_add(limit.saturating_sub(served).max(wanted))
 }
 
+/// Squared L2 distance between two unit vectors, which every preset embeds, past which a note is
+/// taken to be unrelated to the query: a cosine similarity below one half.
+pub(crate) const UNRELATED_DISTANCE: f32 = 1.0;
+
+/// What a search by meaning says when it left out hits past [`UNRELATED_DISTANCE`].
+fn unrelated_notice(left_out: usize) -> String {
+    format!(
+        "{left_out} of the nearest notes are farther from the query than the relevance floor (distance \
+         {UNRELATED_DISTANCE:.1}) and are left out: they are unlikely to be about it. A listing by `prefix` or \
+         `tag` shows every note"
+    )
+}
+
 /// `memory_search` by meaning: embed the query, bring the rows nearer the notes, and answer the
-/// nearest rows from the notes they were embedded from. Which rows are current is read from the
-/// notes' stamps; only the notes that may be served are read whole.
+/// nearest rows within [`UNRELATED_DISTANCE`] from the notes they were embedded from. Which rows
+/// are current is read from the notes' stamps; only the notes that may be served are read whole.
+/// A query no model can embed is matched by its words ([`super::lexical`]).
 pub(crate) fn search(ws: &Workspace, params: MemorySearchParams) -> Result<MemorySearchResponse, EngineError> {
     let started = Instant::now();
     let limit = params.limit.unwrap_or(10).min(100) as usize;
     let (vis_byte, owner) = ws.memory_namespace(params.visibility);
     let lance_vis = lance_visibility(params.visibility);
-    let embedding = ws.embed_query(&params.query)?;
+    let embedding = match ws.embed_query(&params.query) {
+        Ok(embedding) => embedding,
+        Err(error @ EngineError::InvalidArgument(_)) => return Err(error),
+        Err(error) => return super::lexical::search(ws, params, &error.to_string(), started),
+    };
     let lance =
         memory_lance_store(ws).map_err(|unavailable| unavailable.refusal("memory_search", MEMORY_SEARCH_MEANWHILE))?;
     let catching_up = backfill_step(ws, params.visibility, vis_byte, owner);
@@ -709,7 +727,8 @@ pub(crate) fn search(ws: &Workspace, params: MemorySearchParams) -> Result<Memor
                 params.tag.as_deref(),
             )
         })?;
-        let exhausted = raw.len() < fetch;
+        // Rows come nearest first: past one beyond the floor, every further row is beyond it too.
+        let exhausted = raw.len() < fetch || raw.last().is_some_and(|hit| hit.distance > UNRELATED_DISTANCE);
         let mut unstamped: Vec<String> = Vec::new();
         for hit in &raw {
             if !stamps.contains_key(&hit.key) && !unstamped.contains(&hit.key) {
@@ -745,10 +764,22 @@ pub(crate) fn search(ws: &Workspace, params: MemorySearchParams) -> Result<Memor
         // Rows without a current note are in the table: the next search reconciles again.
         not_level(ws, vis_byte, owner);
     }
+    let (hits, unrelated): (Vec<MemorySearchHit>, Vec<MemorySearchHit>) = joined
+        .hits
+        .into_iter()
+        .partition(|hit| hit.distance <= UNRELATED_DISTANCE);
+    let notices: Vec<String> = [
+        catching_up.then(|| CATCHING_UP.to_string()),
+        (!unrelated.is_empty()).then(|| unrelated_notice(unrelated.len())),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     Ok(MemorySearchResponse {
         query: params.query,
-        hits: joined.hits,
-        notice: catching_up.then(|| CATCHING_UP.to_string()),
+        hits,
+        lexical: false,
+        notice: (!notices.is_empty()).then(|| notices.join(". ")),
         elapsed_us: elapsed_us(started),
     })
 }

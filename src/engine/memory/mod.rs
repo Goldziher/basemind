@@ -1,9 +1,13 @@
 //! The memory notes of a repo group: `memory_save`, `memory_search` and `basemind memory delete`.
 //!
 //! The Fjall `memory_by_key` record is the truth for a note ([`ops`]); its vector row, which
-//! `memory_search` by meaning reads, is derived from it ([`vectors`]).
+//! `memory_search` by meaning reads, is derived from it ([`vectors`]). A search no model can embed
+//! matches the notes by words ([`lexical`]).
 
+pub(crate) mod lexical;
 pub(crate) mod ops;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub(crate) mod vectors;
 
 use std::sync::{Arc, Mutex, PoisonError};
