@@ -461,6 +461,39 @@ impl Repo {
         Ok(None)
     }
 
+    /// Sizes of the staged blobs of `rels` (forward-slash), read from object headers so no blob body
+    /// is inflated. A path the index does not list, or whose object is missing, is left out.
+    pub fn staged_blob_sizes<'a>(&self, rels: impl IntoIterator<Item = &'a str>) -> Result<Vec<u64>, GitError> {
+        let local = self.local();
+        let index = local.index().map_err(|e| GitError::Read {
+            what: "git index".to_string(),
+            msg: e.to_string(),
+        })?;
+        Ok(rels
+            .into_iter()
+            .filter_map(|rel| index.entry_by_path(gix::bstr::BStr::new(rel)))
+            .filter_map(|entry| local.find_header(entry.id).ok())
+            .map(|header| header.size())
+            .collect())
+    }
+
+    /// Sizes of the blobs of `rels` at `rev_sha`, read from object headers so no blob body is
+    /// inflated. A path absent at that rev, or whose object is missing, is left out.
+    pub fn rev_blob_sizes<'a>(
+        &self,
+        rev_sha: &str,
+        rels: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Vec<u64>, GitError> {
+        let local = self.local();
+        let tree = resolve_tree(&local, rev_sha)?;
+        Ok(rels
+            .into_iter()
+            .filter_map(|rel| tree.lookup_entry_by_path(rel).ok().flatten())
+            .filter_map(|entry| local.find_header(entry.object_id()).ok())
+            .map(|header| header.size())
+            .collect())
+    }
+
     /// Read the blob content for `rel` at `rev_sha`. `None` = path doesn't exist at that rev.
     pub fn read_blob_at_rev(&self, rev_sha: &str, rel: impl AsRef<Path>) -> Result<Option<Vec<u8>>, GitError> {
         Ok(self.read_blob_at_rev_with_oid(rev_sha, rel)?.map(|(bytes, _)| bytes))

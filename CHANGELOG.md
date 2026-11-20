@@ -801,7 +801,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index and passed with about 512 MiB free before writing several GB of index rows, blobs and vectors.
   The check now runs once the walk has listed the candidates and before anything is extracted, and adds
   3.5x (index rows), 2.5x (blobs) and, when code is embedded, 1.5x (vectors) the bytes of every
-  candidate with a grammar that no file map lists yet. The refusal, in the CLI and from the daemon,
+  candidate with a grammar that no file map lists yet, sized as the scan reads it: a staged or rev scan
+  by its git blobs, a working-tree scan by its files. The refusal, in the CLI and from the daemon,
   states the free and needed bytes and each part of the estimate, and names the blob namespaces and
   per-view indexes an older release left in the cache, with how each is removed.
 - **A blob write that finds the disk full stops the scan**

@@ -7,7 +7,7 @@
 
 use crate::disk_space;
 use crate::index::IndexDb;
-use crate::scanner::ScanError;
+use crate::scanner::{ScanError, ScanSource};
 use crate::store::{ScanHealth, Store, StoreError};
 
 /// Run before a full scan touches the index: take the writer's place ([`claim_writer`]), forget a
@@ -154,10 +154,13 @@ fn purge_rows(db: &IndexDb, path: &crate::path::RelPath) -> Result<(), StoreErro
 /// Refuse, before a full pass extracts anything, a volume without room for what it will write: the
 /// group index rewritten, plus the index rows, blobs and code vectors of every candidate with a
 /// grammar that no file map lists yet (see [`disk_space::SpaceEstimate`]). On a first scan, and on
-/// the first after a release-minor bump empties the file map, that is every candidate.
+/// the first after a release-minor bump empties the file map, that is every candidate. Each is sized
+/// as `source` reads it: a working-tree file by its stat, a staged or rev candidate by its git blob,
+/// which may be missing from the working tree or differ from it.
 pub(crate) fn ensure_scan_space(
     store: &Store,
     root: &std::path::Path,
+    source: &ScanSource<'_>,
     filters: &crate::scanner_filter::Filters,
     config: &crate::config::Config,
     candidates: &[String],
@@ -166,7 +169,12 @@ pub(crate) fn ensure_scan_space(
         .iter()
         .map(String::as_str)
         .filter(|rel| store.lookup(rel).is_none() && filters.detect_lang(rel).lang().is_some());
-    let source_bytes = disk_space::new_source_bytes(root, unlisted, filters.max_file_bytes);
+    let cap = filters.max_file_bytes;
+    let source_bytes = match source {
+        ScanSource::WorkingTree => disk_space::new_source_bytes(root, unlisted, cap),
+        ScanSource::Staged(repo) => disk_space::capped_bytes(repo.staged_blob_sizes(unlisted)?, cap),
+        ScanSource::Rev { repo, sha } => disk_space::capped_bytes(repo.rev_blob_sizes(sha, unlisted)?, cap),
+    };
     let vectors = cfg!(feature = "code-search") && config.code_search.enabled && config.code_search.embed;
     let group_dir = crate::store_layout::group_index_dir(&store.root);
     let estimate = disk_space::current_estimate(&group_dir, source_bytes, vectors);
