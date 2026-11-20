@@ -61,8 +61,7 @@ The wheel includes MCP and PyYAML dependencies, but no basemind binary.
 
 Missing or invalid required skill resources and required registration errors disable the plugin
 with a named Hermes error. Reinstall a complete wheel before restarting Hermes; optional
-notification failures remain best effort. Maintainers can run `mise run plugin:hermes:native:test`
-with `HERMES_PYTHON` pointing to the Hermes SDK interpreter.
+notification failures remain best effort.
 
 ### Pi and OpenCode packages
 
@@ -97,28 +96,10 @@ Install only the public skills with `npx skills add Goldziher/basemind`. Root `s
 ten product skills, including `basemind-multi-agent-room`; maintainer rules and private agents are
 excluded. Claude-style slash commands become prompts or commands where the runtime supports them.
 
-## Configuration
+## Contributing
 
-Product sources live in `plugin/.ai-rulez/`; root `.ai-rulez/` governs development. Runtime manifests,
-packages, marketplace indexes, and skill mirrors are generated from these sources. Gemini context
-lives at `plugin/assets/GEMINI.md`.
-
-## Contributing and publishing
-
-Regenerate and verify through the repository plugin tasks before submitting changes. Do not edit
-generated runtime files directly. Publishing must verify the packed npm archive, Hermes wheel,
-and all-runtime archive before checking whether a version already exists.
-
-The manual artifact workflow packages the selected checkout only when its core and plugin
-versions match the requested existing release tag. Marketplace indexes pin that checkout's
-immutable commit; the archive attaches to the requested release. It does not create a product
-tag or publish registry packages.
-
-The new npm package requires its first manual bootstrap and a trusted-publisher configuration
-(`npm trust github @goldziher/basemind-plugin --repo Goldziher/basemind --file publish.yaml
---allow-publish`; without it the OIDC token exchange returns 404 and the publish fails);
-Hermes publishing requires its PyPI trusted publisher. Configure those account settings before
-requesting a release. See the [root README](../README.md).
+Plugin sources, generation and publishing are described in
+[CONTRIBUTING.md](../CONTRIBUTING.md#plugin-and-packages).
 
 ## License
 
