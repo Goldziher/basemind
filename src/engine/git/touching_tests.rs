@@ -103,7 +103,7 @@ fn a_fresh_index_answers_a_path_no_commit_touches_without_a_walk() {
 
     let mut missing = None;
     let walked = tested_by(|| missing = Some(run_touching(&ws, touching("missing.rs", 5))));
-    let refused = missing.expect("ran").err().expect("a path that is nowhere");
+    let refused = missing.expect("ran").expect_err("a path that is nowhere");
     assert_eq!(
         refused.to_string(),
         "`git_log`: no commit reachable from HEAD touches `missing.rs` and no such file exists. `path` is a \
