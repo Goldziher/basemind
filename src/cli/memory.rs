@@ -1,8 +1,8 @@
-//! `basemind memory` — the CLI half of `memory_save`, `memory_search` and `docs_search`.
+//! `basemind memory` — the CLI half of `memory_save` and `memory_search`.
 //!
-//! `put` runs the body of `memory_save`, `search` / `get` / `list` the body of `memory_search`, and
-//! `documents` the body of `docs_search`, which is what `tests/cli_parity/` asserts. `delete` has
-//! no MCP tool.
+//! `put` runs the body of `memory_save` and `search` / `get` / `list` the body of `memory_search`,
+//! which is what `tests/cli_parity/` asserts. `delete` has no MCP tool. The hidden `documents` is
+//! `basemind docs search` ([`super::docs`]) under its earlier name.
 //!
 //! The tools are registered in every build and gate in the body, so these handlers always compile
 //! and a command whose feature is missing surfaces the tool's own "rebuild with --features …"
@@ -74,33 +74,9 @@ pub enum MemoryCmd {
         #[arg(long)]
         individual: bool,
     },
-    /// Semantic search over indexed documents (needs `--features documents`).
-    Documents {
-        query: String,
-        /// Exact MIME filter, e.g. `application/pdf`.
-        #[arg(long)]
-        mime_type: Option<String>,
-        /// Format family: pdf, office, html, markdown, email, notebook, text, other.
-        #[arg(long)]
-        kind: Option<String>,
-        /// Glob over document paths, e.g. `docs/**/*.md`.
-        #[arg(long)]
-        path: Option<String>,
-        /// Keep documents with any of these whole keywords (comma-separated).
-        #[arg(long)]
-        keywords: Option<String>,
-        /// Keep chunks naming an entity of this category.
-        #[arg(long)]
-        entity: Option<String>,
-        #[arg(long)]
-        limit: Option<u32>,
-        /// Resume token: pass the previous page's `next_cursor`.
-        #[arg(long)]
-        cursor: Option<String>,
-        /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
-        #[arg(long)]
-        max_tokens: Option<u32>,
-    },
+    /// `basemind docs search`, under the name it had before `docs` existed.
+    #[command(hide = true)]
+    Documents(super::docs::DocsSearchArgs),
 }
 
 /// A `memory_search` call with no selector set.
@@ -202,35 +178,7 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
                     .await,
             )
         }
-        MemoryCmd::Documents {
-            query,
-            mime_type,
-            kind,
-            path,
-            keywords,
-            entity,
-            limit,
-            cursor,
-            max_tokens,
-        } => {
-            let p = DocsSearchParams {
-                query,
-                mime_type,
-                kind,
-                path,
-                keywords,
-                entity,
-                limit,
-                cursor: cursor.map(Cursor),
-                max_tokens,
-            };
-            (
-                "docs_search",
-                tools
-                    .call("docs_search", p, async |s, p| s.docs_search_call(p).await)
-                    .await,
-            )
-        }
+        MemoryCmd::Documents(args) => return super::docs::search(tools, args, opts, out).await,
     };
 
     let r = run_tool(tool, result)?;

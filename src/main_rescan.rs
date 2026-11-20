@@ -1,11 +1,8 @@
+use super::main_scan::{interrupted, reclaim_after_scan, scan_streaming, sync_git_history_after_scan};
 use super::*;
 
-pub(super) fn cmd_rescan(
-    root: &std::path::Path,
-    args: &RescanArgs,
-    verbosity: Verbosity,
-    no_color: bool,
-) -> Result<()> {
+pub(super) fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, output: ScanOutput) -> Result<()> {
+    let started = std::time::Instant::now();
     let root = &guard_workspace_root(root)?;
     let full = args.paths.is_empty();
     // ~keep Validate before touching any lock or daemon, so a bad path is a clean exit 2.
@@ -14,17 +11,17 @@ pub(super) fn cmd_rescan(
     } else {
         basemind::cli::rescan::resolve_paths(root, &args.paths)?
     };
-    let mut out = render::stdout(no_color);
+    let verbosity = output.verbosity;
+    let mut out = output.human();
     // ~keep A running daemon is the sole index writer: hand it the scan instead of opening a second,
     // ~keep unlocked-by-it writer. Never fall through to a local scan after a daemon failure.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if basemind::cli::rescan::daemon_is_up() {
         let report = basemind::cli::rescan::rescan_via_daemon(root, (!full).then_some(abs), full)?;
-        print_forwarded(&mut out, "rescan", &report);
-        return Ok(());
+        return output.forwarded(&mut out, "rescan", root, &report);
     }
     let cancel = basemind::cli::interrupt::install();
-    bootstrap_grammars(verbosity, no_color)?;
+    bootstrap_grammars(&mut out, verbosity)?;
     let config = load_or_default(root)?;
     if let Some(notice) = writer_collision_notice(root) {
         return Err(basemind::cli::exit::CliExit::busy(notice));
@@ -39,8 +36,7 @@ pub(super) fn cmd_rescan(
 
     let report = if full {
         scan_streaming(
-            no_color,
-            verbosity,
+            output,
             basemind::scanner::ScanSource::WorkingTree,
             root,
             &mut store,
@@ -49,25 +45,25 @@ pub(super) fn cmd_rescan(
         )
         .context("rescan (full)")?
     } else {
-        let mut observer = render::ScanLineObserver::new(no_color, verbosity);
-        let report = basemind::scanner::scan_named_paths_with_observer(
-            root,
-            &mut store,
-            &config,
-            &abs,
-            basemind::scanner::EmbedMode::Inline,
-            &cancel,
-            &mut observer,
-            basemind::retrieval_wiring::backend(),
-        );
-        observer.finish();
-        report.context("rescan (paths)")?
+        output
+            .observed(|observer| {
+                basemind::scanner::scan_named_paths_with_observer(
+                    root,
+                    &mut store,
+                    &config,
+                    &abs,
+                    basemind::scanner::EmbedMode::Inline,
+                    &cancel,
+                    observer,
+                    basemind::retrieval_wiring::backend(),
+                )
+            })
+            .context("rescan (paths)")?
     };
     if report.cancelled {
         return interrupted(&mut out, &report, verbosity, "rescan");
     }
-    render::render_summary(&mut out, &report.stats, verbosity);
-    render::render_phase_peaks(&mut out, &report.phase_peaks, verbosity);
+    output.summary(&mut out, root, &report, started)?;
     render::render_deps_unavailable(&mut out, &report.deps_unavailable, verbosity);
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);

@@ -10,7 +10,8 @@
 //! - `context.rs` — one-shot server construction, or the daemon session a call is forwarded over.
 //! - `forward.rs` — the relay session that forwards a call to the daemon when it is up.
 //! - `render.rs` — JSON extraction + generic human renderer.
-//! - `code.rs` / `git.rs` / `memory.rs` / `admin.rs` — subcommand groups.
+//! - `code.rs` / `git.rs` / `memory.rs` / `docs.rs` / `admin.rs` — subcommand groups.
+//! - `spelling.rs` — a tool's usage refusal rewritten in the spelling of the command that was typed.
 
 pub mod admin;
 pub mod agent;
@@ -21,6 +22,7 @@ pub mod code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod comms_daemon;
 pub mod context;
+pub mod docs;
 pub mod env_config;
 pub mod exit;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -41,6 +43,7 @@ pub mod registry;
 pub mod render;
 pub mod rescan;
 pub mod sessions;
+pub mod spelling;
 
 use std::io::Write;
 use std::path::Path;
@@ -63,9 +66,12 @@ pub enum ToolCmd {
     /// Git history / blame / diff queries.
     #[command(subcommand)]
     Git(git::GitCmd),
-    /// Shared agent memory and document search (needs `--features memory,documents`).
+    /// Shared agent memory (needs `--features memory`).
     #[command(subcommand)]
     Memory(memory::MemoryCmd),
+    /// Document search (needs `--features documents`).
+    #[command(subcommand)]
+    Docs(docs::DocsCmd),
     /// Administration: telemetry, tokens, eval.
     #[command(subcommand)]
     Admin(admin::AdminCmd),
@@ -95,14 +101,19 @@ pub(crate) fn resolve_path(tools: &context::Tools, path: &str) -> crate::path::R
 /// `is_error` result still produce `Ok(...)` — the JSON payload describes the
 /// condition, so we render it rather than fail the process.
 ///
-/// Two failures are classified for the exit-code contract ([`exit`]): invalid params are usage
-/// errors (`2`), and an unavailable fjall index gets an actionable hint instead of the bare
-/// internal message.
+/// Two failures are classified for the exit-code contract ([`exit`]), each by what the tool says it
+/// is, never by its wording: invalid params are a [`spelling::ToolUsage`] (`2`), which the binary
+/// rewrites in the command's own spelling, and an error marked busy (the `busy` data of an
+/// [`EngineError::Busy`](crate::engine::EngineError::Busy)) exits `3` with the message that names its
+/// fix.
 pub fn run_tool(tool: &str, result: Result<CallToolResult, McpError>) -> Result<CallToolResult> {
     result.map_err(|e| {
         let message = e.message.to_string();
         if e.code == rmcp::model::ErrorCode::INVALID_PARAMS {
-            return exit::CliExit::usage(format!("{tool}: {message}"));
+            return anyhow::Error::new(spelling::ToolUsage {
+                tool: tool.to_string(),
+                message,
+            });
         }
         if e.data
             .as_ref()
@@ -111,13 +122,6 @@ pub fn run_tool(tool: &str, result: Result<CallToolResult, McpError>) -> Result<
             == Some(true)
         {
             return exit::CliExit::busy(format!("{tool}: {message}"));
-        }
-        if message.contains("index not available") {
-            return exit::CliExit::busy(format!(
-                "{tool}: {message}. Another basemind process holds the index lock and no daemon is \
-                 reachable to forward to. Start the daemon with `basemind comms start` (it becomes the \
-                 sole writer and serves this call), or stop the process holding the lock and retry."
-            ));
         }
         anyhow::anyhow!("{tool}: {e}")
     })
@@ -166,6 +170,7 @@ pub fn run(
             ToolCmd::Code(c) => code::run(&tools, c, &opts, &mut out).await?,
             ToolCmd::Git(g) => git::run(&tools, g, &opts, &mut out).await?,
             ToolCmd::Memory(m) => memory::run(&tools, m, &opts, &mut out).await?,
+            ToolCmd::Docs(d) => docs::run(&tools, d, &opts, &mut out).await?,
             ToolCmd::Admin(a) => admin::run(&tools, a, &opts, &mut out).await?,
             ToolCmd::Status => admin::run_status(&tools, &opts, &mut out).await?,
             ToolCmd::Overview(args) => overview::run(&tools, args, &opts, &mut out).await?,
@@ -213,6 +218,40 @@ mod tests {
             exit::exit_code_for(&error),
             exit::ERROR,
             "any other failure stays a runtime error"
+        );
+    }
+
+    /// The exit status follows the error's kind, not its wording: a busy refusal exits `3` whatever
+    /// it says, and a message that mentions an unavailable index without the busy mark exits `1`.
+    #[test]
+    fn the_busy_exit_follows_the_error_kind_not_its_text() {
+        let busy = run_tool(
+            "code_refs",
+            Err(rmcp::ErrorData::from(crate::engine::EngineError::busy(
+                "held elsewhere",
+            ))),
+        )
+        .expect_err("busy");
+        assert_eq!(exit::exit_code_for(&busy), exit::BUSY);
+        assert_eq!(busy.to_string(), "code_refs: held elsewhere");
+
+        let worded = run_tool(
+            "code_refs",
+            Err(rmcp::ErrorData::invalid_request("the index not available here", None)),
+        )
+        .expect_err("worded");
+        assert_eq!(exit::exit_code_for(&worded), exit::ERROR);
+    }
+
+    #[test]
+    fn invalid_params_are_a_tool_usage_error() {
+        let error =
+            run_tool("code_grep", Err(rmcp::ErrorData::invalid_params("`limit` is 0", None))).expect_err("refused");
+        assert_eq!(exit::exit_code_for(&error), exit::USAGE);
+        let usage = error.downcast_ref::<spelling::ToolUsage>().expect("a tool usage error");
+        assert_eq!(
+            (usage.tool.as_str(), usage.message.as_str()),
+            ("code_grep", "`limit` is 0")
         );
     }
 }

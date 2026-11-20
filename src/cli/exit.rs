@@ -75,12 +75,16 @@ impl fmt::Display for CliExit {
 
 impl std::error::Error for CliExit {}
 
-/// The exit status for a failed command: the first [`CliExit`] in the chain, else `3` for a store
-/// lock collision (however deep it is wrapped), else `1`.
+/// The exit status for a failed command: the first [`CliExit`] in the chain, `2` for a tool's usage
+/// refusal ([`super::spelling::ToolUsage`]), else `3` for a store lock collision (however deep it is
+/// wrapped), else `1`.
 pub fn exit_code_for(error: &anyhow::Error) -> u8 {
     for cause in error.chain() {
         if let Some(exit) = cause.downcast_ref::<CliExit>() {
             return exit.code;
+        }
+        if cause.is::<super::spelling::ToolUsage>() {
+            return USAGE;
         }
         if let Some(store) = cause.downcast_ref::<crate::store::StoreError>()
             && store.is_lock_contention()

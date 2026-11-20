@@ -44,6 +44,27 @@ impl From<&ScanStats> for RescanStats {
     }
 }
 
+impl RescanResponse {
+    /// The answer for a scan of `root` that counted `stats` in `elapsed_ms`: what `index_rescan`
+    /// returns, and what `basemind scan --json` and `basemind rescan --json` print.
+    pub(crate) fn new(stats: RescanStats, elapsed_ms: u128, root: String) -> Self {
+        Self {
+            scanned: stats.scanned,
+            updated: stats.updated,
+            docs_indexed: stats.docs_indexed,
+            docs_degraded: stats.docs_degraded,
+            docs_text_fallback: stats.docs_text_fallback,
+            doc_timeouts: stats.doc_timeouts,
+            removed: stats.removed,
+            skipped_unchanged: stats.skipped_unchanged,
+            skipped_no_lang: stats.skipped_no_lang,
+            extract_failed: stats.extract_failed,
+            elapsed_ms,
+            root,
+        }
+    }
+}
+
 /// Lines from which `index_status` counts a code file as too long to read whole: past a few
 /// thousand lines one read spends most of an agent's context, so `code_outline` and a line range
 /// serve better (#127).
@@ -225,20 +246,7 @@ impl Workspace {
         progress.started();
         let stats = scan(self, scoped_paths)?;
         progress.finished(stats.scanned);
-        Ok(RescanResponse {
-            scanned: stats.scanned,
-            updated: stats.updated,
-            docs_indexed: stats.docs_indexed,
-            docs_degraded: stats.docs_degraded,
-            docs_text_fallback: stats.docs_text_fallback,
-            doc_timeouts: stats.doc_timeouts,
-            removed: stats.removed,
-            skipped_unchanged: stats.skipped_unchanged,
-            skipped_no_lang: stats.skipped_no_lang,
-            extract_failed: stats.extract_failed,
-            elapsed_ms: started.elapsed().as_millis(),
-            root,
-        })
+        Ok(RescanResponse::new(stats, started.elapsed().as_millis(), root))
     }
 
     /// The scan of [`index_rescan`](Self::index_rescan) in this workspace's own store: an embedding

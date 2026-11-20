@@ -80,7 +80,7 @@ impl BasemindServer {
 }
 
 impl BasemindServer {
-    /// Body of the `docs_search` tool, shared with `basemind memory documents`.
+    /// Body of the `docs_search` tool, shared with `basemind docs search`.
     pub(crate) async fn docs_search_call(&self, p: DocsSearchParams) -> Result<CallToolResult, McpError> {
         self.op(p, Workspace::docs_search).await
     }

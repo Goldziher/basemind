@@ -13,6 +13,9 @@ unchanged file is never extracted twice, across worktrees and repositories alike
 | Re-index the whole tree | `index_rescan {}` | `basemind rescan` |
 | Build the index from scratch | none | `basemind scan` |
 
+`basemind scan --json` and `basemind rescan --json` print only the response `index_rescan` gives
+(the counts, `elapsed_ms` and `root`), for a scan run here or forwarded to the daemon.
+
 Besides the counts per language, `index_status` lists `large_files` (code files too long to read
 whole) and `most_imported` (the five files most others import at runtime, absent when no import
 resolver placed an edge).

@@ -1176,7 +1176,7 @@ files that became eligible from the cached blobs, without re-embedding.
 ## CLI reference
 
 <details>
-<summary><strong>Full command list</strong> — code · git · memory · admin · cache · agent · workspace</summary>
+<summary><strong>Full command list</strong> — code · git · memory · docs · admin · cache · agent · workspace</summary>
 
 Every MCP tool has a CLI command (enforced by `tests/cli_parity/`); the CLI also keeps shorthands
 and administrative commands that have no MCP tool. Add `--json` for machine-readable output: the
@@ -1194,7 +1194,7 @@ arguments are 1-based.
 |---|---|
 | `0` | Success. |
 | `1` | Runtime error. |
-| `2` | Usage error: bad flag or argument (including an invalid `rescan` path, or a destructive command without `--yes`). |
+| `2` | Usage error: bad flag or argument (including an invalid `rescan` path, or a destructive command without `--yes`). The message names the command and its flags as typed (`--max-tokens`), not the MCP tool's fields. |
 | `3` | Busy: another process holds the workspace writer lock, or the daemon a scan was forwarded to is stopping. Retry later. |
 | `4` | A required daemon is unreachable. |
 | `130` | Interrupted by Ctrl-C; completed work is committed and the index stays consistent. |
@@ -1245,7 +1245,13 @@ degrading to a truncated in-memory view.
 | `put <key> <value> [--tag]... [--individual]` | Store a note (`memory_save`). |
 | `get <key>` / `list [--prefix --tag]` / `search <query> [--tag]` | Read one note, list by key prefix, or search by meaning (`memory_search`). |
 | `delete <key>` | Remove a note (CLI only). |
-| `documents <query> [--mime-type --kind --path --keywords --entity]` | Search indexed PDFs / Office / HTML / email / notebooks / Markdown / text, config and data files by meaning and by words, with citations (`docs_search`). |
+
+**Documents (`basemind docs`)**
+
+| Command | Purpose |
+|---|---|
+| `search <query> [--mime-type --kind --path --keywords --entity]` | Search indexed PDFs / Office / HTML / email / notebooks / Markdown / text, config and data files by meaning and by words, with citations (`docs_search`). `basemind memory documents` is the same command under its earlier name. |
+
 **Admin (`basemind admin`)**
 
 | Command | Purpose |
@@ -1298,8 +1304,8 @@ checkout's principal.
 
 | Command | Purpose |
 |---|---|
-| `scan [--staged \| --rev <REV>] [--no-git-history] [--rebuild-git-history]` | Full scan, or index the git index / one revision. Ctrl-C stops it cleanly. With a daemon running, a working-tree scan is forwarded to it; a flag it cannot apply (`--rebuild-git-history`, `--verify-shared-base`, a `--documents-*` / `--llm-*` override) is refused with exit 2, and `--staged` / `--rev` exit 3 while the daemon holds the workspace. A scan starts no daemon. |
-| `rescan [<path>…] [--no-git-history] [--rebuild-git-history]` | Update the given paths, or with none the whole tree. Routed through the daemon when one runs. |
+| `scan [--staged \| --rev <REV>] [--no-git-history] [--rebuild-git-history]` | Full scan, or index the git index / one revision. With `--json`, stdout holds only the `index_rescan` response. Ctrl-C stops it cleanly. With a daemon running, a working-tree scan is forwarded to it; a flag it cannot apply (`--rebuild-git-history`, `--verify-shared-base`, a `--documents-*` / `--llm-*` override) is refused with exit 2, and `--staged` / `--rev` exit 3 while the daemon holds the workspace. A scan starts no daemon. |
+| `rescan [<path>…] [--no-git-history] [--rebuild-git-history]` | Update the given paths, or with none the whole tree. Routed through the daemon when one runs. `--json` prints the `index_rescan` response. |
 | `status` | Index health for this workspace: file counts, languages, scan age. |
 | `overview [--sections a,b] [--limit N]` | The repository's shape: languages with file and line counts, top-level directories, build manifests (`Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`, `pom.xml`, `build.gradle`) and the entry points they declare, the largest and most-imported files, HTTP routes, naming conventions per language, the latest commits. CLI only; answered by the daemon when one runs. |
 | `doctor` | Check root, config, index, grammars, pre-commit hook and daemon; exits 1 on a failed check. |
