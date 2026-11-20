@@ -5,14 +5,6 @@
 
 **The context and communication layer for coding agents.**
 
-basemind turns any repo into an always-current map of its code, documents, history, and memory —
-so agents answer from **structure and search** instead of burning their context window on `grep` and
-file reads — and gives a team of agents a **shared channel to coordinate** while they work. One
-server does both.
-
-Code map across **300+ languages** · PDF, Office, HTML, email and image documents · semantic + full-text search ·
-git history & blame · shared memory · agent-to-agent comms
-
 [![Docs](https://img.shields.io/badge/docs-basemind.ai-965aff?style=flat-square)](https://basemind.ai)
 [![crates.io](https://img.shields.io/crates/v/basemind?style=flat-square)](https://crates.io/crates/basemind)
 [![npm](https://img.shields.io/npm/v/basemind?style=flat-square)](https://www.npmjs.com/package/basemind)
@@ -20,254 +12,114 @@ git history & blame · shared memory · agent-to-agent comms
 [![CI](https://img.shields.io/github/actions/workflow/status/Goldziher/basemind/ci.yaml?style=flat-square)](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
-[Docs](https://basemind.ai) · [Install](#installation) · [Features](#what-you-get) · [How it works](#how-it-works) · [Performance](#performance) · [CLI](#cli-reference)
+[Docs](https://basemind.ai) · [Quickstart](#quickstart-60-seconds) · [Install](#installation) · [For teams](#for-teams) · [How it works](#how-it-works) · [Security](SECURITY.md)
 
 </div>
 
 ---
 
+- **Fewer tokens.** An agent reads a file's outline, one symbol's body or a list of call sites
+  instead of opening and grepping whole files.
+- **Answers with paths and lines.** Every result names the file, the 1-based line and the
+  signature, so the agent reads only the span it needs.
+- **Coordination.** Agents on one machine, in any harness and any repository, post to shared
+  threads and read their own inbox.
+
 <!-- markdownlint-disable MD013 -->
 <p align="center"><img src="docs/media/mcp-demo.gif" alt="An agent answering from a file outline and its call sites in a live Claude Code session" width="820"></p>
-<p align="center"><em>An agent reasoning from structure — a file outline and a call-site lookup in a live session, statusline tracking tokens saved.</em></p>
+<p align="center"><em>An agent reasoning from structure — a file outline and a call-site lookup in a live session, statusline tracking tokens saved. Recorded on an earlier release: the tools are now <code>code_outline</code> and <code>code_refs</code>.</em></p>
 <!-- markdownlint-enable MD013 -->
 
-<div align="center"><sub><a href="#demos">More demos ↓</a></sub></div>
+## Quickstart (60 seconds)
 
----
-
-## What you get
-
-basemind answers with **file paths, line numbers, and signatures — not whole files** — so a question
-about your code costs a small fraction of the tokens it takes to read the source.
-
-<!-- markdownlint-disable MD013 -->
-
-| Capability | What it does | Key tools |
-|---|---|---|
-| **Code intelligence** | Read the code map instead of opening files: what a file contains (`code_outline`), where a name is defined (`code_symbols`), one symbol's body or an exact line span (`code_read`), exact text search over code and text files, literal by default (`code_grep`), search by meaning over indexed chunks (`code_search`, needs `--features code-search`), and usages (`code_refs`): call sites of a name (matched by name), callers of one definition, implementors of a trait / interface / base class, importers of a module, the files importing a file (`relation: "importers"` with `path`, up to `depth` hops), the import cycles (`relation: "cycles"`) over the resolved import graph, the HTTP calls reaching a route (a `METHOD /path` name, or a handler pinned by `path`), and go-to-definition (scope- and import-aware once a `path` pins the definition: JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)). `find_files` locates or lists files, documents included, or with `min_lines` the code files too long to read whole, largest first. `changed` scopes `code_grep`, `code_symbols`, `code_refs` and `find_files` to the files a revision or `A..B` touched. Layered over [300+ languages](#how-it-works). | `code_outline` · `code_symbols` · `code_read` · `code_grep` · `code_search` · `code_refs` · `find_files` |
-| **Git intelligence** | Ask what changed recently, which commits touched a file, which commit mentions a phrase (full-text over messages and authors at full branch depth), when a symbol's body changed, who last touched a line or a function, and how a file differs between revisions or from the working tree, as text hunks or as symbols added and removed. | `git_log` · `git_blame` · `git_diff` |
-| **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included in the published binaries, no extra setup; a source build needs the `documents-ocr` Cargo feature). | `memory_save` · `memory_search` · `docs_search` |
-| **Agent comms** | Threads opened by a post with a subject, open to the repository or invitation-only (`to`); a per-actor inbox whose reads mark messages read (`peek` does not); membership by principal, `as` for subagents; waits in the daemon (`wait_secs`). | `agent_post` · `agent_inbox` · `agent_threads` |
-| **Index** | Check index health and repo identity (including `large_files`: how many code files reach 2,000 lines, and the largest; and `most_imported`: the five files most others import), and refresh the index after edits. Telemetry and cache maintenance are CLI commands (`basemind admin telemetry`, `basemind cache stats\|gc\|clear`). | `index_status` · `index_rescan` |
-
-<!-- markdownlint-enable MD013 -->
-
-The code, git, memory, document and index rows are 15 tools, one per job, each with its own exact
-schema; there is no `mode` argument. They are always loaded (`_meta["anthropic/alwaysLoad"]`), so a host that defers MCP tools
-needs no tool-search round trip: call them directly. Their `tools/list` entry is about 20 KB (about
-5k tokens). The three agent tools (`comms` builds) are deferred: a host finds them by tool search, and the session-start hook and the server instructions name them. An unknown argument is
-rejected with a did-you-mean suggestion, every line number is 1-based, and a failure the caller can
-fix comes back as an `isError` result that names the fix. Arguments, examples and the mapping from
-the previous `code` / `git` / `memory` / `admin` tools: the
-[MCP tool reference](https://basemind.ai/reference/mcp-tools/) and
-[`docs/UPGRADING.md`](docs/UPGRADING.md).
-
-```text
-code_outline {"path":"src/store.rs"}
-code_symbols {"name":"parse_config","kind":"function"}
-code_read    {"path":"src/store.rs","symbol":"open"}
-code_grep    {"pattern":"cache_root(","path":"src/"}
-code_refs    {"name":"open_store","path":"src/store.rs"}
-git_log      {"path":"src/store.rs","limit":5}
-git_diff     {"path":"src/store.rs","from":"HEAD~1","to":"HEAD"}
-docs_search  {"query":"how releases are versioned"}
-```
-
----
-
-## Installation
-
-Three ways to run basemind, easiest first. All three share the same local index and are safe to run
-side by side.
-
-> **The MCP plugin downloads the basemind program for you** on first use. Pi, the MCP-server,
-> and CLI paths need it installed yourself — see [Install the program](#install-the-program).
-
-### 1. As a plugin (recommended)
-
-The curated plugin under `plugin/` contains ten public skills and six commands for eleven runtime
-profiles. See the [plugin installation guide](plugin/README.md) for local installation and release
-prerequisites. The repository root also retains the existing OpenCode terminal adapter and Pi
-extension; those integrations have separate package entry points.
-
-<details>
-<summary><strong>Claude Code</strong></summary>
-
-In the session (not your shell), run in order:
+In a Claude Code session (not your shell), at the repository root:
 
 ```text
 /plugin marketplace add Goldziher/basemind
 /plugin install basemind@basemind
 ```
 
-Restart, then run `/bm-statusline` once to turn on the live statusline (a one-time step — see
-[Statusline](#install-the-program)). **Turn on auto-update for the `basemind` marketplace**
-(Claude Code's plugin manager): the plugin then tracks each new release automatically, and the
-launcher resolves the matching published release. Prefer to control timing? Update the
-marketplace regularly by hand instead.
-
-</details>
-
-<details>
-<summary><strong>Codex</strong></summary>
-
-```bash
-codex plugin marketplace add Goldziher/basemind
-codex plugin add basemind@basemind
-```
-
-In the app: open the **Plugins** sidebar and add basemind. The CLI and IDE share one config file.
-The generated plugin uses the matching published GitHub release, or a local `BASEMIND_BIN` override.
-
-</details>
-
-<details>
-<summary><strong>Cursor</strong></summary>
-
-In Agent chat: `/add-plugin basemind` (once listed), or go to **Dashboard → Settings → Plugins →
-Team Marketplaces → Import from Repo** and point it at `https://github.com/Goldziher/basemind`.
-
-</details>
-
-<details>
-<summary><strong>Gemini CLI</strong></summary>
-
-```bash
-git clone https://github.com/Goldziher/basemind
-cd basemind
-gemini extensions install ./plugin --skip-settings
-```
-
-Update later with `gemini extensions update basemind`.
-
-</details>
-
-<details>
-<summary><strong>Factory Droid</strong></summary>
-
-```bash
-droid plugin marketplace add https://github.com/Goldziher/basemind
-droid plugin install basemind@basemind
-```
-
-</details>
-
-<details>
-<summary><strong>GitHub Copilot CLI</strong></summary>
-
-```bash
-copilot plugin marketplace add Goldziher/basemind
-copilot plugin install basemind@basemind
-```
-
-</details>
-
-<details>
-<summary><strong>OpenCode</strong></summary>
-
-Add to `opencode.json` (project) or `~/.config/opencode/opencode.json` (global):
-
-```json
-{ "plugin": ["basemind-opencode@latest"] }
-```
-
-</details>
-
-<details>
-<summary><strong>Kimi Code</strong></summary>
+Restart Claude Code and run `/bm-init`. It asks where the rules go, then runs `basemind init --yes`
+with the binary the plugin downloaded: that writes `basemind.toml` and a rules block telling the
+agent to ask basemind first. Then ask:
 
 ```text
-/plugins install https://github.com/Goldziher/basemind
+Where is parse_config defined, and what calls it?
 ```
 
-Kimi doesn't support the comms auto-notifications, but the chat tools still work.
+The first call builds the index; until it is done, answers carry a notice saying so.
 
-</details>
-
-<details>
-<summary><strong>Agent Plugins (agent-plugins.org)</strong></summary>
-
-Load the `plugin/` directory as an [Agent Plugins](https://agent-plugins.org) 1.0.0 package. It contains
-`plugin.json`, `mcp.json`, and ten public skills. Copilot shares this portable layout. The MCP
-launcher downloads the matching published basemind binary, or uses `BASEMIND_BIN` for a local build.
-
-</details>
-
-<details>
-<summary><strong>Hermes</strong></summary>
-
-[Install the program](#install-the-program) first. Install the plugin into the same Python
-environment Hermes runs in, at the version of your `basemind` binary, then enable it:
-
-```bash
-python -m pip install "basemind-hermes-plugin==$(basemind --version | awk '{print $2}')"
-hermes plugins enable basemind
-```
-
-Restart Hermes. The plugin registers ten skills, six slash commands, comms notifications,
-and `basemind_call`, which bridges the local MCP server's tools and returns JSON text.
-The binary must be on `PATH`. Comms notifications are
-best-effort. You can also configure `mcp_servers.basemind` with `command: basemind` and
-`args: [serve]` for direct access to the tools.
-
-To run a binary built from a checkout, build the wheel from the same checkout, so its skills name
-the tools that binary serves:
-
-```bash
-uv build --wheel --out-dir dist/hermes plugin/.hermes/package
-python -m pip install --force-reinstall dist/hermes/basemind_hermes_plugin-*.whl
-```
-
-</details>
-
-<details>
-<summary><strong>Antigravity</strong></summary>
-
-**Antigravity** uses a shared MCP config — [install the program](#install-the-program), then add the
-[generic MCP block](#2-as-an-mcp-server). If you already use the Gemini extension,
-`agy plugin import gemini` brings it across.
-
-</details>
-
-<details>
-<summary><strong>Pi</strong></summary>
-
-[Install the basemind program](#install-the-program) first, then install the Pi package:
+Without a plugin, from a shell:
 
 ```sh
-pi install git:github.com/Goldziher/basemind
+brew install Goldziher/tap/basemind
+basemind init --yes
+basemind scan
+basemind code refs parse_config
 ```
 
-The package includes ten skills and a native extension that loads basemind context at session start
-and after compaction. Pi runs basemind through its shell tool using the [CLI](#3-as-a-cli).
-No MCP bridge or binary is included. Add `-l` to save the package in the current project's configuration.
+[Other agents →](#installation)
 
-The `basemind-opencode` npm package carries the same extension and skills: use
-`pi install npm:basemind-opencode` for registry installation and Pi package-catalog discovery.
+## What you get
 
-</details>
+<!-- markdownlint-disable MD013 -->
 
-**Public skills only.** Install the ten public skills independently:
+| Capability | What it answers | MCP tools |
+|---|---|---|
+| **Code** | What a file contains, where a name is defined, one symbol's body, text and meaning search, and the call sites, callers, implementations and importers of a name. | `code_outline` · `code_symbols` · `code_read` · `code_grep` · `code_search` · `code_refs` · `find_files` |
+| **Git** | Recent commits, commits touching a path or mentioning a phrase, blame per line or per symbol, and diffs as hunks or as the symbols added and removed. | `git_log` · `git_blame` · `git_diff` |
+| **Documents** | Search by meaning and by words over PDFs, Office files, HTML, email, notebooks, Markdown and images, with citations. | `docs_search` |
+| **Memory** | Notes agents save and search by meaning, kept per clone and shared by its worktrees. | `memory_save` · `memory_search` |
+| **Agent messaging** | Threads and per-agent inboxes for the agents on one machine. | `agent_post` · `agent_inbox` · `agent_threads` |
+| **Index** | Whether the index is fresh, and a refresh after edits. | `index_status` · `index_rescan` |
 
-```sh
-npx skills add Goldziher/basemind
-```
+<!-- markdownlint-enable MD013 -->
 
-Discovery uses the root `skills/` mirror. Maintainer governance and private agents are not included.
-For the curated Pi package's ten skills and six prompts, run `pi install ./plugin` from this checkout;
-it carries no automatic context extension. The root Git package above retains the custom extension.
+Arguments and examples for every tool: the [MCP tool reference](https://basemind.ai/reference/mcp-tools/).
+Each tool has a CLI command that runs the same code with the same arguments (`basemind code refs`,
+`basemind git log`, …).
 
-**Local or development builds with the plugin.** The launcher runs the release that matches the
-plugin manifest. Set `BASEMIND_BIN=/path/to/basemind` to run your own build instead: it is honoured
-whatever version it reports (the launcher logs a notice when that differs from the manifest's), and it
-wins over `BASEMIND_FORCE_VERSION`. A build on a different release minor resets the cache on first open
-(wipe and rebuild). `BASEMIND_FORCE_VERSION=<x.y.z>` pins the launcher to one published release
-instead of the manifest's.
+## Installation
 
-### 2. As an MCP server
+The plugin downloads the basemind program on first use. Every other path needs the program
+[installed](#install-the-program).
 
-If your tool speaks MCP but you're not using the plugin, [install the program](#install-the-program),
-then register it:
+### As a plugin
+
+<!-- markdownlint-disable MD013 -->
+
+| Harness | Install |
+|---|---|
+| Claude Code | In the session: `/plugin marketplace add Goldziher/basemind`, then `/plugin install basemind@basemind`. Turn on auto-update for the `basemind` marketplace to follow each release. |
+| Codex | `codex plugin marketplace add Goldziher/basemind`, then `codex plugin add basemind@basemind`; in the app, add basemind from the **Plugins** sidebar. |
+| Cursor | `/add-plugin basemind` in Agent chat, or **Dashboard → Settings → Plugins → Team Marketplaces → Import from Repo** with `https://github.com/Goldziher/basemind`. |
+| Gemini CLI | `git clone https://github.com/Goldziher/basemind`, then `gemini extensions install ./plugin --skip-settings` inside the clone; update with `gemini extensions update basemind`. |
+| Factory Droid | `droid plugin marketplace add https://github.com/Goldziher/basemind`, then `droid plugin install basemind@basemind`. |
+| GitHub Copilot CLI | `copilot plugin marketplace add Goldziher/basemind`, then `copilot plugin install basemind@basemind`. |
+| OpenCode | Add `{ "plugin": ["basemind-opencode@latest"] }` to `opencode.json` or `~/.config/opencode/opencode.json`. |
+| Kimi Code | `/plugins install https://github.com/Goldziher/basemind`. Message notifications are not supported; the tools work. |
+| Agent Plugins | Load the `plugin/` directory as an [Agent Plugins](https://agent-plugins.org) 1.0.0 package. |
+| Hermes | Needs the program. `python -m pip install "basemind-hermes-plugin==$(basemind --version \| awk '{print $2}')"`, then `hermes plugins enable basemind`. |
+| Pi | Needs the program. `pi install git:github.com/Goldziher/basemind`, or `pi install npm:basemind-opencode`. |
+| Antigravity | Needs the program. Add the [MCP server block](#as-an-mcp-server), or `agy plugin import gemini` from the Gemini extension. |
+
+<!-- markdownlint-enable MD013 -->
+
+Local installs, the Hermes wheel from a checkout and the Pi package variants are in the
+[plugin installation guide](plugin/README.md). `npx skills add Goldziher/basemind` installs the
+public skills alone.
+
+The launcher runs the release that matches the plugin manifest. `BASEMIND_BIN=/path/to/basemind`
+runs your own build instead, whatever version it reports; `BASEMIND_FORCE_VERSION=<x.y.z>` pins one
+published release.
+
+In Claude Code, `/bm-statusline` turns on the status line once: index freshness, calls by type,
+tokens saved and unread messages. `BASEMIND_STATUSLINE=full|compact|minimal` picks the layout and
+`BASEMIND_STATUSLINE_CONTEXT=0` hides the top line.
+
+### As an MCP server
+
+[Install the program](#install-the-program), then register it with any MCP client:
 
 ```json
 {
@@ -277,54 +129,22 @@ then register it:
 }
 ```
 
-Each tool has a title and says whether it only reads or can change things, so your client can
-auto-approve the safe ones and ask before the rest. The server also exposes three on-demand MCP
-resources whose bodies equal the matching tool result: `basemind://status`,
-`basemind://outline/{path}` and `basemind://memory/{key}`. If `basemind` isn't found, use the full path
-from `which basemind`.
+In Claude Code: `claude mcp add basemind -- basemind serve` (`--scope user` for every project). In
+Codex: `codex mcp add basemind -- basemind serve`. In Gemini CLI:
+`gemini mcp add basemind basemind serve`. Every tool states whether it only reads, so a client can approve the read-only ones
+automatically. If `basemind` is not found, use the full path from `which basemind`.
 
-<details>
-<summary><strong>Per-tool specifics</strong> (Claude Code · Cursor · Windsurf · Codex · Gemini · Copilot · Droid · Cline · Continue · OpenCode · Hermes)</summary>
+### As a CLI
 
-- **Claude Code** — `claude mcp add basemind -- basemind serve` (add `--scope user` for all
-  projects; the `--` is required). Or commit a `.mcp.json` at the repo root with the block above.
-- **Cursor** — put the block above in `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global).
-- **Windsurf** — `~/.codeium/windsurf/mcp_config.json` (or Cascade → MCP servers → manage), then
-  **Refresh**.
-- **Codex** — `codex mcp add basemind -- basemind serve`, shared by the CLI and IDE.
-- **Gemini CLI** — `gemini mcp add basemind basemind serve`, or the block above in
-  `~/.gemini/settings.json`.
-- **GitHub Copilot CLI** — `/mcp add` in-session, or `~/.copilot/mcp-config.json` with
-  `"type": "local"` and `"tools": ["*"]`.
-- **Factory Droid** — `droid mcp add basemind "basemind serve"`, or `~/.factory/mcp.json`.
-- **Cline** — MCP Servers icon → Configure → add the block above.
-- **Continue** — `.continue/mcpServers/basemind.yaml` with `command: basemind`, `args: [serve]`.
-- **OpenCode (without the plugin)** — `opencode.json` under key `mcp`, with `command` as an array
-  `["basemind", "serve"]`.
-- **Hermes** — `mcp_servers.basemind` in `~/.hermes/config.yaml` (YAML: `command: basemind`,
-  `args: [serve]`). For helper skills and notifications, install the source wheel and enable the
-  plugin as described in the [Hermes installation section](#1-as-a-plugin-recommended).
-- **Any other tool** — point it at the command `basemind` with the argument `serve`.
-
-</details>
-
-### 3. As a CLI
-
-The standalone program, for scripts, headless runs, and CI. [Install it](#install-the-program), then:
-
-```bash
+```sh
 basemind scan                          # index the project once
-basemind code symbols "parseQuery"     # find a definition by name
-basemind code refs "processFile"       # find everywhere it's called
+basemind code symbols "parseQuery"     # where a name is defined
+basemind code refs "processFile"       # where it is called
 basemind git blame src/main.rs         # who last changed each line
 basemind watch                         # keep the index fresh as files change
 ```
 
-Full command list in the [CLI reference](#cli-reference).
-
 ### Install the program
-
-The MCP and CLI paths need `basemind` available on your system. (The plugin does this for you.)
 
 <!-- markdownlint-disable MD013 -->
 
@@ -333,155 +153,71 @@ The MCP and CLI paths need `basemind` available on your system. (The plugin does
 | Homebrew | `brew install Goldziher/tap/basemind` | everything |
 | npm | `pnpm add -g basemind` | everything |
 | pip | `pip install basemind` | everything |
-| cargo | `cargo install basemind --locked` | code + git only (the CLI; `basemind serve` needs `--features comms`) |
+| cargo | `cargo install basemind --locked` | code and git tools only, without precise resolution; `basemind serve` needs `--features comms` |
 | cargo (full) | `cargo install basemind --features full --locked` | everything |
 | GitHub releases | [Download a binary](https://github.com/Goldziher/basemind/releases) | everything |
 
 <!-- markdownlint-enable MD013 -->
 
-The Homebrew / npm / pip / GitHub downloads are built with `full` — documents, OCR, named-entity
-recognition, search, shared memory, and agent comms — so the first run downloads the models it
-needs. The plain `cargo install` builds the code-map and git tools only: the one-shot CLI works, but
-`basemind serve` relays to the daemon and so needs the `comms` feature (`--features full` has it).
+The Homebrew, npm, pip and GitHub builds include documents with OCR and named-entity recognition,
+code search, memory and agent messaging; the first run downloads the models they need. A source build
+picks features in `Cargo.toml` (`documents`, `documents-ocr`, `documents-ner`, `code-search`,
+`memory`, `comms`, `code-intel`, or `full` for all of them); the
+[feature table](https://basemind.ai/reference/configuration/#cargo-features) says what each adds.
 
-A source build picks its document tiers by Cargo feature:
+Release binaries are published for macOS on Apple Silicon, Linux on x86_64 and arm64 (glibc 2.28 or
+newer) and Windows on x86_64. Other platforms build from source.
 
-<!-- markdownlint-disable MD013 -->
+## For teams
 
-| Feature | Adds | In `full` |
-|---|---|---|
-| `documents` | Document search over local files: PDF (text layer), Office formats, spreadsheets, email, HTML, XML (SVG text is read as XML), Markdown/MDX and Jupyter notebooks, with chunking, language detection, quality scoring, keywords, extractive summaries, the cross-encoder reranker and embeddings. No OCR, no NER. | yes |
-| `documents-ocr` | `documents` plus Tesseract OCR: raster images and scanned PDFs (no text layer). Runs implicitly, no configuration. | yes |
-| `documents-ner` | `documents` plus ONNX named-entity recognition (GLiNER): `[documents.ner]` and the `entity` filter of `docs_search`. | yes |
-| `documents-ocr-paddle` | `documents-ocr` plus PaddleOCR as an optional fallback stage. Source builds only. | no |
+A repository commits what every teammate shares; each teammate's machine keeps the rest.
 
-<!-- markdownlint-enable MD013 -->
+| Committed to the repository | Set by each user |
+|---|---|
+| `basemind.toml`: what to scan and index | The plugin install and its auto-update |
+| The plugin's marketplace and enable entries in `.claude/settings.json` | The `BASEMIND_*` variables: cache budget, daemon caps, grants |
+| Optionally, the read-only tool allows `basemind init --settings-target shared` writes | The `.local` rules and settings files `basemind init` writes by default |
 
-`--features documents` alone no longer includes OCR or NER; use
-`--features "documents documents-ocr documents-ner"` (or `full`) to keep both. Without
-`documents-ocr`, raster images are not indexed as documents and a PDF with no text layer is indexed
-with no text, with a warning naming the file and the feature. Without `documents-ner`,
-`[documents.ner] enabled = true` has no effect and logs a warning, and `docs_search` with
-`entity` returns an error naming the feature.
+The index, the memory notes and the daemon's files live in one data directory per user:
+`~/.local/share/basemind` on Linux, `~/Library/Application Support/basemind` on macOS,
+`%APPDATA%\basemind\data` on Windows, or `BASEMIND_DATA_HOME`. basemind writes into a repository
+only what `basemind init` and `basemind hook install` put there.
 
-### Get started
+A repository's `basemind.toml` can ask for a capability that reaches outside the repository
+(extra roots, symlinks, credential files), but only an operator's `BASEMIND_ALLOW_*` variable grants
+it, so cloning a repository cannot widen what basemind reads. The daemon serves only its own user,
+and HTTP is off unless the operator enables it. The threat model is in [SECURITY.md](SECURITY.md).
 
-After installing, run **`basemind init`** (CLI) — or **`/bm-init`** if your tool supports slash
-commands — from the repo root. It's re-runnable and safe to call again later:
+Rolling out to a team: [`basemind manual setup`](docs/manual/setup.md#rolling-out-to-a-team).
 
-- Writes a commented `basemind.toml` scaffold at the repo root, if one doesn't already exist.
-- Lets you pick which capabilities to advertise (interactive prompt in a TTY, or non-interactive
-  with `--yes`, `--with <capability>`, `--without <capability>`). Capability slugs:
-  `code-search-navigation`, `code-mapping-architecture`, `git-history`, `file-finding`, `agent-comms`,
-  `documents-rag`, `semantic-search`.
-- Injects a "prefer basemind over grep/read/git" rules block. By default it never writes a committed
-  file unasked: with `.ai-rulez/config.toml` present it writes the gitignored
-  `.ai-rulez/local/rules/basemind-usage.md`; otherwise a terminal run asks, defaulting to the
-  personal, gitignored `CLAUDE.local.md`, and a scripted run writes `CLAUDE.local.md` (or
-  `AGENTS.local.md` in a repo that has an `AGENTS.md` and no `CLAUDE.md`). It adds the file to
-  `.gitignore`. The block is delimited
-  (`<!-- BEGIN basemind ... -->` / `<!-- END basemind -->`) so re-running replaces it in place
-  instead of duplicating it.
+## Configuration
 
-Preview changes without writing with `--print`; skip the rules step with `--no-rules`; steer the
-target explicitly with `--rules-target <auto|claude|claude-local|agents|agents-local|ai-rulez|ai-rulez-local|none>`
-(the committed `CLAUDE.md`, `AGENTS.md` and `.ai-rulez/rules/basemind-usage.md` are explicit opt-ins).
-`--settings-target <local|shared|none>` adds basemind's tools to Claude Code's auto-approved
-permissions; a non-interactive run skips that unless you pass the flag.
+`basemind.toml` at the repository root, committed. `basemind init` writes a commented scaffold of
+every option; `.config/basemind.toml` and `.config/basemind/config.toml` are read too, and the root
+file wins. The schema is [`schema/basemind-config-v1.schema.json`](schema/basemind-config-v1.schema.json).
 
-<details>
-<summary><strong>Statusline</strong> (Claude Code)</summary>
+Operator settings are environment variables a repository cannot set: `basemind manual environment`.
+Every key: the [configuration reference](https://basemind.ai/reference/configuration/).
 
-Run `/bm-statusline` once. This is a one-time step because Claude Code doesn't let plugins set the
-main statusline themselves — so basemind asks the assistant to make the one-line settings change on
-your behalf, and it sticks from then on.
+## CLI
 
-It shows two lines:
+`basemind code`, `git`, `memory`, `admin`, `cache`, `agent`, `comms` and `workspace` group the
+commands; `scan`, `rescan`, `watch`, `status`, `overview`, `serve`, `init`, `doctor` and `manual`
+sit at the top level. Add `--json` to a query for the response the MCP tool returns.
 
-```text
-Opus · basemind · ⎇ main · 12% ctx
-◆ basemind  ●  1,247 files · 23m ago  │  312 calls · 180 srch · 44 git · 12 docs  │  1.4M saved  │  ✉ 3 @reviewer
-```
-
-The dot is green when basemind is live and fresh, amber when idle, red when stale. The middle shows
-activity by type, then tokens saved, then unread messages. Adjust with
-`BASEMIND_STATUSLINE=full|compact|minimal`, or hide the top line with `BASEMIND_STATUSLINE_CONTEXT=0`.
-
-</details>
-
----
-
-## Demos
-
-<!-- markdownlint-disable MD013 -->
-
-<p align="center"><img src="docs/media/demo.gif" alt="basemind CLI: scan, then symbol / reference / blame queries" width="760"></p>
-<p align="center"><em>The same engine from the CLI — <code>scan</code>, then symbol / reference / blame queries.</em></p>
-
-<p align="center"><img src="docs/media/semantic-demo.gif" alt="Semantic search over the documents store" width="820"></p>
-<p align="center"><em>Searching documents by meaning, not keywords, across PDFs, Office files, HTML and email.</em></p>
-
-<p align="center"><img src="docs/demos/code-review-panel.gif" alt="Three named reviewer agents posting findings to a shared repo-scoped thread, replying to each other, and an orchestrator synthesizing a verdict over the comms CLI" width="820"></p>
-<p align="center"><em>Multi-agent code-review panel: named reviewers coordinate in a repo-scoped thread (post, reply, synthesize) — entirely over <code>basemind agent</code>.</em></p>
-
-<!-- markdownlint-enable MD013 -->
-
----
+- `basemind <command> --help`: a command's flags.
+- `basemind manual`: the offline manual (code, resolution, git, documents, memory, agents, indexing,
+  paging, setup, exit codes, environment, troubleshooting). It needs no index.
+- The [CLI reference](https://basemind.ai/reference/cli/).
 
 ## How it works
-
-<details>
-<summary><strong>From one scan to instant answers</strong></summary>
-
-`basemind scan` reads your project once, in parallel. It maps your code with
-[tree-sitter] (across [300+ languages][tslp]) and pulls text out of your documents with
-[xberg], then saves the result to a global cache under the XDG data directory, keyed by workspace —
-nothing is written into your repo. After that, the background daemon keeps the map in memory (one
-shared copy per workspace) and answers questions instantly — no re-reading the project for each one;
-`basemind serve` is a thin stdio relay to it. When files change, it updates only what changed. The
-daemon is the sole writer to that cache, so multiple sessions on the same repo (or on different
-worktrees of it) all read and write concurrently instead of one falling back read-only. See
-[Global cache & the daemon](#how-it-works) below.
-
-Navigation is **scope- and import-aware** for JavaScript/TypeScript, **Python, and Java**: basemind
-resolves each use to the definition it actually binds to, so a shadowed local isn't confused with an
-import and `code_refs` with `relation: "definition"` lands on the right target (including across files
-for imports). Every
-other language still gets fast tree-sitter scope binding. Precise Python/Java resolution runs GitHub
-stack-graphs-style `.tsg` name-binding rules via an in-tree engine (`crates/`), with no per-language
-LSP server.
-
-Resolution **refines, but never shrinks, a result set.** `code_refs` with a `path` (callers of the
-definition in that file) reports every call site whose callee is exactly that name — the same sound
-floor a `code_refs` call without `path` uses — and grades each hit with a `resolution`:
-`same_file` or `imported` when resolution proved it binds to that definition (`resolved_total` counts
-them), `elsewhere` when it binds to another one, and `name_only` for a hit nothing checked
-(`resolution_note` says why when that holds for the whole definition). Without `path` a hit is graded
-by what it binds to, and `external` when the index defines no symbol of the name. A row leaves out the
-page's `resolution_default`. Matching is on the whole identifier, so
-`open` no longer counts `open_store`; pass `match: "substring"` for the looser match. It deliberately
-does *not* return only the resolved subset: resolution cannot see through a module-object import
-(`from pkg import mod` then `mod.f()`) or an unresolvable path alias, so filtering to it would drop
-real callers and report the remainder as complete. Pass `resolution: "same_file,imported"` when you
-want precision; trust
-`total` when you need completeness.
-
-The code map is **code only**. Prose, data and config files — Markdown, reStructuredText, AsciiDoc,
-vimdoc, CSV, JSON, YAML, TOML, INI, XML, `.properties`, `.env`, diffs, `.gitignore`/`.gitattributes`
-and Fluent — go to the document tier instead: they are chunked and searched as text with
-`docs_search` (gated by `[documents] include` / `exclude`), and no longer show up in `code_outline`
-and `code_symbols`. Plain text, logs, CSV, TSV, NDJSON, JSON, YAML and TOML are chunked from the
-file itself (paragraphs, records, top-level entries), so every hit cites its lines. `code_grep`
-still searches them as text, and `find_files` still covers them, labelled by grammar name or
-extension. An existing index migrates on its next scan. A build
-without the `documents` feature keeps the old behaviour, where those files are outlined as code.
 
 ```mermaid
 flowchart LR
   A(["Coding agent"])
   R["Your project<br/>code · documents · git"]
   S["basemind scan<br/>map code & read documents"]
-  D[("Global cache<br/>per-OS data dir")]
+  D[("Data directory<br/>per user")]
   V["basemind serve<br/>answers questions"]
   R --> S --> D --> V
   A <-->|asks questions| V
@@ -489,262 +225,57 @@ flowchart LR
   class S,V accent
 ```
 
-Search and memory are powered by a vector store ([LanceDB]).
+`basemind scan` reads a project once, in parallel. It maps the code with [tree-sitter] across
+[300+ languages][tslp], extracts text from documents with [xberg], and stores the result in the
+user's data directory, keyed by workspace. Content is stored once by hash, so identical files in
+different repositories or worktrees are extracted once. Every worktree of a clone shares one code
+index ([ADR-0028](docs/adr/0028-content-keyed-group-index.md)).
 
-</details>
+One background daemon per user holds the index in memory and is its only writer. `basemind serve`,
+the process an MCP host starts, relays to it, so any number of sessions on a repository and its
+worktrees read and write at once. The daemon updates only what changed when files change. On Linux,
+to put it under a memory limit, run it from the user unit
+[`docs/systemd/basemind-comms.service`](docs/systemd/basemind-comms.service) with
+`BASEMIND_NO_AUTOSPAWN=1`.
 
-<details>
-<summary><strong>Index lifecycle &amp; freshness</strong></summary>
+For JavaScript, TypeScript, Python and Java, navigation resolves each use to the definition it binds
+to, through scopes and imports. Every other language binds by tree-sitter scope. A reference result
+keeps every call site of the name and grades each one, so a result is never cut to what resolution
+could prove: `basemind manual resolution`.
 
-The daemon answers the MCP handshake immediately and warms the code map into memory in the
-background, so a client never blocks waiting for a large repo to load. The `status` tool reports
-`warming` (still loading) and, once done, `warm_ms`; a first-time index build similarly reports
-`indexing` / `index_build_ms`, and the boot-time git-history sync `history_syncing` (a `git_log` or
-`git_blame` cursor issued before it ends may be refused as stale).
-
-While the server isn't fully ready, `status` and every code-map read tool may carry a `notice`
-object — `{ state, message, retry }` — instead of (or alongside) their normal result:
-
-| `state` | Meaning | `retry` |
-|---|---|---|
-| `warming_up` | Loading an existing index into memory. | `true` |
-| `building_index` | Indexing from scratch (no cache entry for this workspace yet). | `true` |
-| `rescanning` | Incremental rescan after a file change; current results are usable but may be stale. | `false` |
-
-Treat an empty or partial result carrying a `notice` as "retry shortly," not "no matches" — poll
-`status` (or just retry the call) until the notice clears.
-
-</details>
-
-<details>
-<summary><strong>Global cache &amp; the daemon</strong></summary>
-
-Index state lives under a single global cache — `~/.local/share/basemind/` on Linux,
-`~/Library/Application Support/basemind/` on macOS (override with `BASEMIND_DATA_HOME`) — keyed by
-workspace, never inside your repo. The
-content-addressed blob store is machine-wide too: identical file content scanned from different repos
-or worktrees is extracted and stored once.
-
-Every worktree of a repository shares one code index, under `cache/groups/<group>/` (ADR-0028). A view
-of a worktree keeps its rows under its own id and its file map under the workspace, so a new linked
-worktree costs its file map and the rows of its files, and its first scan re-extracts nothing whose
-content is already in the blob store. Only one process at a time holds a group's index; another
-process in a worktree of the same group answers from the blob store.
-
-Linked worktrees share one git-history index per clone. A worktree whose HEAD descends from the
-indexed head appends the new commits; one that diverges leaves the index alone and answers history
-queries by walking git directly (correct, just slower), rather than wiping and rebuilding it on every
-worktree switch. The first build may come from any worktree.
-
-Memory is bounded by design:
-
-- `[resources] max_footprint_mb` (auto by default) is a best-effort ceiling on the process footprint.
-  The scan processes files in bounded chunks and pauses between them while over the ceiling; if it
-  is still over after five seconds it halves its chunk size and worker count and carries on, then
-  widens again once memory clears. A large-file parse is likewise admitted anyway after five seconds.
-  Document extraction is admitted *exclusively*: over the ceiling exactly one document runs at a time
-  (an otherwise idle process is admitted immediately), and a document whose header-derived
-  working-set estimate exceeds the whole ceiling is skipped and counted as too large.
-- ONNX Runtime runs on the CPU provider by default (`onnx_provider = "cpu"`): on macOS the platform
-  default, CoreML, measured 7.6 GB resident after embedding one 2 KB SVG against 0.8 GB on CPU. In
-  every basemind process ONNX has no memory-pattern planning and no retained CPU arena, which
-  otherwise grow to the largest batch seen and never shrink. Intra-op threads are the auto
-  embed-thread count (`max(2, logical CPUs / 4)`), or 2 in the daemon, which also drops its resident
-  embedding models once the last concurrent embedding pass ends; the next pass reloads them.
-- Precise Python/Java resolution abandons a file past 600,000 builder steps, 4,096 stitching phases
-  (about a million path extensions), 50,000 partial paths or 3 seconds, and runs at most two
-  stack-graph builds at once. The stitcher checks those budgets every 256 path extensions, not once
-  per phase, so a pathological file cannot grow between checks.
-- On macOS the allocator (mimalloc) heap is tagged as application memory (Mach VM tag 254), so
-  `footprint`, `vmmap` and Activity Monitor no longer report it as `IOAccelerator` "GPU" memory.
-
-A workspace root must be a project: a git repository, or a directory containing a basemind config
-(`basemind.toml` at the root, or under the `.config/` convention). Anything else is refused, because
-basemind opens a root read-write and indexes every file beneath
-it — so an accidentally inherited root (`/`, your home directory, or wherever an MCP host happened
-to start) would become a whole-filesystem scan. Run `basemind init` to mark a directory you do want
-indexed, or set `BASEMIND_ALLOW_ANY_ROOT=1` to skip the check. A filesystem or volume root is
-refused unconditionally and cannot be overridden.
-
-A single background daemon per machine is the sole writer to that cache and hosts the MCP server:
-`basemind serve` is a thin stdio relay that ensures the daemon is up and pumps bytes to it, so N
-sessions on the same repo — or on different worktrees of it — share one read stack per workspace
-and all read and write concurrently instead of a second session silently falling back to a stale,
-read-only view. The daemon holds the single-writer index, so `code_refs` lookups (call sites,
-callers, implementations) run inside it and return complete results with no per-session copy. The daemon
-also keeps a cheap, always-on registry of repos, worktrees, and branches, listed by the CLI
-(`basemind workspace workspaces` / `worktrees` / `branches`).
-
-`basemind statusline` queries the daemon for the workspaces currently active and prints a compact
-line for your shell prompt; it prints nothing when no daemon is running.
-
-The daemon is started on demand, detached with `setsid(2)`. That changes the session and the process
-group but **not** the cgroup, so on Linux an auto-spawned daemon lives in the cgroup of whatever
-shell or editor happened to start it — outside any `MemoryMax` you configured for basemind. No code
-in basemind can change that; a process cannot move its own children into a cgroup it does not
-control. If you want an enforced memory ceiling, your unit has to be the thing that starts the
-daemon: set `BASEMIND_NO_AUTOSPAWN=1` everywhere (basemind then connects to a running daemon but
-never starts one; `basemind comms start` deliberately still does) and install the ready-made user
-unit at [`docs/systemd/basemind-comms.service`](docs/systemd/basemind-comms.service), which also
-lists the two commands that verify the ceiling is real rather than merely configured.
-
-The daemon can additionally serve MCP over streamable HTTP on loopback, but that front-end is
-**opt-in**: it binds only when `BASEMIND_ALLOW_HTTP` is truthy in the daemon's environment, and every
-request must then present the bearer token published as the second line of `<comms_dir>/http.addr`
-(mode `0600`; `<comms_dir>` is the generation directory, `comms/g1/` under the data directory). The
-first line of that file is the bound address: the default port is `51786`, but a daemon that finds it
-in use binds another. A daemon serving HTTP is not stopped for idleness, because no HTTP client can
-start one and a daemon started implicitly never serves HTTP: start it with `basemind comms start`
-(or the systemd unit) and stop it with `basemind comms stop`. Plugin manifests and the CLI use the
-stdio transport and need none of this.
-
-</details>
-
-<details>
-<summary><strong>How agents coordinate</strong></summary>
-
-A single shared service in the background lets agents talk to each other — even across different
-tools and different repos on the same machine. Three deferred tools carry it (`agent_post`,
-`agent_inbox`, `agent_threads`; the CLI mirror is `basemind agent post|inbox|threads`). A post with
-a `subject` opens a **thread**: open to every agent of the repository, or invitation-only when it
-names recipients (`to`). Each agent has an **inbox**: reading returns unread messages with their
-bodies inline (a body over 4 KiB is cut, and `id` reads one whole) and marks them read; `peek`
-reads without marking, `unread: false` reads history, and `wait_secs` (at most 40) waits in the
-daemon for a peer's post. An agent never sees its own posts as unread. Identity is one id per
-checkout (`BASEMIND_AGENT_ID`, else `comms.agent_id`, else `<host>-<repo>-<6 hex>`); a subagent
-passes `as` to get its own read position. Messages are kept 30 days, at most 1,000 per thread. See
-[`docs/comms-v2.md`](docs/comms-v2.md).
-
-The client–daemon protocol is version 7 (a client and a daemon of different versions refuse each
-other at connect): the daemon serves it on an 8-worker async runtime, and
-every request carries an id, so replies are matched to
-requests and most calls have a deadline (`BASEMIND_COMMS_REQUEST_TIMEOUT_SECS`, 10 s;
-`BASEMIND_COMMS_HANDSHAKE_TIMEOUT_SECS`, 30 s; a waiting read is exempt). After an upgrade, run
-`basemind comms stop` so the old daemon is replaced. The stdio relay stamps each agent request with a
-key and replays it once if the daemon restarts underneath it, instead of failing the call: a replayed
-post stores one message. The relay fails a request that outlives
-`BASEMIND_RELAY_REQUEST_TIMEOUT_SECS` (180 s). A detached daemon logs to a size-rotated
-`<comms_dir>/daemon.log`, which `basemind comms doctor` shows.
-
-The plugin makes sure agents notice messages without being asked — through the built-in instructions,
-a count at session start, and a list of unread messages (from, thread, size; never a body) at each
-turn. In Claude Code a hook also gives each session and subagent its own `as`.
+`code_grep` skips files whose trigram filter proves they cannot match
+([ADR-0012](docs/adr/0012-grep-content-prefilter.md)). Each tool's text answer uses the encoding that
+measured fewest tokens for it ([ADR-0053](docs/adr/0053-text-answers-encoded-per-tool.md)); the
+CLI's `--json` and MCP `structuredContent` are JSON.
 
 ```mermaid
 flowchart LR
   A["Agent A<br/>Claude Code · repo X"]
   B["Agent B<br/>Cursor · repo Y"]
-  BR["Shared comms service<br/>threads · inboxes"]
+  BR["Daemon<br/>threads · inboxes"]
   A <-->|post · read| BR
   B <-->|post · read| BR
   classDef accent fill:#965aff,stroke:#7d4dff,color:#fff
   class BR accent
 ```
 
-</details>
+Agents coordinate through the same daemon. A post with a subject opens a thread, open to the
+repository or to named recipients; each agent's inbox returns its unread messages. The plugin
+shows the unread count at session start and lists new messages each turn
+([ADR-0021](docs/adr/0021-agent-comms-v2.md), [`docs/comms-v2.md`](docs/comms-v2.md)).
 
-<details>
-<summary><strong>Launching agents in other harnesses (opt-in, Unix)</strong></summary>
+A lead agent can launch Claude Code, Codex or OpenCode agents in worktrees of their own
+(`basemind serve --lead`). It is off until the user writes `agents.toml` in their configuration
+directory; a repository cannot turn it on
+([ADR-0040](docs/adr/0040-cross-harness-agent-launch.md),
+[ADR-0044](docs/adr/0044-launched-agent-comms-and-user-mcp-isolation.md)).
 
-A lead agent can hand a task to Claude Code, Codex or OpenCode in a worktree of its own. The lead's
-MCP host runs `basemind serve --lead` instead of `basemind serve`; that process, and only that
-process, answers two more tools on its own stdio, never through the daemon:
-
-| Tool | Job |
-|---|---|
-| `agent_launch` | start an agent (`harness`, `brief`, `working_dir`; optional `model`, `effort`, `max_turns`, `wall_time_s`); returns its session, its id and a thread you share |
-| `agent_stop` | stop an agent you launched, by `session` |
-
-Launching is off until the operator writes `agents.toml` in basemind's user configuration directory
-(`~/.config/basemind/` on Linux, `~/Library/Application Support/basemind/` on macOS, under your
-account's home directory as the user database names it, whatever `HOME` or `XDG_CONFIG_HOME` say),
-owned by you and writable by nobody else. A repository's `basemind.toml` cannot turn it on, nor can the
-environment, a flag or a tool argument:
-
-```toml
-[agents.launch]
-enabled = true
-worktrees_root = "/abs/path/to/worktrees"   # not, nor above, nor inside the lead's repository
-max_concurrent = 2
-max_launches = 16
-
-[agents.launch.harness.claude]
-executable = "/abs/path/to/claude"          # absolute: no PATH lookup
-permission_mode = "supervised"              # supervised | read_only | accept_edits
-pass_env = ["ANTHROPIC_API_KEY"]            # read from the lead's environment
-```
-
-A launched agent runs at depth 1 and cannot launch; it may use the injected server's agent comms
-tools (`agent_inbox`, `agent_post`, `agent_threads`) unasked, and every other approval it asks for is
-denied ([ADR-0044](docs/adr/0044-launched-agent-comms-and-user-mcp-isolation.md)); its harness starts
-none of your own MCP servers but OpenCode's plugins and the servers of a managed or organisation
-OpenCode configuration; each `working_dir` is an existing directory
-under `worktrees_root` that no session of any lead of yours holds, and inside or around none that
-one holds (leads see each other through lock files in their data directory, so leads run with
-different `BASEMIND_DATA_HOME`s do not; a human's session there is not detected); every
-launch, stop and refusal is written to `<data dir>/agents/launch-audit-*.jsonl`. Without the file,
-`serve --lead` serves exactly like `serve` and says why in its instructions. This bounds what a model
-can do through MCP; it is no sandbox against a process of the same user. See
-[ADR-0040](docs/adr/0040-cross-harness-agent-launch.md).
-
-</details>
-
----
-
-## Token saving
-
-<details>
-<summary><strong>Good habits the plugin sets up for you</strong></summary>
-
-The plugin nudges agents toward the cheap path by default:
-
-- Get a file's outline before opening it — then read only the part you need.
-- Search for a definition instead of grepping for it.
-- Look up who calls a function instead of grepping for call sites.
-- Refresh the index after edits instead of restarting the server.
-- Don't re-read a file basemind already mapped.
-
-A guard enforces this at the moment a tool is used: it gently redirects `grep`-style searches to the
-matching basemind tool. On by default; set `BASEMIND_GUARD=off` to disable, or `redirect` to block
-instead of nudge.
-
-</details>
-
-<details>
-<summary><strong>How answers are written</strong></summary>
-
-Each tool's text answer is written in the form that measured fewest tokens on the value-gate
-corpora ([ADR-0053](docs/adr/0053-text-answers-encoded-per-tool.md)): `code_grep` rows under
-`# <path>` and `## <symbol>` headers, as `rg --heading` groups them; `code_outline`, `git_diff` and a
-`find_files` list as [TOON](https://toonformat.dev) tables; compact JSON for the rest. MCP
-`structuredContent` and the CLI's `--json` are JSON for every tool.
-
-</details>
-
-<details>
-<summary><strong>Measure it on your own repo</strong></summary>
-
-`basemind admin eval` runs a task file of lookups through the same code the MCP tools use, scores
-each answer against gold generated from your repository (precision/recall, hit@k, MRR, nDCG),
-records latency and response tokens, and compares the token cost with the grep-and-read baseline
-an agent would otherwise pay. Savings only count when basemind's answer was actually correct, and
-the report flags any eval mode whose measured ratio deviates from the dashboard's fixed multiplier.
-`--baseline <report.json>` turns it into a regression gate. Gold generators and the workflow are in
-[`benchmarks/eval/`](benchmarks/eval/README.md); measured savings, including the cases where `grep` is
-cheaper for a single narrow hit, are in [`benchmarks/README.md`](benchmarks/README.md#measured-results).
-
-</details>
-
----
+The full design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Performance
 
-<details>
-<summary><strong>Scan speed</strong></summary>
-
-Measured on an Apple M4 (10 cores — 4 performance + 6 efficiency, 16 GB, macOS 26) with the
-hardening harness (`scripts/harden.sh`), which clones each upstream repo fresh and scans its code
-map. Warm, steady-state numbers; the first scan of a cold project is slower.
+Scan time of the code map on an Apple M4 (10 cores, 16 GB), warm, with the hardening harness
+(`scripts/harden.sh`). A rescan reads only what changed.
 
 | Project | Files | Languages | Scan time |
 |---|---|---|---|
@@ -756,568 +287,13 @@ map. Warm, steady-state numbers; the first scan of a cold project is slower.
 | django | 7 065 | Python | 2.4 s |
 | TypeScript compiler | 81 324 | TS / JS / JSON | 18 s |
 
-The TypeScript compiler is the worst case — 81k files in about 18 seconds. Re-scans only look at
-what changed, so keeping a project up to date is far faster than the first scan.
-
-Once running, code questions answer from memory rather than from disk each time — in milliseconds
-even on a very large repository (next section).
-
-</details>
-
-<details>
-<summary><strong>Query latency and accuracy on a large monorepo</strong></summary>
-
-Measured with the built-in harness (`basemind admin eval --warmup`, see
-[Measure it on your own repo](#token-saving)) on a 74k-file, ~350 MB monorepo checkout, 60 tasks per
-eval mode, in-process (no transport or process start-up). Gold is generated from the repository
-itself; [`benchmarks/eval/README.md`](benchmarks/eval/README.md) states what each mode's gold encodes.
-Rows are eval modes, with the tool each one calls. The numbers predate the tool rename; the lookups
-behind them are unchanged.
-
-| Eval mode (tool) | p50 | p95 | precision | recall |
-|---|---|---|---|---|
-| `outline` (`code_outline`) | 1.0 ms | 2.2 ms | 1.00 | 1.00 |
-| `references` (`code_refs`) | 1.4 ms | 6.0 ms | 0.81 | 1.00 |
-| `symbols` (`code_symbols`) | 3.7 ms | 5.3 ms | 0.97 | 1.00 |
-| `dependents` (`code_refs`, `relation: "importers"`) | 4.0 ms | 5.6 ms | 0.84 | 1.00 |
-| `callers` (`code_refs` with `path`) | 4.6 ms | 10.4 ms | 0.87 | 1.00 |
-| `find` (`find_files`; ranked, hit@1 0.72) | 6.6 ms | 9.0 ms | 0.29 | 0.75 |
-| `git_search` (`git_log` with `query`; ranked, hit@1 1.00) | 55 ms | 96 ms | 1.00 | 0.91 |
-| `docs` (`docs_search`; hit@1 0.48, hit@5 0.63) | 106 ms | 260 ms | 0.18 | 0.63 |
-| `grep` (`code_grep` with `regex: true`; 15 tasks, trigram prefilter) | ~130 ms | 190–270 ms | 0.91 | 1.00 |
-
-`code_symbols` and the importer lookup answer from a resident term index, and call-site, caller and
-implementation lookups from a resident dictionary of distinct callee and trait names, which is why
-they sit in the millisecond range instead of walking every call site. `code_grep` skips files a per-file
-trigram bloom filter proves cannot match (index cost ≈ 12.8 % of the indexed code bytes; results are
-identical to the full sweep, which took 3.6–7.8 s p50 on the same tasks; see
-[ADR-0012](docs/adr/0012-grep-content-prefilter.md)). Set `BASEMIND_GREP_BLOOM=0` to force the full
-sweep. Numbers vary with hardware and load; rerun the harness on your repository.
-
-</details>
-
-<details>
-<summary><strong>Git history queries</strong></summary>
-
-basemind precomputes a per-repo git-history index (path → commit posting lists, stored newest-first)
-so the history lookups — `git_log` with no filter, with `path`, and the commit walk behind `path` +
-`symbol`, plus the CLI's `git churn` and `git by-path` — are posting-list lookups. Warm in-process query latency on the same M4:
-
-| Repo | Commits | `git_log {path}` | `git_log {}` | index build | index size |
-|---|---|---|---|---|---|
-| django | 2 000 | 39 µs | 15 µs | 0.5 s | 1.7 MB (6 % of `.git`) |
-| tokio | 3 984 | 37 µs | 13 µs | 0.9 s | 2.1 MB (12 %) |
-| requests | 6 480 | 38 µs | 15 µs | 1.0 s | 1.9 MB (14 %) |
-| TypeScript | 2 000 | 37 µs | 13 µs | 3.2 s | 30 MB (12 %) |
-
-History queries answer in **tens of microseconds**, flat across history depth, because the
-newest-first posting lists decode only the commits a query returns. The index builds in well under a
-second to a few seconds and costs **6–22 % of `.git`** on disk.
-
-It is a pure accelerator: the tools use it only when it is fresh (`last_indexed_head == HEAD`) and
-otherwise walk history directly, so it can never serve stale results — and it rebuilds automatically
-when history is rewritten (filter-repo / rebase / force-push). Reproduce with
-`cargo bench --bench git_history` or the git-ops block in `scripts/harden.sh`.
-
-</details>
-
-<details>
-<summary><strong>Measuring query latency (<code>elapsed_us</code>)</strong></summary>
-
-`code_outline`, `code_search`, `docs_search`, `git_blame`, the memory tools and `index_status`
-report their own latency as **`elapsed_us`** on their response. The locating tools (`code_symbols`, `code_grep`, `code_refs`,
-`find_files`, `git_log`, `git_diff`) leave it out: their answer is a short list, and a timing field
-on it would cost as much as a row. Telemetry records every call's latency, and the CLI times the
-call itself when the response has no `elapsed_us`.
-Don't wrap the CLI in `time`; ask basemind.
-
-Resolution is **microseconds** on purpose: an indexed `git_log` with `path` is ~37 µs, so
-millisecond granularity would round the hot path to `0`.
-
-**What `elapsed_us` includes** — the tool body's own execution: index and store lookups, git walks,
-ranking, and building the response.
-
-**What it excludes** — MCP / JSON-RPC transport (which the server cannot observe), argument
-deserialization, and serialization of the response itself. Excluding encoding keeps the number
-comparable across result-set sizes: it reports *query* cost, not *encoding* cost.
-
-**The one caveat, stated plainly:** most read tools begin by awaiting the in-RAM code map, and the
-git tools lazily build their history index on first use. Both waits happen *inside* the measured
-region, so a first call against a cold server is much slower than the steady-state call after it.
-When the server is still warming or building, the response carries a `notice`
-(`warming_up` / `building_index` / `rescanning`) — **discard any sample carrying a `notice`** if you
-are measuring steady-state latency.
-
-The CLI adds a second number, `startup_us`, covering process startup: clap parsing, the tokio runtime,
-the store open, and the config/git-cache load. It is reported separately because it is exactly the
-part of a `time basemind …` measurement that was never the query — and a long-running MCP server pays
-it once at boot, not per call:
-
-```console
-$ basemind code outline src/store.rs --json
-{
-  ...
-  "elapsed_us": 90,        # the query
-  "startup_us": 957887     # everything else a `time` wrapper would have charged to it
-}
-
-$ basemind code refs parse_kind --limit 3
-...
-(6.5 ms query · 852.9 ms startup)    # stderr: stdout carries only the answer
-```
-
-That first example is the whole point: the query took 90 µs, while the process spent ~0.96 s getting
-ready to run it. A `time basemind …` wrapper would have reported the second number and told you
-nothing about the first.
-
-</details>
-
----
-
-## Configuration
-
-<details>
-<summary><strong>Config file &amp; overrides</strong></summary>
-
-The config lives at the **repo root** as `basemind.toml` (committed). The cache it drives is derived
-state — held in the global cache under the XDG data directory, wiped and rebuilt on schema bumps —
-so config never belongs there and nothing basemind-owned is written into your repo. Run
-`basemind init` to drop a fully-commented scaffold (documenting every option) at the root. It can
-also live under the project-level [`.config/` convention](https://github.com/pi0/config-dir) —
-`.config/basemind.toml` or `.config/basemind/config.toml` — which is auto-discovered read-only; the
-root `basemind.toml` still wins when both exist. `basemind init --config-dir .config` (or
-`--config-dir .config/basemind`) scaffolds the convention. The legacy in-cache path
-(`.basemind/basemind.toml`, from before the global-cache move) is still read as a fallback for older
-checkouts. The full schema is at `schema/basemind-config-v1.schema.json`:
-
-```toml
-# basemind.toml  (repo root — commit this)
-"$schema" = "v1"
-
-[scan]
-respect_gitignore = true
-# Follow symlinks during the walk. Off by default — symlinks often escape the repo (e.g. Bazel's
-# bazel-* convenience symlinks). Turn on for repos that symlink real source into place. Ignored
-# (forced false) in a repository's own file unless the operator sets BASEMIND_ALLOW_FOLLOW_SYMLINKS=1.
-follow_symlinks = false
-# Glob syntax (include / exclude here, and every include / exclude / embed_* list below): paths are
-# repo-relative with forward slashes, matching is case-sensitive, and `*` also crosses `/` (so
-# `src/*.rs` matches `src/a/b.rs`). A pattern with no glob characters is gitignore-like: `generated`
-# matches every path segment of that name at any depth and everything beneath it; `docs/api` is
-# anchored at the root. Exclude beats include. An invalid glob, a negated (`!`) pattern, or an empty
-# `include` (it would index nothing) is a config error. For `extra_roots` files the globs are
-# matched against the path relative to that root.
-include = ["**/*"]
-# `exclude` is ADDED ON TOP of an always-on floor (node_modules, target, dist, build, out, .venv,
-# venv, __pycache__, *.pyc, .pytest_cache/.mypy_cache/.ruff_cache/.tox, .next/.nuxt/.svelte-kit,
-# vendor, .gradle, .terraform, coverage, bazel-*, .git, .basemind, .idea, .DS_Store) and of a
-# credential floor, so a secret never becomes searchable by every agent that can query the index:
-# .env and .env.*, .aws/, .ssh/, .gnupg/, .npmrc, .pypirc, .netrc, .git-credentials, id_rsa /
-# id_dsa / id_ecdsa / id_ed25519, *.pem, *.key, *.p12, *.pfx, *.jks, *.keystore. Note `.env.*` also
-# drops `.env.example`; list `.env.*` in floor_allow to index those templates (needs the
-# BASEMIND_ALLOW_REPO_CREDENTIALS grant below).
-exclude = []
-# Remove entries from that floor so the tree is indexed, by directory name (`build`), file name or
-# glob (`.env.*`, `*.pem`) or floor pattern (`**/build/**`). `.git` and `.basemind` can never be
-# allowed; an entry naming nothing is ignored with a warning. A credential entry (`.env`, `*.pem`,
-# keys) is honoured only with BASEMIND_ALLOW_REPO_CREDENTIALS=1 in the environment — a repository's
-# own file cannot un-exclude your secrets. The default `exclude` separately lists
-# dist/target/node_modules/.venv/bazel-*, so drop those from `exclude` too when allowing them.
-floor_allow = []
-# Index directories outside the repo root too — e.g. a Bazel external repo cache — so their
-# symbols resolve in search / references / outlines. External files are keyed by absolute path;
-# (re-)indexed on a full `basemind scan` only (not live-watched). Requires the operator to set
-# BASEMIND_ALLOW_EXTRA_ROOTS in the environment: this file lives inside the repository, so
-# without that opt-in a cloned repo could point basemind at your ~/.ssh. Even with the grant, a root
-# under .ssh / .aws / .gnupg or /etc, a filesystem root, and a root inside the repo are skipped.
-# Extra roots count toward max_candidates and follow symlinks only when follow_symlinks is on.
-extra_roots = ["/private/var/tmp/_bazel_you/abc123/external"]
-# Ceiling on how many candidate files one scan may keep, across the repo walk and every extra root.
-# Exceeding it aborts before any extraction or index write, and the error names the heaviest
-# contributing directories — so a vendored tree that slipped past .gitignore is a one-line fix
-# instead of an out-of-memory kill. It also bounds how far the walk may travel to find them. It does
-# NOT bound bytes read or index size, and does not apply to `--staged` / `--rev` (those enumerate
-# from git, not from a walk). 0 disables both bounds.
-max_candidates = 500_000
-
-# Per-grammar overrides, keyed by tree-sitter-language-pack grammar name (see `basemind lang list`;
-# an unknown key is a config error that suggests near matches).
-[languages.vimdoc]
-# false stops parsing that grammar's files as code (fixes misdetections: `.txt` is vimdoc, `.conf`
-# is nginx). They are then handled like any unrecognised file: routed to the document tier, where
-# `[documents] exclude` can drop them entirely. Already-indexed files are removed on the next scan.
-enabled = false
-[languages.jinja2]
-# Map extra suffixes (leading dot optional, case-insensitive, compound allowed) and exact file
-# names onto the grammar. Overrides beat built-in detection; a filename beats an extension.
-extensions = [".mako", ".tpl"]
-filenames = ["BUILD.in"]
-# `basemind lang install` also fetches this grammar (otherwise only the languages basemind ships
-# queries for are pre-fetched and the rest download on first use).
-preload = true
-
-[code_intel]
-# Precise, scope- and import-aware resolution (JS/TS via oxc; Python/Java via stack-graphs). On by
-# default. Set false to fall back to fast tree-sitter locals binding for every language. Applies to
-# files (re)scanned after the change.
-precise_resolution = true
-
-[analysis]
-# Extra entry points of `basemind code deadcode` (same glob syntax as [scan] include: a bare name
-# such as "main.py" matches that name at any depth): files a tool, framework or loader runs by name
-# that no build manifest or language convention declares.
-entry_points = []
-
-[documents]
-enabled = true
-# Embed documents for semantic search (ON — embeddings pay off on real prose / OCR).
-embed = true
-# Model preset: fast | balanced (default, 768-dim) | quality | multilingual.
-# Changing the preset forces a FULL RE-EMBED of the corpus (time + CPU): every document is
-# re-encoded at the new model's dimension.
-embedding_preset = "balanced"
-# Which non-code files become documents. Prose, data and config files (markdown, rst, json, yaml,
-# toml, xml, csv, ini, ...) are NOT in the code map; they are documents and are gated here. Default
-# (empty include) is everything that passes [scan]; exclude applies to document indexing itself and
-# beats include (same glob syntax as [scan]).
-# The default `exclude` drops low-value bulk: SVG icon/vector assets, lockfiles and test-data
-# directories (removing an entry re-indexes it). Setting the key REPLACES that list (it is not
-# merged): `exclude = []` indexes all of them, and a custom list must repeat any default entry you
-# still want.
-include = []
-exclude = [
-  "*.svg", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "Cargo.lock", "poetry.lock", "*.lock",
-  "**/test_data/**", "**/testdata/**", "**/fixtures/**", "**/__snapshots__/**",
-]
-# Per-document size cap in bytes, independent of [scan] max_file_bytes (which caps source files), so
-# large PDFs / Office files are still extracted. Files over it are skipped and counted as too large
-# in the scan summary.
-max_file_bytes = 52428800
-# Backstop against pathological chunking cost: structured data (json, yaml, xml, svg, csv) is always
-# chunked linearly, and other text-like documents over these sizes (bytes, minimum
-# 1024) are chunked by a linear fixed-size chunker instead and counted as `docs_degraded` in the scan summary.
-# PDFs / Office files are never affected. text/plain (.txt, .log) has no markup to exploit, so its
-# cutover is lower.
-# A text-like file that xberg rejects (Helm template named .yaml, huge CSV, SVG with a huge entity) is also read as
-# text/plain through this chunker and counted as `docs_text_fallback`.
-markdown_chunk_max_bytes = 1048576
-plain_text_chunk_max_bytes = 4194304
-# Wall-clock budget (seconds) for one document's extraction + chunking. A document that overruns is
-# abandoned, skipped, and counted as `doc_timeouts`. It is remembered by content hash and not retried
-# while the file and these limits (this value, the two cutovers above, max_pages) are unchanged; editing
-# the file or changing a limit retries it.
-extraction_timeout_secs = 120
-# Wall-clock budget (seconds) for the whole document phase of one scan, started at the first document
-# that needs a real extraction (never below extraction_timeout_secs). Once spent, the remaining
-# documents are deferred (counted as `docs_deferred`, not failed) and picked up by the next scan.
-phase_budget_secs = 1800
-# A timed-out extraction cannot be cancelled and keeps a core busy until it finishes. At this many
-# still-running abandoned extractions (1 to 64), further documents are deferred instead of spawning
-# another thread. A soft bound; the live count shows as `abandoned_extractions` in the scan summary.
-max_abandoned_extractions = 4
-# Extra extensions to skip on top of the built-in archive/binary floor (case-insensitive; ".pdf" and
-# "pdf" are the same).
-extension_denylist = []
-# Embedding scope: with a non-empty embed_include only matching documents are embedded; embed_exclude
-# always wins. Left-out documents stay extracted + keyword-searchable. Editing either (or `embed`)
-# deletes the vector rows of documents that stop being eligible on the next scan.
-embed_include = []
-embed_exclude = []
-# `extract_archives` is still accepted and ignored: archive extraction was removed, so archives
-# (.zip/.tar/.jar/…) are always skipped, and `true` logs a warning.
-
-[code_search]
-enabled = true
-# Vector embeddings for code are OFF by default — a general English model on code isn't worth the
-# cost, and NL→symbol is already served by the BM25 keyword lane. Chunking + keyword search work
-# regardless. Turn on only for vector search over code (downloads an ONNX model, re-embeds on
-# preset change).
-embed = false
-# Same semantics as the [documents] pair: allow-list, with embed_exclude winning. Files left out are
-# still chunked and keyword-searchable; newly ineligible files lose their vector rows on the next scan.
-embed_include = []
-embed_exclude = []
-# Cap on chunks indexed per source file. A generated parser table or a checked-in bundle otherwise
-# fans one file out into a chunk count bounded only by max_file_bytes, and every chunk costs a
-# keyword posting, a vector row, and (with embed on) an embed. Over-cap files are still chunked and
-# cached — outline and grep are unaffected — they just contribute no postings and no vector rows.
-max_chunks_per_file = 2000
-
-[resources]
-# Memory ceiling for this process, in MiB. A positive integer is an explicit ceiling; 0 or "auto"
-# (the default) derives one — 75% of an enforced cgroup limit, or 25% of machine RAM, floored at
-# 2048 MiB; "off" disables it. ADVISORY: workers park while over the ceiling and are admitted anyway
-# after five seconds, so it shapes peak memory rather than enforcing a hard limit (document
-# extraction is stricter: over the ceiling one document runs at a time). To actually cap the
-# daemon's memory, run it from your own resource-controlled unit — see
-# `docs/systemd/basemind-comms.service`.
-max_footprint_mb = "auto"
-# Byte budget (MiB) for the MCP read stack's decoded-outline cache, per workspace. 0 = unbounded.
-# A miss costs one blob read and never changes an answer.
-max_map_cache_mb = 256
-# ONNX Runtime execution provider for embeddings, reranking and NER: cpu (default)
-# | auto | coreml | cuda | tensorrt. `auto` restores the platform default (CoreML on macOS), which
-# measured 7.6 GB resident for one tiny document against 0.8 GB on cpu.
-onnx_provider = "cpu"
-```
-
-**Overrides.** Only the `documents.*` keys can be overridden, by a CLI flag or its
-environment variable (each flag's name is in `--help`; the variable is the flag upper-cased with a
-`BASEMIND_` prefix and underscores, e.g. `--documents-overlap` is `BASEMIND_DOCUMENTS_OVERLAP`).
-The `--llm-*` flags and `BASEMIND_LLM_*` variables are still accepted and ignored (see Deprecated
-keys below). Every other setting is file-only. Overrides apply to the CLI
-command they are passed to (the MCP tools do not accept them); a daemon-hosted scan or read
-stack loads only the file (plus the daemon caps below), so set those keys in `basemind.toml` for
-daemon workloads. Overrides are validated after merging, so an override cannot smuggle in a value
-the file would be rejected for (`documents.max_characters` under 64, `overlap >= max_characters`,
-`language.min_confidence` outside 0..1).
-
-**Trust boundary.** `basemind.toml` is authored by the repository, not by you, so settings that
-reach outside the process are gated on the operator's environment:
-
-| Setting in the repo's file | Honoured only when |
-|---|---|
-| `[scan] follow_symlinks = true` | `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`; otherwise reset to `false` with a warning (a tracked link can point at `~/.ssh`). |
-| `[scan] floor_allow` (a credential entry: `.env`, `*.pem`, `id_rsa`, ...) | `BASEMIND_ALLOW_REPO_CREDENTIALS=1`; otherwise the entry is ignored with a warning and the secret stays excluded (a clone could otherwise un-exclude your untracked `.env` and have every agent query it). Entries for build artifacts (`build`, `vendor`) need no grant. |
-| `[scan] extra_roots` | `BASEMIND_ALLOW_EXTRA_ROOTS=1` (every workspace this process scans) or a list of absolute workspace roots separated by `:` (`;` on Windows), which grants only those workspaces and their descendants. A relative entry is ignored with a warning, as is any other non-truthy word (`on`). A daemon is one long-lived process serving many repositories, so prefer the list form there: the bare `1` also opens `extra_roots` for any workspace it serves later. Credential directories (`.ssh`, `.aws`, `.gnupg`, `/etc`) and filesystem roots are refused even with the grant. |
-| `[documents.dependencies] enabled = true` | Package roots inside the repository (`node_modules/`, `.venv/`, `vendor/`) need no grant. Roots outside it (the cargo registry under `CARGO_HOME`, the Go module cache under `GOMODCACHE` / `GOPATH`, a `VIRTUAL_ENV` elsewhere, or an in-tree root that resolves outside) are read only under `BASEMIND_ALLOW_DEPENDENCY_ROOTS`, in the same forms as `BASEMIND_ALLOW_EXTRA_ROOTS`; otherwise those packages are listed under `deps_unavailable` as `not_granted`. No setting in the file names a root, and a package that resolves out of its root through a symlink is refused even with the grant. |
-
-Grant variables accept `1`, `true` or `yes` (case-insensitive). They are read from the process
-environment; the env and CLI override layers are operator-supplied and never gated.
-
-Credential and key files are not indexed by default: the exclude floor (see `[scan]` above) drops
-`.env`, `.env.*` (which includes `.env.example`), `.aws/`, `.ssh/`, `.gnupg/`, `.npmrc`, `.pypirc`,
-`.netrc`, `.git-credentials`, SSH private keys and `*.pem` / `*.key` / `*.p12` / `*.pfx` / `*.jks` /
-`*.keystore`. Opt a file class back in with `[scan] floor_allow = [".env.*"]` — a credential entry
-only takes effect with the operator's `BASEMIND_ALLOW_REPO_CREDENTIALS=1` grant, so a repository's
-own file cannot un-exclude it. Unless
-`follow_symlinks` is granted, working-tree reads (including the watcher and `rescan paths`) refuse a
-symlinked file or a path that resolves outside the workspace, and a `basemind.toml` that is a symlink
-leaving the workspace is not followed.
-
-**The daemon treats `[resources]` and `[scan] max_candidates` as ceilings.** The effective value is
-the smaller of the file's and the daemon's cap; the `[resources]` sentinels `0` / `"auto"` / `"off"`
-resolve to the cap. The operator raises a cap in the daemon's own environment (a repository cannot):
-
-| Variable | Caps | Default |
-|---|---|---|
-| `BASEMIND_DAEMON_MAX_SCAN_THREADS` | `scan_threads` | 4 |
-| `BASEMIND_DAEMON_MAX_EMBED_THREADS` | `embed_threads` | 4 |
-| `BASEMIND_DAEMON_MAX_EMBED_BATCH` | `embed_batch_size` | 8 |
-| `BASEMIND_DAEMON_MAX_CONCURRENT_DOCUMENTS` | `max_concurrent_documents` | 4 |
-| `BASEMIND_DAEMON_MAX_FOOTPRINT_MB` | `max_footprint_mb` | 3072 |
-| `BASEMIND_DAEMON_MAX_MAP_CACHE_MB` | `max_map_cache_mb` | 1024 |
-| `BASEMIND_DAEMON_MAX_CANDIDATES` | `[scan] max_candidates` | 2000000 |
-| `BASEMIND_DAEMON_MAX_FILE_BYTES` | `[scan] max_file_bytes` | 67108864 (64 MiB) |
-| `BASEMIND_DAEMON_MAX_DOCUMENT_BYTES` | `[documents] max_file_bytes` | 536870912 (512 MiB) |
-| `BASEMIND_DAEMON_MAX_DOCUMENT_PAGES` | `[documents] max_pages` | 5000 |
-| `BASEMIND_DAEMON_MAX_EXTRACTION_SECS` | `[documents] extraction_timeout_secs` | 1800 |
-| `BASEMIND_DAEMON_MAX_CHUNKS_PER_DOCUMENT` | `[documents] max_chunks_per_document` | 20000 |
-| `BASEMIND_DAEMON_MIN_DEBOUNCE_MS` | floor for `[watch] debounce_ms` (a minimum, not a ceiling) | 50 |
-
-A cap variable must be a positive integer; anything else falls back to the default.
-
-**Other operator variables.**
-
-| Variable | Effect |
-|---|---|
-| `BASEMIND_DATA_HOME` | Root of the machine-global cache (default: the XDG data directory). |
-| `BASEMIND_GREP_BLOOM=0` | Force `code grep` to sweep every file instead of using the per-file trigram bloom prefilter. |
-| `BASEMIND_BLOB_GC_GRACE_SECS` | Age (seconds) below which the blob sweep keeps a blob; default 6 hours. |
-| `BASEMIND_WARM_READ_STACKS` | Daemon-hosted read stacks kept warm at once; default 3. |
-| `BASEMIND_NO_AUTOSPAWN=1` | Connect to a running daemon but never start one. |
-| `BASEMIND_MAX_DAEMONS` | Ceiling on live daemons per machine before a spawn is refused; default 8. |
-| `BASEMIND_BIN`, `BASEMIND_FORCE_VERSION` | Plugin launcher: run a local build / pin a release (see [Installation](#1-as-a-plugin-recommended)). |
-
-**Reload.** The daemon re-reads a workspace's `basemind.toml` on the next request after it changes
-(size or modification time) and logs `config changed`. A file that no longer parses keeps the last
-good config and logs a warning. A hosted read stack with live sessions keeps its config until they
-reconnect, and `scan_threads` is fixed for the process lifetime (the daemon logs that a restart is
-required). `index_status {}` (CLI `basemind status`) reports `config_stamp` (`<bytes>B@<unix seconds>`) to spot an edit.
-
-**Reserved keys.** These parse but nothing reads them yet, and setting one to a non-default value
-logs a warning: `[watch] live_l2`, `[cache] file_map_lru`, `[mcp] transport`, `[memory] enabled` /
-`scope_strategy` / `default_visibility`, `[comms] enabled` / `idle_timeout_secs` /
-`max_messages_per_room` / `retention_secs` / `max_rooms` / `workspace_root`,
-`[documents.ocr] backend` / `languages`, and `[documents.language] preferred_languages`.
-
-**Deprecated keys.** These are still accepted so an older `basemind.toml` keeps loading, and are
-ignored with a one-time warning:
-
-- The `[llm]` table (`model`, `api_key`, `base_url`, `temperature`, `timeout_secs`, `max_retries`,
-  `max_tokens`), the `--llm-*` flags on `basemind scan` and the `BASEMIND_LLM_*` variables. Nothing
-  calls a language model any more (the reranker is a local ONNX cross-encoder), so
-  `BASEMIND_ALLOW_REPO_LLM` has nothing to grant.
-- `[documents] extract_archives`: archive extraction was removed and archives are always skipped;
-  `BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES` has no effect. `max_archive_bytes` /
-  `max_archive_entries` still apply: they bound the zip containers that Office files (docx, pptx,
-  xlsx, odt) are.
-- `[documents.summarization] strategy = "abstractive"`: extractive (TextRank) summaries are used.
-- `[documents.ner] backend = "llm"`: no entities are extracted.
-
-**Removed sections.** `[crawl]` configured web crawling and `[shells]` configured agent shells; both
-were removed. The tables are still accepted so an older `basemind.toml` keeps loading (`basemind
-init` used to write an empty `[crawl]`); their contents are not validated or read, and a table with
-keys in it logs one warning.
-
-**Config changes take effect on the next scan.** Cached chunks and documents carry a fingerprint of
-the settings that shape them (`[code_search]` `max_characters` / `overlap` / `max_chunks_per_file`;
-`[documents]` chunk size, page cap, language detection, keywords, NER, summarization and
-`[resources] document_models`), so changing one re-chunks or re-extracts only the
-affected files. Embedding scope (`embed`, `embed_include`, `embed_exclude`, and the `enabled` switches)
-is reconciled too: the first scan after a change deletes the vector rows of files that are no longer
-eligible (and, when `[code_search] enabled = false`, their keyword postings) and rebuilds the rows of
-files that became eligible from the cached blobs, without re-embedding.
-
-</details>
-
----
-
-## CLI reference
-
-<details>
-<summary><strong>Full command list</strong> — code · git · memory · admin · cache · agent · workspace</summary>
-
-Every MCP tool has a CLI command (enforced by `tests/cli_parity/`); the CLI also keeps shorthands
-and administrative commands that have no MCP tool. Add `--json` for machine-readable output: the
-response types the MCP tools return. Human output prints source bodies, diffs and exports in full;
-only table cells are cut (to 200 characters, with a note on stderr), and the timing line goes to
-stderr. List commands take
-`--limit`, `--cursor` (resume from a previous `next_cursor`) and `--max-tokens`. Line and column
-arguments are 1-based.
-
-<!-- markdownlint-disable MD013 -->
-
-**Exit codes**
-
-| Code | Meaning |
-|---|---|
-| `0` | Success. |
-| `1` | Runtime error. |
-| `2` | Usage error: bad flag or argument (including an invalid `rescan` path, or a destructive command without `--yes`). |
-| `3` | Busy: another process holds the workspace writer lock, or the daemon a scan was forwarded to is stopping. Retry later. |
-| `4` | A required daemon is unreachable. |
-| `130` | Interrupted by Ctrl-C; completed work is committed and the index stays consistent. |
-
-With a comms daemon running, the one-shot CLI forwards memory operations, reference/caller reads,
-the grep prefilter, scans and rescans to it (the daemon is the sole index writer) instead of failing or
-degrading to a truncated in-memory view.
-
-**Code (`basemind code`)**
-
-| Command | Purpose |
-|---|---|
-| `outline <path>` | A file's structure: symbols, 1-based lines, signatures, imports (`code_outline`). |
-| `symbols <name> [--kind --changed]` | Find a definition by name, optionally filtered by kind (`code_symbols`). |
-| `read <path> --symbol <name> [--kind]` / `read <path> --line <n> [--end-line <m>]` | One symbol's source body, or an inclusive line span (`code_read`; alias `expand`). |
-| `grep <pattern> [--regex --path --language --context N --changed]` | Text search; the pattern is literal unless `--regex`. `--path` is a substring of the repo-relative path; `--context N` (0-10) adds the N lines around each match (`code_grep`). |
-| `search <query> [--lane hybrid\|semantic\|keyword]` | Search code by meaning; returns pointers. Needs `--features code-search` (`code_search`; alias `semantic`). |
-| `refs <name> [--relation --path --line --column --depth]` | Usages of a name: call sites by default, or `--relation implementations\|importers\|definition` (`code_refs`; alias `references`). `refs --relation importers --path <file> [--depth]` lists the files importing a file and `refs --relation cycles [--path]` the import cycles; neither takes a name. |
-| `callers <path> <name>` | Shorthand for `refs <name> --path <path>`: callers of one specific definition. |
-| `implementations <name>` | Shorthand for `refs <name> --relation implementations`. |
-| `dependents <module>` | Shorthand for `refs <module> --relation importers`. |
-| `definition <path> <line> <name> [--column]` | Shorthand for `refs <name> --relation definition`: the definition a reference binds to. |
-| `find [query] [--path-prefix --language --min-lines --changed]` / `files [--path-prefix --language]` | Locate a file by a fuzzy fragment of its name or path, or list indexed files (`find_files`); `--min-lines N` lists code files of at least N lines, largest first, with line and byte counts. |
-| `chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (CLI only). |
-| `impact <path\|symbol> [--depth]` / `impact --diff <rev\|A..B>` / `impact --changed` | Files that import a file, a symbol's defining files or a change's files, transitively through the file-level import graph, each with its depth and whether it is in a cycle (CLI only). |
-| `cycles [--path --max-size]` / `cycles --check <from> <to>` | Import cycles, smallest first, each with an import chain that closes it; or whether `from` importing `to` would close one. Type-only imports and Rust `mod` declarations count only with `--include-type-imports` / `--include-module-decls` (CLI only). |
-| `explain <symbol\|path\|path:line> [--sections --limit --depth --no-code --max-tokens]` | One briefing: a symbol's definition, short body, graded callers (to depth 3 over resolved edges), callees, importers and history, or a file's outline, imports, importers, calls in and out by file, hotspot signals, recent commits and owners; each cut section names the call that continues it (CLI only). |
-| `deadcode [--path --kind --tier --limit --fail-on-dead-code]` | Files no entry point reaches through the import graph, definitions whose name nothing else spells and imports that resolve to nothing, each with a confidence tier (`high`/`medium`/`low`) and its reason, plus a coverage note per language; `--fail-on-dead-code` exits 1 for CI on a `high` finding (or one at `--tier`), and on a report that judged nothing (CLI only). |
-| `migration check [name] [--fail-on-remaining --ranges]` | Remaining uses of the old forms named in `.basemind/migrations/<name>.toml`, per rule and file, with the share migrated and the progress across runs (history kept in the cache dir). `--fail-on-remaining` exits 1 for CI (CLI only). |
-
-**Git (`basemind git`)**
-
-| Command | Purpose |
-|---|---|
-| `log [--path --query --author --symbol --rev]` | Commit history: recent commits, commits touching a path, full-text search, a symbol's history, or one commit in full (`git_log`). |
-| `blame <path> [--line --end-line --symbol --rev]` | Who last changed a file, a line span, or one symbol (`git_blame`). |
-| `diff [path] [--from --to --structural]` | No path: working-tree status. A path alone: its working-tree diff against HEAD. `--from`/`--to`: between revisions. `--structural`: symbols added and removed (`git_diff`). |
-| `status` / `recent` / `touching <path>` / `search <query> [--author]` / `show <rev>` | Shorthands for `diff` with no arguments and for `log` with one filter. |
-| `symbol-history <path> <name>` / `blame-symbol <path> <name> [--rev]` / `diff-outline <path> [--rev]` | Shorthands for `log --path --symbol`, `blame --symbol` and `diff --structural`. |
-| `churn [--window --top-k]` | The most frequently changed files (CLI only). |
-| `by-path <regex> [--window]` | Commits whose changed paths match a regex (CLI only). |
-| `hotspots [--since 90d --path --limit]` | Files with two or more of commits, authors, lines, symbols, longest function and importers in their top 10% (CLI only). |
-
-**Memory (`basemind memory`)**
-
-| Command | Purpose |
-|---|---|
-| `put <key> <value> [--tag]... [--individual]` | Store a note (`memory_save`). |
-| `get <key>` / `list [--prefix --tag]` / `search <query> [--tag]` | Read one note, list by key prefix, or search by meaning (`memory_search`). |
-| `delete <key>` | Remove a note (CLI only). |
-| `documents <query> [--mime-type --kind --path --keywords --entity]` | Search indexed PDFs / Office / HTML / email / notebooks / Markdown / text, config and data files by meaning and by words, with citations (`docs_search`). |
-**Admin (`basemind admin`)**
-
-| Command | Purpose |
-|---|---|
-| `repo` | Same payload as the top-level `basemind status` (`index_status`): index health plus branch and HEAD. |
-| `telemetry [--window --tool]` | What's been queried and how many tokens were saved. `--window` is one of `today`, `1h`, `24h`, `all`. |
-| `eval --tasks <file> [--out --report --markdown --baseline --tolerance --cost-tolerance --min-recall --warmup --mode]` | Score retrieval quality and token savings against gold from a JSONL task file; `--baseline` gates regressions. See [`benchmarks/eval/`](benchmarks/eval/README.md). |
-| `tokens --stdin` | Count tokens in stdin with the real o200k tokenizer (needs the `tokenizer` feature). |
-
-Index commands live at the top level: `status` (`index_status`), `rescan [paths]`
-(`index_rescan`) and `cache stats|gc|clear` (CLI only).
-
-**Cache (`basemind cache`)**
-
-| Command | Purpose |
-|---|---|
-| `stats` | Disk footprint (per-component + total, matches `du`) and process RAM. |
-| `gc [--dry-run]` | Reap blobs no workspace on the machine references. Cross-workspace reference-counted, keeps blobs younger than 6 h (`BASEMIND_BLOB_GC_GRACE_SECS`), serialised by a machine-wide lock. `--dry-run` only counts the blobs in the store, plus the marker-less workspace dirs the daemon's sweep would reap, and deletes nothing. |
-| `clear --component <comp> [--yes]` | Clear part of the cache (`blobs`, `views`, `views:<name>`, `lance`, `git-cache`, `telemetry`, `all`; default `git-cache`). Everything but `git-cache` asks for confirmation on a terminal and needs `--yes` otherwise. `blobs` is the **machine-global** store shared by every workspace. Refuses (exit 3) while a writer holds the workspace lock, and for `blobs` while the daemon runs. |
-
-**Agent (`basemind agent`, `--features comms`)**
-
-Flags mirror the MCP fields. Every command takes `--as <name>` to act as a sub-identity of this
-checkout's principal.
-
-| Command | Purpose |
-|---|---|
-| `post --body <text> (--subject <s> [--to <id>…] [--paths <p>…] \| --thread <t> \| --reply-to <id>)` | Send a message: start a thread, post into one, or reply. |
-| `inbox [--thread --id --unread <bool> --peek --announce --wait-secs --limit --cursor]` | Read unread messages (marks them read; `--peek` does not, `--unread false` reads history, `--id` one whole message). `--announce` lists front matter only and never marks read; CLI and hooks only. |
-| `threads [--query --path --thread --join --leave --invite <id>… --archive --archived --limit --cursor]` | List, describe, join, leave, invite to or archive threads. |
-| `status` | Who this checkout acts as (principal, where the id came from, host, root) and the agent store (directory, state, version, posts, live serve sessions, repository). |
-| `cleanup [--archive <thread>…]` | Operator: archive any thread whoever created it, then run one retention sweep. |
-| `hook pre-tool-use` / `hook name` | Read a hook event on stdin: the first names the caller's `as` for an agent tool call, the second the session's name. Used by the plugin hooks. |
-
-**Comms daemon (`basemind comms`, `--features comms`)**
-
-| Command | Purpose |
-|---|---|
-| `daemon` / `start` / `stop [--all]` / `status` | The broker daemon: run it, ensure it, stop it (`--all` stops every live daemon of this version's protocol generation on the machine), or inspect pid / version / uptime. |
-| `doctor [--probe --clear-fatal]` | List every live daemon of this version's protocol generation on the machine (pid / comms dir / version / uptime), pruning dead registry entries, and flag a pile-up over the ceiling (`BASEMIND_MAX_DAEMONS`, default 8). `--probe` also asks each daemon whether it can serve; `--clear-fatal` acknowledges the records of scans that died without unwinding. |
-| `cleanup [--dry-run --older-than <days>]` | Remove the comms files of other protocol generations and of releases up to 0.33 (including a pre-generation `store.fjall`) once no daemon holds their lock and they have been idle for 30 days. |
-
-**Workspace (`basemind workspace`, `--features comms`)**
-
-| Command | Purpose |
-|---|---|
-| `workspaces` / `worktrees <repo-id>` / `branches <repo-id>` | List registered workspaces / a repo's worktrees / its local branches. CLI only: there is no MCP tool. |
-
-**Other commands (`scan`, `serve`, `watch`, …)**
-
-| Command | Purpose |
-|---|---|
-| `scan [--staged \| --rev <REV>] [--no-git-history] [--rebuild-git-history]` | Full scan, or index the git index / one revision. Ctrl-C stops it cleanly. With a daemon running, a working-tree scan is forwarded to it; a flag it cannot apply (`--rebuild-git-history`, `--verify-shared-base`, a `--documents-*` / `--llm-*` override) is refused with exit 2, and `--staged` / `--rev` exit 3 while the daemon holds the workspace. A scan starts no daemon. |
-| `rescan [<path>…] [--no-git-history] [--rebuild-git-history]` | Update the given paths, or with none the whole tree. Routed through the daemon when one runs. |
-| `status` | Index health for this workspace: file counts, languages, scan age. |
-| `overview [--sections a,b] [--limit N]` | The repository's shape: languages with file and line counts, top-level directories, build manifests (`Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`, `pom.xml`, `build.gradle`) and the entry points they declare, the largest and most-imported files, HTTP routes, naming conventions per language, the latest commits. CLI only; answered by the daemon when one runs. |
-| `doctor` | Check root, config, index, grammars, pre-commit hook and daemon; exits 1 on a failed check. |
-| `completions <shell>` / `man` | Print a shell completion script (`bash`, `zsh`, `fish`, `elvish`, `powershell`) / the man page (roff) to stdout. |
-| `manual [topic]` | Print the offline manual (an index, or one topic: `code`, `resolution`, `git`, `documents`, `memory`, `agents`, `indexing`, `paging`, `setup`, `exit-codes`, `environment`, `troubleshooting`). Needs no index. |
-| `watch` | Keep the index fresh as files change (no server). |
-| `serve` | Stdio MCP entry point: ensures the daemon and relays to it (needs `--features comms`). The daemon keeps the index fresh by default. |
-| `daemon ensure` | Ensure the daemon and its HTTP transport are up and print the MCP URL (needs `--features comms`). |
-| `statusline` | One-line summary of the daemon's active workspaces for a shell prompt; prints nothing when no daemon runs. |
-| `init [--config-dir .config\|.config/basemind --rules-target --settings-target --print]` | Re-runnable onboarding: write `basemind.toml` (at the root or under the `.config/` convention), select capabilities, inject usage rules. |
-| `lang <list\|install\|clean>` | Manage downloaded language grammars. |
-| `hook install [--force]` | Add a git pre-commit hook that runs `basemind scan --staged`. Honours `core.hooksPath`, works in linked worktrees, never blocks a commit, and refuses to overwrite a hook it did not write unless `--force` (the old one is kept as `pre-commit.bak`). |
-
-<!-- markdownlint-enable MD013 -->
-
-</details>
-
----
+On a 74k-file monorepo, outline, symbol and reference lookups answer in single-digit milliseconds at
+p50. The CLI reports process start (`startup_us`) apart from the query's own time, which a
+`time basemind …` wrapper would add together.
+`basemind admin eval` measures accuracy, latency and tokens saved on your own repository
+against gold generated from it ([`benchmarks/eval/`](benchmarks/eval/README.md)). Results, including
+the cases where `grep` is cheaper: [`benchmarks/README.md`](benchmarks/README.md#measured-results)
+and the [performance page](https://basemind.ai/reference/performance/).
 
 ## License
 
@@ -1326,4 +302,3 @@ MIT — see [LICENSE](LICENSE).
 [tree-sitter]: https://tree-sitter.github.io/tree-sitter/
 [tslp]: https://github.com/Goldziher/tree-sitter-language-pack
 [xberg]: https://github.com/xberg-io/xberg
-[LanceDB]: https://github.com/lancedb/lancedb
