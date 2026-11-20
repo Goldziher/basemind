@@ -33,7 +33,9 @@ fn an_offline_switch_refuses_the_grammar_download_and_names_both_variables() {
     for vars in [
         [("BASEMIND_OFFLINE", "1")],
         [("BASEMIND_OFFLINE", "true")],
+        [("BASEMIND_OFFLINE", "on")],
         [("BASEMIND_GRAMMAR_OFFLINE", "1")],
+        [("BASEMIND_GRAMMAR_OFFLINE", "ON")],
         [("BASEMIND_GRAMMAR_OFFLINE", "yes")],
     ] {
         let output = lang_install(&vars);
@@ -56,6 +58,7 @@ fn a_false_offline_value_tries_the_download() {
         [("BASEMIND_GRAMMAR_OFFLINE", "0")],
         [("BASEMIND_OFFLINE", "false")],
         [("BASEMIND_OFFLINE", "0")],
+        [("BASEMIND_OFFLINE", "Off")],
     ] {
         let output = lang_install(&vars);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -65,5 +68,21 @@ fn a_false_offline_value_tries_the_download() {
         );
         assert!(!stderr.contains(OFFLINE_REFUSAL), "{vars:?}: {stderr}");
         assert!(stderr.contains("grammar download failed"), "{vars:?}: {stderr}");
+    }
+}
+
+#[test]
+fn an_offline_switch_that_is_not_a_boolean_stops_the_command_naming_it() {
+    for name in ["BASEMIND_OFFLINE", "BASEMIND_GRAMMAR_OFFLINE"] {
+        let output = lang_install(&[(name, "maybe")]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{name}: {stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "{name}=\"maybe\" is not a boolean: use 1, true, yes, on or 0, false, no, off"
+            )),
+            "{name}: {stderr}"
+        );
+        assert!(!stderr.contains("grammar download failed"), "{name}: {stderr}");
     }
 }
