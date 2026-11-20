@@ -143,8 +143,8 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
 
 ### Behaviour changes
 
-- **`path` is a prefix, or a glob when it holds `*`.** `code_grep`, `find_files` and `docs_search`
-  read their `path` filter one way: a repo-relative prefix (`src/mcp/`), or a glob over the whole
+- **`path` is a prefix, or a glob when it holds `*`.** `code_grep`, `find_files`, `docs_search`,
+  `code_symbols` and `code_search` read their `path` filter one way: a repo-relative prefix (`src/mcp/`), or a glob over the whole
   path when the value holds `*` (`src/**/*.rs`; `*` stays within one segment, `**` crosses `/`).
   `path_contains` was a substring, so `mcp` matched `src/mcp/tools.rs`; pass `src/mcp/` or
   `**/mcp/**`. A `docs_search` `path` without `*` is now a prefix: `docs/` where it was `docs/**`.

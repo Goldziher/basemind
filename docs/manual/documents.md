@@ -21,7 +21,7 @@ and by words, then cites each hit (path, pages, section, lines).
   the call is an error naming the feature. Documents must be scanned first: `basemind scan`.
 - `kind` is one of `pdf`, `office`, `html`, `markdown`, `email`, `notebook`, `text`, `other`.
   `path` is a repository-relative prefix, or a glob over the whole path when it holds `*`, as in
-  `code_grep` and `find_files`. Filters apply before ranking.
+  the code tools. Filters apply before ranking.
 - `keywords` are whole keywords, comma-separated, any one matching. `entity` keeps chunks naming an
   entity of that category and needs a build with named-entity recognition; without it the filter is
   an error, not an empty result.

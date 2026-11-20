@@ -18,6 +18,12 @@ pub struct CodeSearchParams {
     #[serde(default)]
     #[schemars(extend("enum" = ["hybrid", "semantic", "keyword"]))]
     pub lane: Option<String>,
+    /// Prefix, or a glob when it has `*`, e.g. `src/`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Language, e.g. `rust`.
+    #[serde(default)]
+    pub language: Option<String>,
     /// Default 10.
     #[serde(default)]
     pub limit: Option<u32>,

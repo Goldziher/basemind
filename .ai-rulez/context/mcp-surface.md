@@ -25,10 +25,10 @@ tool's body, before changing one.
 | Tool | Arguments (required first; `?` = optional) | Job |
 |---|---|---|
 | `code_outline` | `path`, `limit?`, `cursor?`, `max_tokens?` | a file's symbols and imports |
-| `code_symbols` | `name`, `kind?`, `fuzzy?`, `limit?`, `cursor?`, `max_tokens?` | find a definition by name |
+| `code_symbols` | `name`, `kind?`, `path?`, `language?`, `fuzzy?`, `limit?`, `cursor?`, `max_tokens?` | find a definition by name |
 | `code_read` | `path`, then `symbol?` (+ `line?` / `kind?` when several share the name) or `line?` + `end_line?` | one symbol's body, or a line span |
 | `code_grep` | `pattern`, `regex?`, `path?`, `language?`, `context?`, `limit?`, `cursor?`, `max_tokens?` | exact text search over indexed code and text documents |
-| `code_search` | `query`, `lane?`, `limit?`, `cursor?`, `max_tokens?` | search code by meaning; pointers, not bodies |
+| `code_search` | `query`, `lane?`, `path?`, `language?`, `limit?`, `cursor?`, `max_tokens?` | search code by meaning; pointers, not bodies |
 | `code_refs` | `name`, `relation?`, `path?`, `line?`, `column?`, `match?`, `limit?`, `cursor?`, `max_tokens?` | call sites, callers, implementations, importers, or the definition a reference binds to |
 | `find_files` | `query?`, `path?`, `language?`, `limit?`, `cursor?`, `max_tokens?` | fuzzy file-name search, or a listing |
 | `docs_search` | `query`, `mime_type?`, `kind?`, `path?`, `keywords?`, `entity?`, `limit?`, `cursor?`, `max_tokens?` | semantic search over indexed documents |

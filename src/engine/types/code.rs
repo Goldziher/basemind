@@ -252,6 +252,12 @@ pub struct CodeSymbolsParams {
     /// function, method, struct, enum, class, interface, trait, type, const, module, macro, route.
     #[serde(default)]
     pub kind: Option<String>,
+    /// Prefix, or a glob when it has `*`, e.g. `src/`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Language, e.g. `rust`.
+    #[serde(default)]
+    pub language: Option<String>,
     /// Also match the name as a fuzzy subsequence, ranked last.
     #[serde(default)]
     pub fuzzy: Option<bool>,
@@ -277,6 +283,10 @@ pub(crate) struct SearchSymbolsParams {
     /// Optional kind filter: function, method, struct, enum, class, interface,
     /// trait, type, const, module, macro.
     pub kind: Option<String>,
+    /// Only definitions in files passing this `path` filter (a prefix, or a glob when it holds `*`).
+    pub path: Option<crate::path_filter::PathFilter>,
+    /// Only definitions in files of this language.
+    pub language: Option<String>,
     /// Also match names the needle is a fuzzy subsequence of, ranked below every literal match.
     pub fuzzy: bool,
     /// Cap the number of results returned. Default 100, max 1000.

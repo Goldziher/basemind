@@ -8,6 +8,7 @@ symbol or span you need. Paths are repository-relative with forward slashes.
 |---|---|---|
 | What is in this file? | `code_outline {"path":"src/store.rs"}` | `basemind code outline src/store.rs` |
 | Where is X defined? | `code_symbols {"name":"open_store"}` | `basemind code symbols open_store` |
+| Where is X defined under a directory? | `code_symbols {"name":"Config","path":"src/mcp/"}` | `basemind code symbols Config --path src/mcp/` |
 | Show one symbol's body | `code_read {"path":"src/store.rs","symbol":"open"}` | `basemind code read src/store.rs --symbol open` |
 | Show a line span | `code_read {"path":"src/store.rs","line":120,"end_line":160}` | `basemind code read src/store.rs --line 120 --end-line 160` |
 | Where does this text appear? | `code_grep {"pattern":"cache_root("}` | `basemind code grep "cache_root("` |
@@ -26,10 +27,12 @@ symbol or span you need. Paths are repository-relative with forward slashes.
 
 ## Contracts
 
-- `path` filters `code_grep` and `find_files` one way: a repository-relative prefix (`src/mcp/`
+- `path` filters `code_grep`, `find_files`, `code_symbols` and `code_search` one way: a repository-relative prefix (`src/mcp/`
   keeps `src/mcp/tools.rs`, and `src/mc` also keeps `src/mcp_types.rs`), or a glob over the whole
   path when it holds `*` (`src/**/*.rs`; `*` stays within one segment, `**` crosses `/`). Without
-  a `*`, `?`, `[` and `{` are literal, so `app/[id]/` is a prefix.
+  a `*`, `?`, `[` and `{` are literal, so `app/[id]/` is a prefix. `language` takes the language
+  `find_files` lists a file under (`rust`, `python`). `code_search` applies both to the 1,000 best
+  candidates of each lane.
 - `code_outline` lists a code file's symbols (kind, name, signature, `line` / `end_line`) and its
   imports. A Markdown, config or data file is a document, not code: the call says so and points at
   `code_grep` for exact text and `docs_search` to search by meaning.

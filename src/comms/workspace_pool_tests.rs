@@ -625,6 +625,8 @@ async fn code_response(shared: &crate::mcp::ServedWorkspace, query: CodeQuery) -
                 .code_symbols_call(crate::mcp::params::CodeSymbolsParams {
                     name: "alpha".to_string(),
                     kind: None,
+                    path: None,
+                    language: None,
                     fuzzy: None,
                     limit: None,
                     cursor: None,

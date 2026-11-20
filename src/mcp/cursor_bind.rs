@@ -188,6 +188,8 @@ mod tests {
         CodeSymbolsParams {
             name: name.to_string(),
             kind: None,
+            path: None,
+            language: None,
             fuzzy,
             limit: None,
             cursor: None,

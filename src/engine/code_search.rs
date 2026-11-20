@@ -11,6 +11,7 @@
 
 use ahash::AHashSet;
 
+use super::filters::Filters;
 use super::types::search::{CodeSearchHit, CodeSearchRanking, LaneUnavailable};
 use super::{EngineError, Workspace};
 use crate::search::bm25::bm25_search;
@@ -23,27 +24,38 @@ use crate::search::rrf::{
 };
 use crate::store::Store;
 
-/// The ranking of `query` over `lane` (default `hybrid`), at most `limit` hits after hydration.
+/// Candidates each lane ranks when a `path` or `language` filter is set: the filter keeps the hits
+/// it passes among them.
+const FILTERED_LANE_DEPTH: usize = 1_000;
+
+/// The ranking of `query` over `lane` (default `hybrid`), at most `limit` hits after hydration, each
+/// in a file `filters` passes.
 pub(super) fn retrieve(
     ws: &Workspace,
     query: String,
     lane: Option<&str>,
     limit: usize,
+    filters: &Filters<'_>,
 ) -> Result<CodeSearchRanking, EngineError> {
     let rr = &ws.config.code_search.reranker;
     let (rerank_enabled, rerank_top_k) = (rr.enabled, rr.top_k);
     let fetch_n = if rerank_enabled { limit.max(rerank_top_k) } else { limit };
+    let depth = if filters.is_empty() {
+        fetch_n
+    } else {
+        FILTERED_LANE_DEPTH.max(fetch_n)
+    };
 
     let mode = lane.map(str::trim).unwrap_or("hybrid");
     let (seeds, report): (Vec<CodeSearchHit>, LaneReport) = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
-        hybrid_hits(ws, &query, fetch_n)?
+        hybrid_hits(ws, &query, depth)?
     } else if mode.eq_ignore_ascii_case("semantic") {
         (
-            semantic_hits(ws, &query, fetch_n, SEMANTIC_MEANWHILE)?,
+            semantic_hits(ws, &query, depth, SEMANTIC_MEANWHILE)?,
             LaneReport::ran_only("vector"),
         )
     } else if mode.eq_ignore_ascii_case("keyword") {
-        (keyword_hits(ws, &query, fetch_n)?, LaneReport::ran_only("keyword"))
+        (keyword_hits(ws, &query, depth)?, LaneReport::ran_only("keyword"))
     } else {
         return Err(EngineError::unavailable(format!(
             "`code_search`: unknown lane {mode:?}; expected \"hybrid\", \"semantic\", or \"keyword\""
@@ -55,7 +67,7 @@ pub(super) fn retrieve(
     } else {
         0
     };
-    let hydrated = hydrate_hits(&ws.store_read(), seeds, fetch_n, keep_text);
+    let hydrated = hydrate_hits(&ws.store_read(), seeds, fetch_n, keep_text, filters);
 
     // The reranker reorders the head of the ranking and drops nothing; a reranker that cannot run
     // leaves the fused order and says why, as a lane that did not run.
@@ -101,7 +113,7 @@ pub(super) fn is_cacheable(ranking: &CodeSearchRanking) -> bool {
 /// read-only index) or that a non-identifier query doesn't trigger simply contributes nothing; the
 /// query never fails on a single lane. The returned hits carry the fused RRF score in `score`.
 fn hybrid_hits(ws: &Workspace, query: &str, limit: usize) -> Result<(Vec<CodeSearchHit>, LaneReport), EngineError> {
-    let fuse_limit = (limit * 4).clamp(limit, 200);
+    let fuse_limit = (limit * 4).min(200).max(limit);
 
     let mut report = LaneReport::default();
 
@@ -352,10 +364,17 @@ struct Hydrated {
 }
 
 /// Resolve ranked seeds into hits, in rank order: the chunk's metadata comes from its sidecar
-/// (decoded once per content hash), `path` and `also_at` from the view's file map now. A chunk no
-/// indexed file holds is dropped and counted; an id ranked twice (one vector row per copy of a
-/// file) keeps its first rank.
-fn hydrate_hits(store: &Store, seeds: Vec<CodeSearchHit>, limit: usize, keep_text: usize) -> Hydrated {
+/// (decoded once per content hash), `path` and `also_at` from the view's file map now, keeping the
+/// paths `filters` passes. A chunk no indexed file holds is dropped and counted; one held only by
+/// files the filters leave out is dropped; an id ranked twice (one vector row per copy of a file)
+/// keeps its first rank.
+fn hydrate_hits(
+    store: &Store,
+    seeds: Vec<CodeSearchHit>,
+    limit: usize,
+    keep_text: usize,
+    filters: &Filters<'_>,
+) -> Hydrated {
     let mut hydrator = ChunkHydrator::new(store);
     hydrator.resolve_paths(seeds.iter().map(|s| s.chunk_id.as_str()));
     let mut seen: AHashSet<String> = AHashSet::with_capacity(seeds.len());
@@ -371,11 +390,21 @@ fn hydrate_hits(store: &Store, seeds: Vec<CodeSearchHit>, limit: usize, keep_tex
         if seen.contains(hit.chunk_id.as_str()) {
             continue;
         }
-        let Some((path, also_at)) = hydrator.paths(&hit.chunk_id).split_first() else {
+        let live = hydrator.paths(&hit.chunk_id);
+        if live.is_empty() {
             out.omitted += 1;
             continue;
+        }
+        let mut kept = live.iter().filter(|path| {
+            filters.is_empty()
+                || store
+                    .lookup(path.as_bytes())
+                    .is_some_and(|entry| filters.passes(path.as_bytes(), &entry.language))
+        });
+        let Some(path) = kept.next() else {
+            continue;
         };
-        let (path, also_at) = (path.clone(), also_at.to_vec());
+        let (path, also_at): (String, Vec<String>) = (path.clone(), kept.cloned().collect());
         let Some(chunk) = hydrator.chunk(&hit.chunk_id) else {
             out.omitted += 1;
             continue;
