@@ -10,6 +10,10 @@
 
 [documents]
 # Evaluation gold data, not documentation: keep it indexed and keyword-searchable, but unembedded.
-embed_exclude = ["benchmarks/**"]
+# Setting the key replaces the default list, so the structured data formats are repeated here.
+embed_exclude = [
+  "benchmarks/**",
+  "*.json", "*.jsonl", "*.ndjson", "*.yaml", "*.yml", "*.toml", "*.csv", "*.tsv", "*.xml",
+]
 
 [code_search]

@@ -185,6 +185,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disk filled. The footprint counts each workspace's git cache, which eviction already removed. A
   set `BASEMIND_CACHE_BUDGET_MB` is enforced as given; `0` still disables enforcement.
   `cache_stats.last_gc.cache_budget_bytes` reports the budget the sweep applied.
+- **`[documents] embed_exclude` now defaults to the structured data formats**
+  ([#260](https://github.com/Goldziher/basemind/issues/260)): `*.json`, `*.jsonl`, `*.ndjson`,
+  `*.yaml`, `*.yml`, `*.toml`, `*.csv`, `*.tsv` and `*.xml`. They are still extracted, chunked and
+  keyword-ranked by `docs_search`, and `code_grep` still searches them, but they get no vectors, so a
+  default scan embeds prose documents only. Setting the key replaces the list; `embed_exclude = []`
+  embeds them as before. The default is part of the embed-policy fingerprint, so the first full scan
+  of an existing index deletes their vector rows without re-extracting or re-embedding anything
+  (`docs/UPGRADING.md`).
 
 - **BREAKING:** `path` is the one path filter of `code_grep`, `find_files` and `docs_search` (#252):
   a repo-relative prefix (`src/mcp/`), or a glob over the whole path when it holds `*`

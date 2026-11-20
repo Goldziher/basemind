@@ -27,5 +27,8 @@ and by words, then cites each hit (path, pages, section, lines).
   an error, not an empty result.
 - Plain text, logs, CSV, JSON, YAML and TOML are chunked from the file itself, so every hit cites
   its lines. `code_grep` still searches them as text and `find_files` still lists them.
+- Structured data (JSON, JSON Lines, YAML, TOML, CSV, TSV, XML) is not embedded by default: it is
+  ranked by its words, not by meaning. `[documents] embed_exclude` holds that default list; setting
+  it replaces the list, so `embed_exclude = []` embeds those formats too.
 - Archives (`.zip`, `.tar`, …) are never extracted. Which files become documents, the embedding
   model and the size and time limits are set in the `[documents]` table of `basemind.toml`.
