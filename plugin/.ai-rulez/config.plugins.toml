@@ -15,7 +15,10 @@ icon = "assets/basemind-icon.svg"
 brand_color = "#965aff"
 keywords = ["mcp", "agent-context", "rag", "code-map", "tree-sitter"]
 tags = ["mcp", "code-intelligence", "rag", "tree-sitter", "git", "embeddings"]
-runtimes = ["claude", "cursor", "codex", "gemini", "kimi", "opencode", "factory", "hermes", "pi", "agent-plugins", "copilot"]
+# ~keep no "cursor": the repository-root .cursor-plugin/ is the one Cursor imports, and the
+# generated tree would resolve hook scripts against the session directory when
+# CURSOR_PLUGIN_ROOT is unset.
+runtimes = ["claude", "codex", "gemini", "kimi", "opencode", "factory", "hermes", "pi", "agent-plugins", "copilot"]
 spec = "1.0.0"
 include = ["assets/**", "hooks/**", "scripts/**", "LICENSE"]
 
@@ -49,9 +52,6 @@ dependencies = ["mcp==1.30.0", "PyYAML==6.0.3"]
 
 [plugin.codex]
 manifest = "both"
-marketplace = true
-
-[plugin.cursor]
 marketplace = true
 
 [plugin.gemini]

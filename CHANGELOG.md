@@ -858,6 +858,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every table it names is disabled) and runs the highest SemVer version: a release ahead of its
   prereleases, and prereleases ordered by their identifiers (`rc.10` above `rc.2`). File age breaks
   only a tie. A stale or foreign copy no longer wins, and the chosen path is logged to stderr.
+- Cursor gets one plugin, the repository root's `.cursor-plugin/` (#320). The generated
+  `plugin/.cursor-plugin/` resolved its hook scripts against `${CURSOR_PLUGIN_ROOT:-.}`, so with the
+  variable unset a hook ran `./hooks/run-hook.cmd` from the opened repository; it also started the
+  MCP server without `--root` and wired `agent-as`, which Cursor does not run. `plugin:verify`
+  (`sync_legacy_plugin_exports.py --check`) fails on a shipped hook whose root falls back to a path.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

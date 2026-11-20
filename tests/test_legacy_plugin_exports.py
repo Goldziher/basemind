@@ -54,6 +54,39 @@ class LegacyExportsTests(unittest.TestCase):
         self.assertNotIn(".cursor-plugin/hooks/agent-as", files, "Cursor applies no input agent-as rewrites")
 
 
+class SessionRelativeHookTests(unittest.TestCase):
+    """The export check rejects a hook that would run the session directory's script."""
+
+    def write_manifest(self, root: Path, relative: str, command: str) -> None:
+        manifest = root / relative
+        manifest.parent.mkdir(parents=True)
+        hooks = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": command}]}]}}
+        manifest.write_text(json.dumps(hooks))
+
+    def test_a_literal_root_fallback_in_a_nested_plugin_tree_is_reported(self) -> None:
+        command = '"${CURSOR_PLUGIN_ROOT:-.}/hooks/run-hook.cmd" session-start'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write_manifest(root, "plugin/.cursor-plugin/hooks/hooks.json", command)
+            self.assertEqual(
+                EXPORTS.session_relative_hooks(root), [f"plugin/.cursor-plugin/hooks/hooks.json: {command}"]
+            )
+
+    def test_a_fallback_to_another_root_or_a_required_root_is_accepted(self) -> None:
+        commands = (
+            '"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:?basemind: the host set no plugin root}}/hooks/run-hook.cmd" x',
+            '"${CURSOR_PLUGIN_ROOT:?basemind: the host set no plugin root}/hooks/run-hook.cmd" x',
+        )
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                self.write_manifest(root, ".codex-plugin/hooks/hooks.json", command)
+                self.assertEqual(EXPORTS.session_relative_hooks(root), [])
+
+    def test_no_shipped_hook_manifest_has_a_literal_root_fallback(self) -> None:
+        self.assertEqual(EXPORTS.session_relative_hooks(ROOT), [])
+
+
 class GeminiContextFileTests(unittest.TestCase):
     def test_every_gemini_manifest_names_a_context_file_the_repository_ships(self):
         for manifest in ("gemini-extension.json", "plugin/gemini-extension.json"):

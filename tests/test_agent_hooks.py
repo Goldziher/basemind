@@ -475,6 +475,21 @@ class HookRootTests(unittest.TestCase):
                         self.assertNotEqual(result.returncode, 0)
                         self.assertFalse(marker.exists(), "the session's ./hooks/run-hook.cmd ran")
 
+    def tracked(self, pattern: str) -> list[str]:
+        listed = subprocess.run(["git", "ls-files", pattern], cwd=ROOT, capture_output=True, text=True, check=True)
+        return listed.stdout.split()
+
+    def test_no_shipped_hook_manifest_falls_back_to_the_session_directory(self) -> None:
+        manifests = self.tracked("*hooks.json")
+        self.assertIn(".cursor-plugin/hooks/hooks.json", manifests)
+        for manifest in manifests:
+            with self.subTest(manifest=manifest):
+                self.assertNotIn(":-.}", (ROOT / manifest).read_text())
+
+    def test_one_cursor_manifest_ships(self) -> None:
+        self.assertEqual(self.tracked("*.cursor-plugin/plugin.json"), [".cursor-plugin/plugin.json"])
+        self.assertEqual(self.tracked("*.cursor-plugin/hooks/hooks.json"), [".cursor-plugin/hooks/hooks.json"])
+
     def test_the_hosts_plugin_root_runs_the_plugins_script(self) -> None:
         hosts = {
             ".codex-plugin/hooks/hooks.json": ("PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT"),
