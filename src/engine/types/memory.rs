@@ -202,7 +202,11 @@ pub(crate) struct MemorySearchHit {
 pub(crate) struct MemorySearchResponse {
     pub query: String,
     pub hits: Vec<MemorySearchHit>,
-    /// Set while the vector index is behind the saved notes: the hits may be incomplete.
+    /// True when no model could embed the query and the notes were matched by its words instead.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub lexical: bool,
+    /// Set while the vector index is behind the saved notes (the hits may be incomplete), when
+    /// hits past the relevance floor were left out, and when the search fell back to words.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notice: Option<String>,
     /// Server-side handler latency in microseconds — the tool body's own execution (index / vector

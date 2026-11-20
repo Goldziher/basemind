@@ -22,6 +22,13 @@ agent working in the same repository should know. Notes are keyed, tagged and se
 - `memory_search` takes at most one of `query`, `key` and `prefix`; with none it lists every note.
   `tags` filters a search or a listing: a note carrying any of them passes. A listing shows the first 200 characters of each value and
   pages with `next_cursor`; `key` reads a note whole.
+- A `query` search answers the notes within a relevance floor (squared L2 distance `1.0` between
+  unit vectors, a cosine similarity of one half); the reply's `notice` says how many nearer notes it
+  left out, and an unrelated query returns no hit.
+- When no embedding model can embed the query (none downloaded, offline), `query` matches words
+  instead and the reply carries `"lexical": true`: a note is a hit when at least half of the
+  query's words each begin a word of its key, value or tags, and its `distance` is the share of
+  the words it lacks.
 - `visibility` is `group` (the default, shared by every agent of the repository) or `individual`
   (only the agent that saved it).
 - Memory is scoped by the normalised git `origin` URL: clones of one repository share notes,
