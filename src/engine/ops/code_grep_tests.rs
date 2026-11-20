@@ -645,18 +645,18 @@ fn line_anchored(pattern: &str) -> LineRegex {
 #[test]
 fn an_anchor_does_not_match_past_the_last_line() {
     let count = |pattern: &str, text: &str| count_matches(text.as_bytes(), &line_anchored(pattern), None);
-    assert_eq!(count("^$", "a\n\nb\n"), Some(1), "the empty second line only");
-    assert_eq!(count("^", "a\nb\n"), Some(2));
-    assert_eq!(count("$", "a\nb\n"), Some(2));
+    assert_eq!(count("^$", "a\n\nb\n"), 1, "the empty second line only");
+    assert_eq!(count("^", "a\nb\n"), 2);
+    assert_eq!(count("$", "a\nb\n"), 2);
     assert_eq!(
         count("$", "a\nb"),
-        Some(2),
+        2,
         "the end of an unterminated last line is on that line"
     );
-    assert_eq!(count(r"^\s*$", "a\n  \n"), Some(1));
-    assert_eq!(count("^$", "a\r\n\r\nb\r\n"), Some(1), "CRLF line ends");
-    assert_eq!(count("^$", "a\n"), Some(0));
-    assert_eq!(count("^$", "\n"), Some(1), "one empty line");
+    assert_eq!(count(r"^\s*$", "a\n  \n"), 1);
+    assert_eq!(count("^$", "a\r\n\r\nb\r\n"), 1, "CRLF line ends");
+    assert_eq!(count("^$", "a\n"), 0);
+    assert_eq!(count("^$", "\n"), 1, "one empty line");
 
     let positions: Vec<usize> = line_matches(&line_anchored("^"), "a\nb\n")
         .map(|found| found.start())
