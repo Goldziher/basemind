@@ -76,7 +76,17 @@ class StatusLineShippingTests(unittest.TestCase):
         self.assertIn("/scripts/statusline.sh", (ROOT / "plugin/commands/bm-statusline.md").read_text())
         self.assertNotIn("*/.claude-plugin/statusline.sh", (ROOT / "plugin/commands/bm-statusline.md").read_text())
 
-    def test_the_installed_script_names_its_plugin_version(self) -> None:
+    def test_the_installed_script_names_its_plugin_version_after_the_brand_mark(self) -> None:
+        if shutil.which("jq") is None:
+            self.skipTest("jq is required to read the manifest")
+        mark = "\033[38;2;249;115;22m\u25c6\033[0m \033[1m\033[38;2;249;115;22mbasemind\033[0m"
+        version = "  \033[1m\033[38;5;244mv7.8.9\033[0m  \033[38;5;240m\u2502\033[0m"
+        cases = {
+            "full": ({"BASEMIND_STATUSLINE": "full"}, f"{mark}{version}  3 files"),
+            "compact": ({"BASEMIND_STATUSLINE": "compact"}, f"{mark}{version}  3 files"),
+            "minimal": ({"BASEMIND_STATUSLINE": "minimal"}, f"{mark}  3 files"),
+            "hidden": ({"BASEMIND_STATUSLINE": "full", "BASEMIND_STATUSLINE_VERSION": "0"}, f"{mark}  3 files"),
+        }
         with tempfile.TemporaryDirectory() as temporary:
             plugin = Path(temporary) / "plugin"
             (plugin / ".claude-plugin").mkdir(parents=True)
@@ -84,14 +94,23 @@ class StatusLineShippingTests(unittest.TestCase):
             (plugin / "scripts").mkdir()
             script = plugin / "scripts/statusline.sh"
             script.write_bytes((ROOT / "plugin/.ai-rulez/scripts/statusline.sh").read_bytes())
+            stub = Path(temporary) / "bin"
+            stub.mkdir()
+            (stub / "basemind").write_text(f"#!/bin/bash\n[ \"$1\" = statusline ] && printf '%s\\n' '{mark}  3 files'\n")
+            (stub / "basemind").chmod(0o755)
             work = Path(temporary) / "work"
-            (work / ".basemind/blobs").mkdir(parents=True)
-            (work / ".basemind/blobs/0aaaaaaaa.fm.msgpack").touch()
+            work.mkdir()
             payload = json.dumps({"workspace": {"current_dir": str(work)}})
-            env = {"PATH": "/usr/bin:/bin:" + str(Path(shutil.which("jq") or "/usr/bin/jq").parent), "COLUMNS": "200"}
-            out = subprocess.run(
-                ["/bin/bash", str(script)], input=payload, env=env, capture_output=True, text=True, timeout=60
-            ).stdout
-            if shutil.which("jq") is None:
-                self.skipTest("jq is required to read the manifest")
-            self.assertIn("v7.8.9", out)
+            path = f"{stub}:/usr/bin:/bin:{Path(shutil.which('jq')).parent}"
+            for case, (extra, expected) in cases.items():
+                with self.subTest(case=case):
+                    out = subprocess.run(
+                        ["/bin/bash", str(script)],
+                        input=payload,
+                        env={"PATH": path, "COLUMNS": "200", **extra},
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        check=True,
+                    ).stdout
+                    self.assertEqual(out, expected)

@@ -826,6 +826,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   symbol change at the edge of a span is compared with its commit's first parent. A posting list that
   does not decode is an error, not a short history. A live-walk cursor now counts commits of the whole
   history, so one an earlier release issued resumes elsewhere: repeat the call without it.
+- The shell status line no longer reads an in-repo `.basemind/` (#321). A repository carrying only the
+  legacy `.basemind/basemind.toml` config showed `scanning…` for good, and a leftover legacy cache showed
+  counts nothing writes any more; every repository now gets the line `basemind statusline --root`
+  renders from the machine-global cache. That call is bounded to 2 seconds on a machine without
+  `timeout` too (stock macOS), where a hung binary stalled the bar. The plugin version and the
+  unread-message segment, which only the legacy branch rendered, now frame that line, so they show for
+  global-cache repositories; the legacy branch's per-type call counts and disk and RSS figures are gone
+  with it.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

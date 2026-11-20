@@ -97,8 +97,8 @@ fn render_repo_statusline(root: &std::path::Path) -> String {
     out
 }
 
-/// Human-readable age of a Unix-epoch-seconds scan timestamp (`Ns/Nm/Nh/Nd ago`), mirroring the
-/// shell renderer's buckets. `"never"` when the timestamp is non-positive or in the future.
+/// Human-readable age of a Unix-epoch-seconds scan timestamp (`Ns/Nm/Nh/Nd ago`). `"never"`
+/// when the timestamp is non-positive or in the future.
 fn format_scan_age(scanned_unix: i64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
