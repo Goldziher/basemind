@@ -425,8 +425,8 @@ pub struct RerankerConfig {
     /// latency means users should opt in explicitly.
     #[serde(default)]
     pub enabled: bool,
-    /// Xberg reranker preset name (`bge-reranker-base` is the small default;
-    /// `bge-reranker-large` and `bge-reranker-v2-m3` are heavier alternatives).
+    /// Xberg reranker preset name (`bge-reranker-base` is the default; `bge-reranker-v2-m3`,
+    /// `jina-reranker-v1-turbo-en`, `ettin-reranker-150m` and `qwen3-reranker-0.6b` are the others).
     #[serde(default = "RerankerConfig::default_preset")]
     pub preset: String,
     /// How many of the best fused hits the cross-encoder reorders, at most 50. The hits after

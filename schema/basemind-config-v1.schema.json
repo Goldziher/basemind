@@ -767,7 +767,7 @@
           "default": false
         },
         "preset": {
-          "description": "Xberg reranker preset name (`bge-reranker-base` is the small default;\n`bge-reranker-large` and `bge-reranker-v2-m3` are heavier alternatives).",
+          "description": "Xberg reranker preset name (`bge-reranker-base` is the default; `bge-reranker-v2-m3`,\n`jina-reranker-v1-turbo-en`, `ettin-reranker-150m` and `qwen3-reranker-0.6b` are the others).",
           "type": "string",
           "default": "bge-reranker-base"
         },
