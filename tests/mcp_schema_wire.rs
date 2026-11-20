@@ -208,8 +208,9 @@ async fn instructions_stay_under_the_client_ceiling() {
         "instructions must steer a rescan to the edited paths: {instructions}"
     );
     assert!(
-        instructions.contains("index_rescan {} only when index_status reports an empty or degraded index"),
-        "instructions must keep the whole-workspace rescan for an empty or degraded index: {instructions}"
+        instructions
+            .contains("index_rescan {} only when index_status reports an empty index, degraded or rescan_needed"),
+        "instructions must keep the whole-workspace rescan for an empty, degraded or rescan_needed index: {instructions}"
     );
     assert!(
         !instructions.contains("index_rescan {} after"),

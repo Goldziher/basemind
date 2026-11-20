@@ -226,7 +226,8 @@ says "not indexed".
   stop.
 - **The index follows your edits**: no rescan and no server reconnect after each one. If a
   result says `stale` or a new file is missing, run `index_rescan {"paths":[...]}` for the files
-  you touched; run `index_rescan {}` only when `index_status` reports an empty or degraded index.
+  you touched; run `index_rescan {}` only when `index_status` reports an empty index, `degraded`
+  or `rescan_needed`.
 
 <Aside type="note">
 Lists are capped by `limit` (default 100 for `code_symbols` / `code_grep` / `code_refs`, 500 for
