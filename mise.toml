@@ -70,7 +70,7 @@ description = "Exercise archive, public export, and actual CLI integration contr
 run = [
   { task = "plugin:pytest" },
   "node tests/basemind_pi_cli_contract.mjs",
-  "node --test tests/npm_install_https.test.cjs tests/npm_install_staging.test.cjs",
+  "node --test tests/npm_install_https.test.cjs tests/npm_install_staging.test.cjs tests/npm_install_proxy.test.cjs",
 ]
 
 [tasks."plugin:verify"]
