@@ -15,7 +15,7 @@ use crate::scan_retrieval::PendingDocBatch;
 use crate::scanner_candidates::candidates_for_source;
 #[cfg(feature = "code-search")]
 use crate::scanner_code::PendingCodeBatch;
-use crate::scanner_drive::{DriveOutcome, ScanDrive, drive_scan};
+use crate::scanner_drive::{DriveOutcome, ProgressObserver, ScanDrive, drive_scan};
 use crate::scanner_file::scanner_pool;
 use crate::scanner_filter::{Filters, IndexFilter};
 use crate::scanner_flush::{
@@ -498,7 +498,8 @@ pub fn scan_with_observer(
         cancel,
     };
     let bm25_pass = crate::scanner_flush::begin_bm25_pass_if_any(store, config, true);
-    let driven = drive_scan(&drive, &candidates, store, &mut report.stats, observer);
+    let mut progress = ProgressObserver::new(observer, breadcrumb.as_mut());
+    let driven = drive_scan(&drive, &candidates, store, &mut report.stats, &mut progress);
     let (seen_count, total_candidates) = (driven.seen.len(), candidates.len());
     // Before the cancel check and the stale purge: a drive stopped by a fatal commit failure is a ~keep
     // partial pass too, and must not be flushed or purged as if it were whole. ~keep

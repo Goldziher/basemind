@@ -36,6 +36,7 @@ use std::path::Path;
 use crate::backpressure::{AdmitOutcome, FootprintGate};
 use crate::chunk_drive::{ChunkCut, drive_chunks_governed};
 use crate::config::{Config, MaxFootprint};
+use crate::scan_evidence::ScanBreadcrumb;
 use crate::scanner::{FileResult, FileStatus, ScanCancel, ScanSource, ScanStats};
 use crate::scanner_file::{run_candidates, scanner_pool};
 use crate::scanner_filter::Filters;
@@ -109,6 +110,39 @@ impl CollectObserver {
 impl ScanObserver for CollectObserver {
     fn on_file(&mut self, result: FileResult) {
         self.results.push(result);
+    }
+}
+
+/// Forwards to `inner` and, at each chunk, records the files extracted so far in the pass's
+/// breadcrumb: the count `index_status` and the statusline report as the scan's progress.
+pub(crate) struct ProgressObserver<'a> {
+    inner: &'a mut dyn ScanObserver,
+    breadcrumb: Option<&'a mut ScanBreadcrumb>,
+    done: usize,
+}
+
+impl<'a> ProgressObserver<'a> {
+    /// Wrap `inner`; with no breadcrumb (it could not be written) the count is kept but not recorded.
+    pub(crate) fn new(inner: &'a mut dyn ScanObserver, breadcrumb: Option<&'a mut ScanBreadcrumb>) -> Self {
+        Self {
+            inner,
+            breadcrumb,
+            done: 0,
+        }
+    }
+}
+
+impl ScanObserver for ProgressObserver<'_> {
+    fn on_file(&mut self, result: FileResult) {
+        self.inner.on_file(result);
+    }
+
+    fn on_batch(&mut self, live_results: usize) {
+        self.done += live_results;
+        if let Some(breadcrumb) = self.breadcrumb.as_deref_mut() {
+            breadcrumb.files_done(self.done);
+        }
+        self.inner.on_batch(live_results);
     }
 }
 
@@ -694,5 +728,24 @@ mod tests {
         );
         assert_eq!(lengths, vec![32, 16, 8, 4, 2, 1, 1, 1]);
         assert_eq!(lengths.iter().sum::<usize>(), 65, "the drive stops when items run out");
+    }
+
+    #[test]
+    fn the_progress_observer_records_the_running_count_and_forwards_every_call() {
+        use crate::scan_evidence::{PHASE_EXTRACT, read};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut breadcrumb = ScanBreadcrumb::begin_in(dir.path(), Path::new("/repo")).expect("breadcrumb written");
+        breadcrumb.advance(PHASE_EXTRACT, Some(5));
+        let mut inner = CollectObserver::new();
+        {
+            let mut progress = ProgressObserver::new(&mut inner, Some(&mut breadcrumb));
+            progress.on_batch(2);
+            assert_eq!(read(dir.path()).expect("record").files_done, Some(2));
+            progress.on_file(FileResult::bare("a.rs".to_string(), FileStatus::SkippedNoLang));
+            progress.on_batch(3);
+        }
+        assert_eq!(read(dir.path()).expect("record").files_done, Some(5));
+        assert_eq!(inner.results().len(), 1);
     }
 }

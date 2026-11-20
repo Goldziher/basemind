@@ -111,6 +111,7 @@ impl Workspace {
             (ms > 0).then_some(ms)
         };
         let notice = self.lifecycle_notice();
+        let scan_progress = crate::scan_evidence::live_progress(&crate::store::workspace_cache_dir(&self.root));
         let identity = self.repo_identity();
         let submodules = self.repo.as_ref().map(|r| r.submodule_paths()).unwrap_or_default();
         let Ok(store) = self.try_store_read() else {
@@ -132,6 +133,7 @@ impl Workspace {
                 warm_ms,
                 history_syncing,
                 notice,
+                scan_progress,
                 total_size_bytes: 0,
                 languages: BTreeMap::new(),
                 large_files: None,
@@ -182,6 +184,7 @@ impl Workspace {
             warm_ms,
             history_syncing,
             notice,
+            scan_progress,
             total_size_bytes: total_size,
             languages: by_lang,
             large_files: Some(large_files),
@@ -406,5 +409,55 @@ mod tests {
                 ("g.rs".to_string(), 2100, 21_000),
             ]
         );
+    }
+
+    fn unscanned_workspace(root: &std::path::Path) -> Workspace {
+        crate::store::init_isolated_cache();
+        let store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("store");
+        Workspace::new(
+            store,
+            root.to_path_buf(),
+            std::sync::Arc::new(crate::config::Config::with_defaults()),
+            None,
+            std::sync::Arc::new(crate::git_cache::GitCache::open(root, 1, false).expect("git cache")),
+            None,
+            crate::engine::workspace::OpenOptions {
+                background: false,
+                read_only: false,
+                forwards_writes: false,
+                lazy_cache: false,
+                history_sync: None,
+                #[cfg(feature = "memory")]
+                memory_owner: |_| "owner".to_string(),
+            },
+        )
+    }
+
+    #[test]
+    fn status_reports_the_running_scans_counts_and_drops_them_once_it_ends() {
+        use crate::scan_evidence::{PHASE_EXTRACT, ScanBreadcrumb};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = unscanned_workspace(dir.path());
+        let status = ws.index_status(IndexStatusParams {}).expect("status");
+        assert_eq!(status.scan_progress, None, "no scan runs");
+
+        let cache_dir = crate::store::workspace_cache_dir(dir.path());
+        let mut breadcrumb = ScanBreadcrumb::begin_in(&cache_dir, dir.path()).expect("breadcrumb written");
+        breadcrumb.advance(PHASE_EXTRACT, Some(10));
+        breadcrumb.files_done(4);
+        let progress = ws
+            .index_status(IndexStatusParams {})
+            .expect("status")
+            .scan_progress
+            .expect("the running scan is reported");
+        assert_eq!(
+            (progress.phase.as_str(), progress.files_done, progress.files_total),
+            (PHASE_EXTRACT, 4, Some(10))
+        );
+
+        drop(breadcrumb);
+        let status = ws.index_status(IndexStatusParams {}).expect("status");
+        assert_eq!(status.scan_progress, None, "a finished scan is not reported");
     }
 }

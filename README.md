@@ -406,6 +406,8 @@ Opus · basemind · ⎇ main · 12% ctx
 The dot is green when basemind is live and fresh, amber when idle, red when stale. The middle shows
 activity by type, then tokens saved, then unread messages. Adjust with
 `BASEMIND_STATUSLINE=full|compact|minimal`, or hide the top line with `BASEMIND_STATUSLINE_CONTEXT=0`.
+While a full scan runs, the line adds its progress (`indexing 1.2k/40k files · extract · ~3m left`),
+which during a first scan takes the place of the "no index" hint.
 
 </details>
 
@@ -513,6 +515,11 @@ object — `{ state, message, retry }` — instead of (or alongside) their norma
 
 Treat an empty or partial result carrying a `notice` as "retry shortly," not "no matches" — poll
 `status` (or just retry the call) until the notice clears.
+
+During a full scan, `status` reports `scan_progress`: the `phase`, the candidate files extracted
+(`files_done`) of those the scan works through (`files_total`), and `eta_secs`, the seconds
+extraction has left at the rate it has run so far. It is read from the scan's breadcrumb, so a scan
+another process runs (`basemind scan`) is reported too.
 
 </details>
 
