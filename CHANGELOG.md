@@ -832,8 +832,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   renders from the machine-global cache. That call is bounded to 2 seconds on a machine without
   `timeout` too (stock macOS), where a hung binary stalled the bar. The plugin version and the
   unread-message segment, which only the legacy branch rendered, now frame that line, so they show for
-  global-cache repositories; the legacy branch's per-type call counts and disk and RSS figures are gone
-  with it.
+  global-cache repositories, the version on the `no index` hint too. The unread count is every unread
+  message (`100+` past one inbox page), not one page of a single message. The legacy branch's per-type
+  call counts and disk and RSS figures are gone with it.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

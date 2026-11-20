@@ -108,6 +108,9 @@ private_state_dir() {
   esac
 }
 
+# The most messages one inbox page holds.
+inbox_page=100
+
 comms_state() {
   command -v basemind >/dev/null 2>&1 || return 1
   command -v pgrep >/dev/null 2>&1 && pgrep -f "comms daemon" >/dev/null 2>&1 || return 1
@@ -132,9 +135,11 @@ comms_state() {
 
   local as=()
   [[ -n "$name" ]] && as=(--as "$name")
-  json="$(run_bounded 2 env BASEMIND_HOST=claude basemind agent inbox --peek ${as[@]+"${as[@]}"} --root "$cwd" --json --limit 1 </dev/null 2>/dev/null || true)"
+  # The inbox reports no total, only one page and whether more follow, so the largest page is read
+  # and a full one with more behind it shows as `100+`.
+  json="$(run_bounded 2 env BASEMIND_HOST=claude basemind agent inbox --peek ${as[@]+"${as[@]}"} --root "$cwd" --json --limit "$inbox_page" </dev/null 2>/dev/null || true)"
   [[ -n "$json" ]] || return 1
-  unread="$(printf '%s' "$json" | jq -r '(.messages | length)' 2>/dev/null | tr -cd '0-9' || true)"
+  unread="$(printf '%s' "$json" | jq -r '"\(.messages | length)\(if .more then "+" else "" end)"' 2>/dev/null | tr -cd '0-9+' || true)"
   [[ -n "$unread" ]] || unread=0
   agent="${BASEMIND_AGENT_ID:-${name}}"
   if [[ -n "$cache" ]] && tmp="$(mktemp "${cache}.XXXXXX" 2>/dev/null)"; then
@@ -197,21 +202,22 @@ bm_version() {
 
 # The unread-message segment, empty when the comms daemon is not running or cannot be asked.
 comms_segment() {
-  local raw unread agent
+  local raw unread agent count
   raw="$(comms_state 2>/dev/null)" || return 0
   unread="${raw%% *}"
   agent="${raw#* }"
   [[ "$agent" == "$raw" ]] && agent=""
-  [[ "$unread" =~ ^[0-9]+$ ]] || return 0
+  [[ "$unread" =~ ^[0-9]+\+?$ ]] || return 0
+  count="${unread%+}"
   if [[ "$tier" == "minimal" ]]; then
-    if [[ "$unread" -gt 0 ]]; then
+    if [[ "$count" -gt 0 ]]; then
       printf ' %s·%s %s%s✉%s%s' "$sep" "$reset" "$bold" "$green" "$unread" "$reset"
     fi
     return 0
   fi
   printf '  %s│%s  ' "$sep" "$reset"
-  if [[ "$unread" -gt 0 ]]; then
-    printf '%s%s✉ %s%s' "$bold" "$green" "$(fmt_count "$unread")" "$reset"
+  if [[ "$count" -gt 0 ]]; then
+    printf '%s%s✉ %s%s%s' "$bold" "$green" "$(fmt_count "$count")" "${unread#"$count"}" "$reset"
   else
     printf '%s✉ 0%s' "$muted" "$reset"
   fi
@@ -226,7 +232,7 @@ comms_segment() {
 # opening the index; the plugin version is spliced in after its brand mark. An in-repo `.basemind/`
 # holds at most a fallback config and is not read here.
 build_basemind_line() {
-  local out="" brand_mark ver
+  local out="" brand_mark ver rest
   if command -v basemind >/dev/null 2>&1; then
     out="$(run_bounded 2 basemind statusline --root "$cwd" </dev/null 2>/dev/null || true)"
   fi
@@ -234,10 +240,14 @@ build_basemind_line() {
   if [[ -z "$out" ]]; then
     out="$(printf '%s %s│%s %sno index — run:%s %s%sbasemind scan%s' \
       "$brand_mark" "$sep" "$reset" "$label" "$reset" "$bold" "$cyan" "$reset")"
-  elif [[ "$tier" != "minimal" && "$out" == "$brand_mark"* ]]; then
+  fi
+  if [[ "$tier" != "minimal" && "$out" == "$brand_mark"* ]]; then
     ver="$(bm_version || true)"
     if [[ -n "$ver" ]]; then
-      out="${brand_mark}  ${bold}${muted}${ver}${reset}  ${sep}│${reset}${out#"$brand_mark"}"
+      # The version brings its own separator, so the no-index hint's is dropped.
+      rest="${out#"$brand_mark"}"
+      rest="${rest#" ${sep}│${reset}"}"
+      out="${brand_mark}  ${bold}${muted}${ver}${reset}  ${sep}│${reset}${rest}"
     fi
   fi
   printf '%s%s' "$out" "$(comms_segment)"
