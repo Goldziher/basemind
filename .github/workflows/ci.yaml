@@ -144,6 +144,10 @@ jobs:
           Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free
 
       - uses: ./.github/actions/setup-rust
+      # ~keep nextest runs the tests; python prints the slowest of them to the job summary.
+      - uses: xberg-io/actions/setup-mise@v1
+        with:
+          install-args: github:nextest-rs/nextest python
 
       - name: Install system dependencies
         if: matrix.features == 'full' || matrix.features == 'comms documents'
@@ -229,20 +233,38 @@ jobs:
           df -h . "$RUNNER_TEMP" "${TMPDIR:-/tmp}" || true
           du -sh target "${TMPDIR:-/tmp}" 2>/dev/null || true
 
-      # ~keep `--no-fail-fast`: plain `cargo test` stops at the first failing test BINARY, so a leg
-      # ~keep reports one target's failures and hides every straggler behind it. A cross-cutting
-      # ~keep change leaves failures in several binaries at once, and discovering them one CI
-      # ~keep round-trip at a time costs an afternoon per release.
-      - name: cargo test (macOS full)
+      # ~keep `--no-fail-fast`: without it the run stops at the first failing test, so a leg reports
+      # ~keep one failure and hides every straggler behind it. A cross-cutting change leaves failures
+      # ~keep in several binaries at once, and discovering them one CI round-trip at a time costs an
+      # ~keep afternoon per release. The `ci` profile (.config/nextest.toml) kills a hung test at its
+      # ~keep own timeout and names it, and writes the JUnit report.
+      - name: cargo nextest (macOS full)
         if: runner.os == 'macOS' && matrix.features == 'full'
         shell: bash
         run: |
-          cargo test --workspace --features full --quiet --no-fail-fast 2>&1 |
+          cargo nextest run --profile ci --workspace --features full --no-fail-fast 2>&1 |
             python3 -u scripts/utf8-test-log.py
 
-      - name: cargo test
+      - name: cargo nextest
         if: runner.os != 'macOS' || matrix.features != 'full'
-        run: cargo test --workspace --features "${{ matrix.features }}" --quiet --no-fail-fast
+        run: cargo nextest run --profile ci --workspace --features "${{ matrix.features }}" --no-fail-fast
+
+      # ~keep nextest runs no doctests.
+      - name: cargo test --doc
+        if: ${{ !cancelled() }}
+        run: cargo test --doc --workspace --features "${{ matrix.features }}" --quiet
+
+      - name: Slowest tests
+        if: ${{ !cancelled() && hashFiles('target/nextest/ci/junit.xml') != '' }}
+        shell: bash
+        run: python scripts/nextest_slowest.py target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the JUnit report
+        if: ${{ !cancelled() && hashFiles('target/nextest/ci/junit.xml') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit-${{ matrix.os }}-${{ matrix.features || 'default' }}
+          path: target/nextest/ci/junit.xml
 
       # ~keep Shell and Node checks that need a basemind binary: the debug build the tests just made.
       - name: Status line and Pi CLI contract

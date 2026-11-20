@@ -31,6 +31,38 @@ checksum_source = "mise-versions"
 url = "https://github.com/Goldziher/poly/releases/download/v0.32.1/poly-0.32.1-x86_64-pc-windows-msvc.zip"
 url_api = "https://api.github.com/repos/Goldziher/poly/releases/assets/694766438"
 
+[[tools."github:nextest-rs/nextest"]]
+version = "0.9.150"
+backend = "github:nextest-rs/nextest"
+specifiers = ["0.9.150"]
+
+[tools."github:nextest-rs/nextest".options]
+version_prefix = "cargo-nextest-"
+
+[tools."github:nextest-rs/nextest"."platforms.linux-arm64"]
+checksum = "sha256:9164568e9840c6509177086828ac7d3178c2d8feb0658b4d2bff62fa620e98c8"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.150/cargo-nextest-0.9.150-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/679066450"
+provenance = "github-attestations"
+
+[tools."github:nextest-rs/nextest"."platforms.linux-x64"]
+checksum = "sha256:b0959bc64232974224cf9fb22c915845398c0e8668fa7831eb5b43fb1eef781f"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.150/cargo-nextest-0.9.150-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/679066447"
+provenance = "github-attestations"
+
+[tools."github:nextest-rs/nextest"."platforms.macos-arm64"]
+checksum = "sha256:82a759b4d218d38359424196ab244c470e8f7c7d149c814fbbeef4d67c3c301a"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.150/cargo-nextest-0.9.150-universal-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/679078149"
+provenance = "github-attestations"
+
+[tools."github:nextest-rs/nextest"."platforms.windows-x64"]
+checksum = "sha256:6fd8f9ba48c946a79a5bcdd35bf4f922447b149f7ca6c3ff7f39e12f32ef78db"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.150/cargo-nextest-0.9.150-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/679074354"
+provenance = "github-attestations"
+
 [[tools."github:taiki-e/cargo-hack"]]
 version = "0.6.46"
 backend = "github:taiki-e/cargo-hack"
