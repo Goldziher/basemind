@@ -133,6 +133,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("textmatch", Core),
     ("version", Core),
     ("watcher", Root),
+    ("wire", Core),
 ];
 
 /// External crates each layer must not name outside test code (ADR-0023, decision table and rule

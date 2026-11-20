@@ -268,4 +268,38 @@ mod tests {
         assert!(out.items.is_empty());
         assert!(!out.budgeted);
     }
+
+    #[test]
+    fn the_grep_budget_charges_the_bytes_the_block_writes() {
+        use crate::engine::types::grep::{GrepHit, GrepHits};
+
+        let hit = |path: &str, line: u32, symbol: Option<&str>, before: &[&str], after: &[&str]| GrepHit {
+            path: crate::path::RelPath::from(path),
+            line,
+            column: 3,
+            write_column: line == 40,
+            text: format!("text of {line} \"q\" ü"),
+            symbol: symbol.map(str::to_string),
+            context_before: before.iter().map(|s| (*s).to_string()).collect(),
+            context_after: after.iter().map(|s| (*s).to_string()).collect(),
+            start_byte: 0,
+            stale: false,
+            file_lines: 1000,
+        };
+        let hits = vec![
+            hit("a b/x.rs", 9, None, &["b1", ""], &["a1"]),
+            hit("a b/x.rs", 40, Some("main"), &[], &[]),
+            hit("a b/x.rs", 100, None, &[], &["tail"]),
+            hit(" lead.rs", 1, Some("\"q\""), &[], &[]),
+        ];
+        let mut seen = GrepSeen::default();
+        let charged: u64 = hits.iter().map(|h| grep_hit_bytes(h, &mut seen)).sum();
+        let value = serde_json::json!({"hits": serde_json::to_value(GrepHits::Rows(hits)).expect("rows")});
+        let text = crate::wire::encode("code_grep", &value);
+        assert_eq!(
+            charged,
+            text.len() as u64 + 1,
+            "every row and header with its line break:\n{text}"
+        );
+    }
 }
