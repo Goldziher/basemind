@@ -696,8 +696,16 @@ impl DirWatches {
             registry.unwatch_dir(&dir);
             self.watched.remove(&dir);
         }
-        self.refused
-            .retain(|p| !p.starts_with(dir) || std::fs::symlink_metadata(p).is_ok_and(|meta| meta.is_dir()));
+        let refused_gone: Vec<PathBuf> = self
+            .refused
+            .range(dir.to_path_buf()..)
+            .take_while(|p| p.starts_with(dir))
+            .filter(|p| !std::fs::symlink_metadata(p).is_ok_and(|meta| meta.is_dir()))
+            .cloned()
+            .collect();
+        for path in refused_gone {
+            self.refused.remove(&path);
+        }
         if !self.watched.contains(dir) && !filter.is_watchable_dir(dir) {
             return;
         }
@@ -716,7 +724,15 @@ impl DirWatches {
             registry.unwatch_dir(&dir);
             self.watched.remove(&dir);
         }
-        self.refused.retain(|p| !p.starts_with(gone));
+        let refused: Vec<PathBuf> = self
+            .refused
+            .range(gone.to_path_buf()..)
+            .take_while(|p| p.starts_with(gone))
+            .cloned()
+            .collect();
+        for dir in refused {
+            self.refused.remove(&dir);
+        }
     }
 
     /// Arm `dir` and every watchable directory beneath it, unless `dir` is already armed.
