@@ -369,11 +369,10 @@ fn run() -> Result<()> {
     }
 
     let no_color = cli.no_color;
-    let start = cli
-        .root
-        .clone()
-        .map(|p| p.canonicalize().unwrap_or(p))
-        .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+    let start = match cli.root.clone() {
+        Some(p) => p.canonicalize().unwrap_or(p),
+        None => std::env::current_dir().context("read the current directory (pass --root to name the repository)")?,
+    };
     let root = basemind::config::discover_root_with_basemind(&start);
     if root != start {
         tracing::info!(

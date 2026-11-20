@@ -25,7 +25,7 @@ use crate::git::GitError;
 use crate::hashing;
 use crate::index::IndexDb;
 use crate::path::RelPath;
-use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanCancel, ScanSource};
+use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanCancel, ScanError, ScanSource};
 use crate::scanner_filter::Filters;
 use crate::scanner_index_batch::WorkerIndexBatch;
 use crate::store::{FileEntry, Store};
@@ -55,24 +55,35 @@ pub(crate) const TEST_PANIC_FILE: &str = "basemind-test-panic.rs";
 /// (one worker per logical CPU); a non-zero value pins the worker count so the scan cannot saturate
 /// every core on a shared machine. The pool is built on first call and its size is then fixed for the
 /// process — the first caller's `scan_threads` wins, mirroring [`crate::embeddings::embed_pool`].
-pub(crate) fn scanner_pool(scan_threads: usize) -> &'static rayon::ThreadPool {
+/// A build the OS refuses (no thread can be spawned) is returned and retried on the next call.
+pub(crate) fn scanner_pool(scan_threads: usize) -> Result<&'static rayon::ThreadPool, ScanError> {
     static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        let mut builder = rayon::ThreadPoolBuilder::new()
-            .stack_size(SCANNER_STACK_SIZE)
-            .thread_name(|i| format!("bm-scan-{i}"));
-        if scan_threads > 0 {
-            builder = builder.num_threads(scan_threads);
-        }
-        builder.build().expect("build scanner rayon pool")
-    })
+    if let Some(pool) = POOL.get() {
+        return Ok(pool);
+    }
+    let pool = build_scanner_pool(scan_threads, SCANNER_STACK_SIZE)?;
+    Ok(POOL.get_or_init(|| pool))
+}
+
+fn build_scanner_pool(
+    scan_threads: usize,
+    stack_size: usize,
+) -> Result<rayon::ThreadPool, rayon::ThreadPoolBuildError> {
+    let builder = rayon::ThreadPoolBuilder::new()
+        .stack_size(stack_size)
+        .thread_name(|i| format!("bm-scan-{i}"));
+    match scan_threads {
+        0 => builder,
+        n => builder.num_threads(n),
+    }
+    .build()
 }
 
 /// Drive the per-file pipeline across `candidates` on the rayon pool, batching index commits
 /// per worker. Order of the returned `FileResult`s is unspecified (each worker's slice is
 /// concatenated) — every consumer keys by `path`, never by position.
 ///
-/// `max_workers` caps how many of the pool's threads this call may spread across; `0` uses the
+/// `max_workers` caps how many of `pool`'s threads this call may spread across; `0` uses the
 /// whole pool. A non-zero value is the drive loop's actuating response to sustained memory pressure,
 /// and the embedding pass's match to the embed pool's width — see [`crate::scanner_drive`]. The
 /// rayon pool itself is process-global and fixed at first use; this narrows a single call, not it.
@@ -88,8 +99,8 @@ pub(crate) fn run_candidates(
     embed: EmbedMode,
     cancel: &ScanCancel,
     max_workers: usize,
+    pool: &rayon::ThreadPool,
 ) -> Vec<FileResult> {
-    let pool = scanner_pool(config.resources.scan_threads);
     let workers = match max_workers {
         0 => pool.current_num_threads(),
         n => n.min(pool.current_num_threads()),
@@ -872,13 +883,27 @@ mod tests {
         ));
     }
 
+    /// A worker stack no address space can hold makes the OS refuse the thread; the scan gets an
+    /// error naming the pool instead of a panic.
+    #[cfg(all(unix, target_pointer_width = "64"))]
+    #[test]
+    fn a_pool_the_os_cannot_spawn_is_a_scan_error() {
+        let error = ScanError::from(build_scanner_pool(1, 1 << 50).expect_err("a 1 PiB stack cannot be mapped"));
+        assert!(matches!(error, ScanError::WorkerPool(_)), "{error:?}");
+        let message = error.to_string();
+        assert!(
+            message.starts_with("scan aborted: the scan worker pool could not be started: "),
+            "{message}"
+        );
+    }
+
     /// The containment fix rests on rayon re-raising a worker's panic on the thread that called
     /// `ThreadPool::install`. If that ever stopped holding, `run_optional_lane` would be catching
     /// nothing and a panicking resolve pass would abort the scan again — so pin it directly.
     #[test]
     fn rayon_install_reraises_a_worker_panic_on_the_calling_thread() {
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            scanner_pool(0).install(|| {
+            scanner_pool(0).expect("scanner pool").install(|| {
                 (0..64u32).into_par_iter().for_each(|i| {
                     assert_ne!(i, 17, "worker panic");
                 });
@@ -897,7 +922,7 @@ mod tests {
         let flag = std::sync::Arc::clone(&entered);
         run_optional_lane("test_lane", move || {
             flag.store(true, Ordering::SeqCst);
-            scanner_pool(0).install(|| {
+            scanner_pool(0).expect("scanner pool").install(|| {
                 (0..64u32).into_par_iter().for_each(|i| {
                     assert_ne!(i, 17, "worker panic");
                 });

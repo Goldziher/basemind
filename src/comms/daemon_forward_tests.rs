@@ -8,7 +8,7 @@ use super::*;
 fn temp_broker() -> (tempfile::TempDir, Arc<Broker>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let agents = super::super::agents_hub::AgentHub::open(dir.path());
-    (dir, Arc::new(Broker::new(agents)))
+    (dir, Arc::new(Broker::new(agents).expect("broker")))
 }
 
 /// Run a `git` subcommand in `repo` with a fixed identity, asserting success. Mirrors the fixture

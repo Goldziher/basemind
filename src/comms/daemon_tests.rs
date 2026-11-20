@@ -13,7 +13,7 @@ mod maintenance_tests;
 fn temp_broker() -> (tempfile::TempDir, Arc<Broker>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let agents = super::super::agents_hub::AgentHub::open(dir.path());
-    (dir, Arc::new(Broker::new(agents)))
+    (dir, Arc::new(Broker::new(agents).expect("broker")))
 }
 
 /// A link that said hello as `principal` from `root`.
@@ -345,5 +345,44 @@ async fn a_hello_from_the_filesystem_root_registers_nothing() {
     assert!(
         broker.machine_registry.lock().await.workspaces().is_empty(),
         "the filesystem root was registered"
+    );
+}
+
+/// A file where a directory must be: neither registry under it can be created.
+fn blocked_dir(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"").expect("write blocker");
+    blocker
+}
+
+#[test]
+fn an_unopenable_data_home_falls_back_to_an_empty_registry() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data = crate::data_root::DataRoot::new(blocked_dir(&dir).join("data"));
+    let fallback = dir.path().join("fallback");
+    let registry = open_machine_registry(&data, &fallback).expect("the fallback opens");
+    assert!(registry.workspaces().is_empty(), "the fallback registry is not empty");
+    assert!(
+        fallback.is_dir(),
+        "the fallback registry was not rooted at {}",
+        fallback.display()
+    );
+}
+
+#[test]
+fn an_unopenable_fallback_registry_is_an_error_not_a_panic() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let blocker = blocked_dir(&dir);
+    let fallback = blocker.join("fallback");
+    let error = open_machine_registry(&crate::data_root::DataRoot::new(blocker.join("data")), &fallback)
+        .err()
+        .expect("neither registry can be created under a file");
+    assert_eq!(error.to_string(), "open the fallback machine registry");
+    let cause = error
+        .downcast_ref::<crate::registry::RegistryError>()
+        .expect("the registry error is the cause");
+    assert!(
+        matches!(cause, crate::registry::RegistryError::Io { path, .. } if *path == fallback),
+        "{cause:?}"
     );
 }

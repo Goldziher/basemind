@@ -29,9 +29,7 @@ async fn listener_does_not_bind_without_the_operator_grant() {
     }
 
     let comms_dir = tempfile::tempdir().expect("comms tempdir");
-    let broker = Arc::new(Broker::new(basemind::comms::agents_hub::AgentHub::open(
-        comms_dir.path(),
-    )));
+    let broker = Arc::new(Broker::new(basemind::comms::agents_hub::AgentHub::open(comms_dir.path())).expect("broker"));
 
     // A portfile from an earlier, granted daemon must be cleared, not left advertising a dead port.
     let portfile = http_frontend::portfile_path(comms_dir.path());

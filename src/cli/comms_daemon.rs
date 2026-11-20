@@ -13,7 +13,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use crate::comms::agents_hub::AgentHub;
-use crate::comms::daemon::{Broker, EXIT_TAIL_TIMEOUT, HOLDER_DRAIN_WAIT, RUNTIME_SHUTDOWN_TIMEOUT};
+use crate::comms::daemon::{
+    Broker, EXIT_TAIL_TIMEOUT, HOLDER_DRAIN_WAIT, RUNTIME_SHUTDOWN_TIMEOUT, open_machine_registry,
+};
 use crate::comms::singleton;
 
 /// How often the registry prune and the hot-workspace eviction run.
@@ -167,14 +169,10 @@ pub fn run() -> Result<()> {
 
         let agents = AgentHub::open_after(&paths.comms_dir, test_store_open_delay().unwrap_or_default());
         log_retention_policy();
-        let machine_registry = match crate::registry::Registry::from_data_home(&crate::data_root::DataRoot::current()) {
-            Ok(registry) => registry,
-            Err(error) => {
-                tracing::warn!(%error, "comms: machine registry open failed; coordination tools degrade to empty");
-                crate::registry::Registry::open(&paths.comms_dir.join("registry-fallback"))
-                    .context("open fallback machine registry")?
-            }
-        };
+        let machine_registry = open_machine_registry(
+            &crate::data_root::DataRoot::current(),
+            &paths.comms_dir.join("registry-fallback"),
+        )?;
         let broker = Arc::new(Broker::with_registry(agents, machine_registry));
         // The first sweep runs as soon as the store has opened, not on the first maintenance tick.
         let broker_for_first_sweep = broker.clone();
