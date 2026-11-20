@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::data_root::DataRoot;
 use crate::store::{WORKSPACE_MARKER_FILE, acquire_lock, read_workspace_marker};
 use crate::store_gc::{GcError, GcReport, dir_size, gc_global_blobs_in, read_dir};
-use crate::store_gc_namespaces::{BlobNamespace, Holds};
+use crate::store_gc_namespaces::Holds;
 use crate::store_gc_protect::{ProtectedWorkspace, ProtectionReason, cache_grace};
 
 /// Environment variable holding the cache byte budget in MiB. Unset ⇒ the disk-aware default
@@ -258,9 +258,9 @@ pub(crate) struct EvictionRules<'a> {
     pub(crate) hot_floor: Duration,
     /// A workspace with a view built more recently than this is never evicted.
     pub(crate) grace: Duration,
-    /// The blob namespaces a live basemind reads. While one of a release up to 0.33 runs, no
-    /// per-view index is removed ahead of the workspaces.
-    pub(crate) live: &'a [BlobNamespace],
+    /// What live basemind processes read. While one of a release up to 0.33, or one whose
+    /// namespace cannot be told, runs, no per-view index is removed ahead of the workspaces.
+    pub(crate) holds: &'a Holds,
 }
 
 struct EvictionCandidate {
@@ -433,7 +433,7 @@ pub fn enforce_cache_budget(data: &DataRoot, budget: CacheBudget) -> Result<Evic
         &EvictionRules {
             hot_floor: BUDGET_EVICTION_HOT_FLOOR,
             grace: cache_grace(),
-            live: &Holds::under(data).live,
+            holds: &Holds::under(data),
         },
     )
 }
@@ -457,7 +457,7 @@ pub(crate) fn enforce_cache_budget_in(
         &EvictionRules {
             hot_floor,
             grace,
-            live: &[],
+            holds: &Holds::default(),
         },
     )
 }
@@ -506,7 +506,7 @@ pub(crate) fn enforce_cache_budget_at(
         return Ok(report);
     }
     // This release reads no per-view index: removing them first costs no workspace its index. ~keep
-    let legacy = crate::store_gc_legacy_views::evict_legacy_indexes_in(workspaces_dir, rules.live, &newer)?;
+    let legacy = crate::store_gc_legacy_views::evict_legacy_indexes_in(workspaces_dir, rules.holds, &newer)?;
     if legacy.reaped > 0 {
         report.legacy_indexes_evicted = legacy.reaped;
         report.legacy_index_bytes_freed = legacy.bytes_freed;
@@ -683,7 +683,7 @@ fn evict_workspace(dir: &Path) -> Result<Eviction, GcError> {
 
 /// Whether a view of this workspace was written by a newer basemind. Such a view is that
 /// version's live index over blobs this binary cannot read, not cache this one may rebuild.
-fn holds_a_newer_view(workspace: &Path) -> bool {
+pub(crate) fn holds_a_newer_view(workspace: &Path) -> bool {
     let views = workspace.join(crate::store::VIEWS_DIR);
     std::fs::read_dir(views).is_ok_and(|entries| entries.flatten().any(|view| view_is_newer(&view.path())))
 }

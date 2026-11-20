@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::store::{FileEntry, INDEX_FILE, Index, VIEWS_DIR, ensure_workspace_marker};
+use crate::store_gc_namespaces::BlobNamespace;
 use std::cell::Cell;
 use std::fs;
 
@@ -894,10 +895,14 @@ fn over_budget_the_per_view_indexes_go_before_any_workspace() {
         let legacy = plant_legacy_index(&mru, ROWS);
         let legacy_bytes = dir_size(&legacy).expect("size");
         let budget = dir_size(&workspaces).expect("size") + dir_size(&blobs).expect("size") - legacy_bytes / 2;
+        let holds = Holds {
+            live: live.to_vec(),
+            ..Holds::default()
+        };
         let rules = EvictionRules {
             hot_floor: DAY_AGO,
             grace: Duration::ZERO,
-            live,
+            holds: &holds,
         };
 
         let report = enforce_cache_budget_at(
