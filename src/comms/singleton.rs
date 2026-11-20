@@ -231,8 +231,8 @@ pub enum SingletonError {
     },
 }
 
-/// Environment opt-out: when set to a truthy value, basemind connects to a daemon that is already
-/// running but never starts one itself.
+/// Environment opt-out: when set true ([`parse_bool`](crate::config::engine::parse_bool)), basemind
+/// connects to a daemon that is already running but never starts one itself.
 ///
 /// This exists because `setsid` cannot solve the containment problem. A detached child changes
 /// session and process group; on Linux it stays in the **spawning process's cgroup**, so a daemon
@@ -244,10 +244,17 @@ pub const NO_AUTOSPAWN_ENV: &str = "BASEMIND_NO_AUTOSPAWN";
 
 /// Whether [`NO_AUTOSPAWN_ENV`] forbids spawning a daemon from this process.
 pub fn autospawn_disabled() -> bool {
-    std::env::var(NO_AUTOSPAWN_ENV).is_ok_and(|value| {
-        let value = value.trim();
-        value.eq_ignore_ascii_case("1") || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
-    })
+    forbids_autospawn(std::env::var(NO_AUTOSPAWN_ENV).ok().as_deref())
+}
+
+/// Whether a raw [`NO_AUTOSPAWN_ENV`] value forbids spawning. The binary refuses a non-boolean
+/// value when it installs its engine; one that reaches here anyway (a library caller that never
+/// installed it) is warned about and honoured as the opt-out the operator meant to set.
+fn forbids_autospawn(value: Option<&str>) -> bool {
+    crate::config::engine::bool_env(NO_AUTOSPAWN_ENV, value).unwrap_or_else(|message| {
+        crate::config::trust::warn_once(message);
+        Some(true)
+    }) == Some(true)
 }
 
 /// Whether a caller is allowed to spawn a daemon when none answers.

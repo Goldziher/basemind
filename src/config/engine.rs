@@ -196,19 +196,22 @@ pub enum ExtraRootsGrant {
 }
 
 impl ExtraRootsGrant {
-    /// Read a grant written as `1` / `true` / `yes` (every workspace) or a path list (`:`-separated
-    /// on Unix, `;` on Windows) of absolute workspace roots. A relative entry is ignored with a
-    /// warning: canonicalised against a daemon's cwd (often `/`) it could cover every workspace.
+    /// Read a grant written as a boolean ([`parse_bool`]: true is every workspace, false none) or a
+    /// path list (`:`-separated on Unix, `;` on Windows) of absolute workspace roots. A relative
+    /// entry is ignored with a warning: canonicalised against a daemon's cwd (often `/`) it could
+    /// cover every workspace.
     pub fn parse(value: &str, name: &str) -> Self {
-        if is_truthy(value) {
-            return Self::Every;
+        match parse_bool(value) {
+            Some(true) => return Self::Every,
+            Some(false) => return Self::Denied,
+            None => {}
         }
         let roots = std::env::split_paths(value.trim())
             .filter(|entry| {
                 let absolute = entry.is_absolute();
                 if !absolute && !entry.as_os_str().is_empty() {
                     super::trust::warn_once(format!(
-                        "{name} entry {entry:?} ignored: use 1/true/yes or a list of absolute workspace paths"
+                        "{name} entry {entry:?} ignored: use {BOOL_SPELLINGS}, or a list of absolute workspace paths"
                     ));
                 }
                 absolute
@@ -232,11 +235,37 @@ impl ExtraRootsGrant {
     }
 }
 
-/// `1` / `true` / `yes`, case- and whitespace-insensitive: the grant words of every `BASEMIND_ALLOW_*`
-/// variable.
-pub fn is_truthy(value: &str) -> bool {
+/// The spellings every boolean `BASEMIND_*` variable accepts, as error messages name them.
+pub const BOOL_SPELLINGS: &str = "1, true, yes, on or 0, false, no, off";
+
+/// A boolean `BASEMIND_*` value: `1` / `true` / `yes` / `on` or `0` / `false` / `no` / `off`, case-
+/// and whitespace-insensitive. `None` for any other value. The one parser every boolean variable
+/// goes through.
+pub fn parse_bool(value: &str) -> Option<bool> {
     let value = value.trim();
-    value.eq_ignore_ascii_case("1") || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
+    let is = |words: [&str; 4]| words.iter().any(|word| value.eq_ignore_ascii_case(word));
+    if is(["1", "true", "yes", "on"]) {
+        Some(true)
+    } else if is(["0", "false", "no", "off"]) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The boolean variable `name` set to `value`: [`parse_bool`]'s answer, or an error naming the
+/// variable when `value` is not one of its spellings.
+pub fn bool_var(name: &str, value: &str) -> Result<bool, String> {
+    parse_bool(value).ok_or_else(|| format!("{name}={value:?} is not a boolean: use {BOOL_SPELLINGS}"))
+}
+
+/// The boolean variable `name` as the environment holds it: `Ok(None)` when it is unset or blank,
+/// else [`bool_var`]'s answer.
+pub fn bool_env(name: &str, value: Option<&str>) -> Result<Option<bool>, String> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| bool_var(name, value))
+        .transpose()
 }
 
 impl EngineConfig {
@@ -344,6 +373,78 @@ pub fn update(change: impl FnOnce(&mut EngineConfig)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_bool_reads_every_spelling_and_nothing_else() {
+        let cases: &[(&str, Option<bool>)] = &[
+            ("1", Some(true)),
+            ("true", Some(true)),
+            ("yes", Some(true)),
+            ("on", Some(true)),
+            ("TRUE", Some(true)),
+            ("Yes", Some(true)),
+            ("ON", Some(true)),
+            (" true ", Some(true)),
+            ("0", Some(false)),
+            ("false", Some(false)),
+            ("no", Some(false)),
+            ("off", Some(false)),
+            ("FALSE", Some(false)),
+            ("No", Some(false)),
+            ("OFF", Some(false)),
+            ("\toff\n", Some(false)),
+            ("", None),
+            ("  ", None),
+            ("2", None),
+            ("-1", None),
+            ("enabled", None),
+            ("disabled", None),
+            ("y", None),
+            ("n", None),
+            ("t", None),
+            ("truthy", None),
+            ("yes please", None),
+            ("o n", None),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(parse_bool(value), *expected, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn bool_var_names_the_variable_it_refuses() {
+        assert_eq!(bool_var("BASEMIND_X", "off"), Ok(false));
+        assert_eq!(
+            bool_var("BASEMIND_X", "maybe"),
+            Err("BASEMIND_X=\"maybe\" is not a boolean: use 1, true, yes, on or 0, false, no, off".to_string())
+        );
+    }
+
+    #[test]
+    fn bool_env_treats_unset_and_blank_as_unset() {
+        let cases: &[(Option<&str>, Option<bool>)] = &[
+            (None, None),
+            (Some(""), None),
+            (Some(" "), None),
+            (Some("on"), Some(true)),
+            (Some("false"), Some(false)),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(bool_env("BASEMIND_X", *value), Ok(*expected), "{value:?}");
+        }
+        assert!(bool_env("BASEMIND_X", Some("nope")).is_err_and(|message| message.starts_with("BASEMIND_X=")));
+    }
+
+    #[test]
+    fn an_extra_roots_grant_reads_a_boolean_before_a_path_list() {
+        let parse = |value: &str| ExtraRootsGrant::parse(value, "BASEMIND_ALLOW_EXTRA_ROOTS");
+        for word in ["1", "true", "YES", "on"] {
+            assert_eq!(parse(word), ExtraRootsGrant::Every, "{word:?}");
+        }
+        for word in ["0", "false", "No", "OFF"] {
+            assert_eq!(parse(word), ExtraRootsGrant::Denied, "{word:?}");
+        }
+    }
 
     /// A thread that read the configuration sees a later install on its next read, nested reads
     /// included.

@@ -1570,7 +1570,8 @@ async fn git_touching_paginates_with_stable_cursor() {
 /// that never comes up fails the test: the server is meant to build it, unless `BASEMIND_GH_INDEX=0`
 /// turns it off, and then every page is the live walk.
 async fn wait_for_git_history(service: &rmcp::service::RunningService<rmcp::RoleClient, ()>) {
-    if std::env::var("BASEMIND_GH_INDEX").is_ok_and(|value| value == "0") {
+    if std::env::var("BASEMIND_GH_INDEX").is_ok_and(|value| basemind::config::engine::parse_bool(&value) == Some(false))
+    {
         return;
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);

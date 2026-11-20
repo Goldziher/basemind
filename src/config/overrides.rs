@@ -16,6 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::documents::{ApiKey, SummarizationStrategy};
+use super::engine::bool_var;
 use super::layered::OverrideLayer;
 use super::source::{ConfigSource, ProvenanceMap};
 use super::v1::ConfigV1;
@@ -28,7 +29,7 @@ use super::{ConfigError, LoadedConfig};
 #[serde(default, deny_unknown_fields)]
 pub struct DocumentsCliOverrides {
     /// Override `documents.enabled` (master switch).
-    #[arg(long = "documents-enabled", env = "BASEMIND_DOCUMENTS_ENABLED")]
+    #[arg(long = "documents-enabled", env = "BASEMIND_DOCUMENTS_ENABLED", value_parser = bool_arg("BASEMIND_DOCUMENTS_ENABLED"))]
     pub enabled: Option<bool>,
 
     /// Override `documents.max_characters` (chunk size).
@@ -44,14 +45,11 @@ pub struct DocumentsCliOverrides {
     pub embedding_preset: Option<String>,
 
     /// Override `documents.embed` (write embeddings to LanceDB).
-    #[arg(long = "documents-embed", env = "BASEMIND_DOCUMENTS_EMBED")]
+    #[arg(long = "documents-embed", env = "BASEMIND_DOCUMENTS_EMBED", value_parser = bool_arg("BASEMIND_DOCUMENTS_EMBED"))]
     pub embed: Option<bool>,
 
     /// Override `documents.language.auto_detect`.
-    #[arg(
-        long = "documents-language-auto-detect",
-        env = "BASEMIND_DOCUMENTS_LANGUAGE_AUTO_DETECT"
-    )]
+    #[arg(long = "documents-language-auto-detect", env = "BASEMIND_DOCUMENTS_LANGUAGE_AUTO_DETECT", value_parser = bool_arg("BASEMIND_DOCUMENTS_LANGUAGE_AUTO_DETECT"))]
     pub language_auto_detect: Option<bool>,
 
     /// Override `documents.language.min_confidence` (0.0–1.0).
@@ -62,14 +60,11 @@ pub struct DocumentsCliOverrides {
     pub language_min_confidence: Option<f64>,
 
     /// Override `documents.language.detect_multiple`.
-    #[arg(
-        long = "documents-language-detect-multiple",
-        env = "BASEMIND_DOCUMENTS_LANGUAGE_DETECT_MULTIPLE"
-    )]
+    #[arg(long = "documents-language-detect-multiple", env = "BASEMIND_DOCUMENTS_LANGUAGE_DETECT_MULTIPLE", value_parser = bool_arg("BASEMIND_DOCUMENTS_LANGUAGE_DETECT_MULTIPLE"))]
     pub language_detect_multiple: Option<bool>,
 
     /// Override `documents.reranker.enabled`.
-    #[arg(long = "documents-reranker-enabled", env = "BASEMIND_DOCUMENTS_RERANKER_ENABLED")]
+    #[arg(long = "documents-reranker-enabled", env = "BASEMIND_DOCUMENTS_RERANKER_ENABLED", value_parser = bool_arg("BASEMIND_DOCUMENTS_RERANKER_ENABLED"))]
     pub reranker_enabled: Option<bool>,
 
     /// Override `documents.reranker.preset`.
@@ -81,7 +76,7 @@ pub struct DocumentsCliOverrides {
     pub reranker_top_k: Option<usize>,
 
     /// Override `documents.keywords.enabled`.
-    #[arg(long = "documents-keywords-enabled", env = "BASEMIND_DOCUMENTS_KEYWORDS_ENABLED")]
+    #[arg(long = "documents-keywords-enabled", env = "BASEMIND_DOCUMENTS_KEYWORDS_ENABLED", value_parser = bool_arg("BASEMIND_DOCUMENTS_KEYWORDS_ENABLED"))]
     pub keywords_enabled: Option<bool>,
 
     /// Override `documents.keywords.max_keywords` (maximum keywords per document).
@@ -96,14 +91,11 @@ pub struct DocumentsCliOverrides {
     pub keywords_min_score: Option<f32>,
 
     /// Override `documents.ner.enabled`.
-    #[arg(long = "documents-ner-enabled", env = "BASEMIND_DOCUMENTS_NER_ENABLED")]
+    #[arg(long = "documents-ner-enabled", env = "BASEMIND_DOCUMENTS_NER_ENABLED", value_parser = bool_arg("BASEMIND_DOCUMENTS_NER_ENABLED"))]
     pub ner_enabled: Option<bool>,
 
     /// Override `documents.summarization.enabled`.
-    #[arg(
-        long = "documents-summarization-enabled",
-        env = "BASEMIND_DOCUMENTS_SUMMARIZATION_ENABLED"
-    )]
+    #[arg(long = "documents-summarization-enabled", env = "BASEMIND_DOCUMENTS_SUMMARIZATION_ENABLED", value_parser = bool_arg("BASEMIND_DOCUMENTS_SUMMARIZATION_ENABLED"))]
     pub summarization_enabled: Option<bool>,
 
     /// Override `documents.summarization.strategy` (`extractive` / `abstractive`).
@@ -149,6 +141,12 @@ pub struct DocumentsCliOverrides {
     /// Override `llm.max_tokens` (maximum tokens to generate).
     #[arg(long = "llm-max-tokens", env = "BASEMIND_LLM_MAX_TOKENS")]
     pub llm_max_tokens: Option<u64>,
+}
+
+/// The value parser of the boolean override whose variable is `name`: the spellings of every boolean
+/// `BASEMIND_*` variable, and an error naming `name` for any other value.
+fn bool_arg(name: &'static str) -> impl Fn(&str) -> Result<bool, String> + Clone + Send + Sync + 'static {
+    move |value: &str| bool_var(name, value)
 }
 
 impl DocumentsCliOverrides {
@@ -357,5 +355,105 @@ fn apply_llm_overrides(
 fn record_provenance(provenance: &mut Option<&mut ProvenanceMap>, source: ConfigSource, key: &'static str) {
     if let Some(p) = provenance.as_mut() {
         p.insert(key, source);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        documents: DocumentsCliOverrides,
+    }
+
+    fn parse(args: &[&str]) -> Result<DocumentsCliOverrides, clap::Error> {
+        Cli::try_parse_from(std::iter::once("basemind").chain(args.iter().copied())).map(|cli| cli.documents)
+    }
+
+    type ReadFlag = fn(&DocumentsCliOverrides) -> Option<bool>;
+
+    const BOOLEANS: [(&str, &str, ReadFlag); 8] = [
+        (
+            "--documents-enabled",
+            "BASEMIND_DOCUMENTS_ENABLED",
+            |o: &DocumentsCliOverrides| o.enabled,
+        ),
+        (
+            "--documents-embed",
+            "BASEMIND_DOCUMENTS_EMBED",
+            |o: &DocumentsCliOverrides| o.embed,
+        ),
+        (
+            "--documents-language-auto-detect",
+            "BASEMIND_DOCUMENTS_LANGUAGE_AUTO_DETECT",
+            |o: &DocumentsCliOverrides| o.language_auto_detect,
+        ),
+        (
+            "--documents-language-detect-multiple",
+            "BASEMIND_DOCUMENTS_LANGUAGE_DETECT_MULTIPLE",
+            |o: &DocumentsCliOverrides| o.language_detect_multiple,
+        ),
+        (
+            "--documents-reranker-enabled",
+            "BASEMIND_DOCUMENTS_RERANKER_ENABLED",
+            |o: &DocumentsCliOverrides| o.reranker_enabled,
+        ),
+        (
+            "--documents-keywords-enabled",
+            "BASEMIND_DOCUMENTS_KEYWORDS_ENABLED",
+            |o: &DocumentsCliOverrides| o.keywords_enabled,
+        ),
+        (
+            "--documents-ner-enabled",
+            "BASEMIND_DOCUMENTS_NER_ENABLED",
+            |o: &DocumentsCliOverrides| o.ner_enabled,
+        ),
+        (
+            "--documents-summarization-enabled",
+            "BASEMIND_DOCUMENTS_SUMMARIZATION_ENABLED",
+            |o: &DocumentsCliOverrides| o.summarization_enabled,
+        ),
+    ];
+
+    #[test]
+    fn every_boolean_override_reads_every_spelling() {
+        let cases = [
+            ("1", true),
+            ("true", true),
+            ("YES", true),
+            ("on", true),
+            ("0", false),
+            ("False", false),
+            ("no", false),
+            ("OFF", false),
+        ];
+        for (flag, _, read) in BOOLEANS {
+            for (value, expected) in cases {
+                let parsed = parse(&[flag, value]).unwrap_or_else(|error| panic!("{flag} {value}: {error}"));
+                assert_eq!(read(&parsed), Some(expected), "{flag} {value}");
+            }
+            assert_eq!(read(&parse(&[]).expect("no flags")), None, "{flag} unset");
+        }
+    }
+
+    #[test]
+    fn a_boolean_override_refuses_a_non_boolean_naming_its_variable() {
+        for (flag, env, _) in BOOLEANS {
+            let error = parse(&[flag, "maybe"])
+                .err()
+                .unwrap_or_else(|| panic!("{flag} maybe parsed"));
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation, "{flag}");
+            let message = error.to_string();
+            assert!(
+                message.contains(&format!(
+                    "{env}=\"maybe\" is not a boolean: use 1, true, yes, on or 0, false, no, off"
+                )),
+                "{flag}: {message}"
+            );
+        }
     }
 }
