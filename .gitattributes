@@ -1,0 +1,4 @@
+plugin/scripts/* text eol=lf
+plugin/hooks/* text eol=lf
+plugin/.ai-rulez/scripts/* text eol=lf
+plugin/.ai-rulez/hooks/* text eol=lf
