@@ -127,9 +127,17 @@ fn tokens(rest: &str) -> Vec<String> {
     out
 }
 
+/// The name of the long flag `flag` (what follows `--`), and whether it carries its value inline
+/// (`--rev=HEAD`).
+fn flag_name(flag: &str) -> (&str, bool) {
+    flag.split_once('=').map_or((flag, false), |(name, _)| (name, true))
+}
+
 /// Why the invocation `rest` (what follows `basemind`) does not run, or nothing when it does or
-/// names a command `help` does not know (the skew gate reports those). An unknown flag is taken to
-/// carry a value, so its value is not also reported as a positional.
+/// names a command `help` does not know (the skew gate reports those). A flag a command group
+/// declares (`basemind --json scan`) is consumed with its value before the subcommand after it is
+/// resolved. An unknown flag is taken to carry a value, so its value is not also reported as a
+/// positional.
 fn invocation_mismatches(rest: &str, help: &dyn Fn(&[String]) -> Option<Help>) -> Vec<String> {
     let mut words = tokens(rest).into_iter().peekable();
     let mut path: Vec<String> = Vec::new();
@@ -138,6 +146,17 @@ fn invocation_mismatches(rest: &str, help: &dyn Fn(&[String]) -> Option<Help>) -
     };
     while !command.subcommands.is_empty() {
         let Some(next) = words.peek() else { return Vec::new() };
+        if let Some(flag) = next.strip_prefix("--") {
+            let (name, inline_value) = flag_name(flag);
+            let Some(&takes_value) = command.flags.get(name) else {
+                break;
+            };
+            words.next();
+            if takes_value && !inline_value {
+                let _ = words.next_if(|value| !value.starts_with('-'));
+            }
+            continue;
+        }
         if next.starts_with('-') {
             break;
         }
@@ -155,7 +174,7 @@ fn invocation_mismatches(rest: &str, help: &dyn Fn(&[String]) -> Option<Help>) -
     let mut positionals = 0;
     while let Some(word) = words.next() {
         if let Some(flag) = word.strip_prefix("--") {
-            let (name, inline_value) = flag.split_once('=').map_or((flag, false), |(name, _)| (name, true));
+            let (name, inline_value) = flag_name(flag);
             let takes_value = match command.flags.get(name) {
                 None => {
                     problems.push(format!("`basemind {shown}` has no `--{name}`"));
@@ -431,6 +450,12 @@ fn an_unknown_flag_or_an_extra_positional_is_reported() {
             vec!["`basemind code grep` has no `--scope`"],
         ),
         ("scan --rev HEAD~3 --staged", vec![]),
+        ("--json scan --staged", vec![]),
+        ("--json code grep x --regex", vec![]),
+        (
+            "--json scan <path>",
+            vec!["`basemind scan` takes 0 positional argument(s), the example passes 1"],
+        ),
         ("rescan src/a.rs src/b.rs", vec![]),
         ("code grep 'fn \\w+_call' --regex --path src/ | head", vec![]),
         ("code stats|gc", vec![]),
