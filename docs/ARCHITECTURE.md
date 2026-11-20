@@ -564,7 +564,8 @@ to be code-mapped keeps its content hash, so its dead code-lane blobs would othe
 live `.doc` blob forever). The sweep is reference-counted against every workspace on the machine, keeps
 blobs younger than 6 hours (`BASEMIND_BLOB_GC_GRACE_SECS`), and is serialised by `cache/gc.lock`. It
 runs after any scan that migrated, refreshed or reset something (the daemon does so a minute later),
-hourly in the daemon, and on `basemind cache gc`. There is no MCP tool for it: a session cannot sweep
+hourly in the daemon, and on `basemind cache gc`, which like the daemon's sweep first reaps the workspaces of
+deleted worktrees and the groups no workspace names. There is no MCP tool for it: a session cannot sweep
 without racing its own rescans. The size-budget enforcer and the last
 sweep's health (`gc-state.json`, shown as `last_gc` by `cache stats`) are in `src/store_gc_budget.rs`.
 Unless `BASEMIND_CACHE_BUDGET_MB` or `[cache] budget_mb` in the user settings file

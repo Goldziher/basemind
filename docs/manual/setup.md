@@ -25,7 +25,7 @@ prints a one-line summary of the daemon's active workspaces for a shell prompt.
 | `basemind lang clean` | Delete the grammar cache. |
 | `basemind hook install` | Add a git pre-commit hook running `basemind scan --staged`; it never blocks a commit. |
 | `basemind cache stats` | Disk footprint per component and process memory. |
-| `basemind cache gc` | Remove blobs no workspace on the machine references (`--dry-run` only counts). |
+| `basemind cache gc` | Reap the caches of deleted worktrees and their groups, then remove blobs no workspace on the machine references (`--dry-run` only counts). |
 | `basemind cache clear` | Clear one component (`--component`); everything but `git-cache` needs `--yes` off a terminal. |
 | `basemind upgrade --plan` | Before a release-minor rebuild: per group and workspace, what is rebuilt, the bytes freed and needed, and a scan estimate. Writes nothing. |
 

@@ -1057,6 +1057,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A cancelled `docs_search` or `code_search` stops its work, as `code_grep` does: the ranking checks
   the call's cancellation before each lane, each widening fetch, while hits are hydrated and before
   the rerank, instead of running on to the end on a blocking thread nobody waits for (#217).
+- `basemind cache gc` reaps what the daemon's sweep reaps (#267): the workspace caches of deleted
+  worktrees, then the group directories no workspace names, then the blobs only they pinned, and
+  reports `workspaces_reaped` and `group_stores_reaped`. It swept only blobs, so after
+  `git worktree remove` the removed worktree's cache stayed and the next scan never retired its view
+  from the shared group. A cache another process holds locked is skipped. Budget eviction stays with
+  the daemon.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
