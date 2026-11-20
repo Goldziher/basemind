@@ -5,7 +5,8 @@
 //! separately), the time to open and first-scan it, and the share of that scan spent in the
 //! resolve pass. It prints a table and appends it to `<results dir>/worktrees.md`.
 //!
-//! This is a measurement, so it asserts only that each number was really taken. Run it through
+//! It asserts that each number was really taken and that no added worktree adds more than
+//! `MAX_ADDED_WORKTREE_PERCENT` of what the main checkout's scan put on disk. Run it through
 //! `scripts/harden.sh` with `BASEMIND_HARDEN_WORKTREES=<K>`.
 
 use std::fs::OpenOptions;
@@ -29,6 +30,11 @@ const DEFAULT_WORKTREES: usize = 5;
 const DEFAULT_COMMIT_STEP: usize = 50;
 /// How often the scan's phase breadcrumb is read. A phase shorter than this can be missed.
 const PHASE_POLL: Duration = Duration::from_micros(500);
+/// Upper bound, in percent of the bytes the main checkout's scan put on disk, on the bytes each added
+/// worktree adds: the bound `tests/worktree_lifecycle_cli.rs` holds identical worktrees to. On ripgrep
+/// at the pinned commit, with worktrees 50 commits apart, an added worktree peaks at 45% of the first
+/// scan (one 2 MiB journal segment over 4.6 MB, `benchmarks/index/harden-worktrees-2026-11-16.md`).
+const MAX_ADDED_WORKTREE_PERCENT: u64 = 50;
 /// Directory name of the Fjall index inside a view directory.
 const INDEX_DB_DIR: &str = "index.fjall";
 /// Directory name of the workspace's LanceDB store. The library exports it only on a build with
@@ -211,6 +217,12 @@ fn measure_worktree(root: &Path, label: &str, commit: &str, diff_files: usize) -
         disk: disk_bytes(&cache_dir, root, group_before),
         new_blob_bytes: dir_size(&global_blobs_dir()).saturating_sub(blobs_before),
     }
+}
+
+/// Whether an added worktree's `added` bytes exceed [`MAX_ADDED_WORKTREE_PERCENT`] of the main
+/// checkout's `first`.
+fn exceeds_added_worktree_bound(added: u64, first: u64) -> bool {
+    u128::from(added) * 100 > u128::from(first) * u128::from(MAX_ADDED_WORKTREE_PERCENT)
 }
 
 fn git(repo: &Path, args: &[&str]) -> Option<String> {
@@ -411,9 +423,39 @@ fn harden_worktrees() {
             failures.push(format!("{}: the scan took no measurable time", row.label));
         }
     }
+    let first = rows[0].disk.total();
+    for row in &rows[1..] {
+        let added = row.disk.total();
+        if exceeds_added_worktree_bound(added, first) {
+            failures.push(format!(
+                "{}: added {} on disk, over {MAX_ADDED_WORKTREE_PERCENT}% of the main checkout's {}",
+                row.label,
+                human_bytes(added),
+                human_bytes(first)
+            ));
+        }
+    }
     assert!(
         failures.is_empty(),
-        "[harden] {repo_name} worktree measurement did not measure:\n  - {}",
+        "[harden] {repo_name} worktree measurement failed:\n  - {}",
         failures.join("\n  - ")
+    );
+}
+
+#[test]
+fn an_added_worktree_over_half_the_first_scan_fails_the_bound() {
+    let first = 4_780_032;
+    assert!(
+        !exceeds_added_worktree_bound(2_138_112, first),
+        "the recorded ripgrep peak, 45%"
+    );
+    assert!(
+        !exceeds_added_worktree_bound(first / 2, first),
+        "exactly 50% is within it"
+    );
+    assert!(exceeds_added_worktree_bound(first / 2 + 1, first));
+    assert!(
+        exceeds_added_worktree_bound(first, first),
+        "a second full copy of the index"
     );
 }
