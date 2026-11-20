@@ -200,7 +200,7 @@ pub fn table() -> Vec<Row> {
             "a report over repository rule files with a CI exit gate; no tool until an eval kind measures it (ADR-0047)",
         ),
         // ---- documents and memory ----
-        tool("docs_search", "memory documents"),
+        tool("docs_search", "docs search"),
         tool("memory_save", "memory put"),
         tool("memory_search", "memory search"),
         shorthand("memory_search", "memory get", "the `key` shape of `memory_search`"),

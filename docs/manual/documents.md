@@ -7,13 +7,15 @@ and by words, then cites each hit (path, pages, section, lines).
 
 | Question | MCP call | CLI |
 |---|---|---|
-| Where is a topic discussed? | `docs_search {"query":"how releases are versioned"}` | `basemind memory documents "how releases are versioned"` |
-| Only PDFs | `docs_search {"query":"…","format":"pdf"}` | `basemind memory documents "…" --format pdf` |
-| Only under a directory | `docs_search {"query":"…","path":"docs/"}` | `basemind memory documents "…" --path docs/` |
-| Only paths matching a glob | `docs_search {"query":"…","path":"docs/**/*.md"}` | `basemind memory documents "…" --path "docs/**/*.md"` |
-| One exact MIME type | `docs_search {"query":"…","mime_type":"application/pdf"}` | `basemind memory documents "…" --mime-type application/pdf` |
-| Documents with a keyword | `docs_search {"query":"…","keywords":"rate limit"}` | `basemind memory documents "…" --keywords "rate limit"` |
-| Documents naming a person | `docs_search {"query":"…","entity":"PERSON"}` | `basemind memory documents "…" --entity PERSON` |
+| Where is a topic discussed? | `docs_search {"query":"how releases are versioned"}` | `basemind docs search "how releases are versioned"` |
+| Only PDFs | `docs_search {"query":"…","format":"pdf"}` | `basemind docs search "…" --format pdf` |
+| Only under a directory | `docs_search {"query":"…","path":"docs/"}` | `basemind docs search "…" --path docs/` |
+| Only paths matching a glob | `docs_search {"query":"…","path":"docs/**/*.md"}` | `basemind docs search "…" --path "docs/**/*.md"` |
+| One exact MIME type | `docs_search {"query":"…","mime_type":"application/pdf"}` | `basemind docs search "…" --mime-type application/pdf` |
+| Documents with a keyword | `docs_search {"query":"…","keywords":"rate limit"}` | `basemind docs search "…" --keywords "rate limit"` |
+| Documents naming a person | `docs_search {"query":"…","entity":"PERSON"}` | `basemind docs search "…" --entity PERSON` |
+
+The hidden `memory documents` command is the same search under its earlier name.
 
 ## Contracts
 

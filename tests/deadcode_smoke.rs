@@ -258,8 +258,8 @@ fn a_malformed_request_exits_with_a_usage_error() {
         let stderr = String::from_utf8_lossy(&refused.stderr);
         assert_eq!(refused.status.code(), Some(2), "{stderr}");
         assert!(
-            stderr.contains("`limit` is 1 to 10000"),
-            "the engine's refusal: {stderr}"
+            stderr.contains("Error: `basemind code deadcode`: `--limit` is 1 to 10000\n"),
+            "the engine's refusal, in the command's spelling: {stderr}"
         );
     }
     // clap refuses an unknown tier before the engine sees it.

@@ -158,17 +158,20 @@ pub(super) fn refuse_view_scan_under_daemon(root: &std::path::Path, flag: &str) 
     Ok(())
 }
 
-/// Forward a working-tree scan to the daemon when [`route`] finds one. `Ok(false)` means scan
-/// directly. Exit codes: `2` for a flag the daemon cannot apply, `3` when the daemon is stopping,
-/// `130` on Ctrl-C (the daemon finishes the scan it was given), `1` for a failed scan.
+/// Forward a working-tree scan to the daemon when [`route`] finds one, reporting its counts as
+/// `output` says. `Ok(false)` means scan directly. Exit codes: `2` for a flag the daemon cannot
+/// apply, `3` when the daemon is stopping, `130` on Ctrl-C (the daemon finishes the scan it was
+/// given), `1` for a failed scan.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(super) fn forward_scan(
     root: &std::path::Path,
     args: &ScanArgs,
     matches: &clap::ArgMatches,
     cancel: &basemind::scanner::ScanCancel,
-    out: &mut impl std::io::Write,
+    output: ScanOutput,
 ) -> Result<bool> {
+    use std::io::Write as _;
+
     use basemind::git_history::proto::{GitHistoryOp, GitHistoryReply};
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -198,7 +201,8 @@ pub(super) fn forward_scan(
             }
         }
         .map_err(|error| forwarded_failure(pid, error))?;
-        super::main_rescan::print_forwarded(out, "scan", &report);
+        let mut out = output.human();
+        output.forwarded(&mut out, "scan", root, &report)?;
         if !args.no_git_history && basemind::git_history::index_enabled() && basemind::git::Repo::discover(root).is_ok()
         {
             match client.git_history(root.to_path_buf(), GitHistoryOp::Sync).await {

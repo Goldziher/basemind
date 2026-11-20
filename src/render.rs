@@ -87,7 +87,7 @@ impl WarnTally {
     }
 
     /// Print the summary lines (a no-op when nothing was absorbed) and reset the tally.
-    pub fn flush(&mut self, w: &mut AutoStream<std::io::Stdout>) {
+    pub fn flush(&mut self, w: &mut impl Write) {
         let style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Yellow))).render();
         let reset = Reset.render();
         let dim = Style::new().dimmed().render();
@@ -102,7 +102,7 @@ impl WarnTally {
 }
 
 /// Print one file's line, or fold a parse-error warning into `tally` unless `-v` asked for every line.
-fn render_or_tally(w: &mut AutoStream<std::io::Stdout>, tally: &mut WarnTally, res: &FileResult, verbosity: Verbosity) {
+fn render_or_tally(w: &mut impl Write, tally: &mut WarnTally, res: &FileResult, verbosity: Verbosity) {
     if verbosity == Verbosity::Default && tally.absorb(res) {
         return;
     }
@@ -112,7 +112,7 @@ fn render_or_tally(w: &mut AutoStream<std::io::Stdout>, tally: &mut WarnTally, r
 /// Print the per-file lines of an already-collected result set (no summary). Used by the watcher,
 /// which renders a batch after the fact. Parse-error warnings collapse into one line per grammar
 /// unless `-v`.
-pub fn render_files(w: &mut AutoStream<std::io::Stdout>, results: &[FileResult], verbosity: Verbosity) {
+pub fn render_files(w: &mut impl Write, results: &[FileResult], verbosity: Verbosity) {
     let mut tally = WarnTally::default();
     for r in results {
         render_or_tally(w, &mut tally, r, verbosity);
@@ -154,14 +154,14 @@ impl ScanObserver for ScanLineObserver {
     }
 }
 
-pub fn render_file(w: &mut AutoStream<std::io::Stdout>, res: &FileResult, verbosity: Verbosity) {
+pub fn render_file(w: &mut impl Write, res: &FileResult, verbosity: Verbosity) {
     let Some(line) = format_line(res, verbosity) else {
         return;
     };
     let _ = writeln!(w, "{line}");
 }
 
-pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, verbosity: Verbosity) {
+pub fn render_summary(w: &mut impl Write, stats: &ScanStats, verbosity: Verbosity) {
     if verbosity == Verbosity::Quiet
         && stats.read_failed == 0
         && stats.extract_failed == 0
@@ -255,7 +255,7 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
 /// The dependencies whose documentation was not indexed (`[documents.dependencies]`), one line
 /// each under a `deps_unavailable` heading. Silent under `--quiet` and when there are none.
 pub fn render_deps_unavailable(
-    w: &mut AutoStream<std::io::Stdout>,
+    w: &mut impl Write,
     unavailable: &[crate::deps_docs::DepUnavailable],
     verbosity: Verbosity,
 ) {
@@ -271,7 +271,7 @@ pub fn render_deps_unavailable(
 
 /// Peak footprint per scan phase, one dimmed line (`peak memory  extract 512.0MB  resolve 5.5GB`).
 /// Silent under `--quiet` and when the scan recorded none.
-pub fn render_phase_peaks(w: &mut AutoStream<std::io::Stdout>, peaks: &[PhasePeak], verbosity: Verbosity) {
+pub fn render_phase_peaks(w: &mut impl Write, peaks: &[PhasePeak], verbosity: Verbosity) {
     let Some(line) = phase_peaks_line(peaks) else {
         return;
     };
@@ -294,7 +294,7 @@ fn phase_peaks_line(peaks: &[PhasePeak]) -> Option<String> {
 }
 
 /// Print what the post-scan blob cleanup reclaimed. Silent when nothing was orphaned.
-pub fn render_cleanup(w: &mut AutoStream<std::io::Stdout>, report: &crate::store_gc::GcReport) {
+pub fn render_cleanup(w: &mut impl Write, report: &crate::store_gc::GcReport) {
     if report.removed == 0 {
         return;
     }
@@ -309,7 +309,7 @@ pub fn render_cleanup(w: &mut AutoStream<std::io::Stdout>, report: &crate::store
 ///
 /// Silent when all grammars were already cached (unless verbose). When a download did happen,
 /// always emit at least one line so the user knows what basemind was doing during the pause.
-pub fn render_grammar_bootstrap(w: &mut AutoStream<std::io::Stdout>, summary: &BootstrapSummary, verbosity: Verbosity) {
+pub fn render_grammar_bootstrap(w: &mut impl Write, summary: &BootstrapSummary, verbosity: Verbosity) {
     if !summary.did_download() && verbosity != Verbosity::Verbose {
         return;
     }
@@ -357,7 +357,7 @@ pub fn render_grammar_bootstrap(w: &mut AutoStream<std::io::Stdout>, summary: &B
 
 /// Tiny header used by non-working-tree scans (staged / rev). Working-tree scans don't get
 /// one — they're the default and shouldn't grow noise on every run.
-pub fn render_scan_header(w: &mut AutoStream<std::io::Stdout>, label: &str, verbosity: Verbosity) {
+pub fn render_scan_header(w: &mut impl Write, label: &str, verbosity: Verbosity) {
     if verbosity == Verbosity::Quiet {
         return;
     }
@@ -371,7 +371,7 @@ pub fn render_scan_header(w: &mut AutoStream<std::io::Stdout>, label: &str, verb
     );
 }
 
-pub fn render_batch_header(w: &mut AutoStream<std::io::Stdout>, paths: usize, verbosity: Verbosity) {
+pub fn render_batch_header(w: &mut impl Write, paths: usize, verbosity: Verbosity) {
     if verbosity == Verbosity::Quiet {
         return;
     }

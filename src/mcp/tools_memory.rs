@@ -84,8 +84,7 @@ impl BasemindServer {
 }
 
 impl BasemindServer {
-    /// Body of the `docs_search` tool, shared with `basemind memory documents`; stopped when the MCP
-    /// request running it is cancelled ([`READ_CANCEL`]).
+    /// Body of the `docs_search` tool, shared with `basemind docs search`.
     pub(crate) async fn docs_search_call(&self, p: DocsSearchParams) -> Result<CallToolResult, McpError> {
         let cancelled = read_cancel_check();
         self.op(p, move |ws: &Workspace, p| ws.docs_search(p, &cancelled)).await
