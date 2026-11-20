@@ -119,27 +119,33 @@ impl Detached {
     }
 
     /// Waits up to `grace` for every recorded process to exit, then kills what is left.
-    /// Returns how many signals were sent.
-    pub fn reap(&self, grace: Duration) -> usize {
+    /// Returns whether a listing showed one of the session's processes still running once the
+    /// session had ended, whether it then exited by itself or was killed: what a signal reached
+    /// is no measure of it, since a process may exit or change between the listing and the
+    /// signal.
+    pub fn reap(&self, grace: Duration) -> bool {
         self.reap_with(grace, procinfo::all)
     }
 
-    /// As [`Self::reap`], reading the process table with `list`. Nothing is killed without a
-    /// listing: when none could be made by the end of `grace`, nothing is.
-    fn reap_with(&self, grace: Duration, mut list: impl FnMut() -> Option<Vec<ProcInfo>>) -> usize {
+    /// As [`Self::reap`], reading the process table with `list`. Nothing is killed or concluded
+    /// without a listing: when none could be made by the end of `grace`, nothing is.
+    fn reap_with(&self, grace: Duration, mut list: impl FnMut() -> Option<Vec<ProcInfo>>) -> bool {
         let deadline = Instant::now().checked_add(grace);
+        let mut outlived = false;
         loop {
             let past = deadline.is_none_or(|deadline| Instant::now() >= deadline);
             if let Some(procs) = list() {
                 let left = self.left(&procs);
                 if left.is_empty() {
-                    return 0;
+                    return outlived;
                 }
+                outlived = true;
                 if past {
-                    return kill(&procs, &left);
+                    kill(&procs, &left);
+                    return true;
                 }
             } else if past {
-                return 0;
+                return outlived;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -220,21 +226,17 @@ fn plan(procs: &[ProcInfo], left: &[ProcInfo], own_group: Option<i32>) -> Vec<Ta
     targets
 }
 
-/// Kills `left`, the session's processes in `procs`, as [`plan`] says. Returns how many
-/// signals were sent.
-fn kill(procs: &[ProcInfo], left: &[ProcInfo]) -> usize {
-    let mut sent = 0;
+/// Kills `left`, the session's processes in `procs`, as [`plan`] says.
+fn kill(procs: &[ProcInfo], left: &[ProcInfo]) {
     for target in plan(procs, left, own_group()) {
-        let signalled = match target {
+        match target {
             Target::Group(group) => {
                 let members: Vec<&ProcInfo> = left.iter().filter(|proc| proc.pgid == group).collect();
-                signal_group(group, &members)
+                signal_group(group, &members);
             }
             Target::Process(id) => signal_process(id),
-        };
-        sent += usize::from(signalled);
+        }
     }
-    sent
 }
 
 fn own_group() -> Option<i32> {
@@ -249,21 +251,21 @@ fn own_group() -> Option<i32> {
 
 /// Kills group `group` after checking again that each of `members` is still the process it
 /// was and still in the group, and that the group has no member besides them.
-fn signal_group(group: i32, members: &[&ProcInfo]) -> bool {
+fn signal_group(group: i32, members: &[&ProcInfo]) {
     let unchanged = members
         .iter()
         .all(|member| procinfo::info(member.pid).is_some_and(|now| now.start == member.start && now.pgid == group));
     if !unchanged || !group_is_only(group, members) {
-        return false;
+        return;
     }
     #[cfg(unix)]
     {
         // SAFETY: a negative pid signals that process group; it is not init's, the kernel's or
         // this process's, and every member was just checked to be the session's.
-        unsafe { libc::kill(-group, libc::SIGKILL) == 0 }
+        unsafe {
+            libc::kill(-group, libc::SIGKILL);
+        }
     }
-    #[cfg(not(unix))]
-    false
 }
 
 /// Whether a fresh listing shows no process in `group` besides `members`.
@@ -277,7 +279,7 @@ fn group_is_only(group: i32, members: &[&ProcInfo]) -> bool {
 }
 
 /// Kills the one process `id`, if it is still that process.
-fn signal_process(id: ProcId) -> bool {
+fn signal_process(id: ProcId) {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         // A pidfd pins the process: once it is open and the process checked, the signal cannot
@@ -290,36 +292,35 @@ fn signal_process(id: ProcId) -> bool {
             // SAFETY: `fd` was just returned by pidfd_open and is owned here.
             let fd = unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
             if !procinfo::running(id) {
-                return false;
+                return;
             }
             let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
             // SAFETY: pidfd_send_signal takes the pidfd, a signal and a null siginfo.
-            let sent = unsafe {
+            unsafe {
                 libc::syscall(
                     libc::SYS_pidfd_send_signal,
                     raw,
                     libc::SIGKILL,
                     std::ptr::null::<libc::siginfo_t>(),
                     0,
-                )
-            };
-            return sent == 0;
+                );
+            }
+            return;
         }
     }
     #[cfg(unix)]
     {
         if !procinfo::running(id) {
-            return false;
+            return;
         }
         // SAFETY: kill takes plain integers; the pid was just checked to be the process
         // recorded, and only a reuse in the instant since could misdirect it.
-        unsafe { libc::kill(id.pid, libc::SIGKILL) == 0 }
+        unsafe {
+            libc::kill(id.pid, libc::SIGKILL);
+        }
     }
     #[cfg(not(unix))]
-    {
-        let _ = id;
-        false
-    }
+    let _ = id;
 }
 
 #[cfg(all(test, unix))]
@@ -471,12 +472,45 @@ mod tests {
         detached.follow(leader());
         detached.observe(&[proc(500, 1, 500, 500), proc(502, 500, 502, 500)]);
         let mut listings = 0;
-        let sent = detached.reap_with(Duration::from_millis(120), || {
+        let outlived = detached.reap_with(Duration::from_millis(120), || {
             listings += 1;
             None
         });
-        assert_eq!(sent, 0);
+        assert!(
+            !outlived,
+            "a process was taken to have outlived the session without a listing"
+        );
         assert!(listings > 1, "the reaper gave up before its grace was over");
+    }
+
+    #[test]
+    fn a_process_that_outlived_the_session_is_reported_though_it_exited_before_the_kill() {
+        let detached = Detached::default();
+        detached.follow(leader());
+        detached.observe(&[proc(500, 1, 500, 500), proc(502, 500, 502, 502)]);
+        // The server is still running once the session has ended, then exits on its own, as
+        // OpenCode's does once its input closes: no signal is sent, yet it outlived the session.
+        let mut listings = vec![
+            vec![proc(900, 1, 900, 900)],
+            vec![proc(502, 1, 502, 502), proc(900, 1, 900, 900)],
+        ];
+        let outlived = detached.reap_with(Duration::from_secs(10), || listings.pop());
+        assert!(outlived, "a server that outlived the session went unreported");
+        assert!(listings.is_empty());
+    }
+
+    #[test]
+    fn a_session_whose_processes_all_ended_with_it_reports_none_outliving_it() {
+        let detached = Detached::default();
+        detached.follow(leader());
+        detached.observe(&[proc(500, 1, 500, 500), proc(502, 500, 502, 502)]);
+        let gone = ProcInfo {
+            zombie: true,
+            ..proc(502, 1, 502, 502)
+        };
+        let mut listings = vec![vec![gone, proc(900, 1, 900, 900)]];
+        assert!(!detached.reap_with(Duration::from_secs(10), || listings.pop()));
+        assert!(listings.is_empty());
     }
 
     #[test]
