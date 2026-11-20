@@ -1,6 +1,6 @@
 version = "5.0"
 name = "basemind"
-description = "Code-map MCP server + scanner — pure-Rust, content-addressed, Fjall-backed inverted index."
+description = "Coding agents ask a local index of your code, git history, documents and memory over MCP or the CLI, get paths and lines instead of reading files, and coordinate in shared threads."
 gitignore = true
 gitignore_exclude = ["opencode.json"]
 

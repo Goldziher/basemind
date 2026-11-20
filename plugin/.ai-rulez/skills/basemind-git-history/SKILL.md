@@ -1,6 +1,6 @@
 ---
 type: Playbook
-title: Basemind Git History
+title: basemind git history
 description: Explore git history without shelling out to git — recent commits, commits
   touching a path, per-line and per-symbol blame, structural diffs across revisions,
   churn ranking, and a symbol's history over time. Reach for it whenever the user

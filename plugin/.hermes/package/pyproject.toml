@@ -5,7 +5,7 @@ build-backend = 'hatchling.build'
 [project]
 name = 'basemind-hermes-plugin'
 version = '0.33.0'
-description = 'Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.'
+description = 'Coding agents ask a local index of your code, git history, documents and memory over MCP or the CLI, get paths and lines instead of reading files, and coordinate in shared threads.'
 license = 'MIT'
 requires-python = '>=3.11'
 dependencies = ['mcp==1.30.0', 'PyYAML==6.0.3']
@@ -13,14 +13,14 @@ keywords = ['mcp', 'agent-context', 'rag', 'code-map', 'tree-sitter']
 
 [project.readme]
 content-type = 'text/markdown'
-text = "# basemind Hermes plugin\n\nFull AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.\n\nInstall this package in the same Python environment as Hermes Agent:\n\n```sh\npython -m pip install basemind-hermes-plugin\n```\n\nEnable the plugin through Hermes Agent's plugin configuration. Available registrations depend on the plugin's authored Hermes adapter.\n"
+text = "# basemind Hermes plugin\n\nCoding agents ask a local index of your code, git history, documents and memory over MCP or the CLI, get paths and lines instead of reading files, and coordinate in shared threads.\n\nInstall this package in the same Python environment as Hermes Agent:\n\n```sh\npython -m pip install basemind-hermes-plugin\n```\n\nEnable the plugin through Hermes Agent's plugin configuration. Available registrations depend on the plugin's authored Hermes adapter.\n"
 
 [project.entry-points]
 [project.entry-points.'hermes_agent.plugins']
 basemind = 'basemind_hermes_plugin'
 
 [project.urls]
-Homepage = 'https://github.com/Goldziher/basemind'
+Homepage = 'https://basemind.ai'
 Repository = 'https://github.com/Goldziher/basemind'
 
 [tool]

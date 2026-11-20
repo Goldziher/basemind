@@ -7,4 +7,4 @@ assert.equal(recipes.length, 7, "Expected all seven navigation recipes");
 for (const [domain, mode] of recipes) {
   execFileSync("basemind", [domain, mode, "--help"], { stdio: "pipe" });
 }
-console.log(`Actual Basemind CLI accepted ${recipes.length}/${recipes.length} Pi navigation recipes`);
+console.log(`Actual basemind CLI accepted ${recipes.length}/${recipes.length} Pi navigation recipes`);

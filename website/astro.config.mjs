@@ -9,8 +9,8 @@ export default defineConfig({
     starlight({
       title: "basemind",
       description:
-        "The context and communication layer for coding agents. A pure-Rust code map, " +
-        "document RAG, git intelligence, shared memory, and agent-to-agent comms — served over MCP.",
+        "Coding agents ask a local index of your code, git history, documents and memory over MCP " +
+        "or the CLI, get paths and lines instead of reading files, and coordinate in shared threads.",
       logo: {
         src: "./src/assets/logo.svg",
         alt: "basemind",

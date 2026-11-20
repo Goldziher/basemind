@@ -1,13 +1,13 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:4cd4fba34c2aa847359fea917debac73d7bec6f67866b4b4f889245229323093",
+  "source_hash": "blake3:17b2cd24938911b2c19d9d2121628e8fae043545b41a3ebfb62f279c72cc0f9b",
   "outputs": {
     ".agents/plugins/marketplace.json": {
       "content_hash": "blake3:20e4d19ef25298d428c88762f3f0078c935f8774c296fb19d25983514f7953da",
       "mode": "0644"
     },
     ".claude-plugin/marketplace.json": {
-      "content_hash": "blake3:2f22c0768d5b58cd6aabe3506e15e1d3f99ca8b9077f30b30fc8575780bb8feb",
+      "content_hash": "blake3:6c83712d64274501c7468328fd6045933c4744e765b2bc8b4189a77eefb1b9c2",
       "mode": "0644"
     }
   }

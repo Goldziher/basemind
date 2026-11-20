@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.14.0'
 scope = 'all'
-tree = 'sha256:f6d50538900bf0c421acdd81c447284ff44a1bfecef3a8f74e25b0b66644ecc9'
+tree = 'sha256:1300f804f16f957581b798f82395e114f212f74fe448830224c6198ca68a7967'
 
 [[served]]
 name = 'adr-workflow'
@@ -214,7 +214,7 @@ digest = 'sha256:22d45349602ce68e3588264925ca68027d873afa6b2878b75d44055023a722b
 kind = 'context'
 id = 'crate-layout'
 path = 'context/crate-layout.md'
-digest = 'sha256:16293d64969ec69308d82f46c5f3f09ffbf38b47c1323d1a3c722c8b7baa01e0'
+digest = 'sha256:9c920f5f978d79fbf298276397df3eb7c18570b493fcba85cffdb63a1311a716'
 
 [[item]]
 kind = 'context'
@@ -262,7 +262,7 @@ digest = 'sha256:d43a23e2f32d56826ce1b59534711227d58024fa861745c184accb836e2c00d
 kind = 'rule'
 id = 'basemind-usage'
 path = 'rules/basemind-usage.md'
-digest = 'sha256:12df76e675515988ac7ac7fddfd3f57155409af426680eea2fd39c14caa2a77d'
+digest = 'sha256:ac173551870917320370e1ded03790eec54ce4524336804d666a8f6b0349ea20'
 
 [[item]]
 kind = 'rule'
@@ -280,19 +280,19 @@ digest = 'sha256:499bf354c2378f40b0acf956f71383872c0201d6bd04f42f25d392f0040fbfc
 kind = 'rule'
 id = 'perf-discipline'
 path = 'rules/perf-discipline.md'
-digest = 'sha256:5e0ed0dee235edf9a76bdf834049ce0e50cd08cbc99ab6b986c8e06b3b68dcfb'
+digest = 'sha256:dc49c7be746c9ff2ca5133d8d6ee548792955d27ecd91823b0c429ed05005f01'
 
 [[item]]
 kind = 'rule'
 id = 'release-versioning'
 path = 'rules/release-versioning.md'
-digest = 'sha256:5b73b0a46ff2314be74bbe40127ba287302331b85d38de806ca04c68a9129398'
+digest = 'sha256:6af4dffd42e726dcac79b66e4c78d3240982d03160f4c70f0ed5f7e2e3c9fbea'
 
 [[item]]
 kind = 'rule'
 id = 'schema-and-blob-compat'
 path = 'rules/schema-and-blob-compat.md'
-digest = 'sha256:3e8b5263bace894e513db123db5e10b820da3255f0ae55e66affe630cdb90cc9'
+digest = 'sha256:c83b0efa26bb93d94f0a4b0787e12e24b456b59371f1b3a24920cbbfe34a0392'
 
 [[item]]
 kind = 'rule'

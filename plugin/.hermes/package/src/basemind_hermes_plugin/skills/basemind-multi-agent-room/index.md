@@ -1,10 +1,10 @@
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:c8f516212d47432e919e1587fb4838c65f20771fd1a17fb5efaff63ee01fabfe
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:3a11ea8a19b617bf806e1973106cbf556d8a886724b6c72482d97c8aecfb4db4
+Source-Hash: blake3:d1ae0a5fe009e6884c73b7840083a0331e886c035c15f8183f0a57923763fc5b
 Schema-Version: v1
 -->
 
 # Concepts
 
-- [Basemind Multi Agent Room](SKILL.md) - Orchestrate a team of subagents in shared threads. Each subagent acts under its own sub-identity (`as`), reads its own inbox, and cross-checks peers by posting to threads they are members of.
+- [basemind multi-agent room](SKILL.md) - Orchestrate a team of subagents in shared threads. Each subagent acts under its own sub-identity (`as`), reads its own inbox, and cross-checks peers by posting to threads they are members of.

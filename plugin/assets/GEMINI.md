@@ -1,4 +1,4 @@
-# Basemind
+# basemind
 
 Use the bundled public skills for structural code search, git history, documents,
 shared memory and scoped agent coordination. The MCP server inherits the caller's

@@ -1,6 +1,6 @@
 ---
 type: Playbook
-title: Basemind Stats
+title: basemind stats
 description: 'Show a quick dashboard of basemind activity in this session: how many
   code-map tool calls have run, the per-tool histogram, and the estimated tokens saved
   vs a hypothetical grep+Read baseline. Use when the user asks "what has basemind

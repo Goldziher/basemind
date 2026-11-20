@@ -1,7 +1,7 @@
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
 
-<img src="docs/media/basemind-banner.svg" alt="basemind — cybernetic core" width="820">
+<img src="docs/media/basemind-banner.svg" alt="basemind" width="820">
 
 **The context and communication layer for coding agents.**
 
@@ -485,7 +485,7 @@ flowchart LR
   V["basemind serve<br/>answers questions"]
   R --> S --> D --> V
   A <-->|asks questions| V
-  classDef accent fill:#2563eb,stroke:#1e40af,color:#fff
+  classDef accent fill:#965aff,stroke:#7d4dff,color:#fff
   class S,V accent
 ```
 
@@ -637,7 +637,7 @@ flowchart LR
   BR["Shared comms service<br/>threads · inboxes"]
   A <-->|post · read| BR
   B <-->|post · read| BR
-  classDef accent fill:#2563eb,stroke:#1e40af,color:#fff
+  classDef accent fill:#965aff,stroke:#7d4dff,color:#fff
   class BR accent
 ```
 

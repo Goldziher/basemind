@@ -10,7 +10,7 @@ x-ai-rulez:
 
 # Release Versioning
 
-Basemind versions are bumped across every shipped surface in lock-step. The single sanctioned bumper is
+basemind versions are bumped across every shipped surface in lock-step. The single sanctioned bumper is
 `mise run release:sync-version X.Y.Z` (script: `scripts/release-bump.sh`, also bumps every plugin
 manifest version in lock-step). Never hand-edit one
 surface without the others — `cargo publish` / npm / PyPI all enforce version uniqueness, so

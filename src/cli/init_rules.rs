@@ -147,7 +147,7 @@ pub struct BlockSections {
 /// notebook guidance include only the selected capabilities.
 pub fn render_block_body(caps: &[Capability], sections: BlockSections) -> String {
     let mut out = String::new();
-    out.push_str("## Basemind\n\n");
+    out.push_str("## basemind\n\n");
 
     if sections.usage_rules {
         render_usage_rules(&mut out, caps);
@@ -160,12 +160,12 @@ pub fn render_block_body(caps: &[Capability], sections: BlockSections) -> String
 
 fn render_usage_rules(out: &mut String, caps: &[Capability]) {
     out.push_str(
-        "**Use Basemind first for every capability listed below.** Make the Basemind MCP call \
+        "**Use basemind first for every capability listed below.** Make the basemind MCP call \
          before using a shell command, file read, or another search tool for the same question. \
          Use the result to narrow any follow-up reads to the paths and lines you need.\n\n",
     );
     out.push_str(
-        "The Basemind tools are always loaded: call them directly, there is no tool search to run \
+        "The basemind tools are always loaded: call them directly, there is no tool search to run \
          first. The agent tools `agent_post`, `agent_inbox` and `agent_threads` are the exception: \
          they are deferred, so find them by tool search. Arguments are exact (an unknown argument is rejected, not ignored), paths are \
          repository-relative, and `line` / `end_line` are 1-based.\n\n",
@@ -216,7 +216,7 @@ fn render_setup_notes(out: &mut String) {
 /// body is the same content as the delimited block, sans delimiters.
 pub fn render_ai_rulez_rule(caps: &[Capability], sections: BlockSections) -> String {
     let mut out = String::new();
-    out.push_str("---\ntype: Decision\ntitle: Basemind Usage\nx-ai-rulez:\n  kind: rule\n  id: basemind-usage\n  metadata:\n    priority: high\n---\n\n");
+    out.push_str("---\ntype: Decision\ntitle: basemind usage\nx-ai-rulez:\n  kind: rule\n  id: basemind-usage\n  metadata:\n    priority: high\n---\n\n");
     out.push_str("# basemind usage\n\n");
     out.push_str(&render_block_body(caps, sections));
     out
@@ -240,7 +240,7 @@ mod tests {
             },
         );
         assert!(rule.starts_with(
-            "---\ntype: Decision\ntitle: Basemind Usage\nx-ai-rulez:\n  kind: rule\n  id: basemind-usage\n  metadata:\n    priority: high\n---\n\n# basemind usage\n"
+            "---\ntype: Decision\ntitle: basemind usage\nx-ai-rulez:\n  kind: rule\n  id: basemind-usage\n  metadata:\n    priority: high\n---\n\n# basemind usage\n"
         ));
     }
 
@@ -260,7 +260,7 @@ mod tests {
         };
         let only_git = vec![Capability::GitHistory];
         let body = render_block_body(&only_git, sections);
-        assert!(body.contains("Use Basemind first for every capability listed below"));
+        assert!(body.contains("Use basemind first for every capability listed below"));
         assert!(body.contains("`git_log {}`"), "git row present");
         assert!(!body.contains("exact literal in a notebook"));
         assert!(
@@ -348,7 +348,7 @@ mod tests {
             },
         );
         assert!(with.contains("Setup & maintenance"));
-        assert!(!with.contains("Use Basemind first"));
+        assert!(!with.contains("Use basemind first"));
         let without = render_block_body(
             &all(),
             BlockSections {

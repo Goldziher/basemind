@@ -1,6 +1,6 @@
 ---
 type: Playbook
-title: Basemind Documents
+title: basemind documents
 description: Semantic search over documents via basemind's
   RAG store — PDFs, Office, HTML, email, Jupyter notebooks, and images (OCR),
   with cross-encoder reranking, keyword and named-entity (NER) filters, and per-document
