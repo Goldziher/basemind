@@ -385,6 +385,18 @@ pub fn tells_cap_archive(kind: ReadKind, resumed: bool) -> bool {
     }
 }
 
+/// Whether a read of `kind`, `resumed` from a cursor or not, says how many messages of a thread a
+/// sweep removed past where the caller stood in it, which the sweep does whatever the caller has
+/// read: every unread read, a peek on its first page only. History starts at the oldest message
+/// kept and says nothing.
+pub fn reports_swept(kind: ReadKind, resumed: bool) -> bool {
+    match kind {
+        ReadKind::Marking | ReadKind::Announcing => true,
+        ReadKind::Peek => !resumed,
+        ReadKind::ById | ReadKind::History => false,
+    }
+}
+
 /// Whether a stored message from `from` is one a read of `kind` by `actor` returns: history
 /// returns everything, every other read only what another actor posted. A sibling actor of the
 /// same principal is another actor.

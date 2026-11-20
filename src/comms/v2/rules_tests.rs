@@ -292,3 +292,13 @@ fn only_a_marking_read_and_the_first_page_of_a_peek_tell_of_a_cap_archive() {
     assert!(!tells_cap_archive(ReadKind::History, false));
     assert!(!tells_cap_archive(ReadKind::ById, false));
 }
+
+#[test]
+fn every_unread_read_but_a_resumed_peek_reports_what_a_sweep_removed() {
+    assert!(reports_swept(ReadKind::Marking, false));
+    assert!(reports_swept(ReadKind::Announcing, false));
+    assert!(reports_swept(ReadKind::Peek, false));
+    assert!(!reports_swept(ReadKind::Peek, true));
+    assert!(!reports_swept(ReadKind::History, false));
+    assert!(!reports_swept(ReadKind::ById, false));
+}

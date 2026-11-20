@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use super::super::api::{
     Actor, COMMS_STORE_VER, CommsError, InboxBody, MAX_MESSAGES_PER_THREAD, MESSAGE_TTL, ThreadAction, ThreadFilter,
-    ThreadId,
+    ThreadId, swept_notice,
 };
 use super::{
     ConformanceHarness, agent, agents, bodies, by_id, change, find, history, ids, list, notify, only, peek, read,
@@ -88,7 +88,7 @@ pub fn record_past_its_retention_is_returned_until_a_sweep_removes_it(h: &impl C
 }
 
 /// Messages are swept one by one: an old message goes while its thread and its newer messages
-/// stay.
+/// stay, and a member that had not read it is told.
 pub fn sweep_removes_old_messages_inside_a_live_thread(h: &impl ConformanceHarness) {
     let created = start(h, "a", "topic", &["b"]);
     h.advance(20 * DAY);
@@ -107,6 +107,7 @@ pub fn sweep_removes_old_messages_inside_a_live_thread(h: &impl ConformanceHarne
     assert_eq!(bodies(&read_as(h, "b", history()).expect("inbox")), ["second"]);
     let unread = read(h, "b");
     assert_eq!(ids(&unread), [second.id]);
+    assert_eq!(unread.notices, [swept_notice(&created.thread, 1)]);
     assert_eq!(h.position(&created.thread, &agent(h, "b")), Some((2, 2)));
 }
 
