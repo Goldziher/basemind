@@ -423,6 +423,7 @@ fn spawn_serve_watcher_thread(
                     ),
                 }
             });
+            health.clear();
             if let Err(error) = result {
                 tracing::warn!(%error, "serve watcher exited with error");
             }

@@ -39,6 +39,13 @@ impl WatchHealth {
         }
     }
 
+    /// Drop the counts once the watcher has exited: it holds no watches, and the directories it
+    /// could not watch are no longer its to report. Silent, unlike [`record`](Self::record).
+    pub fn clear(&self) {
+        self.held.store(0, Ordering::Relaxed);
+        self.unwatched.store(0, Ordering::Relaxed);
+    }
+
     /// Watches the watcher holds.
     pub fn held(&self) -> usize {
         self.held.load(Ordering::Relaxed)
@@ -133,6 +140,14 @@ mod tests {
         assert_eq!((health.held(), health.unwatched()), (10, 4));
         health.record(14, 0);
         assert_eq!((health.held(), health.unwatched()), (14, 0));
+    }
+
+    #[test]
+    fn clearing_drops_the_counts() {
+        let health = WatchHealth::default();
+        health.record(10, 4);
+        health.clear();
+        assert_eq!((health.held(), health.unwatched()), (0, 0));
     }
 
     #[cfg(target_os = "linux")]
