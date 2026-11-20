@@ -580,6 +580,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - cargo-deny checks the `full` dependency graph the release binaries are built from.
 
+- The hardening soak waives the daemon's memory climb until lsm-tree evicts the blocks of deleted
+  tables (#200, #164), within a stated bound: the 296 MiB of Fjall block cache the daemon holds for
+  one workspace, spread over the judged load minutes (16.5 MiB/min over 18 minutes, 6.9 MiB/min
+  over 43). `analyze.py` fails R2 or R2f on a climb above it, marks a waived rule `waived` in its
+  report and the CI summary, and `--lsm-cache-mib 0` lifts the waiver. On the soak's generated
+  fixture the daemon climbed +4.7 MiB/min (RSS, Linux), +4.8 MiB/min (footprint, macOS) and
+  +4.1 MiB/min (footprint, Windows) over 18 minutes, each within the bound. The soak also records
+  the daemon's descriptors by kind (`fd_kinds`), and R3t lists the kinds that moved over load.
+
 ### Removed
 
 - `BASEMIND_MCP_LEAN` and its three wrapper tools (`list_tools`, `get_tool_schema`,
