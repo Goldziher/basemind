@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:fe427a1bf267bc1c8811e278c57d6ec884b738c881289fa7c7892ecb530267c3
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:148957827e1930fb0c244c2bb6e390268193aab15fbc73e94396ab5aca6e59ad
+Source-Hash: blake3:e76ab756fa00f2d991cff8ec87cba9f5a24df5dd28e7631a16b653f6b5dc5347
 Schema-Version: v1
 -->
 
@@ -201,7 +201,8 @@ the caller can fix is a tool result with `isError` whose text names the fix.
 
 - `basemind hook install` resolves the hooks dir through git (`core.hooksPath` and linked worktrees
   work), never overwrites a pre-commit hook it did not write unless `--force` (the old one is kept
-  as `pre-commit.bak`), and the installed hook fails open: it can never block a commit.
+  as `pre-commit.bak`, or `pre-commit.bak.1`, `.bak.2`, ... when earlier backups exist), and the
+  installed hook fails open: it can never block a commit.
 - Memory, `refs`/`callers`, the grep prefilter, `scan` and `rescan` are forwarded to a running daemon
   when there is one, so they work alongside a live server.
 - All paths are repository-relative with forward-slash separators.
