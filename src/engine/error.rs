@@ -136,6 +136,18 @@ fn undecodable() -> EngineError {
     unreadable("the index holds a record this basemind cannot decode")
 }
 
+/// An index a scan stopped writing to ([`crate::scanner::ScanError::IndexFault`]): the disk is
+/// full, or a failed write poisoned the handle. The latched reason quotes the library's error, so
+/// the message leaves it out.
+fn index_fault(reason: &str) -> EngineError {
+    if crate::index::fault::is_storage_full(reason) {
+        return EngineError::IndexUnavailable(format!(
+            "the index cannot be written because the disk is full; free disk space, then {INDEX_REPAIR}"
+        ));
+    }
+    unreadable("a write to the code index failed, so it takes no more writes")
+}
+
 /// The contention of Fjall's own lock on the index database, which carries no holder to name.
 fn index_held() -> EngineError {
     EngineError::Busy(
@@ -210,11 +222,13 @@ fn git_cache_error(error: &crate::git_cache::CacheError) -> EngineError {
     }
 }
 
-fn scan_error(error: &crate::scanner::ScanError) -> EngineError {
+/// A scan failure as the caller reads it.
+pub(crate) fn scan_error(error: &crate::scanner::ScanError) -> EngineError {
     use crate::scanner::ScanError;
     match error {
         ScanError::Store(error) => store_error(error),
         ScanError::Git(error) => git_error(error),
+        ScanError::IndexFault(reason) => index_fault(reason),
         _ => EngineError::Internal(error.to_string()),
     }
 }
@@ -461,6 +475,23 @@ mod tests {
                 ("internal", "invalid glob in config: [".to_string()),
             ),
             (
+                EngineError::Scan(ScanError::IndexFault(format!(
+                    "disk full: io error on {DATA}: no space left"
+                ))),
+                (
+                    "index_unavailable",
+                    format!(
+                        "the index cannot be written because the disk is full; free disk space, then {INDEX_REPAIR}"
+                    ),
+                ),
+            ),
+            (
+                EngineError::Scan(ScanError::IndexFault(
+                    "index handle poisoned: fjall error: Poisoned".to_string(),
+                )),
+                unreadable("a write to the code index failed, so it takes no more writes"),
+            ),
+            (
                 EngineError::Io(io::Error::other("disk gone")),
                 ("internal", "disk gone".to_string()),
             ),
@@ -480,6 +511,21 @@ mod tests {
         assert_eq!(
             shown(EngineError::Cancelled),
             ("cancelled", "request_cancelled".to_string())
+        );
+    }
+
+    #[test]
+    fn a_rescan_that_cannot_write_the_index_names_the_repair_and_no_path() {
+        let full = ScanError::IndexFault(format!("disk full: io error on {DATA}: no space left"));
+        assert_eq!(
+            shown(crate::engine::scan::rescan_error(&full)),
+            (
+                "index_unavailable",
+                format!(
+                    "rescan: the index cannot be written because the disk is full; free disk space, then \
+                     {INDEX_REPAIR}"
+                ),
+            )
         );
     }
 

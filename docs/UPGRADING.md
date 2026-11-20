@@ -175,9 +175,11 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   the JSON-RPC error a resource read gets. It keeps `retry_after_ms`.
 - **Error text names no host path.** A data-home path is written `$BASEMIND_DATA_HOME/…`, a
   repository path repository-relative and another path under the home directory `~/…`; the server
-  log keeps the full text. A store or index that cannot be read is `index_unavailable` and says to
-  run `basemind doctor` (`basemind scan` rebuilds it), where it used to forward the library's message
-  (`io error on <path>`, `corrupt blob at <path>`, `fjall error`). A panic in a tool answers with a
+  log keeps the full text. A store or index that cannot be read, and an index a rescan cannot write
+  (a full disk, a failed write), is `index_unavailable` and says to run `basemind doctor`
+  (`basemind scan` rebuilds it), where it used to forward the library's message (`io error on
+  <path>`, `corrupt blob at <path>`, `fjall error`) as `internal`. A rescan the daemon runs is
+  worded the same way. A panic in a tool answers with a
   fixed message and the failure's reference in the log.
 - **Default token budget.** Every list honours a default `max_tokens` of 6000 and sets `budgeted`
   when it trims; page with `next_cursor`, or raise `max_tokens`.

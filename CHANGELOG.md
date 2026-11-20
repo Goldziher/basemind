@@ -730,9 +730,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A tool error names no absolute host path (#257). A data-home path is written
   `$BASEMIND_DATA_HOME/…`, a repository path repository-relative and any other path under the home
   directory `~/…`; the full text goes to the server log. A store or index that cannot be read (an
-  I/O error, a corrupt or undecodable blob, an unreadable file map, a damaged index) is
-  `index_unavailable` and says "run `basemind doctor`; `basemind scan` rebuilds it" in place of the
-  library's message, and a held index is `busy`. A panicking tool body answers with a fixed message
+  I/O error, a corrupt or undecodable blob, an unreadable file map, a damaged index), and an index a
+  rescan cannot write (a full disk, a failed write), is `index_unavailable` and says "run `basemind
+  doctor`; `basemind scan` rebuilds it" in place of the library's message, on an in-process and a
+  daemon-hosted rescan alike, and a held index is `busy`. A panicking tool body answers with a fixed message
   naming its failure reference in the log, not the panic payload.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
