@@ -11,9 +11,9 @@ use crate::scanner::ScanError;
 use crate::store::{ScanHealth, Store, StoreError};
 
 /// Run before a full scan touches the index: take the writer's place ([`claim_writer`]), forget a
-/// full-disk latch from an earlier pass (the space check below decides whether it is cured), refuse
-/// a poisoned handle outright, empty an index that is behind its file map so the pass rebuilds it,
-/// refuse a volume without room for the index, and open the pass's rows ([`open_full_pass`]).
+/// full-disk latch from an earlier pass (the space check after the walk, [`ensure_scan_space`],
+/// decides whether it is cured), refuse a poisoned handle outright, empty an index that is behind
+/// its file map so the pass rebuilds it, and open the pass's rows ([`open_full_pass`]).
 pub(crate) fn preflight(store: &mut Store) -> Result<UnlistedRows, ScanError> {
     crate::scan_evidence::settle_dead_hosts();
     store.retry_vector_store();
@@ -25,7 +25,6 @@ pub(crate) fn preflight(store: &mut Store) -> Result<UnlistedRows, ScanError> {
         }
     }
     store.rebuild_index_if_behind()?;
-    ensure_space(store)?;
     open_full_pass(store)
 }
 
@@ -150,6 +149,29 @@ fn purge_file(store: &mut Store, rel: &str) -> Result<(), ScanError> {
 /// Remove every index row of `path`, in one commit.
 fn purge_rows(db: &IndexDb, path: &crate::path::RelPath) -> Result<(), StoreError> {
     db.purge_paths(std::slice::from_ref(path)).map_err(StoreError::from)
+}
+
+/// Refuse, before a full pass extracts anything, a volume without room for what it will write: the
+/// group index rewritten, plus the index rows, blobs and code vectors of every candidate with a
+/// grammar that no file map lists yet (see [`disk_space::SpaceEstimate`]). On a first scan, and on
+/// the first after a release-minor bump empties the file map, that is every candidate.
+pub(crate) fn ensure_scan_space(
+    store: &Store,
+    root: &std::path::Path,
+    filters: &crate::scanner_filter::Filters,
+    config: &crate::config::Config,
+    candidates: &[String],
+) -> Result<(), ScanError> {
+    let unlisted = candidates
+        .iter()
+        .map(String::as_str)
+        .filter(|rel| store.lookup(rel).is_none() && filters.detect_lang(rel).lang().is_some());
+    let source_bytes = disk_space::new_source_bytes(root, unlisted, filters.max_file_bytes);
+    let vectors = cfg!(feature = "code-search") && config.code_search.enabled && config.code_search.embed;
+    let group_dir = crate::store_layout::group_index_dir(&store.root);
+    let estimate = disk_space::current_estimate(&group_dir, source_bytes, vectors);
+    disk_space::ensure_scan_space(&group_dir, estimate)?;
+    Ok(())
 }
 
 /// The free-space check alone, for the resolve pass: the file map is already durable by then, so a
@@ -334,3 +356,7 @@ mod blob_tests;
 #[cfg(test)]
 #[path = "scanner_integrity_settle_tests.rs"]
 mod settle_tests;
+
+#[cfg(test)]
+#[path = "scanner_integrity_space_tests.rs"]
+mod space_tests;
