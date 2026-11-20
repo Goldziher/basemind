@@ -51,7 +51,8 @@ prints it; facts a row shares with its neighbours are written once.
 
 2. **`code_grep`.** `hits` is `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, grouped by the
    innermost enclosing symbol (`""` outside every symbol). Matches on one line are one row,
-   `"<line>:<column>,<column>: <text>"`; a clipped line writes its match's column the same way. With
+   `"<line>:<column>,<column>: <text>"`; on a line clipped around each match, matches whose windows
+   differ are a row each, with its column. With
    `context: N` (0-10), the N lines before and after a match are rows `"<line>- <text>"`, each
    written once where windows overlap, as `rg -C N` merges them, and a window stops at the file's
    last line. A file
@@ -105,13 +106,18 @@ The eval extractor reads these shapes.
 
 - A breaking change to the MCP and CLI JSON of six tools, in the same breaking release as
   ADR-0034. `docs/UPGRADING.md` ("Lean rows") lists each.
+- These shapes are the `structuredContent` and `--json` of every tool. ADR-0053 writes the MCP text
+  block of `code_grep` as `# <path>` and `## <symbol>` headers over the same rows, and of a
+  `find_files` list as TOON; there the file order is the header order, and the budget charges
+  headers rather than keys.
 - Measured on the same corpora with ADR-0051's gate (median ratio, basemind / tokio): `symbols`
   0.75x / 0.79x, `grep` 0.69x / 0.76x, `grep_changed` 0.73x / 0.93x, `find_large` 0.85x / 0.89x,
   `git_search` 0.78x / 0.77x, `git_path` 0.85x / 0.83x, `git_symbol` 0.77x / 0.92x, `impact` 0.72x /
   1.49x, `blame` 6.71x / 3.84x and `blame_symbol` 4.71x / 2.09x, with recall unchanged.
-- **`find` still fails the floor on basemind:** 0.667x against 0.67 (20 of 25 tasks compared, 5
-  excluded as failed baselines under ADR-0051); 0.69x on tokio. The answer is `{"files":["x"]}`
-  against the bare path `x`, 12 tokens against 8: the `"files"` key is the remaining cost, and a
+- **`find` sits exactly at the floor on basemind:** 0.667x, the 2/3 that ADR-0031's "at most one
+  and a half times" allows (20 of 25 tasks compared, 5 excluded as failed baselines under
+  ADR-0051); 0.69x on tokio. The answer is `{"files":["x"]}` against the bare path `x`, 12 tokens
+  against 8: the `"files"` key is the remaining cost, and a
   bare list would lose the response's room for `next_cursor` and notices. This ADR changes no
   threshold.
 - A consumer that wants fields splits a row at its first `": "` (`code_grep`), at the first
