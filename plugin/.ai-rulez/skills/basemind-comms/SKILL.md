@@ -1,6 +1,6 @@
 ---
 type: Playbook
-title: Basemind Comms
+title: basemind comms
 description: Coordinate with other agents working the same repo through basemind's
   deferred agent_post, agent_inbox and agent_threads tools — threads, a per-actor read
   position, bodies inline. Reach for it whenever you start, finish, or hit a decision

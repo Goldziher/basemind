@@ -5,7 +5,7 @@ type = "github"
 
 [marketplace]
 name = "basemind"
-description = "Basemind code intelligence and context for coding agents."
+description = "Coding agents ask a local index of your code, git history, documents and memory over MCP or the CLI, get paths and lines instead of reading files, and coordinate in shared threads."
 members = ["plugin"]
 
 [marketplace.owner]

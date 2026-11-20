@@ -1,6 +1,6 @@
 ---
 type: Playbook
-title: Basemind Multi Agent Room
+title: basemind multi-agent room
 description: Orchestrate a team of subagents in shared threads. Each subagent acts
   under its own sub-identity (`as`), reads its own inbox, and cross-checks peers by
   posting to threads they are members of.

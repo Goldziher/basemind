@@ -1,5 +1,5 @@
 """
-basemind: Code-map MCP server + scanner — content-addressed, Fjall-backed inverted index over tree-sitter outlines.
+basemind: the context and communication layer for coding agents.
 """
 
 __version__ = "0.33.0"

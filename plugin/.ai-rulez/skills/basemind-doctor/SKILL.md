@@ -1,6 +1,6 @@
 ---
 type: Playbook
-title: Basemind Doctor
+title: basemind doctor
 description: Diagnose and recover basemind when it isn't working — MCP tools missing
   or erroring, "no index" / "no indexed files", empty results that shouldn't be empty,
   or the MCP server seems dead. Runs CLI checks (no MCP server required) and gives

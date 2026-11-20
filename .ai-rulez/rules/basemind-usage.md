@@ -1,6 +1,6 @@
 ---
 type: Decision
-title: Basemind Usage
+title: basemind usage
 x-ai-rulez:
   kind: rule
   id: basemind-usage
@@ -10,11 +10,11 @@ x-ai-rulez:
 
 # basemind usage
 
-## Basemind
+## basemind
 
-**Use Basemind first for every capability listed below.** Make the Basemind MCP call before using a shell command, file read, or another search tool for the same question. Use the result to narrow any follow-up reads to the paths and lines you need.
+**Use basemind first for every capability listed below.** Make the basemind MCP call before using a shell command, file read, or another search tool for the same question. Use the result to narrow any follow-up reads to the paths and lines you need.
 
-The Basemind tools are always loaded: call them directly, there is no tool search to run first. Arguments are exact (an unknown argument is rejected, not ignored), paths are repository-relative, and `line` / `end_line` are 1-based.
+The basemind tools are always loaded: call them directly, there is no tool search to run first. Arguments are exact (an unknown argument is rejected, not ignored), paths are repository-relative, and `line` / `end_line` are 1-based.
 
 | Task | First call |
 |---|---|

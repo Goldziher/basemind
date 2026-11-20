@@ -10,7 +10,7 @@ x-ai-rulez:
 
 # Crate Layout
 
-Basemind is a single Rust crate that builds a CLI binary (`basemind`) and exposes its internals as a library. Two binaries-in-one: `basemind scan` indexes a workspace into the machine-global cache (`~/.local/share/basemind/`, override `BASEMIND_DATA_HOME`); `basemind serve` runs the MCP stdio server.
+basemind is a single Rust crate that builds a CLI binary (`basemind`) and exposes its internals as a library. Two binaries-in-one: `basemind scan` indexes a workspace into the machine-global cache (`~/.local/share/basemind/`, override `BASEMIND_DATA_HOME`); `basemind serve` runs the MCP stdio server.
 
 ## `src/`
 

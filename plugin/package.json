@@ -7,7 +7,7 @@
   "dependencies": {
     "@opencode/plugin": "^2.2.5"
   },
-  "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.",
+  "description": "Coding agents ask a local index of your code, git history, documents and memory over MCP or the CLI, get paths and lines instead of reading files, and coordinate in shared threads.",
   "exports": {
     ".": "./.opencode/plugins/basemind.js"
   },
@@ -71,7 +71,7 @@
     "assets/",
     "scripts/"
   ],
-  "homepage": "https://github.com/Goldziher/basemind",
+  "homepage": "https://basemind.ai",
   "keywords": [
     "agent-context",
     "code-map",

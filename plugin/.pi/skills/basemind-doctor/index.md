@@ -1,10 +1,10 @@
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:0b44c6f0a5796f1d7d20e024326f1425889ca0abf5d6660839257fdd77945df3
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:75afd5b88662db30aeeecd9adb117b371379d729068d0b603c643c278c53bb0c
+Source-Hash: blake3:d1ae0a5fe009e6884c73b7840083a0331e886c035c15f8183f0a57923763fc5b
 Schema-Version: v1
 -->
 
 # Concepts
 
-- [Basemind Doctor](SKILL.md) - Diagnose and recover basemind when it isn't working — MCP tools missing or erroring, "no index" / "no indexed files", empty results that shouldn't be empty, or the MCP server seems dead. Runs CLI checks (no MCP server required) and gives the client-specific way to reconnect the server.
+- [basemind doctor](SKILL.md) - Diagnose and recover basemind when it isn't working — MCP tools missing or erroring, "no index" / "no indexed files", empty results that shouldn't be empty, or the MCP server seems dead. Runs CLI checks (no MCP server required) and gives the client-specific way to reconnect the server.

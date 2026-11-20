@@ -10,7 +10,7 @@ x-ai-rulez:
 
 # Performance Discipline
 
-Basemind is a hot-path scanner that processes tens of thousands of files in seconds. Hot-path code lives in `src/scanner.rs`, `src/extract/`, `src/store.rs`, `src/index/`, and `src/engine/`. Apply these patterns by default; deviate only with measurement.
+basemind is a hot-path scanner that processes tens of thousands of files in seconds. Hot-path code lives in `src/scanner.rs`, `src/extract/`, `src/store.rs`, `src/index/`, and `src/engine/`. Apply these patterns by default; deviate only with measurement.
 
 - Use `ahash::AHashMap` / `AHashSet`, never `std::collections::HashMap` on the scanner / extract / index paths. The crate has a workspace dep — reuse it.
 - Use `memchr::memmem::Finder` for substring matching, not `str::contains` or `str::find`. The Finder is built once and reused.

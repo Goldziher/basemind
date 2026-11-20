@@ -1,6 +1,6 @@
 ---
 type: Playbook
-title: Basemind Code Search
+title: basemind code search
 description: Find where code is defined and used without reading files — symbol search,
   file outlines, references, callers, implementations, dependents, and
   indexed regex over content. Reach for it whenever the user asks "where is X defined",

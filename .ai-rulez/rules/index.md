@@ -2,7 +2,7 @@
 
 - [Adr Immutability](adr-immutability.md)
 - [Agent Comms](agent-comms.md)
-- [Basemind Usage](basemind-usage.md)
+- [basemind usage](basemind-usage.md)
 - [Mcp Tool Conventions](mcp-tool-conventions.md)
 - [Module Size Cap](module-size-cap.md)
 - [Perf Discipline](perf-discipline.md)

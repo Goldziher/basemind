@@ -1,10 +1,10 @@
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:04ea54683724946cca5b55d2fdb02031b7f11b06260d3d6d11bff4ecac3a5ce1
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:005b1a4c3bacbe599cd40b27d12dbfb0cd4ecca0e92b904e0a9a6e1259b95d42
+Source-Hash: blake3:d1ae0a5fe009e6884c73b7840083a0331e886c035c15f8183f0a57923763fc5b
 Schema-Version: v1
 -->
 
 # Concepts
 
-- [Basemind Stats](SKILL.md) - Show a quick dashboard of basemind activity in this session: how many code-map tool calls have run, the per-tool histogram, and the estimated tokens saved vs a hypothetical grep+Read baseline. Use when the user asks "what has basemind done?", "how much is basemind helping?", "show me basemind stats", or invokes `/bm-stats` directly.
+- [basemind stats](SKILL.md) - Show a quick dashboard of basemind activity in this session: how many code-map tool calls have run, the per-tool histogram, and the estimated tokens saved vs a hypothetical grep+Read baseline. Use when the user asks "what has basemind done?", "how much is basemind helping?", "show me basemind stats", or invokes `/bm-stats` directly.

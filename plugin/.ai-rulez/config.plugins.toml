@@ -5,8 +5,8 @@ display_name = "basemind"
 # ~keep overridden from the generator default (^2.0.26) so the bundled OpenCode
 # SDK tracks the current 2.x release.
 opencode_dependency = "^2.2.5"
-description = "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB."
-homepage = "https://github.com/Goldziher/basemind"
+description = "Coding agents ask a local index of your code, git history, documents and memory over MCP or the CLI, get paths and lines instead of reading files, and coordinate in shared threads."
+homepage = "https://basemind.ai"
 repository = "https://github.com/Goldziher/basemind"
 license = "MIT"
 category = "developer-tools"
@@ -28,14 +28,14 @@ args = ["serve"]
 
 [plugin.interface]
 display_name = "basemind"
-short_description = "Code-map MCP server for navigating large codebases"
-long_description = "basemind indexes a repository with tree-sitter and exposes a structured code map \u2014 outlines, references, callers, history, blame, diff \u2014 over MCP. Designed for AI agents to navigate unfamiliar code without reading every file."
+short_description = "The context and communication layer for coding agents"
+long_description = "Coding agents ask a local index of your code, git history, documents and memory over MCP or the CLI, get paths and lines instead of reading files, and coordinate in shared threads."
 developer_name = "Na'aman Hirschfeld"
 category = "Developer Tools"
 capabilities = ["Interactive", "Read"]
 default_prompt = ["Outline this file.", "What calls `<symbol>` in this repo?", "Where is `<symbol>` defined?", "What changed in this file in the last 20 commits?"]
-website_url = "https://github.com/Goldziher/basemind"
-brand_color = "#F97316"
+website_url = "https://basemind.ai"
+brand_color = "#965aff"
 
 [plugin.hermes]
 requires_python = ">=3.11"

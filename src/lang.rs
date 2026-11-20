@@ -343,7 +343,7 @@ pub(crate) fn extract_section(source: &str, name: &str) -> Option<String> {
 /// Adapt an upstream TSLP `tags.scm` source into basemind's override-shaped section convention.
 ///
 /// TSLP's `tags.scm` uses the GitHub-standard capture names `@definition.<kind>` / `@reference.call`
-/// with the identifier name captured as `@name`. Basemind's extractors look for
+/// with the identifier name captured as `@name`. basemind's extractors look for
 /// `@symbol.<kind>` / `@symbol.name` (l1) and `@call.range` / `@call.callee` (l2). This walks
 /// top-level S-expression patterns, classifies each by its root capture, and emits the
 /// rewritten pattern into the appropriate section block.

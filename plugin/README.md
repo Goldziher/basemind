@@ -1,6 +1,6 @@
 # basemind plugin
 
-Basemind provides code intelligence, git history, document retrieval, shared memory, and agent coordination through MCP.
+The context and communication layer for coding agents. Coding agents ask a local index of your code, git history, documents and memory over MCP or the CLI, get paths and lines instead of reading files, and coordinate in shared threads.
 
 ## Install
 

@@ -1,12 +1,12 @@
 {
   "name": "basemind",
   "version": "0.33.0",
-  "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.",
+  "description": "Coding agents ask a local index of your code, git history, documents and memory over MCP or the CLI, get paths and lines instead of reading files, and coordinate in shared threads.",
   "author": {
     "name": "Na'aman Hirschfeld",
     "email": "nhirschfeld@gmail.com"
   },
-  "homepage": "https://github.com/Goldziher/basemind",
+  "homepage": "https://basemind.ai",
   "license": "MIT",
   "keywords": ["mcp", "agent-context", "rag", "code-map", "tree-sitter"],
   "skills": "./skills/",
@@ -22,10 +22,10 @@
   "skillInstructions": "basemind is a tree-sitter code map + git context layer exposed over MCP as one tool per job: `code_outline`, `code_symbols`, `code_read`, `code_grep`, `code_search`, `code_refs`, `find_files`, `docs_search`, `git_log`, `git_blame`, `git_diff`, `memory_save`, `memory_search`, `index_status` and `index_rescan`. No tool takes a `mode`; an unknown argument is rejected, and every line number is 1-based. Prefer these tools over grep/read for structural and historical questions — they return paths, line numbers, and signatures, not file bodies.\n\n- Instead of Kimi Code's `Grep` / `Glob` / `Read`: `code_symbols` for a definition, `code_refs` for call sites, callers, implementations and importers, `code_outline` for a file's structure, `find_files` to locate a file, and `code_grep` for text (literal unless `regex` is true).\n- The code map holds code only: for markdown, config, data and PDF files call `docs_search`.\n- For history, blame, status and diffs, call `git_log`, `git_blame` or `git_diff` instead of shelling out to `git` via `Bash`.\n- Use Kimi Code's native `Read`, `Write`, `Edit`, `Bash`, `Grep`, and `Glob` for edits and anything basemind does not cover.\n- After editing files, call `index_rescan` rather than restarting the server.\n- Do not re-read a file basemind has already mapped — call `code_outline`, then `code_read` for only the symbol or span you need.",
   "interface": {
     "displayName": "basemind",
-    "shortDescription": "Code-map MCP server for navigating large codebases",
-    "longDescription": "basemind indexes a repository with tree-sitter and exposes a structured code map — outlines, references, callers, history, blame, diff — over MCP. Designed for AI agents to navigate unfamiliar code without reading every file.",
+    "shortDescription": "The context and communication layer for coding agents",
+    "longDescription": "Coding agents ask a local index of your code, git history, documents and memory over MCP or the CLI, get paths and lines instead of reading files, and coordinate in shared threads.",
     "developerName": "Na'aman Hirschfeld",
     "capabilities": ["Interactive", "Read"],
-    "websiteURL": "https://github.com/Goldziher/basemind"
+    "websiteURL": "https://basemind.ai"
   }
 }
