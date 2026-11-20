@@ -2026,7 +2026,7 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
 
     for empty in [
         json!({ "query": "harbour", "keywords": "no-document-has-this-keyword" }),
-        json!({ "query": "harbour", "kind": "pdf" }),
+        json!({ "query": "harbour", "format": "pdf" }),
         json!({ "query": "harbour", "mime_type": "application/pdf" }),
     ] {
         let answer = decode_text(&call(empty.clone()).await.expect("docs_search"));
@@ -2037,11 +2037,15 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
         );
     }
 
-    let bad_kind = call(json!({ "query": "harbour", "kind": "slides" }))
+    let bad_format = call(json!({ "query": "harbour", "format": "slides" }))
         .await
         .expect("docs_search");
-    assert_eq!(bad_kind.is_error, Some(true));
-    assert!(error_text(&bad_kind).contains("markdown"), "{}", error_text(&bad_kind));
+    assert_eq!(bad_format.is_error, Some(true));
+    assert!(
+        error_text(&bad_format).contains("markdown"),
+        "{}",
+        error_text(&bad_format)
+    );
     let scope = call(json!({ "query": "harbour", "scope": "repo" }))
         .await
         .expect("docs_search");

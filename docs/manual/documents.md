@@ -8,7 +8,7 @@ and by words, then cites each hit (path, pages, section, lines).
 | Question | MCP call | CLI |
 |---|---|---|
 | Where is a topic discussed? | `docs_search {"query":"how releases are versioned"}` | `basemind memory documents "how releases are versioned"` |
-| Only PDFs | `docs_search {"query":"…","kind":"pdf"}` | `basemind memory documents "…" --kind pdf` |
+| Only PDFs | `docs_search {"query":"…","format":"pdf"}` | `basemind memory documents "…" --format pdf` |
 | Only under a directory | `docs_search {"query":"…","path":"docs/"}` | `basemind memory documents "…" --path docs/` |
 | Only paths matching a glob | `docs_search {"query":"…","path":"docs/**/*.md"}` | `basemind memory documents "…" --path "docs/**/*.md"` |
 | One exact MIME type | `docs_search {"query":"…","mime_type":"application/pdf"}` | `basemind memory documents "…" --mime-type application/pdf` |
@@ -19,7 +19,7 @@ and by words, then cites each hit (path, pages, section, lines).
 
 - `docs_search` needs a build with the `documents` feature (the release binary has it); without it
   the call is an error naming the feature. Documents must be scanned first: `basemind scan`.
-- `kind` is one of `pdf`, `office`, `html`, `markdown`, `email`, `notebook`, `text`, `other`.
+- `format` is one of `pdf`, `office`, `html`, `markdown`, `email`, `notebook`, `text`, `other`.
   `path` is a repository-relative prefix, or a glob over the whole path when it holds `*`, as in
   the code tools. Filters apply before ranking.
 - `keywords` are whole keywords, comma-separated, any one matching. `entity` keeps chunks naming an

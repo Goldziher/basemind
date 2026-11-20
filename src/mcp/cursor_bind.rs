@@ -290,7 +290,7 @@ mod tests {
             json!({ "query": "harbour", "keywords": "pilots" }),
             json!({ "query": "harbour", "entity": "PERSON" }),
             json!({ "query": "harbour", "mime_type": "application/pdf" }),
-            json!({ "query": "harbour", "kind": "pdf" }),
+            json!({ "query": "harbour", "format": "pdf" }),
             json!({ "query": "harbour", "path": "docs/**" }),
             json!({ "query": "tides" }),
         ] {

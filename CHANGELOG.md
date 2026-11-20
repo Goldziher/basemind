@@ -322,7 +322,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `also_at` and `title`; the response reports `lanes_ran`, `lanes_unavailable`, `lexical_fuzzy`,
     `vector_mode` and `rerank`. Per-hit `keywords`, `entities` and `summary`, `chunk_idx`, `distance`
     and `byte_start` / `byte_end` are gone.
-  - `scope` is removed. `kind` and `path` are new filters, `keywords` matches whole keywords, and every
+  - `scope` is removed. `format` and `path` are new filters, `keywords` matches whole keywords, and every
     filter runs before ranking.
   - A vector lane and a full-text lane are fused; a search works without the embedder, on the full-text
     lane, and says so.

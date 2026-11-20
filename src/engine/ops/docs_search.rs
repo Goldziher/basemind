@@ -55,7 +55,7 @@ mod enabled {
             let request = DocsRequest {
                 query: p.query,
                 mime_type: p.mime_type,
-                kind: p.kind,
+                format: p.format,
                 entity: p.entity,
                 keywords: p.keywords,
                 path: p.path,
@@ -65,7 +65,7 @@ mod enabled {
             let arguments = serde_json::json!({
                 "query": &request.query,
                 "mime_type": &filters.mime_type,
-                "kind": &filters.kind,
+                "format": &filters.format,
                 "entity": &filters.entity,
                 "keywords": &filters.keywords,
                 "path": &request.path,

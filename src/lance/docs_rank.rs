@@ -3,7 +3,7 @@
 //! 1. **Live documents.** The view's document map names, for every path, the `doc_key` its rows
 //!    are stored under. A `path` filter (a prefix, or a glob when it holds `*`) and a `keywords`
 //!    filter narrow that set.
-//! 2. **Filter before ranking.** `mime_type`, `kind`, `entity` and the allowed keys are one
+//! 2. **Filter before ranking.** `mime_type`, `format`, `entity` and the allowed keys are one
 //!    predicate both lanes apply. While the allowed keys number at most [`LIVE_KEYS_PREFILTER`]
 //!    they go into it; above that, each lane over-fetches and projects onto them, widening until
 //!    it has enough or reaches [`LIVE_WIDEN_CAP`], which the ranking then reports.
@@ -71,7 +71,8 @@ impl std::error::Error for DocsSearchError {}
 pub struct DocsRequest {
     pub query: String,
     pub mime_type: Option<String>,
-    pub kind: Option<String>,
+    /// The document format family, one of [`MIME_GROUPS`].
+    pub format: Option<String>,
     pub entity: Option<String>,
     pub keywords: Option<String>,
     pub path: Option<String>,
@@ -80,7 +81,7 @@ pub struct DocsRequest {
 /// The filters of one request, checked.
 pub struct Filters {
     pub mime_type: Option<String>,
-    pub kind: Option<String>,
+    pub format: Option<String>,
     pub entity: Option<String>,
     pub keywords: Vec<String>,
     pub path: Option<crate::path_filter::PathFilter>,
@@ -93,12 +94,12 @@ impl Filters {
         if request.query.trim().is_empty() {
             return Err(DocsSearchError::InvalidArgument("`query` is empty".to_string()));
         }
-        let kind = request.kind.as_deref().map(str::trim).map(str::to_ascii_lowercase);
-        if let Some(kind) = &kind
-            && !MIME_GROUPS.contains(&kind.as_str())
+        let format = request.format.as_deref().map(str::trim).map(str::to_ascii_lowercase);
+        if let Some(format) = &format
+            && !MIME_GROUPS.contains(&format.as_str())
         {
             return Err(DocsSearchError::InvalidArgument(format!(
-                "unknown `kind` {kind:?}; one of {}",
+                "unknown `format` {format:?}; one of {}",
                 MIME_GROUPS.join(", ")
             )));
         }
@@ -115,7 +116,7 @@ impl Filters {
             .map_err(DocsSearchError::InvalidArgument)?;
         Ok(Self {
             mime_type: request.mime_type.clone().filter(|m| !m.trim().is_empty()),
-            kind,
+            format,
             entity: request
                 .entity
                 .as_deref()
@@ -226,7 +227,7 @@ pub fn rank(query: &str, filters: &Filters, inputs: RankInputs<'_>) -> Result<Do
     }
     let predicate = DocPredicate {
         mime_type: filters.mime_type.clone(),
-        mime_group: filters.kind.clone(),
+        mime_group: filters.format.clone(),
         entity: filters.entity.clone(),
         keys: (allowed.len() <= LIVE_KEYS_PREFILTER).then(|| {
             let mut keys: Vec<String> = allowed.iter().cloned().collect();
