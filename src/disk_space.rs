@@ -65,7 +65,8 @@ pub const VECTORS_PER_SOURCE: Ratio = Ratio { num: 3, den: 2 };
 pub struct SpaceEstimate {
     /// Bytes of the group index on disk now.
     pub index_bytes: u64,
-    /// Source bytes the pass extracts that no file map lists yet ([`new_source_bytes`]).
+    /// Source bytes the pass extracts that no file map lists yet: working-tree files
+    /// ([`new_source_bytes`]) or git blobs ([`capped_bytes`]), as the scan's source reads them.
     pub source_bytes: u64,
     /// Whether the pass writes code vectors.
     pub vectors: bool,
@@ -223,11 +224,19 @@ pub fn dir_bytes(dir: &Path) -> u64 {
 /// skipped by the scan, so it costs nothing). A path that cannot be read counts zero. The caller
 /// passes the candidates no file map lists, so a rescan stats only what is new.
 pub fn new_source_bytes<'a>(root: &Path, rels: impl IntoIterator<Item = &'a str>, max_file_bytes: u64) -> u64 {
-    rels.into_iter()
-        .filter_map(|rel| std::fs::metadata(root.join(rel)).ok())
-        .filter(|meta| meta.is_file() && meta.len() <= max_file_bytes)
-        .map(|meta| meta.len())
-        .sum()
+    capped_bytes(
+        rels.into_iter()
+            .filter_map(|rel| std::fs::metadata(root.join(rel)).ok())
+            .filter(std::fs::Metadata::is_file)
+            .map(|meta| meta.len()),
+        max_file_bytes,
+    )
+}
+
+/// The sum of `sizes`, each at most `max_file_bytes` (a larger file is skipped by the scan, so it
+/// costs nothing). A git-backed scan sizes its new candidates from their blobs and sums them here.
+pub fn capped_bytes(sizes: impl IntoIterator<Item = u64>, max_file_bytes: u64) -> u64 {
+    sizes.into_iter().filter(|size| *size <= max_file_bytes).sum()
 }
 
 /// What older releases left in the cache at `cache_dir`: the blob namespaces of a schema below
