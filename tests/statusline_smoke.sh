@@ -118,16 +118,38 @@ if [[ -n "$plugin_version" ]]; then
     printf '  FAIL minimal tier should omit version v%s; got: %q\n' "$plugin_version" "$min_output" >&2
     fail=1
   fi
-  nover_output="$(printf '%s' "$payload" | BASEMIND_STATUSLINE_VERSION=0 "$STATUSLINE")"
-  if [[ "$nover_output" != *"v$plugin_version"* ]]; then
-    printf '  ok  BASEMIND_STATUSLINE_VERSION=0 hides version\n'
-  else
-    printf '  FAIL BASEMIND_STATUSLINE_VERSION=0 should hide version; got: %q\n' "$nover_output" >&2
-    fail=1
-  fi
+  for word in 0 false No OFF; do
+    nover_output="$(printf '%s' "$payload" | BASEMIND_STATUSLINE_VERSION="$word" "$STATUSLINE")"
+    if [[ "$nover_output" != *"v$plugin_version"* ]]; then
+      printf '  ok  BASEMIND_STATUSLINE_VERSION=%s hides version\n' "$word"
+    else
+      printf '  FAIL BASEMIND_STATUSLINE_VERSION=%s should hide version; got: %q\n' "$word" "$nover_output" >&2
+      fail=1
+    fi
+  done
+  for word in 1 TRUE yes on; do
+    ver_output="$(printf '%s' "$payload" | BASEMIND_STATUSLINE_VERSION="$word" "$STATUSLINE")"
+    if [[ "$ver_output" == *"v$plugin_version"* ]]; then
+      printf '  ok  BASEMIND_STATUSLINE_VERSION=%s shows version\n' "$word"
+    else
+      printf '  FAIL BASEMIND_STATUSLINE_VERSION=%s should show version; got: %q\n' "$word" "$ver_output" >&2
+      fail=1
+    fi
+  done
 else
   printf '  skip version assertions (jq or plugin.json unavailable)\n'
 fi
+
+for name in BASEMIND_STATUSLINE_VERSION BASEMIND_STATUSLINE_CONTEXT; do
+  bad_output="$(printf '%s' "$payload" | env "$name=maybe" "$STATUSLINE")"
+  expected="$name=\"maybe\" is not a boolean: use 1, true, yes, on or 0, false, no, off"
+  if [[ "$bad_output" == *"$expected"* ]]; then
+    printf '  ok  %s=maybe is reported as an error naming it\n' "$name"
+  else
+    printf '  FAIL %s=maybe should be reported; got: %q\n' "$name" "$bad_output" >&2
+    fail=1
+  fi
+done
 
 legacy_dir="$(mktemp -d)"
 mkdir -p "$legacy_dir/.basemind/blobs" "$legacy_dir/.basemind/views/working"

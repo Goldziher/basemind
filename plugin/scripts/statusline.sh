@@ -29,6 +29,31 @@ cols="${COLUMNS:-0}"
 [[ "$cols" -le 0 ]] && cols="$(tput cols 2>/dev/null || echo 120)"
 [[ -z "$cols" || "$cols" -le 0 ]] && cols=120
 
+# Sets REPLY to 1 or 0 from the boolean variable named $1, $2 when it is unset or blank. The
+# spellings are basemind's: 1/true/yes/on or 0/false/no/off, any case. Any other value keeps the
+# default and is recorded in flag_error, which the status line then shows instead of its output.
+flag_error=""
+read_flag() {
+  local raw="${!1:-}" value
+  value="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  case "$value" in
+    "") REPLY="$2" ;;
+    1 | true | yes | on) REPLY=1 ;;
+    0 | false | no | off) REPLY=0 ;;
+    *)
+      REPLY="$2"
+      flag_error="$1=\"$raw\" is not a boolean: use 1, true, yes, on or 0, false, no, off"
+      ;;
+  esac
+}
+
+read_flag BASEMIND_STATUSLINE_CONTEXT 1
+show_context="$REPLY"
+read_flag BASEMIND_STATUSLINE_VERSION 1
+show_version="$REPLY"
+
 tier="${BASEMIND_STATUSLINE:-auto}"
 if [[ "$tier" == "auto" ]]; then
   if [[ "$cols" -ge 120 ]]; then
@@ -168,7 +193,7 @@ comms_state() {
 }
 
 build_context_line() {
-  [[ "${BASEMIND_STATUSLINE_CONTEXT:-1}" == "0" ]] && return 1
+  [[ "$show_context" == "0" ]] && return 1
   [[ -z "$model" && -z "$out_style" ]] && return 1
 
   local dir branch="" head_file parts=()
@@ -202,7 +227,7 @@ build_context_line() {
 mark() { printf '%s%s%s %s%sbasemind%s' "$brand" "$glyph" "$reset" "$bold" "$brand" "$reset"; }
 
 bm_version() {
-  [[ "${BASEMIND_STATUSLINE_VERSION:-1}" == "0" ]] && return 0
+  [[ "$show_version" == "0" ]] && return 0
   local dir ver="" parent manifest
   dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || return 0
   # Beside the manifest (`.claude-plugin/statusline.sh`) or in the plugin's `scripts/`.
@@ -385,6 +410,11 @@ build_basemind_line() {
   fi
   printf '%s' "$out"
 }
+
+if [[ -n "$flag_error" ]]; then
+  printf '%s: %s' "$(mark)" "$flag_error"
+  exit 0
+fi
 
 ctx="$(build_context_line || true)"
 bm="$(build_basemind_line)"
