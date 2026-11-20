@@ -40,7 +40,7 @@ jobs:
       sha: ${{ steps.commit.outputs.sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -86,13 +86,13 @@ jobs:
       release_assets_exist: ${{ steps.release_assets.outputs.release_assets_exist }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
       - name: Setup Node.js and pnpm
-        uses: xberg-io/actions/setup-mise@v1
+        uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           install-args: node pnpm
           config-ref: ${{ github.sha }}
@@ -249,7 +249,7 @@ jobs:
       release_id: ${{ steps.release_info.outputs.release_id }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
@@ -350,13 +350,13 @@ jobs:
       attestations: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.meta.outputs.tag }}
           persist-credentials: false
 
       - name: Download the smoke-tested archives
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-archive-*
           merge-multiple: true
@@ -395,7 +395,7 @@ jobs:
       # --repo Goldziher/basemind`. The checksums file comes from the same release as the archive,
       # so it proves integrity only; the attestation ties the archive to this workflow run.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/basemind-*.tar.gz
@@ -431,7 +431,7 @@ jobs:
       # workspace is empty and `bash` exits 127. Every other job that uses the script checks
       # out first — only this one was missed.
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Promote draft to a published release once complete
         env:
@@ -493,7 +493,7 @@ jobs:
       actions: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ needs.meta.outputs.tag }}
@@ -535,7 +535,7 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
@@ -554,7 +554,7 @@ jobs:
         uses: ./.github/actions/install-system-deps
 
       - name: Authenticate to crates.io
-        uses: rust-lang/crates-io-auth-action@v1
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         id: crates_auth
 
       - name: Publish to crates.io (dependency order)
@@ -604,13 +604,13 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
       - name: Setup Node.js and pnpm
-        uses: xberg-io/actions/setup-mise@v1
+        uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           install-args: node pnpm
           config-ref: ${{ github.sha }}
@@ -641,13 +641,13 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
       - name: Setup Node.js and pnpm
-        uses: xberg-io/actions/setup-mise@v1
+        uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           install-args: node pnpm
           config-ref: ${{ github.sha }}
@@ -705,13 +705,13 @@ jobs:
     environment: pypi
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
       - name: Setup Python
-        uses: xberg-io/actions/setup-mise@v1
+        uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           install-args: python
           config-ref: ${{ github.sha }}
@@ -724,7 +724,7 @@ jobs:
           python -m build
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.14.3
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: pip-package/dist
           skip-existing: true
@@ -740,12 +740,12 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
       - name: Install reviewed ai-rulez
-        uses: xberg-io/actions/setup-ai-rulez@v1
+        uses: xberg-io/actions/setup-ai-rulez@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
 
       - name: Verify generated product bundles and public skills
         run: |
@@ -754,7 +754,7 @@ jobs:
           python3 scripts/sync_plugin_version.py --check
 
       - name: Setup Node.js and pnpm
-        uses: xberg-io/actions/setup-mise@v1
+        uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           install-args: node pnpm
           config-ref: ${{ github.sha }}
@@ -822,16 +822,16 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.meta.outputs.tag }}
           fetch-depth: 0
       - name: Install ai-rulez
-        uses: xberg-io/actions/setup-ai-rulez@v1
+        uses: xberg-io/actions/setup-ai-rulez@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
       - name: Verify public skill exports
         run: python3 scripts/sync_public_skills.py --check
       - name: Package all supported plugin runtimes
-        uses: xberg-io/actions/package-ai-rulez-plugin@v1
+        uses: xberg-io/actions/package-ai-rulez-plugin@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           cursor-marketplace: "true"
           tag: ${{ needs.meta.outputs.tag }}
@@ -850,7 +850,7 @@ jobs:
             --owner=0 --group=0 --numeric-owner -cf - -C dist/plugin . | gzip -n > "$bundle"
           (cd dist && sha256sum "$(basename "$bundle")") > "$bundle.sha256"
       - name: Attach verified plugin archive and metadata
-        uses: xberg-io/actions/upload-release-assets@v1
+        uses: xberg-io/actions/upload-release-assets@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           tag: ${{ needs.meta.outputs.tag }}
           assets: |
@@ -868,12 +868,12 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.meta.outputs.tag }}
           fetch-depth: 0
       - name: Install ai-rulez
-        uses: xberg-io/actions/setup-ai-rulez@v1
+        uses: xberg-io/actions/setup-ai-rulez@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
       - name: Verify plugin versions and generated resources before publishing
         env:
           VERSION: ${{ needs.meta.outputs.version }}
@@ -882,7 +882,7 @@ jobs:
           python3 scripts/sync_plugin_version.py --expect "$VERSION"
           python3 scripts/sync_public_skills.py --check
           ai-rulez verify --plugin
-      - uses: xberg-io/actions/setup-mise@v1
+      - uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           install-args: python uv
           config-ref: ${{ github.sha }}
@@ -912,7 +912,7 @@ jobs:
       - name: Verify every packaged Hermes runtime resource
         run: python3 scripts/verify_plugin_distribution.py wheel dist-hermes/*.whl
       - name: Publish verified Hermes wheel
-        uses: xberg-io/actions/publish-pypi@v1
+        uses: xberg-io/actions/publish-pypi@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           expected-version: ${{ steps.wheel-version.outputs.version }}
           packages-dir: dist-hermes
@@ -927,7 +927,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
@@ -978,7 +978,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
       - name: Reject failed or skipped plugin distribution jobs
@@ -995,7 +995,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
       # A registry version is immutable: publish it only from the release tag that names it, never
@@ -1009,12 +1009,12 @@ jobs:
             exit 1
           fi
       - name: Install reviewed ai-rulez
-        uses: xberg-io/actions/setup-ai-rulez@v1
+        uses: xberg-io/actions/setup-ai-rulez@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
       - name: Verify plugin versions and generated resources
-        uses: xberg-io/actions/verify-ai-rulez-plugin@v1
+        uses: xberg-io/actions/verify-ai-rulez-plugin@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           version-sync-script: scripts/sync_plugin_version.py
-      - uses: xberg-io/actions/setup-mise@v1
+      - uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           install-args: node pnpm
       - name: Read and check the exact npm version
@@ -1059,7 +1059,7 @@ jobs:
           python3 scripts/verify_plugin_distribution.py npm "$RUNNER_TEMP/$archive"
       - name: Publish missing npm version with trusted publishing
         if: steps.package.outputs.exists != 'true'
-        uses: xberg-io/actions/publish-npm@v1
+        uses: xberg-io/actions/publish-npm@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           package-dir: plugin
           expected-version: ${{ steps.package.outputs.version }}
@@ -1077,7 +1077,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
       # A registry version is immutable: publish it only from the release tag that names it, never
@@ -1091,12 +1091,12 @@ jobs:
             exit 1
           fi
       - name: Install reviewed ai-rulez
-        uses: xberg-io/actions/setup-ai-rulez@v1
+        uses: xberg-io/actions/setup-ai-rulez@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
       - name: Verify plugin versions and generated resources
-        uses: xberg-io/actions/verify-ai-rulez-plugin@v1
+        uses: xberg-io/actions/verify-ai-rulez-plugin@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           version-sync-script: scripts/sync_plugin_version.py
-      - uses: xberg-io/actions/setup-mise@v1
+      - uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           install-args: python uv
       - name: Read the verified Hermes version
@@ -1119,7 +1119,7 @@ jobs:
       - name: Verify every packaged Hermes runtime resource
         run: python3 scripts/verify_plugin_distribution.py wheel dist-hermes/*.whl
       - name: Publish missing Hermes version with trusted publishing
-        uses: xberg-io/actions/publish-pypi@v1
+        uses: xberg-io/actions/publish-pypi@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           packages-dir: dist-hermes
           expected-version: ${{ steps.package.outputs.version }}

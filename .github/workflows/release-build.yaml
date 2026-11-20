@@ -44,7 +44,7 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
@@ -77,7 +77,7 @@ jobs:
       # ~keep reruns when that dir is gone, so a target/ saved by a failed build must carry it (see
       # ~keep ci.yaml). %LOCALAPPDATA%\ort.pyke.io on Windows, ~/Library/Caches/ort.pyke.io on macOS.
       - name: Setup cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release-${{ matrix.triple }}
           cache-on-failure: true
@@ -107,7 +107,7 @@ jobs:
         run: ./scripts/package-release.sh ${{ matrix.triple }}
 
       - name: Upload the archive
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-archive-${{ matrix.triple }}
           path: basemind-${{ matrix.triple }}.*
@@ -139,7 +139,7 @@ jobs:
             rustup_sha256: 9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
@@ -275,7 +275,7 @@ jobs:
         run: ./scripts/package-release.sh ${{ matrix.triple }}
 
       - name: Upload the archive
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-archive-${{ matrix.triple }}
           path: basemind-${{ matrix.triple }}.tar.gz
@@ -306,14 +306,14 @@ jobs:
             os: windows-2022
             archive: basemind-x86_64-pc-windows-msvc.zip
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - uses: xberg-io/actions/setup-mise@v1
+      - uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           install-args: python
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-archive-${{ matrix.triple }}
           path: ${{ runner.temp }}/archive
