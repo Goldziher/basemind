@@ -40,21 +40,40 @@ from fixtures import FACTS, build_fixture  # noqa: E402
 Check = Callable[[Any], str | None]
 
 
+GROUP_KEYS = ("path", "symbol")
+
+
+def grouped_rows(groups: dict[str, Any], keys: tuple[str, ...] = GROUP_KEYS) -> list[Any] | None:
+    """The rows of a map grouping them by file (`{"<path>": [row, ...]}`, ADR-0034) or by file and
+    enclosing symbol (`code_grep`: `{"<path>": {"<symbol>": [row, ...]}}`, ADR-0052), flattened with
+    each row's group keys put back; None when `groups` is not such a map."""
+    if not groups or not keys:
+        return None
+    out: list[Any] = []
+    for name, inner in groups.items():
+        tag = {keys[0]: name}
+        if isinstance(inner, list):
+            out += [{**tag, **row} if isinstance(row, dict) else {**tag, "row": row} for row in inner]
+            continue
+        nested = grouped_rows(inner, keys[1:]) if isinstance(inner, dict) else None
+        if nested is None:
+            return None
+        out += [{**tag, **row} for row in nested]
+    return out
+
+
 def items(body: Any, *keys: str) -> list[Any]:
-    """The rows found first under one of `keys`: a list, or a `{"<path>": [row, ...]}` map of rows
-    grouped by file (ADR-0034), flattened with each row's `path` put back."""
+    """The rows found first under one of `keys`: a list, or a map of rows grouped by file, or by file
+    and symbol (`grouped_rows`)."""
     if not isinstance(body, dict):
         return []
     for k in keys:
         v = body.get(k)
         if isinstance(v, list):
             return v
-        if isinstance(v, dict) and v and all(isinstance(rows, list) for rows in v.values()):
-            return [
-                {"path": path, **row} if isinstance(row, dict) else {"path": path, "row": row}
-                for path, rows in v.items()
-                for row in rows
-            ]
+        rows = grouped_rows(v) if isinstance(v, dict) else None
+        if rows is not None:
+            return rows
     return []
 
 

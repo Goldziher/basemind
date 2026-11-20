@@ -129,12 +129,13 @@ jobs:
           } >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/hardening-reports"
 
-      - name: Selftest (analyze.py rules fire on known-bad input)
+      - name: Selftest (analyze.py rules and the sweep's matchers fire on known-bad input)
         shell: bash
         run: |
           set -euo pipefail
           python scripts/hardening/selftest_analyze.py --out "$HARDENING_REPORTS/selftest" 2>&1 |
             tee "$HARDENING_REPORTS/selftest.log"
+          python scripts/hardening/selftest_sweep.py 2>&1 | tee "$HARDENING_REPORTS/selftest-sweep.log"
 
       - name: Build the binary under test
         id: build
