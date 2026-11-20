@@ -209,7 +209,7 @@ jobs:
             Linux) triple=x86_64-unknown-linux-gnu ;;
             macOS) triple=aarch64-apple-darwin ;;
           esac
-          list="$(scripts/fetch-release-binaries.sh "$RUNNER_TEMP/release-binaries" "$triple" 0.28.0 latest)"
+          list="$(scripts/fetch-release-binaries.sh "$RUNNER_TEMP/release-binaries" "$triple" 0.28.0 0.33.0 latest)"
           echo "BASEMIND_UPGRADE_FROM_BIN=$list" >> "$GITHUB_ENV"
           pinned="$(jq -r .version plugin/.claude-plugin/plugin.json)"
           checksums="https://github.com/Goldziher/basemind/releases/download/v$pinned/basemind_${pinned}_checksums.txt"
@@ -527,7 +527,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          list="$(scripts/fetch-release-binaries.sh "$RUNNER_TEMP/release-binaries" x86_64-unknown-linux-gnu 0.28.0 latest)"
+          list="$(scripts/fetch-release-binaries.sh "$RUNNER_TEMP/release-binaries" x86_64-unknown-linux-gnu 0.28.0 0.33.0 latest)"
           echo "BASEMIND_UPGRADE_FROM_BIN=$list" >> "$GITHUB_ENV"
       - name: Upgrade test across the bump
         env:
