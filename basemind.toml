@@ -13,7 +13,7 @@
 # Setting the key replaces the default list, so the structured data formats are repeated here.
 embed_exclude = [
   "benchmarks/**",
-  "*.json", "*.jsonl", "*.ndjson", "*.yaml", "*.yml", "*.toml", "*.csv", "*.tsv", "*.xml",
+  "*.json", "*.jsonc", "*.json5", "*.jsonl", "*.ndjson", "*.geojson", "*.yaml", "*.yml", "*.toml", "*.csv", "*.tsv", "*.xml",
 ]
 
 [code_search]

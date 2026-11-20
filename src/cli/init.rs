@@ -143,10 +143,10 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # Embedding scope: when embed_include is non-empty only matching documents are embedded; embed_exclude
 # always wins. Non-embedded documents stay extracted + keyword-searchable. Changing either (or embed)
 # removes the vectors of newly ineligible documents on the next scan. The default embed_exclude keeps
-# structured data (json, jsonl, ndjson, yaml, toml, csv, tsv, xml) out of the vector store; setting
-# the key replaces the list, so `embed_exclude = []` embeds those formats too.
+# structured data (json, jsonc, json5, jsonl, ndjson, geojson, yaml, toml, csv, tsv, xml) out of the
+# vector store; setting the key replaces the list, so `embed_exclude = []` embeds those formats too.
 # embed_include = []
-# embed_exclude = ["*.json", "*.jsonl", "*.ndjson", "*.yaml", "*.yml", "*.toml", "*.csv", "*.tsv", "*.xml"]
+# embed_exclude = ["*.json", "*.jsonc", "*.json5", "*.jsonl", "*.ndjson", "*.geojson", "*.yaml", "*.yml", "*.toml", "*.csv", "*.tsv", "*.xml"]
 
 [code_search]
 # Semantic code-search tier. Requires a `code-search` build.

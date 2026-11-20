@@ -488,6 +488,9 @@ fn default_embed_scope_indexes_structured_data_but_embeds_only_prose() {
         Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
     for (path, embedded) in [
         ("data/report.json", false),
+        ("config/tsconfig.jsonc", false),
+        ("config/settings.json5", false),
+        ("maps/regions.geojson", false),
         ("logs/events.jsonl", false),
         ("logs/events.ndjson", false),
         ("config/settings.yaml", false),

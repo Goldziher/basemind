@@ -1025,7 +1025,7 @@ extension_denylist = []
 # text (code_grep) and keyword far more than by meaning. Setting the key REPLACES the list:
 # `embed_exclude = []` embeds those formats too.
 embed_include = []
-embed_exclude = ["*.json", "*.jsonl", "*.ndjson", "*.yaml", "*.yml", "*.toml", "*.csv", "*.tsv", "*.xml"]
+embed_exclude = ["*.json", "*.jsonc", "*.json5", "*.jsonl", "*.ndjson", "*.geojson", "*.yaml", "*.yml", "*.toml", "*.csv", "*.tsv", "*.xml"]
 # `extract_archives` is still accepted and ignored: archive extraction was removed, so archives
 # (.zip/.tar/.jar/…) are always skipped, and `true` logs a warning.
 
