@@ -33,9 +33,9 @@ async fn server() -> (tempfile::TempDir, rmcp::service::RunningService<rmcp::Rol
     (dir, service)
 }
 
-fn text_of(contents: &[ResourceContents]) -> String {
+fn text_and_mime(contents: &[ResourceContents]) -> (String, Option<String>) {
     match &contents[0] {
-        ResourceContents::TextResourceContents { text, .. } => text.clone(),
+        ResourceContents::TextResourceContents { text, mime_type, .. } => (text.clone(), mime_type.clone()),
         other => panic!("expected text, got {other:?}"),
     }
 }
@@ -53,13 +53,18 @@ async fn resources_list_read_and_complete() {
     let templates = service.list_all_resource_templates().await.expect("templates");
     assert!(templates.iter().any(|t| t.uri_template == "basemind://outline/{path}"));
 
-    // Outline resource equals the `code_outline` tool result.
+    // Outline resource equals the `code_outline` tool result, in the tool's TOON encoding.
     let outline = service
         .read_resource(ReadResourceRequestParams::new("basemind://outline/lib.rs"))
         .await
         .expect("read outline");
-    let body = text_of(&outline.contents);
+    let (body, mime) = text_and_mime(&outline.contents);
     assert!(body.contains("seed"), "{body}");
+    assert_eq!(mime.as_deref(), Some("text/toon"));
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&body).is_err(),
+        "TOON, not JSON:\n{body}"
+    );
     let tool = service
         .call_tool(
             CallToolRequestParams::new("code_outline")
@@ -87,7 +92,9 @@ async fn resources_list_read_and_complete() {
         .read_resource(ReadResourceRequestParams::new("basemind://status"))
         .await
         .expect("status");
-    assert!(text_of(&status.contents).contains("file_count"));
+    let (status_body, status_mime) = text_and_mime(&status.contents);
+    assert!(status_body.contains("file_count"));
+    assert_eq!(status_mime.as_deref(), Some("application/json"));
     assert!(
         service
             .read_resource(ReadResourceRequestParams::new("basemind://repo/map"))

@@ -153,8 +153,8 @@ fn as_text(tool: &str, mut result: CallToolResult) -> CallToolResult {
     result
 }
 
-/// `op`'s answer with no cursor binding and no telemetry row: a resource read answers as the tool it
-/// mirrors, and is not a tool call; nor is a CLI-only command.
+/// `op`'s answer with no cursor binding and no telemetry row, its text compact JSON: a CLI-only
+/// command is not a tool call.
 pub(super) async fn run<P, R>(ws: &Arc<Workspace>, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
 where
     P: Send + 'static,
@@ -162,6 +162,16 @@ where
 {
     let ws = Arc::clone(ws);
     blocking_answer(move || answer(&ws, p, op)).await
+}
+
+/// [`run`] for a resource read: it answers as the tool it mirrors, its text in that tool's encoding
+/// ([`crate::wire::encode`]), and is not a tool call.
+pub(super) async fn mirror<P, R>(ws: &Arc<Workspace>, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
+where
+    P: ToolArgs + Send,
+    R: Serialize + 'static,
+{
+    run(ws, p, op).await.map(|result| as_text(P::TOOL, result))
 }
 
 #[cfg(test)]

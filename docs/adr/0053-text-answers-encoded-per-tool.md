@@ -80,7 +80,8 @@ The text block of a verb tool is written in the encoding that measured fewest to
 4. **One place.** `crate::wire::encode(tool, value)` writes the text block in `src/mcp/adapter.rs`,
    after the cursor is bound and before the telemetry row, so telemetry costs the text sent.
    `crate::wire::decode` reads any of the three back to the JSON; the eval scores the text through
-   it, and an answer it cannot read is a task error, never an empty answer.
+   it, and an answer it cannot read is a task error, never an empty answer. A resource mirrors its
+   tool's encoding: `basemind://outline/{path}` is TOON, served as `text/toon`.
 5. **Budgets charge what is written.** `max_tokens` costs a `code_grep` hit as its rows and the
    headers it opens in the block, an outline symbol and a `find_files` path as their TOON table row
    or cell, and keeps the JSON cost elsewhere.

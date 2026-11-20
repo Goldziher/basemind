@@ -315,6 +315,9 @@ symbol in a `code_grep` header is a JSON string when it starts with `"`, has lea
 whitespace or holds a control character. The token budget (`max_tokens`) charges the encoding the
 tool writes, so a budgeted page of these tools holds more rows than before.
 
+A resource's text is its tool's text block: `basemind://outline/{path}` is TOON, served as
+`text/toon`; `basemind://status` and `basemind://memory/{key}` stay JSON.
+
 ## Upgrading to agent comms v2 (ADR-0021)
 
 The `agents` MCP tool and the `basemind agents` CLI group are removed in the same release, with no

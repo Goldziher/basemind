@@ -3,7 +3,8 @@
 //! A deliberately small surface that re-exposes existing tool output as addressable, on-demand
 //! content. Nothing here is part of the always-loaded prompt: clients list resources lazily, so the
 //! cost to a session that never touches them is zero. Every read runs the body of the matching
-//! tool, so a resource body is byte-for-byte the tool result.
+//! tool, so a resource body is byte-for-byte the tool result, in the tool's text encoding (ADR-0053):
+//! TOON for an outline, compact JSON for the others.
 //!
 //! | URI                          | Backing tool call             |
 //! |------------------------------|-------------------------------|
@@ -33,6 +34,8 @@ const URI_STATUS: &str = "basemind://status";
 const TEMPLATE_OUTLINE: &str = "basemind://outline/{path}";
 const TEMPLATE_MEMORY: &str = "basemind://memory/{key}";
 const MIME_JSON: &str = "application/json";
+/// The media type the TOON specification registers.
+const MIME_TOON: &str = "text/toon";
 
 /// A parsed `basemind://` resource URI.
 #[derive(Debug, PartialEq, Eq)]
@@ -149,7 +152,7 @@ pub(super) fn resource_templates() -> Vec<ResourceTemplate> {
             .with_description(
                 "Symbols and imports of one indexed code file (repo-relative path). Same as the code_outline tool.",
             )
-            .with_mime_type(MIME_JSON),
+            .with_mime_type(MIME_TOON),
         ResourceTemplate::new(TEMPLATE_MEMORY, "memory-entry")
             .with_title("Memory entry")
             .with_description("One shared memory note by key. Same as memory_search with a key.")
@@ -181,19 +184,23 @@ impl BasemindServer {
             .map_err(McpError::from)?;
         // ~keep No map wait: status, an outline and a note read the store, as their tools do.
         let state = &self.state;
-        let result = match parsed {
+        let (result, mime) = match parsed {
             ResourceUri::Status => {
                 let params = super::types_tools::IndexStatusParams {};
-                super::adapter::run(&state.shared, params, crate::engine::Workspace::index_status).await?
+                let result =
+                    super::adapter::mirror(&state.shared, params, crate::engine::Workspace::index_status).await?;
+                (result, MIME_JSON)
             }
             ResourceUri::Outline(path) => {
                 let params: super::types_tools::CodeOutlineParams = from_args(json!({ "path": path }))?;
-                super::adapter::run(&state.shared, params, crate::engine::Workspace::code_outline).await?
+                let result =
+                    super::adapter::mirror(&state.shared, params, crate::engine::Workspace::code_outline).await?;
+                (result, MIME_TOON)
             }
             ResourceUri::Memory(key) => {
                 let params: super::types_tools::MemorySearchToolParams = from_args(json!({ "key": key }))?;
                 let result =
-                    super::adapter::run(&state.shared, params, crate::engine::Workspace::memory_search).await?;
+                    super::adapter::mirror(&state.shared, params, crate::engine::Workspace::memory_search).await?;
                 let missing = result
                     .structured_content
                     .as_ref()
@@ -206,10 +213,10 @@ impl BasemindServer {
                         Some(json!({ "uri": uri })),
                     ));
                 }
-                return Ok(contents(uri, text));
+                return Ok(contents(uri, text, MIME_JSON));
             }
         };
-        Ok(contents(uri, tool_text(result, uri)?))
+        Ok(contents(uri, tool_text(result, uri)?, mime))
     }
 
     /// Completion for resource-template arguments: `outline`'s `path` completes against indexed paths.
@@ -221,8 +228,8 @@ impl BasemindServer {
     }
 }
 
-fn contents(uri: &str, text: String) -> ReadResourceResult {
-    ReadResourceResult::new(vec![ResourceContents::text(text, uri).with_mime_type(MIME_JSON)])
+fn contents(uri: &str, text: String, mime: &str) -> ReadResourceResult {
+    ReadResourceResult::new(vec![ResourceContents::text(text, uri).with_mime_type(mime)])
 }
 
 fn from_args<T: serde::de::DeserializeOwned>(args: Value) -> Result<T, McpError> {
