@@ -18,7 +18,10 @@ is cleaned up.
    where it used to mean true (`BASEMIND_GRAMMAR_OFFLINE`, `BASEMIND_GIT_DISCOVER_PARENTS`).
 2. Update the plugin and the binary together, then restart every session. The marketplace plugins,
    npm and pip run the binary their manifest pins. OpenCode's `basemind-opencode` package, Hermes and
-   the status line run `basemind` from `PATH`, so update that binary too.
+   the status line run `basemind` from `PATH`, so update that binary too. On a team, everyone who
+   shares a checked-in `basemind.toml` upgrades before anyone adds a key new in 0.34 (`[analysis]`
+   `entry_points`, `[documents.dependencies]`): 0.33 rejects unknown keys, so a file that uses one
+   stops loading for a teammate still on 0.33.
 3. Run `basemind comms stop`, so the 0.33 daemon is replaced (see "Upgrading to agent comms v2").
 4. Run `basemind scan`. The index is wiped and rebuilt at its first open, and the blob store moves to
    `cache/blobs/v34/`, so every file is re-extracted and every document re-embedded once (see "What
@@ -679,10 +682,24 @@ component the migration touches; the term index and name dictionaries are memory
 removed by `all`: the daemon holds it open. `cache clear` refuses while a writer holds the workspace
 lock (and `blobs` while the daemon runs), and everything except `git-cache` needs `--yes` off a terminal.
 
-Opening upgraded data with an older binary fails safe. The index extras are ignored, a binary on the same
-schema minor re-maps the files it still treats as code (and drops their document entries), and one on a
-different minor resets the view and re-extracts, as for any schema change. Going back and forth costs
-re-extraction, never correctness; the next sweep reclaims what is left.
+Opening upgraded data with an older binary fails safe. The index extras are ignored, and a binary on
+the same schema minor re-maps the files it still treats as code (and drops their document entries).
+
+A binary on an older minor never wipes data a newer one wrote. From 0.34 on, each store checks its
+schema on open and refuses a newer one instead of resetting it: the file map, the blobs and the
+group index ("index written by a newer basemind (schema N); this binary understands M — upgrade
+basemind"), the git history and the LanceDB stores ("… written by a newer basemind … upgrade
+basemind"). The memory notes are refused for memory operations the same way. So:
+
+- 0.34 to 0.33 resets and re-extracts: 0.33 predates the check and wipes a view on any schema
+  mismatch, as for any schema change.
+- A later minor back to 0.34 is refused until you upgrade again. To stay on the older binary, give it
+  a data directory of its own (`BASEMIND_DATA_HOME=<empty dir>`) and run `basemind scan`, which
+  builds every store from scratch there; notes saved in the original data directory are not visible
+  from it. `basemind cache clear --component views|lance` clears only the workspace's file maps and
+  vector stores, not the group index (`cache/groups/<group>/index.fjall`) or the git history.
+
+Going back and forth costs re-extraction, never correctness; the next sweep reclaims what is left.
 
 ## Per-version binaries
 
