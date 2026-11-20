@@ -190,7 +190,8 @@ pub enum RulesTarget {
     ClaudeLocal,
     /// Force the committed `AGENTS.md` delimited block.
     Agents,
-    /// Force the personal, gitignored `AGENTS.local.md` delimited block.
+    /// Force the personal, gitignored `AGENTS.local.md` delimited block. No agent host loads this
+    /// file by itself; `init` prints how to make one read it.
     AgentsLocal,
     /// Force the COMMITTED ai-rulez rule file (`.ai-rulez/rules/basemind-usage.md`). An explicit
     /// opt-in only — `Auto` never resolves here, it prefers [`RulesTarget::AiRulezLocal`].
@@ -280,6 +281,11 @@ pub(crate) enum Change {
 /// files only: a user's global excludes file does not reach collaborators, so it does not count.
 const NOT_COVERED: &str = "not covered by the repository's .gitignore";
 
+/// Printed when the rules go to `AGENTS.local.md`, which no agent host loads by itself.
+const AGENTS_LOCAL_NOTE: &str = "rules: no agent host loads AGENTS.local.md by itself; OpenCode reads it when \
+\"instructions\" in ~/.config/opencode/opencode.json lists \"AGENTS.local.md\", other hosts only when AGENTS.md \
+points the agent to it";
+
 /// Entry point. `root` is already resolved by `main`.
 pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
     let caps = select_capabilities(args)?;
@@ -297,6 +303,14 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
     changes.push(plan_config(root, args.config_dir.as_deref())?);
     if let Some(rule_change) = plan_rules_change(&rules_plan, &caps, sections)? {
         changes.push(rule_change);
+    }
+    if rules_plan
+        .target_path()
+        .is_some_and(|path| path.ends_with("AGENTS.local.md"))
+    {
+        changes.push(Change::NoOp {
+            note: AGENTS_LOCAL_NOTE.to_string(),
+        });
     }
     if let Some(settings_change) = init_settings::plan_settings_change(&settings_plan)? {
         changes.push(settings_change);
@@ -417,7 +431,7 @@ fn prompt_rules_target() -> Result<RulesTarget> {
     println!("Where should the basemind rules block go?");
     println!("  1) CLAUDE.local.md  — personal, gitignored (recommended)");
     println!("  2) CLAUDE.md        — committed, shared with everyone on the repo");
-    println!("  3) AGENTS.local.md  — personal, gitignored");
+    println!("  3) AGENTS.local.md  — personal, gitignored; no agent host loads it by itself");
     println!("  4) AGENTS.md        — committed, shared with everyone on the repo");
     println!("  5) none             — write no rules");
     write!(stdout, "Choose [1-5, blank = 1]: ").context("write prompt")?;

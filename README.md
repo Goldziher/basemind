@@ -379,7 +379,11 @@ commands — from the repo root. It's re-runnable and safe to call again later:
   `.ai-rulez/local/rules/basemind-usage.md`; otherwise a terminal run asks, defaulting to the
   personal, gitignored `CLAUDE.local.md`, and a scripted run writes `CLAUDE.local.md` (or
   `AGENTS.local.md` in a repo that has an `AGENTS.md` and no `CLAUDE.md`). It adds the file to
-  `.gitignore`. The block is delimited
+  `.gitignore`. No agent host loads `AGENTS.local.md` by itself: Codex, Cursor, Pi, Hermes and Claude
+  Code never read it, and OpenCode reads it once `"instructions": ["AGENTS.local.md"]` is in
+  `~/.config/opencode/opencode.json`; `init` prints this when it writes the file. It does not write a
+  `CLAUDE.local.md` or `AGENTS.override.md` there instead, because each hides the repo's `AGENTS.md`
+  from a host (Claude Code; Codex, Pi and Hermes). The block is delimited
   (`<!-- BEGIN basemind ... -->` / `<!-- END basemind -->`) so re-running replaces it in place
   instead of duplicating it.
 
