@@ -364,4 +364,13 @@ mod tests {
         assert_eq!(first.modified, second.modified, "same mtime");
         assert_ne!(first, second, "the content hash tells them apart");
     }
+
+    #[test]
+    fn an_unchanged_file_stamps_equal_once_its_mtime_is_no_longer_recent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_toml(dir.path(), "[watch]\ndebounce_ms = 111\n");
+        let fresh = ConfigStamp::of(dir.path());
+        std::thread::sleep(std::time::Duration::from_millis(2_100));
+        assert_eq!(fresh, ConfigStamp::of(dir.path()), "an untouched file is not a change");
+    }
 }
