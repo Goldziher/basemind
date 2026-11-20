@@ -169,7 +169,7 @@ fn the_live_walk_tests_one_span_per_page_and_resumes_where_it_ran_out() {
     assert_eq!(pages[2].resume, None);
 
     let snapshot = (head_snapshot_id(&head) & !LIVE_WALK) | LIVE_WALK;
-    let page = touching_response(pages.swap_remove(0), 5, None, snapshot, false);
+    let page = touching_response(pages.swap_remove(0), 5, None, snapshot, false, false);
     assert_eq!(page.commits.len(), 0);
     assert!(page.truncated);
     assert_eq!(page.truncated_reason, Some(SPAN_LIMIT));
@@ -206,7 +206,7 @@ fn a_span_that_ran_out_after_a_match_lists_it_and_resumes_past_the_span() {
     assert_eq!(span.resume, Some((3, newest_first[3].clone())));
 
     let snapshot = (head_snapshot_id(&head) & !LIVE_WALK) | LIVE_WALK;
-    let page = touching_response(span, 5, None, snapshot, false);
+    let page = touching_response(span, 5, None, snapshot, false, false);
     let summaries: Vec<&str> = page.commits.iter().map(|commit| commit.summary.as_str()).collect();
     assert_eq!(summaries, ["round 9", "round 8", "round 7"]);
     assert_eq!(page.truncated_reason, Some(SPAN_LIMIT));
@@ -215,5 +215,74 @@ fn a_span_that_ran_out_after_a_match_lists_it_and_resumes_past_the_span() {
         .expect("the history goes on")
         .decode_in_memory()
         .expect("cursor");
-    assert_eq!(next, (3, snapshot));
+    assert_eq!(next, (3 | MATCHED_EARLIER, snapshot), "the cursor says a page matched");
+}
+
+/// The pages of `path`'s history the live walk lists with a span of `span`, following each cursor
+/// to the last page, which is the error when there is one.
+fn all_pages(ws: &Workspace, path: &str, span: usize) -> (Vec<CommitsTouchingResponse>, Option<EngineError>) {
+    super::super::common::LIVE_WALK_SPAN.with(|cell| cell.set(Some(span)));
+    let mut pages = Vec::new();
+    let mut cursor = None;
+    loop {
+        let params = CommitsTouchingParams {
+            cursor,
+            ..touching(path, 5)
+        };
+        match run_touching(ws, params) {
+            Ok(page) => {
+                cursor = page.next_cursor.clone();
+                pages.push(page);
+                if cursor.is_none() {
+                    return (pages, None);
+                }
+            }
+            Err(error) => return (pages, Some(error)),
+        }
+    }
+}
+
+/// A path no page matched is refused when the history runs out, however many span-limited pages
+/// came before; a path an earlier page matched ends in an empty page instead.
+#[test]
+fn a_path_no_span_matched_is_refused_on_the_last_page() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let root = repo_dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("a.rs"), "0\n").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "init"]);
+    for round in 1..=9 {
+        std::fs::write(root.join("a.rs"), format!("{round}\n")).unwrap();
+        match round {
+            2 => std::fs::write(root.join("gone.rs"), "fn gone() {}\n").unwrap(),
+            3 => std::fs::remove_file(root.join("gone.rs")).unwrap(),
+            _ => {}
+        }
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-qm", &format!("round {round}")]);
+    }
+    let cache_dir = tempfile::tempdir().unwrap();
+    let ws = workspace_over(root, cache_dir.path(), None);
+
+    let (pages, error) = all_pages(&ws, "missing.rs", 4);
+    assert_eq!(pages.len(), 2, "two spans of 4 before the last 2 commits");
+    for page in &pages {
+        assert_eq!(page.commits.len(), 0);
+        assert_eq!(page.truncated_reason, Some(SPAN_LIMIT));
+    }
+    assert_eq!(
+        error.expect("the last page refuses the path").to_string(),
+        "`git_log`: no commit reachable from HEAD touches `missing.rs` and no such file exists. `path` is a \
+         repo-relative file path, or a directory when it ends with `/`; locate it with `find_files`."
+    );
+
+    let (pages, error) = all_pages(&ws, "gone.rs", 4);
+    assert!(error.is_none(), "a deleted file has a history: {error:?}");
+    let summaries: Vec<Vec<&str>> = pages
+        .iter()
+        .map(|page| page.commits.iter().map(|commit| commit.summary.as_str()).collect())
+        .collect();
+    assert_eq!(summaries, [vec![], vec!["round 3", "round 2"], vec![]]);
 }

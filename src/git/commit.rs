@@ -440,6 +440,28 @@ impl Repo {
         Ok(found)
     }
 
+    /// The sha of commit `sha`'s first parent, `None` for a root commit or a parent a shallow clone
+    /// does not hold.
+    pub fn first_parent(&self, sha: &str) -> Result<Option<String>, GitError> {
+        let local = self.local();
+        let Some(id) = Self::resolve_oid(&local, sha) else {
+            return Err(GitError::RevParse {
+                rev: sha.to_string(),
+                msg: "does not resolve to a commit".to_string(),
+            });
+        };
+        let commit = local.find_commit(id).map_err(|e| GitError::Read {
+            what: format!("commit {sha}"),
+            msg: e.to_string(),
+        })?;
+        Ok(commit
+            .parent_ids()
+            .next()
+            .map(|parent| parent.detach())
+            .filter(|parent| local.has_object(parent))
+            .map(|parent| parent.to_string()))
+    }
+
     /// The walk of `head`'s history, newest commit first.
     fn newest_first<'repo>(local: &'repo gix::Repository, head: &str) -> Result<gix::revision::Walk<'repo>, GitError> {
         let Some(head) = Self::resolve_oid(local, head) else {

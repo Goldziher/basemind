@@ -11,17 +11,33 @@ use crate::path::RelPath;
 
 const STEADY_RS: &str = "pub fn stable() -> u32 {\n    7\n}\n\npub fn churn() -> u32 {\n    0\n}\n";
 
-fn git(root: &Path, args: &[&str]) {
-    let status = Command::new("git")
+fn git_command(root: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(root)
         .env("GIT_AUTHOR_NAME", "t")
         .env("GIT_AUTHOR_EMAIL", "t@e.x")
         .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
-        .status()
-        .expect("git in PATH");
+        .env("GIT_COMMITTER_EMAIL", "t@e.x");
+    command
+}
+
+fn run(mut command: Command, args: &[&str]) {
+    let status = command.status().expect("git in PATH");
     assert!(status.success(), "git {args:?} failed");
+}
+
+fn git(root: &Path, args: &[&str]) {
+    run(git_command(root, args), args);
+}
+
+/// [`git`] dated `seconds` after the epoch, so the walk's commit-time order is the order written.
+fn git_at(root: &Path, args: &[&str], seconds: u64) {
+    let date = format!("@{seconds} +0000");
+    let mut command = git_command(root, args);
+    command.env("GIT_AUTHOR_DATE", &date).env("GIT_COMMITTER_DATE", &date);
+    run(command, args);
 }
 
 /// A repository whose first commit holds `src/steady.rs`, and a workspace over it that has
@@ -218,4 +234,57 @@ fn an_indexed_file_is_judged_by_its_live_content() {
     let renamed = history(&ws, "churned").expect("defined in the working tree");
     assert_eq!(changes(&renamed), Vec::<(&str, &str)>::new(), "no commit has it yet");
     assert_eq!(renamed.unmatched, None, "the working tree defines it");
+}
+
+/// Newest first: `later`, the merge of an unrelated `side` branch that keeps trunk's file,
+/// `modify churn`, `side` (which has no `src/steady.rs`) and `introduce`.
+fn merged_history(root: &Path) {
+    git(root, &["init", "-q", "-b", "trunk"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/steady.rs"), STEADY_RS).unwrap();
+    git(root, &["add", "-A"]);
+    git_at(root, &["commit", "-qm", "introduce"], 1_000);
+    git(root, &["checkout", "-q", "--orphan", "side"]);
+    git(root, &["rm", "-rqf", "."]);
+    std::fs::write(root.join("other.txt"), "side\n").unwrap();
+    git(root, &["add", "-A"]);
+    git_at(root, &["commit", "-qm", "side"], 2_000);
+    git(root, &["checkout", "-q", "trunk"]);
+    std::fs::write(root.join("src/steady.rs"), STEADY_RS.replace("    0\n", "    1\n")).unwrap();
+    git_at(root, &["commit", "-qam", "modify churn"], 3_000);
+    git_at(
+        root,
+        &["merge", "-q", "--allow-unrelated-histories", "--no-edit", "side"],
+        4_000,
+    );
+    std::fs::write(root.join("other.txt"), "later\n").unwrap();
+    git_at(root, &["commit", "-qam", "later"], 5_000);
+}
+
+/// A span that runs out right after a change compares it with its commit's parent, not with the
+/// commit the span left untested, which here is the merged branch's and has no file; a span that
+/// runs out before any change says `span_limit` too.
+#[test]
+fn a_span_that_runs_out_compares_the_oldest_change_with_its_parent() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let root = repo_dir.path();
+    crate::store::init_isolated_cache();
+    let _ = crate::lang::ensure_grammars().expect("grammar bootstrap");
+    merged_history(root);
+    let ws = workspace_over(root, cache_dir.path());
+    let span = |commits: usize| super::super::common::LIVE_WALK_SPAN.with(|cell| cell.set(Some(commits)));
+
+    span(3);
+    let page = history(&ws, "churn").expect("`churn` is defined");
+    assert_eq!(changes(&page), [("modified", "modify churn")]);
+    assert_eq!(page.truncated_reason, Some(SPAN_LIMIT));
+    assert!(page.next_cursor.is_some(), "the history goes on");
+
+    span(1);
+    let page = history(&ws, "churn").expect("`churn` is defined");
+    assert_eq!(changes(&page), Vec::<(&str, &str)>::new());
+    assert_eq!(page.truncated_reason, Some(SPAN_LIMIT));
+    assert!(page.next_cursor.is_some(), "the history goes on");
 }

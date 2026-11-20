@@ -29,9 +29,10 @@ repository.
   Follow the cursor until it is absent.
 - `git_blame` locates a `symbol` in the file as it is at `rev` (default HEAD), so a symbol that
   exists only uncommitted is not found. `line` / `end_line` are 1-based and inclusive.
-- A file's history comes from the git-history index when it holds HEAD, and a path no commit
-  touches answers at once. Without it each page tests at most 10 000 commits of the live history: a
-  page cut there says `truncated_reason: "span_limit"`, and its `next_cursor` goes on further back.
+- A file's history, and a symbol's, comes from the git-history index when it holds HEAD, and a path
+  no commit touches answers at once. Without it each page tests at most 10 000 commits of the live
+  history: a page cut there says `truncated_reason: "span_limit"`, and its `next_cursor` goes on
+  further back.
 - `git_diff` with `path` diffs against HEAD by default (`from`) and the working tree (`to`). A diff
   stops at 200 hunks or 128 KiB and sets `truncated`; it has no cursor, so narrow `from` / `to`. A
   structural diff compares `from` with the indexed working tree and takes no `to`.
