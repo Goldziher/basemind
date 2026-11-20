@@ -85,6 +85,12 @@ pub(crate) fn namespace_recorded(
 pub(crate) struct Holds {
     /// The namespaces a live basemind process reads.
     pub(crate) live: Vec<BlobNamespace>,
+    /// Whether a live basemind process reads a namespace its record does not tell: a hosting
+    /// marker that names no build (one written before markers recorded it, or one that does not
+    /// parse), or a version that does not parse. Such a process may read any superseded namespace,
+    /// so it holds them all: the superseded sweep reaps nothing while it runs. The cost is disk
+    /// only, and lasts no longer than the process at that pid.
+    pub(crate) unidentified: bool,
     /// How long after the last write into it a namespace is kept.
     pub(crate) hold: Duration,
 }
@@ -93,32 +99,33 @@ impl Holds {
     /// The holds under the data home `data`: the namespaces of the live daemons and hosts
     /// registered there, and the engine configuration's hold.
     pub(crate) fn under(data: &DataRoot) -> Self {
+        let read = live_namespaces(data);
         Self {
-            live: live_namespaces(data),
+            unidentified: read.contains(&None),
+            live: read.into_iter().flatten().collect(),
             hold: crate::config::engine::with(|config| config.gc.superseded_hold),
         }
     }
 }
 
 /// The namespaces the live daemons (`daemons/`, every generation) and hosts (`hosting/<pid>`)
-/// registered under the data home `data` read. A process that refuses to be opened counts as live
-/// ([`crate::boot_identity::PidState::may_be_live`]): the hold gates a deletion.
+/// registered under the data home `data` read, `None` for one whose namespace cannot be told. A
+/// process that refuses to be opened counts as live ([`crate::boot_identity::PidState::may_be_live`]):
+/// the hold gates a deletion.
 #[cfg(any(unix, windows))]
-fn live_namespaces(data: &DataRoot) -> Vec<BlobNamespace> {
-    let daemons = crate::daemon_lock::registered_daemons(data)
-        .into_iter()
-        .filter_map(|daemon| {
-            let record = daemon.record;
-            namespace_recorded(record.blob_schema, Some(&record.version), daemon.pre_generation)
-        });
+fn live_namespaces(data: &DataRoot) -> Vec<Option<BlobNamespace>> {
+    let daemons = crate::daemon_lock::registered_daemons(data).into_iter().map(|daemon| {
+        let record = daemon.record;
+        namespace_recorded(record.blob_schema, Some(&record.version), daemon.pre_generation)
+    });
     let hosts = crate::scan_evidence_hosts::live_host_builds(data)
         .into_iter()
-        .filter_map(|host| namespace_recorded(host.blob_schema, host.version.as_deref(), false));
+        .map(|host| namespace_recorded(host.blob_schema, host.version.as_deref(), false));
     daemons.chain(hosts).collect()
 }
 
 #[cfg(not(any(unix, windows)))]
-fn live_namespaces(_data: &DataRoot) -> Vec<BlobNamespace> {
+fn live_namespaces(_data: &DataRoot) -> Vec<Option<BlobNamespace>> {
     Vec::new()
 }
 
@@ -224,7 +231,8 @@ fn reap_namespace(dir: &Path, now: SystemTime, grace: Duration, report: &mut GcR
 /// Reap every aged blob under `blobs_root` that the `current` schema's namespace does not own and
 /// `holds` lets go ([`may_reap`]): un-namespaced blob files and the namespaces of older schemas. Newer
 /// namespaces, the current one and anything unrecognised, a file in the root that is not a blob
-/// included, are left alone.
+/// included, are left alone, and so is everything while a live process's namespace cannot be told
+/// ([`Holds::unidentified`]).
 pub(crate) fn sweep_superseded_namespaces(
     blobs_root: &Path,
     current: u16,
@@ -233,7 +241,7 @@ pub(crate) fn sweep_superseded_namespaces(
 ) -> Result<GcReport, GcError> {
     let now = SystemTime::now();
     let mut report = GcReport::default();
-    if !blobs_root.exists() {
+    if holds.unidentified || !blobs_root.exists() {
         return Ok(report);
     }
     let releasable = |namespace: BlobNamespace, files: &[PathBuf]| {
@@ -412,6 +420,38 @@ mod tests {
         );
     }
 
+    /// A live host whose marker names no build, as one written before markers recorded it, may
+    /// read any superseded namespace: while it runs the superseded sweep reaps nothing.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn a_live_host_of_an_unknown_build_holds_every_superseded_namespace() {
+        let home = tempfile::tempdir().unwrap();
+        let me = std::process::id();
+        let marker = serde_json::json!({
+            "boot": crate::boot_identity::current(), "started": crate::boot_identity::process_start(me),
+        });
+        let hosting = home.path().join("hosting");
+        std::fs::create_dir_all(&hosting).unwrap();
+        std::fs::write(hosting.join(me.to_string()), marker.to_string()).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let legacy = plant_aged(root.path(), "aa.fm.msgpack", 30 * DAY);
+        let older = plant_aged(root.path(), "v6/bb.fm.msgpack", 30 * DAY);
+
+        let holds = Holds::under(&DataRoot::new(home.path()));
+        assert_eq!(holds.live, Vec::<BlobNamespace>::new());
+        assert!(holds.unidentified, "the host's namespace cannot be told");
+        let report = sweep_superseded_namespaces(root.path(), CURRENT, Duration::ZERO, &holds).unwrap();
+        assert_eq!((report.scanned, report.removed), (0, 0));
+        assert!(legacy.exists() && older.exists(), "nothing is reaped under the host");
+
+        let identified = Holds {
+            unidentified: false,
+            ..holds
+        };
+        let report = sweep_superseded_namespaces(root.path(), CURRENT, Duration::ZERO, &identified).unwrap();
+        assert_eq!(report.removed, 2, "both are reaped once no such host runs");
+    }
+
     #[test]
     fn the_hold_is_read_in_days_and_defaults_to_the_launcher_s_fourteen() {
         assert_eq!(prune_hold_from(None), 14 * DAY);
@@ -430,6 +470,7 @@ mod tests {
         let free = plant_aged(root.path(), "v6/cc.fm.msgpack", 30 * DAY);
         let holds = Holds {
             live: vec![BlobNamespace::Unnamespaced, BlobNamespace::Schema(5)],
+            unidentified: false,
             hold: Duration::ZERO,
         };
 
@@ -453,6 +494,7 @@ mod tests {
         let expired = plant_aged(root.path(), "v5/ee.fm.msgpack", 20 * DAY);
         let holds = Holds {
             live: Vec::new(),
+            unidentified: false,
             hold: 14 * DAY,
         };
 

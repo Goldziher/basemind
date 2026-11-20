@@ -7,6 +7,7 @@ use std::path::PathBuf;
 /// No live process and no hold: the superseded namespaces go by the blob grace alone.
 const NO_HOLDS: Holds = Holds {
     live: Vec::new(),
+    unidentified: false,
     hold: Duration::ZERO,
 };
 
