@@ -4,8 +4,9 @@ Usage:
     python3 scripts/smoke_release_archive.py <archive> <expected-version>
 
 The archive is extracted into a fresh directory; it must carry ``LICENSE``, ``ATTRIBUTIONS.md`` and
-``THIRD_PARTY_LICENSES`` at its root and ``licenses/<name>.txt`` for each library it bundles (under
-``lib/``, or a DLL beside the Windows binary), and the binary in it must:
+``THIRD_PARTY_LICENSES`` at its root, the notices of the native code linked into the binary
+(``LINKED_NOTICES``) and ``licenses/<name>.txt`` for each library it bundles (under ``lib/``, or a
+DLL beside the Windows binary), and the binary in it must:
 
 1. report ``basemind <expected-version>`` from ``--version``;
 2. ``scan`` a small git fixture repository;
@@ -35,12 +36,19 @@ from pathlib import Path
 
 TIMEOUT = 180
 NOTICES = ("LICENSE", "ATTRIBUTIONS.md", "THIRD_PARTY_LICENSES")
+# The same list as LINKED_NOTICES in scripts/package-release.sh.
+LINKED_NOTICES = (
+    "licenses/onnxruntime.txt",
+    "licenses/onnxruntime-ThirdPartyNotices.txt",
+    "licenses/tesseract.txt",
+    "licenses/leptonica.txt",
+)
 
 
 def missing_notices(root: Path) -> list[str]:
     """The notice files, relative to ``root``, that an extracted archive lacks."""
     bundled = [*(root / "lib").glob("*"), *root.glob("*.dll")]
-    expected = [*NOTICES, *(f"licenses/{library.name}.txt" for library in sorted(bundled))]
+    expected = [*NOTICES, *LINKED_NOTICES, *(f"licenses/{library.name}.txt" for library in sorted(bundled))]
     return [notice for notice in expected if not (root / notice).is_file()]
 
 

@@ -233,6 +233,29 @@ fn every_archive_is_packaged_with_the_third_party_licenses() {
     }
 }
 
+/// Every change and every release checks the hand-written native-code notices against Cargo.lock
+/// before rendering THIRD_PARTY_LICENSES, so a stale entry or a licence about.toml does not accept
+/// fails on the pull request rather than at release time.
+#[test]
+fn native_notices_are_checked_before_third_party_licenses_render() {
+    let check = "run: python3 scripts/check_native_notices.py";
+    let render = "run: mise run release:licenses";
+    for file in ["ci.yaml", "release-build.yaml"] {
+        let workflow = read_workflow(file);
+        let block = job_block(&workflow, "third-party-licenses");
+        let checked = block
+            .find(check)
+            .unwrap_or_else(|| panic!("{file} must check the native-code notices"));
+        let rendered = block
+            .find(render)
+            .unwrap_or_else(|| panic!("{file} must render THIRD_PARTY_LICENSES"));
+        assert!(
+            checked < rendered,
+            "{file} must check the native-code notices before rendering THIRD_PARTY_LICENSES"
+        );
+    }
+}
+
 /// Promotion (which flips the release public and lets `latest` move) must require the full
 /// platform-asset set plus checksums, not a partial draft.
 #[test]
