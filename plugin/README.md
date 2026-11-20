@@ -4,7 +4,8 @@ The context and communication layer for coding agents. Coding agents ask a local
 
 ## Install
 
-Clone the repository, then use the generated `plugin/` directory for local installs:
+The [root installation guide](../README.md#installation) covers every runtime in detail. Gemini CLI
+and the curated Pi package install from a checkout:
 
 ```sh
 git clone https://github.com/Goldziher/basemind
@@ -18,15 +19,15 @@ cd basemind
 | Cursor | Import the repository in Team Marketplaces; the marketplace points to `plugin/` |
 | Gemini CLI | `gemini extensions install ./plugin --skip-settings` |
 | Factory Droid | `droid plugin marketplace add https://github.com/Goldziher/basemind`, then `droid plugin install basemind@basemind` |
-| Kimi | Load the generated `plugin/` package with its plugin installer |
-| OpenCode | Add the absolute path to `plugin/.opencode/plugins/basemind.js` to the `plugin` array in `opencode.json` |
+| Kimi Code | `/plugins install https://github.com/Goldziher/basemind` |
+| OpenCode | Add `"basemind-opencode@latest"` to the `plugins` array in `opencode.json` |
 | Hermes | Install `basemind-hermes-plugin` at the binary's version (below) and enable `basemind` |
-| Pi | `pi install ./plugin` |
+| Pi | `pi install npm:basemind-opencode` or `pi install git:github.com/Goldziher/basemind`; `pi install ./plugin` for the curated skills and prompts only |
 | Agent Plugins | Load `plugin/plugin.json` and its sibling resources |
 | GitHub Copilot CLI | `copilot plugin marketplace add Goldziher/basemind`, then `copilot plugin install basemind@basemind`; uses the shared Agent Plugins layout |
 
 The MCP launcher downloads the matching published basemind binary. Set `BASEMIND_BIN` to select a
-local build for launcher-based integrations. Hermes and Pi require `basemind` on `PATH`.
+local build for launcher-based integrations. Hermes, OpenCode and Pi require `basemind` on `PATH`.
 
 ### Platforms
 
@@ -74,13 +75,9 @@ with `HERMES_PYTHON` pointing to the Hermes SDK interpreter.
 
 ### Pi and OpenCode packages
 
-The curated package supplies ten Pi skills and six prompts. It contains no Pi context extension.
-The existing root Git package preserves the custom Pi extension, and `basemind-opencode` preserves
-its existing OpenCode and terminal adapters. See the [root installation guide](../README.md#installation).
-
-The generated npm identity is `@goldziher/basemind-plugin`. It is not yet published; use the local
-OpenCode adapter and Pi directory installation above. Do not substitute that name for the existing
-published `basemind-opencode` package until the new package is released.
+`basemind-opencode` and the root Git package carry the OpenCode and terminal adapters, ten skills
+and the Pi context extension. The curated `pi install ./plugin` package supplies the same ten skills
+and six prompts, without the context extension.
 
 ## Quick start
 
@@ -103,7 +100,7 @@ Each job is its own tool with an exact schema: `code_outline`, `code_symbols`, `
 `git_diff`, `memory_save`, `memory_search`, `index_status` and `index_rescan`. The tools are always
 loaded, an unknown argument is rejected, and line numbers are 1-based. Agent messaging is three
 deferred tools, `agent_post`, `agent_inbox` and `agent_threads`, found by tool search. Optional
-capabilities depend on the installed binary's features. See the [MCP reference](../README.md) for arguments and error handling.
+capabilities depend on the installed binary's features. See the [MCP tools reference](https://basemind.ai/reference/mcp-tools/) for arguments and error handling.
 
 Install only the public skills with `npx skills add Goldziher/basemind`. Root `skills/` mirrors the
 ten product skills, including `basemind-multi-agent-room`; maintainer rules and private agents are
