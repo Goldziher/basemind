@@ -140,6 +140,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- The plugin launcher downloads releases from a mirror when `BASEMIND_RELEASE_BASE_URL` is set
+  (#207): `<base>/v<version>/` holds the platform archives and `basemind_<version>_checksums.txt`, as
+  a GitHub release does, and the archive is verified against that checksums file before it is
+  installed. With a mirror set the launcher asks GitHub for nothing, and a mirror missing the pinned
+  release is named in the error with the files it needs.
 
 ### Changed
 

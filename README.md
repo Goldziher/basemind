@@ -264,6 +264,24 @@ wins over `BASEMIND_FORCE_VERSION`. A build on a different release minor resets 
 (wipe and rebuild). `BASEMIND_FORCE_VERSION=<x.y.z>` pins the launcher to one published release
 instead of the manifest's.
 
+**Release mirror and vendored binaries.** Behind a proxy that blocks github.com, set
+`BASEMIND_RELEASE_BASE_URL` to a mirror of the release downloads (`https://`, `http://` or
+`file:///`). The mirror keeps GitHub's layout under its base, one directory per release:
+
+```text
+<base>/v0.34.0/basemind-aarch64-apple-darwin.tar.gz
+<base>/v0.34.0/basemind-aarch64-unknown-linux-gnu.tar.gz
+<base>/v0.34.0/basemind-x86_64-unknown-linux-gnu.tar.gz
+<base>/v0.34.0/basemind-x86_64-pc-windows-msvc.zip
+<base>/v0.34.0/basemind_0.34.0_checksums.txt
+```
+
+Copy the files unchanged from the GitHub release. The launcher downloads the archive and the
+checksums file from the mirror and installs nothing whose SHA-256 does not match. It asks GitHub for
+nothing while a mirror is set, so it cannot fall back to another release of the same minor when the
+mirror lacks the pinned one; a cached binary of that minor still serves. On a machine with no network
+at all, install the binary yourself and set `BASEMIND_BIN` to it, as for a local build.
+
 ### 2. As an MCP server
 
 If your tool speaks MCP but you're not using the plugin, [install the program](#install-the-program),
@@ -1128,6 +1146,7 @@ A cap variable must be a positive integer; anything else falls back to the defau
 | `BASEMIND_NO_AUTOSPAWN=1` | Connect to a running daemon but never start one. |
 | `BASEMIND_MAX_DAEMONS` | Ceiling on live daemons per machine before a spawn is refused; default 8. |
 | `BASEMIND_BIN`, `BASEMIND_FORCE_VERSION` | Plugin launcher: run a local build / pin a release (see [Installation](#1-as-a-plugin-recommended)). |
+| `BASEMIND_RELEASE_BASE_URL` | Plugin launcher: download releases from a mirror instead of GitHub (see [Installation](#1-as-a-plugin-recommended)). |
 
 **Reload.** The daemon re-reads a workspace's `basemind.toml` on the next request after it changes
 (size or modification time) and logs `config changed`. A file that no longer parses keeps the last
