@@ -362,6 +362,23 @@ jobs:
           install-args: python node
       - run: mise run plugin:verify
 
+  # ~keep The retrieval-eval gate and task generators are Python no cargo test reaches. The
+  # ~keep baseline test skips itself without `rg`, so its absence must fail the step.
+  eval-scripts:
+    name: retrieval-eval scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: xberg-io/actions/setup-mise@v1
+        with:
+          install-args: python uv ripgrep
+      - name: pytest (eval gate, task generators, corpus fetch)
+        run: |
+          set -euo pipefail
+          command -v rg
+          mise run eval:pytest
+
   hermes:
     name: hermes plugin package
     runs-on: ubuntu-latest
