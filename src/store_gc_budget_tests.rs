@@ -780,8 +780,9 @@ fn over_budget_the_per_view_indexes_go_before_any_workspace() {
 
         if *legacy_first {
             assert_eq!(report.legacy_indexes_evicted, 1, "{case}: {report:?}");
-            // The rows at least: the reap opens the database to look for notes, which may add a journal. ~keep
-            assert!(report.legacy_index_bytes_freed >= ROWS as u64, "{case}: {report:?}");
+            // Its size on disk at least, not the rows' (LZ4 compresses them): the reap opens the database
+            // to look for notes, which may add a journal. ~keep
+            assert!(report.legacy_index_bytes_freed >= legacy_bytes, "{case}: {report:?}");
             assert_eq!(report.evicted, 0, "{case}: no workspace is evicted: {report:?}");
             assert!(report.total_bytes_after <= budget, "{case}: {report:?}");
             assert_eq!(files_under(&cold.join(VIEWS_DIR)), ["working/index.msgpack"], "{case}");
