@@ -68,6 +68,11 @@ basemind code definition <path> <line> <name> [--column]
 basemind code find [query] [--path-prefix --language --limit --cursor --max-tokens]
 basemind code files [--path-prefix --language --limit --cursor --max-tokens]
 basemind code chunk <path> [--chunk-id --byte-start]
+basemind code impact (<path|symbol> | --symbol <name> | --diff <rev|A..B> | --changed) [--depth --include-type-imports --include-module-decls]
+basemind code cycles [--path --max-size | --check <from> <to>] [--include-type-imports --include-module-decls]
+basemind code explain <symbol|path|path:line> [--sections --limit --depth --no-code --max-tokens]
+basemind code deadcode [--path --kind files|symbols|imports --tier high|medium|low --limit --fail-on-dead-code]
+basemind code migration check [name] [--fail-on-remaining --ranges]
 ```
 
 | Command | Purpose |
@@ -85,6 +90,11 @@ basemind code chunk <path> [--chunk-id --byte-start]
 | `find [query] [--path-prefix --language]` | Fuzzy file-name or path search, ranked by score; a listing when the query is omitted. Covers documents as well as code. |
 | `files [--path-prefix --language]` | List indexed files, code and documents alike. |
 | `chunk <path> [--chunk-id --byte-start]` | Fetch one code-search chunk body. CLI only. Needs `--features code-search`. |
+| `impact <path\|symbol> [--depth]` / `impact --diff <rev\|A..B>` / `impact --changed` | Files that import a file, a symbol's defining files or a change's files, transitively through the file-level import graph, each with its depth and whether it is in a cycle. CLI only. |
+| `cycles [--path --max-size]` / `cycles --check <from> <to>` | Import cycles, smallest first, each with an import chain that closes it; or whether `from` importing `to` would close one. Type-only imports and Rust `mod` declarations count only with `--include-type-imports` / `--include-module-decls`. CLI only. |
+| `explain <symbol\|path\|path:line> [--sections --limit --depth --no-code --max-tokens]` | One briefing: a symbol's definition, short body, graded callers, callees, importers and history, or a file's outline, imports, importers, calls in and out by file, hotspot signals, recent commits and owners; each cut section names the call that continues it. CLI only. |
+| `deadcode [--path --kind --tier --limit --fail-on-dead-code]` | Files no entry point reaches through the import graph, definitions whose name nothing else spells and imports that resolve to nothing, each with a confidence tier and its reason, plus a coverage note per language. `--fail-on-dead-code` exits 1 on a `high` finding (or one at `--tier`) and on a report that judged nothing. Extra entry points come from `[analysis] entry_points`. CLI only. |
+| `migration check [name] [--fail-on-remaining --ranges]` | Remaining uses of the old forms named in `.basemind/migrations/<name>.toml`, per rule and file, with the share migrated and the progress across runs. `--fail-on-remaining` exits 1. CLI only. |
 
 ## `git` — git history
 
@@ -104,6 +114,7 @@ basemind git blame-symbol <path> <name> [--rev --limit --cursor]
 basemind git diff-outline <path> [--rev]
 basemind git churn [--window --top-k]
 basemind git by-path <pattern> [--window --limit --cursor --max-tokens]
+basemind git hotspots [--since 90d --path --limit]
 ```
 
 | Command | Purpose |
@@ -121,6 +132,7 @@ basemind git by-path <pattern> [--window --limit --cursor --max-tokens]
 | `diff-outline <path> [--rev]` | Shorthand for `diff <path> --structural --from <rev>`. |
 | `churn [--window --top-k]` | Top files by commit count over a recent window. CLI only. |
 | `by-path <pattern> [--window]` | Commits whose changed paths match a regex. CLI only. |
+| `hotspots [--since --path --limit]` | Files with two or more of commits, authors, lines, symbols, longest function and importers in the top 10% of the files changed in the window (`--since` `<N>d`, `<N>w` or `<N>y`, default `90d`; `--limit` default 20, at most 200). Raw numbers, no score. CLI only. |
 
 ## `memory` — shared memory and documents
 
@@ -234,9 +246,12 @@ basemind rescan [PATH...] [--no-git-history --rebuild-git-history]
 basemind watch
 basemind serve
 basemind status
+basemind overview [--sections a,b --limit N]
+basemind sessions [--since YYYY-MM-DD]
 basemind doctor
 basemind completions <bash|zsh|fish|elvish|powershell>
 basemind man
+basemind manual [topic]
 basemind init [--yes --with --without --rules-target --settings-target --config-dir .config|.config/basemind --no-rules --no-usage-rules --no-setup-notes --print]
 basemind lang list|install|clean
 basemind hook install [--force]
@@ -254,9 +269,12 @@ basemind statusline
 | `watch` | Long-running watcher; keeps the code map current as files change (no server). |
 | `serve` | Ensure the daemon is up and relay this process's stdio to it as the MCP server. The daemon keeps the index fresh. |
 | `status` | Index health and repo identity for this workspace (`index_status`): file counts per language, scan state, cache directory, branch and HEAD. |
+| `overview [--sections --limit]` | The repository's shape in one call: languages with file and line counts, top-level directories, build manifests and the entry points they declare, the largest and most-imported files, HTTP routes, naming conventions per language, the latest commits. CLI only; answered by the daemon when one runs. |
+| `sessions [--since YYYY-MM-DD]` | Per session of the local Claude Code and Codex transcripts of this repository and its worktrees, subagents under their parent: basemind calls against shell searches and whole-file reads. Counts and paths only; a removed worktree's sessions are not counted. CLI only. |
 | `doctor` | Check root, config, index, grammars, pre-commit hook and daemon; exits 1 when a check fails. |
 | `completions <shell>` | Print a shell completion script to stdout. |
 | `man` | Print the man page (roff) to stdout. |
+| `manual [topic]` | Print the offline manual: an index, or one topic (`code`, `resolution`, `git`, `documents`, `memory`, `agents`, `indexing`, `paging`, `setup`, `exit-codes`, `environment`, `troubleshooting`). Needs no index. |
 | `init [--yes --with --without --rules-target --settings-target --config-dir --no-rules --no-usage-rules --no-setup-notes --print]` | Re-runnable onboarding: write `basemind.toml`, select capabilities, inject usage rules into a gitignored local rules file by default, optionally auto-approve basemind's tools in Claude Code settings. See [Get started](/start/installation/#get-started). |
 | `lang list\|install\|clean` | Manage downloaded tree-sitter grammars. `install` also fetches every grammar marked `preload = true` under `[languages.<name>]`. |
 | `hook install [--force]` | Add a git pre-commit hook that runs `basemind scan --staged`. Honours `core.hooksPath`, works in linked worktrees, never blocks a commit, and refuses to replace a hook basemind did not write unless `--force` (the old one is kept as `pre-commit.bak`). |
@@ -288,7 +306,7 @@ the index directly and read-only.
 <Aside type="note">
 Global flags (`--root`, `--quiet`, `--verbose`, `--no-color`, `--json`, `--view`) apply across all
 subcommands, though `--json` only takes effect on the tool subcommands (`code`, `git`,
-`memory`, `admin`, `status`, `cache`, `doctor`, and — with `--features comms` — `comms`, `agent`,
+`memory`, `admin`, `status`, `overview`, `cache`, `doctor`, and — with `--features comms` — `comms`, `agent`,
 `workspace`, `daemon`); `--view` also applies to `serve`. Ignored flags log a warning. Cursor-based pagination
 (`--cursor`) is covered in the paging table above.
 </Aside>
