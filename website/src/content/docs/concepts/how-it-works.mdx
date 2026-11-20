@@ -76,6 +76,11 @@ While the server isn't fully ready, `index_status` and every code-map read tool 
 Treat an empty or partial result carrying a `notice` as "retry shortly," not "no matches" — poll
 `index_status` (or just retry the call) until the notice clears.
 
+During a full scan, `index_status` reports `scan_progress`: the `phase`, the candidate files
+extracted (`files_done`) of those the scan works through (`files_total`), and `eta_secs`, the
+seconds extraction has left at the rate it has run so far. It is read from the scan's breadcrumb, so
+a scan another process runs (`basemind scan`) is reported too.
+
 ## Code versus documents
 
 The code map holds code only. Prose, data and configuration files (Markdown, reStructuredText,

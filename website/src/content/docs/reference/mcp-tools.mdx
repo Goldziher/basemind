@@ -279,3 +279,6 @@ and `indexing` / `index_build_ms` (first-time index build), and `queued_scan` wh
 workspace's watcher pass waits for a daemon scan slot. Treat an empty or partial result carrying
 a `notice` as "retry shortly," not "no matches." See
 [Index lifecycle and freshness](/concepts/how-it-works/#index-lifecycle-and-freshness) for details.
+
+During a full scan, `index_status` reports `scan_progress`: `phase`, `files_done` of `files_total`
+candidate files and `eta_secs`, the seconds extraction has left at its rate so far.

@@ -301,4 +301,6 @@ The second line shows the indexed files and the last scan, the calls and tokens
 saved in the last 24 hours (counted over the 2,000 most recent logged calls, so
 a busier day shows a lower bound), then unread messages (`100+` past one inbox
 page). Adjust with `BASEMIND_STATUSLINE=full|compact|minimal`, or hide the top
-line with `BASEMIND_STATUSLINE_CONTEXT=0`.
+line with `BASEMIND_STATUSLINE_CONTEXT=0`. While a full scan runs, the line adds its progress
+(`indexing 1.2k/40k files · extract · ~3m left`), which during a first scan takes the place of the
+"no index" hint.

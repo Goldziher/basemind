@@ -7,7 +7,9 @@
 //! an unwind. A file still sitting there afterwards therefore means exactly one thing: that process
 //! never ran its destructors, which no record written by the process itself can capture: a
 //! `SIGKILL` reaches none of that code. The record's `phase` says how far the pass had got,
-//! which is the question a memory post-mortem actually opens with.
+//! which is the question a memory post-mortem actually opens with. While its process lives, the same
+//! record is the scan's progress: [`live_progress`] turns its counts into what `index_status` and the
+//! statusline report.
 //!
 //! **The memory log.** [`log_memory_snapshot`] emits one `tracing` line with the process's current
 //! footprint and the ceiling it is measured against. Sampled on an interval it reconstructs the
@@ -29,7 +31,7 @@ use crate::store_layout::workspace_cache_dir;
 /// Filename of the in-flight-scan breadcrumb inside a workspace cache dir.
 const INFLIGHT_FILE: &str = "scan-inflight.json";
 
-/// The record a live scan leaves behind, rewritten at each phase boundary.
+/// The record a live scan leaves behind, rewritten at each phase boundary and each drive chunk.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanInflight {
     /// Unix seconds at which the scan began. Not the phase timestamp: the age of the *pass* is what
@@ -45,6 +47,78 @@ pub struct ScanInflight {
     pub phase: String,
     /// Candidate files the pass was working through, once enumeration has produced a number.
     pub candidates: Option<usize>,
+    /// Unix milliseconds at which `phase` began. Absent in a record from an older build.
+    #[serde(default)]
+    pub phase_started_unix_ms: Option<u64>,
+    /// Candidates the extract phase has finished, rewritten once per drive chunk. Absent until
+    /// extraction finishes its first chunk.
+    #[serde(default)]
+    pub files_done: Option<usize>,
+}
+
+/// A running scan's progress, as counts from its breadcrumb.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct ScanProgress {
+    /// The phase the scan is in: `starting`, `candidates`, `extract`, `purge`, `flush`, `resolve`
+    /// or `lanes`.
+    pub phase: String,
+    /// Candidate files extracted so far.
+    pub files_done: usize,
+    /// Candidate files the scan works through. Absent while it still lists them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_total: Option<usize>,
+    /// Seconds until extraction finishes, at the rate it has run so far. Absent outside the extract
+    /// phase and before its first chunk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_secs: Option<u64>,
+}
+
+impl ScanInflight {
+    /// The progress this record describes at `now_unix_ms`.
+    pub fn progress(&self, now_unix_ms: u64) -> ScanProgress {
+        let files_done = self.files_done.unwrap_or(0);
+        let eta_secs = match (self.phase.as_str(), self.phase_started_unix_ms, self.candidates) {
+            (PHASE_EXTRACT, Some(started), Some(total)) => {
+                eta_from_rate(now_unix_ms.saturating_sub(started), files_done, total)
+            }
+            _ => None,
+        };
+        ScanProgress {
+            phase: self.phase.clone(),
+            files_done,
+            files_total: self.candidates,
+            eta_secs,
+        }
+    }
+}
+
+/// Seconds left for the `total - done` files still to go, at the rate `done` files took
+/// `elapsed_ms`, rounded up. `None` when no rate is known yet or nothing is left.
+fn eta_from_rate(elapsed_ms: u64, done: usize, total: usize) -> Option<u64> {
+    if done == 0 || done >= total || elapsed_ms == 0 {
+        return None;
+    }
+    let remaining = u128::from(elapsed_ms) * (total - done) as u128;
+    u64::try_from(remaining.div_ceil(done as u128 * 1000)).ok()
+}
+
+/// The progress of the scan running now for the workspace in `cache_dir`. `None` when no scan is
+/// running there: no breadcrumb, or one whose process is gone.
+pub fn live_progress(cache_dir: &Path) -> Option<ScanProgress> {
+    read(cache_dir)
+        .filter(|record| scan_process_is_running(record.pid))
+        .map(|record| record.progress(now_unix_ms()))
+}
+
+#[cfg(any(unix, windows))]
+fn scan_process_is_running(pid: u32) -> bool {
+    crate::daemon_lock::pid_is_live(pid)
+}
+
+/// A platform that cannot tell a live pid from a dead one takes every breadcrumb for a running scan.
+#[cfg(not(any(unix, windows)))]
+fn scan_process_is_running(_pid: u32) -> bool {
+    true
 }
 
 /// Path of the breadcrumb for a workspace cache dir.
@@ -120,6 +194,8 @@ impl ScanBreadcrumb {
             root: root.to_path_buf(),
             phase: PHASE_STARTING.to_string(),
             candidates: None,
+            phase_started_unix_ms: Some(now_unix_ms()),
+            files_done: None,
         };
         let breadcrumb = Self {
             path: inflight_path(cache_dir),
@@ -137,10 +213,23 @@ impl ScanBreadcrumb {
     /// `scan_paths` would churn it continuously for no evidentiary gain. The phase constants in this
     /// module are the intended vocabulary.
     pub fn advance(&mut self, phase: &'static str, candidates: Option<usize>) {
+        self.advance_at(phase, candidates, now_unix_ms());
+    }
+
+    /// [`advance`](Self::advance) with the phase's start time given, so tests need no clock.
+    pub fn advance_at(&mut self, phase: &'static str, candidates: Option<usize>, now_unix_ms: u64) {
         self.record.phase = phase.to_string();
+        self.record.phase_started_unix_ms = Some(now_unix_ms);
         if candidates.is_some() {
             self.record.candidates = candidates;
         }
+        self.write();
+    }
+
+    /// Record that the extract phase has finished `done` candidates. Called once per drive chunk
+    /// (about a thousand files), never per file, for the reason [`advance`](Self::advance) gives.
+    pub fn files_done(&mut self, done: usize) {
+        self.record.files_done = Some(done);
         self.write();
     }
 
@@ -266,6 +355,14 @@ fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+/// Unix milliseconds now, or `0` if the clock is before the epoch.
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0)
 }
 
@@ -552,6 +649,117 @@ mod tests {
         assert_eq!(resolving.started_unix, extracting.started_unix, "the pass began once");
     }
 
+    #[test]
+    fn the_record_reports_files_done_of_the_total_and_an_eta_at_the_rate_so_far() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut breadcrumb = ScanBreadcrumb::begin_in(dir.path(), Path::new("/repo")).expect("breadcrumb written");
+        breadcrumb.advance_at(PHASE_EXTRACT, Some(4000), 10_000);
+        breadcrumb.files_done(1000);
+
+        let record = read(dir.path()).expect("record present");
+        assert_eq!(record.phase_started_unix_ms, Some(10_000));
+        assert_eq!(record.files_done, Some(1000));
+        // 1000 files took 30 s, so the 3000 left take 90 s.
+        assert_eq!(
+            record.progress(40_000),
+            ScanProgress {
+                phase: PHASE_EXTRACT.to_string(),
+                files_done: 1000,
+                files_total: Some(4000),
+                eta_secs: Some(90),
+            }
+        );
+    }
+
+    #[test]
+    fn progress_outside_a_running_extraction_carries_no_eta() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut breadcrumb = ScanBreadcrumb::begin_in(dir.path(), Path::new("/repo")).expect("breadcrumb written");
+        breadcrumb.advance_at(PHASE_CANDIDATES, None, 1_000);
+        let listing = ScanProgress {
+            phase: PHASE_CANDIDATES.to_string(),
+            files_done: 0,
+            files_total: None,
+            eta_secs: None,
+        };
+        assert_eq!(read(dir.path()).expect("record").progress(5_000), listing);
+
+        breadcrumb.advance_at(PHASE_EXTRACT, Some(8), 2_000);
+        let before_first_chunk = read(dir.path()).expect("record").progress(5_000);
+        assert_eq!((before_first_chunk.files_done, before_first_chunk.eta_secs), (0, None));
+
+        breadcrumb.files_done(8);
+        breadcrumb.advance_at(PHASE_RESOLVE, None, 3_000);
+        let resolving = ScanProgress {
+            phase: PHASE_RESOLVE.to_string(),
+            files_done: 8,
+            files_total: Some(8),
+            eta_secs: None,
+        };
+        assert_eq!(read(dir.path()).expect("record").progress(9_000), resolving);
+    }
+
+    #[test]
+    fn the_eta_is_the_remaining_files_at_the_observed_rate_rounded_up() {
+        let cases = [
+            (30_000, 1000, 4000, Some(90)),
+            (1, 3, 4, Some(1)),
+            (2_500, 1, 2, Some(3)),
+            (0, 10, 20, None),
+            (5_000, 0, 10, None),
+            (5_000, 10, 10, None),
+            (5_000, 12, 10, None),
+        ];
+        for (elapsed_ms, done, total, expected) in cases {
+            assert_eq!(
+                eta_from_rate(elapsed_ms, done, total),
+                expected,
+                "{elapsed_ms} ms, {done}/{total}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_record_from_an_older_build_reads_with_no_progress_counts() {
+        let old = r#"{"started_unix":1,"pid":1,"version":"0.34.0","root":"/repo","phase":"extract","candidates":9}"#;
+        let record: ScanInflight = serde_json::from_str(old).expect("an older record still parses");
+        assert_eq!((record.phase_started_unix_ms, record.files_done), (None, None));
+        assert_eq!(record.progress(1_000).eta_secs, None);
+    }
+
+    #[test]
+    fn live_progress_is_reported_only_while_the_scanning_process_runs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(live_progress(dir.path()), None, "no breadcrumb, no scan");
+
+        let mut breadcrumb = ScanBreadcrumb::begin_in(dir.path(), Path::new("/repo")).expect("breadcrumb written");
+        breadcrumb.advance(PHASE_EXTRACT, Some(3));
+        breadcrumb.files_done(2);
+        let live = live_progress(dir.path()).expect("this process is scanning");
+        assert_eq!((live.files_done, live.files_total), (2, Some(3)));
+
+        drop(breadcrumb);
+        assert_eq!(live_progress(dir.path()), None, "a finished scan reports no progress");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn the_breadcrumb_of_a_dead_scan_is_not_progress() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let corpse = ScanInflight {
+            started_unix: 1,
+            pid: 0x7FFF_FFFE,
+            version: "0.0.0".to_string(),
+            root: PathBuf::from("/repo"),
+            phase: PHASE_EXTRACT.to_string(),
+            candidates: Some(9),
+            phase_started_unix_ms: Some(1_000),
+            files_done: Some(4),
+        };
+        std::fs::write(inflight_path(dir.path()), serde_json::to_vec(&corpse).expect("encode")).expect("write");
+        assert_eq!(live_progress(dir.path()), None);
+    }
+
     /// The whole point of the breadcrumb. `mem::forget` is a faithful stand-in for `SIGKILL`: no
     /// destructor runs, so the file outlives the pass exactly as it does after an OOM kill.
     #[test]
@@ -586,6 +794,8 @@ mod tests {
             root: PathBuf::from("/"),
             phase: PHASE_EXTRACT.to_string(),
             candidates: Some(9),
+            phase_started_unix_ms: None,
+            files_done: None,
         };
         std::fs::write(
             inflight_path(&dead),

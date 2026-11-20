@@ -93,6 +93,12 @@ pub(crate) struct StatusResponse {
     /// one recursive watch, and a read-only serve or the CLI watches nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watches: Option<WatchStatus>,
+    /// The full scan running now for this workspace, in this process or another: its `phase`, the
+    /// candidate files extracted (`files_done`) of those it works through (`files_total`), and
+    /// `eta_secs`, the seconds extraction has left at the rate it has run so far. Absent when no
+    /// full scan runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_progress: Option<crate::scan_evidence::ScanProgress>,
     pub total_size_bytes: u64,
     pub languages: BTreeMap<String, usize>,
     /// Code files too long to read whole. Absent while a writer holds the store.
