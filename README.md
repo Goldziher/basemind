@@ -1083,9 +1083,11 @@ reach outside the process are gated on the operator's environment:
 | `[documents.dependencies] enabled = true` | Package roots inside the repository (`node_modules/`, `.venv/`, `vendor/`) need no grant. Roots outside it (the cargo registry under `CARGO_HOME`, the Go module cache under `GOMODCACHE` / `GOPATH`, a `VIRTUAL_ENV` elsewhere, or an in-tree root that resolves outside) are read only under `BASEMIND_ALLOW_DEPENDENCY_ROOTS`, in the same forms as `BASEMIND_ALLOW_EXTRA_ROOTS`; otherwise those packages are listed under `deps_unavailable` as `not_granted`. No setting in the file names a root, and a package that resolves out of its root through a symlink is refused even with the grant. |
 
 Grant variables, like every boolean variable, accept `1`, `true`, `yes`, `on` or `0`, `false`,
-`no`, `off` (case-insensitive); any other value is an error naming the variable. They are read
-from the process environment; the env and CLI override layers are operator-supplied and never
-gated.
+`no`, `off` (case-insensitive); any other value is an error naming the variable. The exceptions are
+`BASEMIND_ALLOW_EXTRA_ROOTS` and `BASEMIND_ALLOW_DEPENDENCY_ROOTS`, which also take a path list: any
+other value there is read as that list, so a misspelling such as `tru` is a relative entry, ignored
+with a warning, and grants nothing. They are read from the process environment; the env and CLI
+override layers are operator-supplied and never gated.
 
 Credential and key files are not indexed by default: the exclude floor (see `[scan]` above) drops
 `.env`, `.env.*` (which includes `.env.example`), `.aws/`, `.ssh/`, `.gnupg/`, `.npmrc`, `.pypirc`,

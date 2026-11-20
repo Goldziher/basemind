@@ -31,8 +31,9 @@ is cleaned up.
    CLI ("Upgrading to agent comms v2").
 7. Check every boolean `BASEMIND_*` variable you set reads `1`, `true`, `yes`, `on` or `0`, `false`,
    `no`, `off` ([Environment variables](manual/environment.md)). Any other value now stops the
-   command with an error naming the variable, and `false` now means false where it used to mean
-   true (`BASEMIND_GRAMMAR_OFFLINE`, `BASEMIND_GIT_DISCOVER_PARENTS`).
+   command with an error naming the variable (`BASEMIND_ALLOW_EXTRA_ROOTS` and
+   `BASEMIND_ALLOW_DEPENDENCY_ROOTS` read it as a path list instead), and `false` now means false
+   where it used to mean true (`BASEMIND_GRAMMAR_OFFLINE`, `BASEMIND_GIT_DISCOVER_PARENTS`).
 
 ## Upgrading to the verb tools (ADR-0018)
 
