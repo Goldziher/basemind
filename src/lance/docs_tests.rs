@@ -136,6 +136,31 @@ fn a_fuzzy_rerun_that_finds_less_keeps_the_exact_hits() {
     );
 }
 
+/// A search cancelled before it starts runs no lane and says it was cancelled.
+#[test]
+fn a_cancelled_rank_runs_no_lane() {
+    let (_dir, store) = seeded();
+    let request = crate::lance::docs_rank::DocsRequest {
+        query: "barrier".to_string(),
+        ..crate::lance::docs_rank::DocsRequest::default()
+    };
+    let filters = crate::lance::docs_rank::Filters::parse(&request, None).unwrap();
+    let mut live = crate::lance::docs_rank::LiveDocs::default();
+    live.by_key.insert("pdf".to_string(), vec!["manual.pdf".to_string()]);
+    let inputs = crate::lance::docs_rank::RankInputs {
+        store: Some(&store),
+        live,
+        owed: 0,
+        embed: Err("off".to_string()),
+        rerank: None,
+    };
+    let outcome = crate::lance::docs_rank::rank_until(&request.query, &filters, inputs, &|| true);
+    assert_eq!(
+        outcome.map(|ranking| ranking.hits.len()),
+        Err(crate::lance::docs_rank::DocsSearchError::Cancelled)
+    );
+}
+
 #[test]
 fn the_lexical_lane_finds_chunks_without_vectors_under_the_same_filter() {
     let (_dir, store) = seeded();

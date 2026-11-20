@@ -12,6 +12,7 @@ use rmcp::tool;
 
 use super::BasemindServer;
 use super::strict::Strict;
+use super::tools::{READ_CANCEL, read_cancel_check};
 use super::types_tools::{DocsSearchParams, MemorySaveParams, MemorySearchToolParams};
 use crate::engine::Workspace;
 use crate::engine::types::memory::MemoryDeleteParams;
@@ -35,8 +36,11 @@ impl BasemindServer {
     pub(crate) async fn docs_search(
         &self,
         Parameters(args): Parameters<Strict<DocsSearchParams>>,
+        ctx: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.answer(args, |p| self.docs_search_call(p)).await
+        READ_CANCEL
+            .scope(ctx.ct, self.answer(args, |p| self.docs_search_call(p)))
+            .await
     }
 
     #[tool(
@@ -80,9 +84,11 @@ impl BasemindServer {
 }
 
 impl BasemindServer {
-    /// Body of the `docs_search` tool, shared with `basemind memory documents`.
+    /// Body of the `docs_search` tool, shared with `basemind memory documents`; stopped when the MCP
+    /// request running it is cancelled ([`READ_CANCEL`]).
     pub(crate) async fn docs_search_call(&self, p: DocsSearchParams) -> Result<CallToolResult, McpError> {
-        self.op(p, Workspace::docs_search).await
+        let cancelled = read_cancel_check();
+        self.op(p, move |ws: &Workspace, p| ws.docs_search(p, &cancelled)).await
     }
 
     /// Body of the `memory_save` tool, shared with `basemind memory put`.

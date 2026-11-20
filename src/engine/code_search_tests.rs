@@ -43,7 +43,7 @@ fn a_renamed_file_is_cited_at_its_new_path() {
     std::fs::rename(dir.path().join("old.rs"), dir.path().join("new.rs")).unwrap();
     let store = scanned(dir.path());
 
-    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0);
+    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0, &|| false).expect("hydrated");
 
     assert!(!hydrated.hits.is_empty(), "the keyword lane finds the chunk");
     for hit in &hydrated.hits {
@@ -65,7 +65,7 @@ fn identical_files_are_one_hit_listing_every_path() {
     let distinct = seeds.len();
     // A vector lane holds one row per path, so the same id can be ranked more than once.
     let doubled: Vec<CodeSearchHit> = seeds.iter().flat_map(|s| [s.clone(), s.clone()]).collect();
-    let hydrated = hydrate_hits(&store, doubled, 10, 10);
+    let hydrated = hydrate_hits(&store, doubled, 10, 10, &|| false).expect("hydrated");
 
     assert_eq!(hydrated.hits.len(), distinct, "one hit per chunk, not per copy");
     let top = &hydrated.hits[0];
@@ -86,7 +86,7 @@ fn a_chunk_no_file_holds_is_dropped_and_counted() {
     let mut seeds = vec![seed("00ff:0".to_string())];
     seeds.extend(keyword_seeds(&store, "retry upload"));
 
-    let hydrated = hydrate_hits(&store, seeds, 10, 0);
+    let hydrated = hydrate_hits(&store, seeds, 10, 0, &|| false).expect("hydrated");
 
     assert_eq!(hydrated.omitted, 1);
     assert!(hydrated.hits.iter().all(|h| h.path == "a.rs"));
@@ -122,7 +122,7 @@ fn a_prose_query_reaches_camel_case_identifiers() {
     .unwrap();
     let store = scanned(dir.path());
 
-    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "find references"), 10, 0);
+    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "find references"), 10, 0, &|| false).expect("hydrated");
 
     assert!(
         hydrated
@@ -256,4 +256,33 @@ fn a_ranking_without_the_lane_the_config_turned_off_is_kept() {
     let mut empty = ranking(Vec::new());
     empty.hits.clear();
     assert!(!is_cacheable(&empty));
+}
+
+/// Hydration stops at its next check once the call is cancelled: it reads sidecars on a blocking
+/// thread that abandoning the call does not stop.
+#[test]
+fn hydration_stops_at_the_next_check_once_cancelled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("a.rs"), BODY).unwrap();
+    let store = scanned(dir.path());
+    let first = keyword_seeds(&store, "retry upload").remove(0);
+    let seeds: Vec<CodeSearchHit> = (0..HYDRATE_CANCEL_EVERY + 1)
+        .map(|_| seed(first.chunk_id.clone()))
+        .collect();
+
+    let live = hydrate_hits(&store, seeds.clone(), 50, 0, &|| false).expect("hydrated");
+    assert_eq!(live.hits.len(), 1, "copies of one chunk are one hit");
+
+    let checks = std::cell::Cell::new(0);
+    let cancelled = || {
+        checks.set(checks.get() + 1);
+        checks.get() > 1
+    };
+    let outcome = hydrate_hits(&store, seeds, 50, 0, &cancelled);
+    assert!(matches!(outcome, Err(EngineError::Cancelled)));
+    assert_eq!(
+        checks.get(),
+        2,
+        "checked at the first seed and again after {HYDRATE_CANCEL_EVERY}"
+    );
 }
