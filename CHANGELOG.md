@@ -113,7 +113,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebuilds its index on the first scan. A view's per-view `index.fjall` is deleted at its first writer open,
   and the daemon's cache sweep deletes it in every workspace whose repository's group index exists, opened since
   the upgrade or not, unless a 0.33 daemon is registered (ADR-0054, amending ADR-0028 rule 11, whose 30-day rule
-  is dropped); `legacy_indexes_reaped` and `legacy_index_bytes_freed` in the sweep's report count them.
+  is dropped); `legacy_indexes_reaped` and `legacy_index_bytes_freed` in the sweep's report count them. With the
+  cache over its budget, budget enforcement deletes every per-view index left, adopted or not, before it evicts
+  any workspace, under the same 0.33 check, and `cache stats` reports how many are left on the machine and their
+  size (`legacy_indexes`, `legacy_index_bytes`).
 - The group sweep (ADR-0041): at the end of a full pass that owes it, the group index deletes the symbol and call
   rows of contents no view's file map names, and the rows of views whose view directory is gone. A view's BM25
   postings are shared by key and written once; a holder row per path names who holds a key, so retiring a

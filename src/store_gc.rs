@@ -146,8 +146,9 @@ pub struct GcReport {
     /// Bytes reclaimed by reaping those directories. Disjoint from the other byte counters.
     #[serde(default)]
     pub group_store_bytes_freed: u64,
-    /// Per-view index databases of releases up to 0.33 that the group index adopted, removed by the
-    /// same sweep (ADR-0054).
+    /// Per-view index databases of releases up to 0.33 removed by the same sweep (ADR-0054): those
+    /// the group index adopted, and, with the cache over budget, every other one before any
+    /// workspace was evicted.
     #[serde(default)]
     pub legacy_indexes_reaped: usize,
     /// Bytes reclaimed by removing those databases. Disjoint from the other byte counters.
@@ -516,7 +517,8 @@ pub fn reap_and_gc_global(data: &DataRoot) -> Result<GcReport, GcError> {
 }
 
 /// The daemon's complete maintenance sweep: [`reap_and_gc_global`], then cache-budget
-/// enforcement (preferring cold workspaces and reclaiming their orphaned blobs in the same pass),
+/// enforcement (removing the per-view indexes of releases up to 0.33 first, then preferring cold
+/// workspaces and reclaiming their orphaned blobs in the same pass),
 /// and finally persistence of the sweep's health and budget outcome to `gc-state.json`.
 pub fn reap_gc_and_enforce_budget(data: &DataRoot) -> Result<GcReport, GcError> {
     let mut report = reap_and_gc_global(data)?;
@@ -527,6 +529,8 @@ pub fn reap_gc_and_enforce_budget(data: &DataRoot) -> Result<GcReport, GcError> 
         report.hot_workspaces_evicted = evicted.hot_evicted;
         report.locked_workspaces_skipped = evicted.locked_skipped;
         report.protected_workspaces = evicted.protected;
+        report.legacy_indexes_reaped += evicted.legacy_indexes_evicted;
+        report.legacy_index_bytes_freed += evicted.legacy_index_bytes_freed;
         if evicted.evicted > 0 {
             report.workspaces_evicted = evicted.evicted;
             report.evicted_bytes_freed = evicted.bytes_freed + evicted.group_bytes_freed;

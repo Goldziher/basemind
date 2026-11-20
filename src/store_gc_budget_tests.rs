@@ -712,3 +712,87 @@ fn a_tie_on_last_activity_ranks_by_path_whatever_the_listing_order() {
     assert_eq!(ranked(&["key-c", "key-b", "key-a"]), expected);
     assert_eq!(ranked(&["key-b", "key-c", "key-a"]), expected);
 }
+
+/// Give `workspace`'s working view the per-view index a release up to 0.33 kept, holding `bytes` of
+/// rows, and return the index's directory.
+fn plant_legacy_index(workspace: &Path, bytes: usize) -> PathBuf {
+    let dir = workspace.join(VIEWS_DIR).join("working").join(crate::index::INDEX_DIR);
+    let db = fjall::Database::builder(&dir).open().expect("create the view's index");
+    db.keyspace("symbols", fjall::KeyspaceCreateOptions::default)
+        .expect("a keyspace of the view's index")
+        .insert(b"k".to_vec(), vec![7_u8; bytes])
+        .expect("write rows");
+    db.persist(fjall::PersistMode::SyncAll).expect("persist the rows");
+    drop(db);
+    dir
+}
+
+/// Every file under `dir`, relative to it, sorted.
+fn files_under(dir: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in fs::read_dir(&next).expect("read dir").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let relative = path.strip_prefix(dir).expect("under dir");
+                files.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// A row of `over_budget_the_per_view_indexes_go_before_any_workspace`: the case, the live
+/// namespaces, and whether the per-view index goes ahead of the cold workspace.
+type LegacyFirstCase = (&'static str, &'static [BlobNamespace], bool);
+
+/// Over budget, the per-view indexes of releases up to 0.33 go before any current entry: this
+/// release reads none of them. While a 0.33 basemind runs they stay, and the cold workspace goes.
+#[test]
+fn over_budget_the_per_view_indexes_go_before_any_workspace() {
+    const ROWS: usize = 512 * 1024;
+    let cases: &[LegacyFirstCase] = &[
+        ("nothing live", &[], true),
+        ("only a live 0.34", &[BlobNamespace::Schema(34)], true),
+        ("a live 0.33 daemon", &[BlobNamespace::Unnamespaced], false),
+    ];
+    for (case, live, legacy_first) in cases {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (workspaces, blobs) = (tmp.path().join("workspaces"), tmp.path().join("blobs"));
+        fs::create_dir_all(&blobs).expect("mk blobs");
+        let cold = seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), 10 * DAY_AGO);
+        let mru = seed_workspace_aged(&workspaces, "key-mru", &"b".repeat(64), Duration::ZERO);
+        let legacy = plant_legacy_index(&mru, ROWS);
+        let legacy_bytes = dir_size(&legacy).expect("size");
+        let budget = dir_size(&workspaces).expect("size") + dir_size(&blobs).expect("size") - legacy_bytes / 2;
+        let rules = EvictionRules {
+            hot_floor: DAY_AGO,
+            grace: Duration::ZERO,
+            live,
+        };
+
+        let report = enforce_cache_budget_at(&workspaces, &blobs, &blobs, crate::extract::SCHEMA_VER, budget, &rules)
+            .expect("enforce");
+
+        if *legacy_first {
+            assert_eq!(report.legacy_indexes_evicted, 1, "{case}: {report:?}");
+            // The rows at least: the reap opens the database to look for notes, which may add a journal. ~keep
+            assert!(report.legacy_index_bytes_freed >= ROWS as u64, "{case}: {report:?}");
+            assert_eq!(report.evicted, 0, "{case}: no workspace is evicted: {report:?}");
+            assert!(report.total_bytes_after <= budget, "{case}: {report:?}");
+            assert_eq!(files_under(&cold.join(VIEWS_DIR)), ["working/index.msgpack"], "{case}");
+            assert_eq!(files_under(&mru.join(VIEWS_DIR)), ["working/index.msgpack"], "{case}");
+        } else {
+            assert_eq!(report.legacy_indexes_evicted, 0, "{case}: {report:?}");
+            assert_eq!(report.legacy_index_bytes_freed, 0, "{case}");
+            assert_eq!(report.evicted, 1, "{case}: the cold workspace goes instead: {report:?}");
+            assert!(!cold.join(VIEWS_DIR).exists(), "{case}");
+            assert!(legacy.is_dir(), "{case}: the 0.33 daemon keeps its index");
+            assert!(mru.join(VIEWS_DIR).join("working").join(INDEX_FILE).exists(), "{case}");
+        }
+    }
+}

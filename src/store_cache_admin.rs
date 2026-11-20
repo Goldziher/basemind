@@ -183,6 +183,13 @@ pub struct CacheStats {
     /// Of [`Self::repo_groups`], those no workspace marker names: likely left by a clone that is
     /// gone, or named only by markers written before markers recorded their group. Report only.
     pub repo_groups_unnamed: usize,
+    /// Per-view index databases of releases up to 0.33 (`views/<view>/index.fjall`) left in the
+    /// workspaces on the machine. This release never reads one; the daemon's cache sweep removes
+    /// them (ADR-0054). Report only.
+    pub legacy_indexes: usize,
+    /// Recursive byte size of those databases. Not part of [`Self::total_bytes`]: the share of this
+    /// workspace is in [`Self::views_bytes`].
+    pub legacy_index_bytes: u64,
 }
 
 /// What a component clear left in place on purpose.
@@ -399,6 +406,10 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
 
     let rss = crate::sysres::sample();
     let groups = repo_group_report(&blobs.repos, basemind_dir.parent())?;
+    let legacy = match basemind_dir.parent() {
+        Some(workspaces) => crate::store_gc_legacy_views::legacy_indexes_in(workspaces)?,
+        None => crate::store_gc_legacy_views::LegacyIndexes::default(),
+    };
 
     Ok(CacheStats {
         blobs_bytes,
@@ -422,6 +433,8 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
         repo_groups_bytes: groups.bytes,
         repo_groups: groups.count,
         repo_groups_unnamed: groups.unnamed,
+        legacy_indexes: legacy.count,
+        legacy_index_bytes: legacy.bytes,
     })
 }
 
