@@ -123,6 +123,32 @@ impl<K: Ord, V> PagedMap<K, V> {
         Self::from_pages(pages)
     }
 
+    /// The pages and the entries of `self` that it does not share with `base`: what deriving
+    /// `self` from `base` allocated.
+    #[cfg(test)]
+    pub(crate) fn unshared_with(&self, base: &Self) -> (usize, usize) {
+        let base_pages: ahash::AHashSet<*const ()> =
+            base.pages.iter().map(|page| Arc::as_ptr(page).cast::<()>()).collect();
+        let base_entries: ahash::AHashSet<*const (K, V)> = base
+            .pages
+            .iter()
+            .flat_map(|page| page.iter())
+            .map(Arc::as_ptr)
+            .collect();
+        let pages = self
+            .pages
+            .iter()
+            .filter(|page| !base_pages.contains(&Arc::as_ptr(*page).cast::<()>()))
+            .count();
+        let entries = self
+            .pages
+            .iter()
+            .flat_map(|page| page.iter())
+            .filter(|entry| !base_entries.contains(&Arc::as_ptr(*entry)))
+            .count();
+        (pages, entries)
+    }
+
     /// Index of the page `key` belongs on: the first whose last key is not below it.
     fn page_of(&self, key: &K) -> usize {
         self.pages.partition_point(|page| page[page.len() - 1].0 < *key)

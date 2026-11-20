@@ -323,3 +323,7 @@ mod map_cache_budget_tests;
 #[cfg(test)]
 #[path = "map_cache_delta_tests.rs"]
 mod map_cache_delta_tests;
+
+#[cfg(test)]
+#[path = "map_cache_patch_cost_tests.rs"]
+mod map_cache_patch_cost_tests;
