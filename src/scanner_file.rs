@@ -55,14 +55,12 @@ pub(crate) const TEST_PANIC_FILE: &str = "basemind-test-panic.rs";
 /// (one worker per logical CPU); a non-zero value pins the worker count so the scan cannot saturate
 /// every core on a shared machine. The pool is built on first call and its size is then fixed for the
 /// process — the first caller's `scan_threads` wins, mirroring [`crate::embeddings::embed_pool`].
-/// A build the OS refuses (no thread can be spawned) is returned and retried on the next call.
+/// Concurrent first scans share one build; a build the OS refuses (no thread can be spawned) is
+/// returned and retried on the next call.
 pub(crate) fn scanner_pool(scan_threads: usize) -> Result<&'static rayon::ThreadPool, ScanError> {
     static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    if let Some(pool) = POOL.get() {
-        return Ok(pool);
-    }
-    let pool = build_scanner_pool(scan_threads, SCANNER_STACK_SIZE)?;
-    Ok(POOL.get_or_init(|| pool))
+    crate::thread_pool::built_once(&POOL, || build_scanner_pool(scan_threads, SCANNER_STACK_SIZE))
+        .map_err(ScanError::from)
 }
 
 fn build_scanner_pool(
