@@ -295,4 +295,6 @@ Opus · basemind · ⎇ main · 12% ctx
 The dot is green when basemind is live and fresh, amber when idle, red when
 stale. The middle shows activity by type, then tokens saved, then unread
 messages. Adjust with `BASEMIND_STATUSLINE=full|compact|minimal`, or hide the
-top line with `BASEMIND_STATUSLINE_CONTEXT=0`.
+top line with `BASEMIND_STATUSLINE_CONTEXT=0`. While a full scan runs, the line
+adds its progress (`indexing 1.2k/40k files · extract · ~3m left`), which during
+a first scan takes the place of the "no index" hint.

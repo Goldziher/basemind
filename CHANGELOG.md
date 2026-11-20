@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- First-scan progress (#212). During a full scan `index_status` reports `scan_progress`: the
+  `phase`, the candidate files extracted (`files_done`) of those the scan works through
+  (`files_total`), and `eta_secs`, the seconds extraction has left at the rate it has run so far.
+  The scan records its count in its breadcrumb once per drive chunk, so a scan run by another
+  process is reported too, and `basemind statusline --root` adds it to the status line
+  (`indexing 1.2k/40k files · extract · ~3m left`) in place of the "no index" hint during a first
+  scan.
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
   lists the files importing that file `by_depth`, up to `depth` hops (default 1, max 5), names those
   in an import cycle with it and says when the walk was cut; `relation: "cycles"` lists the import

@@ -66,12 +66,22 @@ fn brand_mark() -> String {
 /// Render the compact per-repo statusline for `root`, reading ONLY the cheap `status.json` sidecar
 /// and `telemetry.jsonl` tail — never opening the index. When the workspace has no sidecar (never
 /// scanned, or an unrecognized schema), returns the same "no index" hint the shell shows so the bar
-/// is never blank.
+/// is never blank. While a full scan runs, its breadcrumb adds the scan's progress, which also
+/// replaces that hint during a first scan.
 fn render_repo_statusline(root: &std::path::Path) -> String {
     use basemind::store::{read_status_sidecar, workspace_cache_dir};
 
     let basemind_dir = workspace_cache_dir(root);
+    let progress = basemind::scan_evidence::live_progress(&basemind_dir).map(|progress| {
+        format!(
+            "  {SEP}│{RESET}  {BOLD}{CYAN}{}{RESET}",
+            format_scan_progress(&progress)
+        )
+    });
     let Some(status) = read_status_sidecar(&basemind_dir) else {
+        if let Some(progress) = progress {
+            return format!("{}{progress}", brand_mark());
+        }
         return format!(
             "{} {SEP}│{RESET} {LABEL}no index — run:{RESET} {BOLD}{CYAN}basemind scan{RESET}",
             brand_mark()
@@ -94,7 +104,38 @@ fn render_repo_statusline(root: &std::path::Path) -> String {
     if status.is_degraded() {
         out.push_str(&format!("  {SEP}│{RESET}  {BOLD}{MAGENTA}degraded{RESET}"));
     }
+    if let Some(progress) = progress {
+        out.push_str(&progress);
+    }
     out
+}
+
+/// A running scan's statusline segment: `indexing`, the files extracted of the candidates once they
+/// are listed, the phase, and the time extraction has left once it has a rate
+/// (`indexing 1.2k/40k files · extract · ~3m left`).
+fn format_scan_progress(progress: &basemind::scan_evidence::ScanProgress) -> String {
+    let counts = progress.files_total.map_or_else(
+        || "indexing".to_string(),
+        |total| {
+            format!(
+                "indexing {}/{} files",
+                fmt_count(progress.files_done as u64),
+                fmt_count(total as u64)
+            )
+        },
+    );
+    let mut parts = vec![counts, progress.phase.clone()];
+    parts.extend(progress.eta_secs.map(|secs| format!("~{} left", fmt_eta(secs))));
+    parts.join(" · ")
+}
+
+/// Whole seconds, minutes or hours, rounded up so a scan with time left never reads `0`.
+fn fmt_eta(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3_600 => format!("{}m", s.div_ceil(60)),
+        s => format!("{}h", s.div_ceil(3_600)),
+    }
 }
 
 /// Human-readable age of a Unix-epoch-seconds scan timestamp (`Ns/Nm/Nh/Nd ago`), mirroring the
@@ -666,6 +707,62 @@ fn humanize_age(secs: i64) -> String {
         s if s < 3600 => format!("{}m", s / 60),
         s if s < 86400 => format!("{}h", s / 3600),
         s => format!("{}d", s / 86400),
+    }
+}
+
+#[cfg(test)]
+mod scan_progress_tests {
+    use basemind::scan_evidence::ScanProgress;
+
+    fn progress(phase: &str, files_done: usize, files_total: Option<usize>, eta_secs: Option<u64>) -> ScanProgress {
+        ScanProgress {
+            phase: phase.to_string(),
+            files_done,
+            files_total,
+            eta_secs,
+        }
+    }
+
+    #[test]
+    fn the_segment_reads_the_counts_the_phase_and_the_time_left() {
+        let cases = [
+            (progress("candidates", 0, None, None), "indexing · candidates"),
+            (
+                progress("extract", 0, Some(40_000), None),
+                "indexing 0/40k files · extract",
+            ),
+            (
+                progress("extract", 1_234, Some(40_000), Some(150)),
+                "indexing 1.2k/40k files · extract · ~3m left",
+            ),
+            (
+                progress("extract", 10, Some(20), Some(45)),
+                "indexing 10/20 files · extract · ~45s left",
+            ),
+            (
+                progress("resolve", 20, Some(20), None),
+                "indexing 20/20 files · resolve",
+            ),
+        ];
+        for (progress, expected) in cases {
+            assert_eq!(super::format_scan_progress(&progress), expected);
+        }
+    }
+
+    #[test]
+    fn the_time_left_rounds_up_to_whole_units() {
+        let cases = [
+            (0, "0s"),
+            (59, "59s"),
+            (60, "1m"),
+            (61, "2m"),
+            (3_599, "60m"),
+            (3_600, "1h"),
+            (3_601, "2h"),
+        ];
+        for (secs, expected) in cases {
+            assert_eq!(super::fmt_eta(secs), expected, "{secs}");
+        }
     }
 }
 

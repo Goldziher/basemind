@@ -100,6 +100,59 @@ fn a_full_scan_writes_a_breadcrumb_at_the_path_the_doctor_reads() {
     );
 }
 
+/// Reads the breadcrumb at each drive chunk, as `index_status` or the statusline in another process
+/// would while the scan runs.
+struct ChunkProbe {
+    cache_dir: PathBuf,
+    seen: Vec<(String, Option<usize>, Option<usize>)>,
+}
+
+impl ScanObserver for ChunkProbe {
+    fn on_file(&mut self, _result: FileResult) {}
+
+    fn on_batch(&mut self, _live_results: usize) {
+        let record = scan_evidence::read(&self.cache_dir).expect("a breadcrumb while the scan runs");
+        self.seen.push((record.phase, record.files_done, record.candidates));
+    }
+}
+
+#[test]
+fn a_full_scan_reports_the_files_extracted_of_its_candidates_while_it_runs_and_nothing_after() {
+    basemind::store::init_isolated_cache();
+    let dir = repo();
+    let root = dir.path();
+    fs::write(root.join("lib.rs"), "pub fn lib() {}\n").expect("write source");
+    fs::write(root.join("util.rs"), "pub fn util() {}\n").expect("write source");
+    let mut probe = ChunkProbe {
+        cache_dir: workspace_cache_dir(root),
+        seen: Vec::new(),
+    };
+
+    let mut store = open(root);
+    scan_with_observer(
+        root,
+        &mut store,
+        &ConfigV1::with_defaults(),
+        ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+        &ScanCancel::new(),
+        &mut probe,
+        basemind::retrieval_wiring::backend(),
+    )
+    .expect("scan");
+
+    assert_eq!(
+        probe.seen,
+        vec![(scan_evidence::PHASE_EXTRACT.to_string(), Some(3), Some(3))],
+        "one chunk of three candidates, counted as it is absorbed"
+    );
+    assert_eq!(
+        scan_evidence::live_progress(&probe.cache_dir),
+        None,
+        "a scan that returned reports no progress"
+    );
+}
+
 #[test]
 fn a_scan_that_returns_leaves_no_breadcrumb_behind() {
     basemind::store::init_isolated_cache();
