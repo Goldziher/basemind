@@ -58,6 +58,31 @@ fn a_live_daemon_is_found_by_pid_in_any_generation_and_a_dead_one_is_not() {
     assert_eq!(found.version, "0.33.0", "the pre-generation layout is read too");
 }
 
+/// A registry that does not exist is an empty, complete census; a record that cannot be read may
+/// be a live daemon's, so the census that skips it says it is incomplete, and still lists the rest.
+#[test]
+fn a_record_that_cannot_be_read_leaves_the_census_incomplete() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let missing = registered_daemons_in(&root.path().join("daemons"));
+    assert_eq!(
+        missing,
+        DaemonCensus {
+            daemons: Vec::new(),
+            complete: true
+        }
+    );
+
+    let record = serde_json::json!({
+        "pid": std::process::id(), "kind": "comms", "dir": "/tmp/comms", "version": "0.34.0", "started_unix": now_unix(),
+    });
+    std::fs::create_dir_all(root.path().join("g1/comms-unreadable.pid")).expect("a record that cannot be read");
+    std::fs::write(root.path().join("g1/comms-live.pid"), record.to_string()).expect("write");
+    let census = registered_daemons_in(root.path());
+    assert!(!census.complete);
+    let listed: Vec<String> = census.daemons.into_iter().map(|daemon| daemon.record.version).collect();
+    assert_eq!(listed, ["0.34.0"]);
+}
+
 /// Every live daemon is listed with where it recorded itself, so the blob sweep can tell a release up
 /// to 0.33 (registry root) from a later one (a generation directory). Dead ones and records outside
 /// a generation directory are not.
@@ -82,7 +107,10 @@ fn every_live_daemon_is_listed_with_whether_it_predates_the_generations() {
     write("g1/comms-dead.pid", record(0x7FFF_FFFE, "0.34.0"));
     write("scratch/comms-stray.pid", record(me, "0.99.0"));
 
-    let mut listed: Vec<(String, bool)> = registered_daemons_in(root.path())
+    let census = registered_daemons_in(root.path());
+    assert!(census.complete);
+    let mut listed: Vec<(String, bool)> = census
+        .daemons
         .into_iter()
         .map(|daemon| (daemon.record.version, daemon.pre_generation))
         .collect();
@@ -297,11 +325,16 @@ fn a_daemon_whose_process_refuses_to_be_opened_holds_but_is_not_named() {
     let unopenable = |_pid: u32| windows_state(Err(Some(ERROR_ACCESS_DENIED)));
 
     let listed: Vec<(String, bool)> = registered_daemons_judged_by(root.path(), unopenable)
+        .daemons
         .into_iter()
         .map(|daemon| (daemon.record.version, daemon.pre_generation))
         .collect();
     assert_eq!(listed, [("0.33.0".to_string(), true), ("0.34.0".to_string(), false)]);
-    assert!(registered_daemons_judged_by(root.path(), |_pid| PidState::Gone).is_empty());
+    assert!(
+        registered_daemons_judged_by(root.path(), |_pid| PidState::Gone)
+            .daemons
+            .is_empty()
+    );
 
     assert_eq!(registered_daemon_judged_by(root.path(), PID, unopenable), None);
     let named = registered_daemon_judged_by(root.path(), PID, |_pid| PidState::Live).expect("a live holder");

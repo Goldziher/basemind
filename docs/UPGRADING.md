@@ -636,7 +636,9 @@ hold: no live process of that version is registered under the data directory (a 
 namespace for `BASEMIND_PRUNE_AFTER_DAYS` days (default 14; `0` leaves only the first test). A
 0.33 daemon still serving another repository through an upgrade therefore keeps its blobs. While a
 live process whose namespace cannot be told is registered (a `hosting/<pid>` that names no build, or
-a version that does not parse), no older namespace is reaped at all. Each
+a version that does not parse), or while a record in `daemons/` cannot be read, no older namespace
+is reaped at all. A daemon record that names no process start (0.33 and earlier) keeps its
+namespace for as long as a process runs under its pid. Each
 file still goes only once it is older than the blob grace period (`BASEMIND_BLOB_GC_GRACE_SECS`).
 A version none of whose processes runs at the sweep keeps its blobs while it has written into them
 within the hold; once they are reaped, its next scan re-extracts.
