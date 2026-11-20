@@ -106,7 +106,20 @@
         "embedding_preset": "balanced",
         "embed": true,
         "embed_include": [],
-        "embed_exclude": [],
+        "embed_exclude": [
+          "*.json",
+          "*.jsonc",
+          "*.json5",
+          "*.jsonl",
+          "*.ndjson",
+          "*.geojson",
+          "*.yaml",
+          "*.yml",
+          "*.toml",
+          "*.csv",
+          "*.tsv",
+          "*.xml"
+        ],
         "extract_archives": false,
         "max_archive_bytes": 67108864,
         "max_archive_entries": 1000,
@@ -575,7 +588,7 @@
           "default": true
         },
         "embed_include": {
-          "description": "Allow-list of globs for embedding: when non-empty only matching documents are embedded; the\nrest stay extracted + keyword-searchable. It only narrows what `include`/`exclude` already\nindex. Empty (default) = every indexed document is embedded. Only consulted when `embed = true`.",
+          "description": "Allow-list of globs for embedding: when non-empty only matching documents are embedded; the\nrest stay extracted + keyword-searchable. It only narrows what `include`/`exclude` already\nindex. Empty (default) = every indexed document outside `embed_exclude` is embedded. Only\nconsulted when `embed = true`.",
           "type": "array",
           "items": {
             "type": "string",
@@ -584,13 +597,26 @@
           "default": []
         },
         "embed_exclude": {
-          "description": "Glob patterns (repo-relative, forward-slash) for documents that are still extracted +\nindexed but **never** embedded. Keeps ONNX vectors off selected large or low-value documents\nwhile leaving their text searchable by keyword. Beats `embed_include`. Empty by default; only\nconsulted when `embed = true`. Changing it removes the vector rows of newly excluded\ndocuments on the next scan.",
+          "description": "Glob patterns (repo-relative, forward-slash) for documents that are still extracted +\nindexed but **never** embedded. Keeps ONNX vectors off selected large or low-value documents\nwhile leaving their text searchable by keyword. Beats `embed_include`. The default holds the\nstructured data formats (`*.json`, `*.jsonc`, `*.json5`, `*.jsonl`, `*.ndjson`, `*.geojson`,\n`*.yaml`, `*.yml`, `*.toml`, `*.csv`, `*.tsv`, `*.xml`), which are searched by exact text and\nkeyword rather than by meaning: they stay chunked, keyword-searchable and visible to\n`code_grep`. Setting the key\nreplaces the default list; `embed_exclude = []` embeds them too. Only consulted when\n`embed = true`. Changing it removes the vector rows of newly excluded documents on the next\nscan.",
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1
           },
-          "default": []
+          "default": [
+            "*.json",
+            "*.jsonc",
+            "*.json5",
+            "*.jsonl",
+            "*.ndjson",
+            "*.geojson",
+            "*.yaml",
+            "*.yml",
+            "*.toml",
+            "*.csv",
+            "*.tsv",
+            "*.xml"
+          ]
         },
         "extract_archives": {
           "description": "Deprecated and ignored: archive extraction was removed, so archives and compressed\ncontainers (`.zip/.tar/.jar/...`) are always skipped. Accepted so existing files keep\nloading; `true` logs a warning.",
