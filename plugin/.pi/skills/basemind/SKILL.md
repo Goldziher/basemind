@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:c33ef5d995d77149e4c27c851b2287fe6d7c2dc59d1f3f3db1e9493d4f0d8db4
-Source-Hash: blake3:2c2d53f0b84699454bf3f753ae0f38ea3a40928c5e2f3c4abbae7a3a7ad0d98a
+Content-Hash: blake3:3cbe47a6012d8166e26608da68552faff5056423ad64c0e8ae3da90b4f69f4db
+Source-Hash: blake3:01442a6227c34b9cd7b138d6aac12ddc327478a9c13627fd6ee56a05f54a4960
 Schema-Version: v1
 -->
 
@@ -74,7 +74,10 @@ structural answer costs a fraction of the tokens of reading source.
   `"regex":true`; every hit carries its line and the enclosing symbol.
 - **The index follows your edits**: no rescan and no server reconnect after each one. If a result
   says `stale` or a new file is missing, run `index_rescan {"paths":["src/store.rs"]}` for the files
-  you touched; run `index_rescan {}` only when `index_status` reports an empty or degraded index.
+  you touched; run `index_rescan {}` only when `index_status` reports an empty index, `degraded` or
+  `rescan_needed`. Files under `scan.extra_roots` are the exception: the watcher does not track them
+  and a path-scoped rescan refreshes only one already indexed, so a new or changed file there needs
+  a full `basemind scan`.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 
 Drop to raw shell, grep, or git only when no basemind tool covers the question.

@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.14.0'
 scope = 'all'
-tree = 'sha256:eafddf09485fe64de2a9bcccda0ae1a48f25a3284eb0a6baec177b194e7c03ef'
+tree = 'sha256:ff56c83f94375e1b98f2e7ad5dab379590a1da1efba868ad379cc2d93e3913ac'
 
 [[served]]
 name = 'adr-workflow'
@@ -262,7 +262,7 @@ digest = 'sha256:d43a23e2f32d56826ce1b59534711227d58024fa861745c184accb836e2c00d
 kind = 'rule'
 id = 'basemind-usage'
 path = 'rules/basemind-usage.md'
-digest = 'sha256:d6bfc85c98e6eff016f05cee8e2e782e8350d1d758421fc483093803378c16bd'
+digest = 'sha256:c540b742c02afe1369434965187356fc152888acdc4f2e2af14e814e06445e9f'
 
 [[item]]
 kind = 'rule'

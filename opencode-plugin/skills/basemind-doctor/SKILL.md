@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:3b7384c541d89c6d948aefa088bd7e69eb6065415a36b43baae644739e5a0eee
-Source-Hash: blake3:2c2d53f0b84699454bf3f753ae0f38ea3a40928c5e2f3c4abbae7a3a7ad0d98a
+Content-Hash: blake3:12e6dab28d40e06254303828e7bb8c4e9f5969938f1437a43025c2ed083a69cf
+Source-Hash: blake3:01442a6227c34b9cd7b138d6aac12ddc327478a9c13627fd6ee56a05f54a4960
 Schema-Version: v1
 -->
 
@@ -57,9 +57,15 @@ directory under the machine-global cache (Linux `~/.local/share/basemind/`, macO
 `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`), keyed by workspace — not
 in the repo.
 
-- If that `pid` is **alive** (`ps -p <pid>`), the server is up — use the MCP tools; it keeps the
-  index fresh as you edit. For a file a result calls stale, run `index_rescan {"paths":["src/store.rs"]}`
-  or `basemind rescan src/store.rs`. Don't run a CLI `scan` (it will contend on the lock and exit 3).
+- If that `pid` is **alive** (`ps -p <pid>`) and is a `basemind serve`, the server is up — use the
+  MCP tools; it keeps the index fresh as you edit. For a file a result calls stale, run
+  `index_rescan {"paths":["src/store.rs"]}` or `basemind rescan src/store.rs`. When `index_status {}`
+  reports an empty index, `degraded` or `rescan_needed`, rebuild it through the server with
+  `index_rescan {}`. Don't run a CLI `scan` (it will contend on the lock and exit 3).
+- If that `pid` is **alive** and is a standalone `basemind watch`, there is no MCP server to take an
+  `index_rescan`, and `basemind rescan` exits 3 on the lock. The watcher re-indexes edits itself; to
+  rescan or rebuild, stop it first, run `basemind rescan src/store.rs` (or `basemind scan` for an
+  empty, `degraded` or `rescan_needed` index), then restart `basemind watch` if you want it.
 - If that `pid` is **dead**, the lock is stale. The OS releases the advisory lock when a process
   dies, so a fresh `basemind scan` / `basemind serve` should just work — retry it. (You may delete
   the stale `.lock.meta` sidecar in that workspace cache dir to clear the advisory holder record.)

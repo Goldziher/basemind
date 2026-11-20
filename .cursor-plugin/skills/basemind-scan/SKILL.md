@@ -1,5 +1,5 @@
 ---
-description: Build or refresh the basemind index by running `basemind scan` via the CLI. Use this when basemind reports "no index" / "no indexed files", when the MCP server isn't available, or when `index_status` reports a degraded index. Works without the MCP server — it shells the basemind binary directly.
+description: Build or refresh the basemind index by running `basemind scan` via the CLI. Use this when basemind reports "no index" / "no indexed files", when the MCP server isn't available, or when `index_status` reports `degraded` or `rescan_needed`. Works without the MCP server — it shells the basemind binary directly.
 name: basemind-scan
 license: MIT
 metadata:
@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:45bc0903d84dcc05069572142d9dafc8889b0d872deb81cb4c96948931955078
-Source-Hash: blake3:2c2d53f0b84699454bf3f753ae0f38ea3a40928c5e2f3c4abbae7a3a7ad0d98a
+Content-Hash: blake3:114639f09dd46a1649822250e608a4a9f91a43589fd2f39f083eb377a58c65ea
+Source-Hash: blake3:01442a6227c34b9cd7b138d6aac12ddc327478a9c13627fd6ee56a05f54a4960
 Schema-Version: v1
 -->
 
@@ -26,10 +26,15 @@ basemind answers code-map questions from an index in a machine-global cache (Lin
 ## When to use
 
 - basemind / the statusline reports **no index** for this repo.
-- An MCP tool returns "no indexed files" or empty results that should not be empty.
+- An MCP tool returns "no indexed files".
 - The MCP server isn't running or isn't reachable, and you need the code map.
-- `index_status` reports a degraded index (`rescan_needed`) and you want a full rebuild. A running
-  server already re-indexes the files you edit.
+- `index_status` reports `degraded` or `rescan_needed: true` and you want a full rebuild. Either one
+  qualifies: a scan that stops after writing the code map sets `degraded` alone.
+- Files under `scan.extra_roots` changed: only a full scan re-indexes them.
+
+Not for a healthy index that misses a file you just created: run `basemind rescan <path>` (or
+`index_rescan {"paths":[…]}`) for that file. A running server already re-indexes the files you edit
+in the repository; it does not watch `scan.extra_roots`.
 
 ## How to run
 

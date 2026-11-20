@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:4095badd412b1677830e2afa72e9cdf33d41f6a22cb73438836c4d5c31849dcd
-Source-Hash: blake3:2c2d53f0b84699454bf3f753ae0f38ea3a40928c5e2f3c4abbae7a3a7ad0d98a
+Content-Hash: blake3:8f9962ffe2dea636de5da041c7cec0be67de4d266c5bc88a4f3be93ac8f2e8a1
+Source-Hash: blake3:01442a6227c34b9cd7b138d6aac12ddc327478a9c13627fd6ee56a05f54a4960
 Schema-Version: v1
 -->
 
@@ -37,9 +37,13 @@ no tool covers the question.
 - **`code_grep` instead of shelling out to ripgrep.** It sweeps every indexed code file (a trigram
   filter skips files that cannot match) and returns each hit's line and enclosing symbol.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
-- **The index follows your edits**: no rescan and no server reconnect after each one. If a result
-  says `stale` or a new file is missing, run `index_rescan {"paths":["src/store.rs"]}` for the files
-  you touched; run `index_rescan {}` only when `index_status` reports an empty or degraded index.
+- **The index follows your edits** while a server, daemon or `basemind watch` runs: no rescan and
+  no server reconnect after each one. If a result says `stale` or a new file is missing, run
+  `index_rescan {"paths":["src/store.rs"]}` for the files you touched; run `index_rescan {}` only when
+  `index_status` reports an empty index, `degraded` or `rescan_needed`.
+- **CLI only, with nothing watching**: the index does not follow edits, and a symbol added to an
+  indexed file is simply missing (no hit, no `stale` flag). Run `basemind rescan <path>…` for the
+  files you edited before querying them.
 
 ## Tool routing
 
