@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33
+to 34, so each view's index is wiped at its first open, the blob store moves to `cache/blobs/v34/`,
+and every file is re-extracted and every document and code chunk re-embedded once. Read
+[`docs/UPGRADING.md`](docs/UPGRADING.md) before installing.
+
 ### Added
 
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
@@ -70,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exit codes, environment variables and troubleshooting. It needs no index or daemon. The pages in
   `docs/manual/` are also the source of the skills' manual sections, spliced in by
   `scripts/sync_public_skills.py --manual` and checked for drift by `plugin_manifest_smoke` (#133).
-- `[documents.dependencies]` (off by default): a full scan indexes the README, CHANGELOG and `docs/**`
+- `[documents.dependencies]` (#132, off by default): a full scan indexes the README, CHANGELOG and `docs/**`
   of the dependencies `Cargo.toml` + `Cargo.lock`, `package.json`, `pyproject.toml` + `uv.lock` /
   `poetry.lock` and `go.mod` name, under `deps/<ecosystem>/<name>@<version>/<file>`, so
   `docs_search {path: "deps/npm/react@*/**"}` filters by package and a hit carries `package` and
@@ -140,6 +145,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- Large files before they are opened (#127): `index_status` reports `large_files`, the count of code
+  files of 2,000 lines or more and the five largest with their line and byte counts, and
+  `find_files` `min_lines` (CLI `basemind code find --min-lines`) lists every code file of at least
+  that many lines, largest first, as path to line count. The file map records each file's line count.
 - Every command's `--help` ends with when to use it, what it returns, one example and what to call
   next (#163); `-h` keeps the one-line summary. `basemind --help` describes what basemind is, and the
   `init`, `memory`, `cache` and `comms status` summaries say what those commands do.
@@ -147,7 +156,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
-  list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
+  list is no longer JSON (#157, ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
   `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`
   groups them; the other three are [TOON](https://toonformat.dev), which writes a list of objects
   as one table. Every other tool keeps JSON, which TOON did not shorten on the value-gate corpora;
