@@ -32,7 +32,8 @@ pub struct FindFilesToolParams {
     /// Only code files of at least this many lines, largest first; `files` maps path to lines.
     #[serde(default)]
     pub min_lines: Option<u32>,
-    /// Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.
+    /// Files changed since rev's merge base (empty: HEAD), in A..B or A...B (e.g. main...HEAD);
+    /// +importers adds importers.
     #[serde(default)]
     pub changed: Option<String>,
 }

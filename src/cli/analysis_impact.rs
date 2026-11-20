@@ -20,7 +20,8 @@ pub struct ImpactArgs {
     /// The target is this symbol, whatever files exist.
     #[arg(long, conflicts_with_all = ["diff", "changed"])]
     symbol: Option<String>,
-    /// The files a change touches: a revision diffed against the working tree, or `A..B`.
+    /// The files a change touches: a revision's merge base with `HEAD` diffed against the working
+    /// tree, `A..B` or `A...B`.
     #[arg(long, conflicts_with = "changed")]
     diff: Option<String>,
     /// The uncommitted changes: `--diff HEAD`.

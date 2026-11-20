@@ -25,6 +25,10 @@ pub struct CodeSearchParams {
     /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Files changed since rev's merge base (empty: HEAD), in A..B or A...B (e.g. main...HEAD);
+    /// +importers adds importers.
+    #[serde(default)]
+    pub changed: Option<String>,
 }
 
 /// Arguments of `docs_search`.
@@ -164,6 +168,9 @@ pub(crate) struct CodeSearchRanking {
 #[derive(Debug)]
 pub(crate) struct CodeSearchPage {
     pub ranking: CodeSearchRanking,
+    /// Files the `changed` scope holds, when one was passed: `0` is a change that touched nothing,
+    /// told apart from one with no hit.
+    pub scope_files: Option<usize>,
     /// True when a `max_tokens` budget dropped trailing `hits`.
     pub budgeted: bool,
     /// True when the ranking goes on past the paging depth (`truncated_reason: depth`).
@@ -184,6 +191,9 @@ impl Serialize for CodeSearchPage {
         let ranking = &self.ranking;
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("query", &ranking.query)?;
+        if let Some(scope_files) = self.scope_files {
+            map.serialize_entry("scope_files", &scope_files)?;
+        }
         if let Some(reason) = &ranking.truncated_reason {
             map.serialize_entry("truncated", &true)?;
             map.serialize_entry("truncated_reason", reason)?;

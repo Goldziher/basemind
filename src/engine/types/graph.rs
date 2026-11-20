@@ -18,7 +18,8 @@ pub struct ImpactParams {
     /// A symbol name: every file defining it is a target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbol: Option<String>,
-    /// A change: a revision against the working tree (`""` for `HEAD`) or `A..B`.
+    /// A change: a revision's merge base with `HEAD` against the working tree (`""` for `HEAD`),
+    /// `A..B` or `A...B`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
     /// Importer levels to walk, 1 to 5 (default 1).

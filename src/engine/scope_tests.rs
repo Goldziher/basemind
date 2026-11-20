@@ -159,6 +159,10 @@ fn the_changed_grammar() {
         from: from.to_string(),
         to: to.to_string(),
     };
+    let merge_base = |from: &str, to: &str| ChangeBase::MergeBase {
+        from: from.to_string(),
+        to: to.to_string(),
+    };
     let cases = [
         ("", tree(None), false),
         (" HEAD ", tree(None), false),
@@ -166,6 +170,10 @@ fn the_changed_grammar() {
         ("a..b", range("a", "b"), false),
         ("a..", range("a", "HEAD"), false),
         ("..b", range("HEAD", "b"), false),
+        ("a...b", merge_base("a", "b"), false),
+        ("a...", merge_base("a", "HEAD"), false),
+        ("...b", merge_base("HEAD", "b"), false),
+        ("main...HEAD+importers", merge_base("main", "HEAD"), true),
         ("+importers", tree(None), true),
         ("v1 +importers", tree(Some("v1")), true),
         ("a..b+importers", range("a", "b"), true),
@@ -177,10 +185,93 @@ fn the_changed_grammar() {
             "{value:?}"
         );
     }
-    for bad in ["a...b", "..", "..+importers"] {
+    for bad in ["..", "..+importers", "...", "...+importers"] {
         let error = ChangeSpec::parse(bad).expect_err(bad);
-        assert!(error.to_string().contains("A..B"), "{bad}: {error}");
+        assert!(error.to_string().contains("`A..B` or `A...B`"), "{bad}: {error}");
     }
+}
+
+/// A branch `feature` off `trunk`, both moved on since, checked out with uncommitted work:
+/// - base: `shared.rs`, `stable.rs`
+/// - `trunk`: `upstream.rs` added, `shared.rs` changed
+/// - `feature` (`HEAD`): `mine.rs` added, `stable.rs` changed
+/// - working tree: `stable.rs` changed again, `loose.rs` untracked
+fn diverged() -> (tempfile::TempDir, Repo) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    write(root, "shared.rs", "shared\n");
+    write(root, "stable.rs", "stable\n");
+    commit(root, "base");
+    git(root, &["branch", "trunk"]);
+    git(root, &["checkout", "-q", "-b", "feature"]);
+    write(root, "mine.rs", "mine\n");
+    write(root, "stable.rs", "stable on feature\n");
+    commit(root, "feature work");
+    git(root, &["checkout", "-q", "trunk"]);
+    write(root, "upstream.rs", "upstream\n");
+    write(root, "shared.rs", "shared on trunk\n");
+    commit(root, "upstream work");
+    git(root, &["checkout", "-q", "feature"]);
+    write(root, "stable.rs", "stable, uncommitted\n");
+    write(root, "loose.rs", "loose\n");
+    let repo = Repo::discover(root).expect("repo");
+    (dir, repo)
+}
+
+#[test]
+fn a_bare_revision_is_the_branch_since_its_merge_base_with_head() {
+    let (_dir, repo) = diverged();
+    let scope = scope_of(&repo, "trunk").expect("scope");
+    assert_eq!(sorted(&scope), ["loose.rs", "mine.rs", "stable.rs"]);
+}
+
+#[test]
+fn a_two_dot_range_still_diffs_the_trees_directly() {
+    let (_dir, repo) = diverged();
+    let scope = scope_of(&repo, "trunk..HEAD").expect("scope");
+    assert_eq!(sorted(&scope), ["mine.rs", "shared.rs", "stable.rs", "upstream.rs"]);
+}
+
+#[test]
+fn a_three_dot_range_is_what_its_right_side_changed_since_the_merge_base() {
+    let (_dir, repo) = diverged();
+    for (value, expected) in [
+        ("trunk...HEAD", ["mine.rs", "stable.rs"]),
+        ("trunk...", ["mine.rs", "stable.rs"]),
+        ("...trunk", ["shared.rs", "upstream.rs"]),
+        ("feature...trunk", ["shared.rs", "upstream.rs"]),
+    ] {
+        assert_eq!(sorted(&scope_of(&repo, value).expect(value)), expected, "{value}");
+    }
+    assert!(scope_of(&repo, "HEAD...HEAD").expect("same commit").is_empty());
+}
+
+#[test]
+fn a_file_restored_on_disk_to_the_merge_base_is_out_of_the_bare_revision_scope() {
+    let (dir, repo) = diverged();
+    write(dir.path(), "stable.rs", "stable\n");
+    let scope = scope_of(&repo, "trunk").expect("scope");
+    assert_eq!(sorted(&scope), ["loose.rs", "mine.rs"]);
+}
+
+#[test]
+fn histories_sharing_no_commit_have_no_merge_base() {
+    let (dir, repo) = diverged();
+    let root = dir.path();
+    git(root, &["checkout", "-q", "--orphan", "island"]);
+    commit(root, "unrelated");
+    git(root, &["checkout", "-q", "-f", "feature"]);
+    drop(repo);
+    let repo = Repo::discover(root).expect("repo");
+    for value in ["island", "island...HEAD", "HEAD...island"] {
+        let error = scope_of(&repo, value).expect_err(value);
+        assert!(matches!(error, EngineError::InvalidArgument(_)), "{value}: {error:?}");
+        assert!(error.to_string().contains("share no commit"), "{value}: {error}");
+    }
+    let error = scope_of(&repo, "no-such-branch...HEAD").expect_err("unknown");
+    assert!(error.to_string().contains("no-such-branch"), "{error}");
 }
 
 #[test]
