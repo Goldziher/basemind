@@ -11,7 +11,9 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use basemind::comms::singleton::{comms_socket_path, generation_dir, probe_alive};
-use basemind::store::{CACHE_DIR, WORKSPACES_DIR, WriterProbe, probe_writer_lock, workspace_key};
+use basemind::store::{
+    CACHE_DIR, REPOS_DIR, WORKSPACES_DIR, WriterProbe, probe_writer_lock, repo_group_key, workspace_key,
+};
 use tempfile::TempDir;
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
@@ -59,6 +61,35 @@ impl Env {
 
     fn run(&self, args: &[&str]) -> Output {
         self.command(args).output().expect("run basemind")
+    }
+
+    /// A `basemind watch` that holds the workspace's writer lock, and with it the index, once this
+    /// returns. No daemon is started.
+    fn hold_writer_lock(&self) -> Child {
+        let mut holder = self
+            .command(&["watch"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("watch");
+        // Wait until the watcher owns the lock, by probing it rather than by scanning: each probing scan
+        // held the lock itself, and `watch` gives up after half a second of contention, so on a loaded
+        // machine it exited busy and the loop waited out its deadline.
+        let workspace = self
+            .home
+            .path()
+            .join(CACHE_DIR)
+            .join(WORKSPACES_DIR)
+            .join(workspace_key(self.root()));
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !matches!(probe_writer_lock(&workspace), WriterProbe::Held { .. }) {
+            if let Some(status) = holder.try_wait().expect("poll watch") {
+                panic!("watch exited ({status}) before it took the lock");
+            }
+            assert!(Instant::now() < deadline, "watch never took the lock");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        holder
     }
 }
 
@@ -227,33 +258,56 @@ fn memory_clear_demands_yes_off_a_terminal_and_removes_every_note() {
     );
 }
 
+/// With no daemon up, `memory clear` refuses busy while another process holds the index, names the
+/// fix, and leaves the notes.
+#[test]
+fn memory_clear_refuses_busy_while_another_process_holds_the_index() {
+    if !cfg!(feature = "memory") {
+        return;
+    }
+    let env = Env::new();
+    assert_eq!(code(&env.run(&["scan", "--quiet"])), 0);
+    assert_eq!(code(&env.run(&["memory", "put", "k1", "a note"])), 0);
+    let mut holder = env.hold_writer_lock();
+
+    let refused = env.run(&["--json", "memory", "clear", "--yes"]);
+    let _ = holder.kill();
+    let _ = holder.wait();
+
+    assert_eq!(code(&refused), 3, "{}", text(&refused));
+    assert!(text(&refused).contains("basemind comms start"), "{}", text(&refused));
+    assert_eq!(json(&env.run(&["--json", "memory", "get", "k1"]))["value"], "a note");
+}
+
+/// `cache stats` names the repository's memory directory: the group's entry under the data home's
+/// `cache/repos/`.
+#[test]
+fn cache_stats_name_the_memory_directory_under_the_data_home() {
+    let env = Env::new();
+    assert_eq!(code(&env.run(&["scan", "--quiet"])), 0);
+
+    let stats = env.run(&["--json", "cache", "stats"]);
+
+    assert_eq!(code(&stats), 0, "{}", text(&stats));
+    let expected = env
+        .home
+        .path()
+        .join(CACHE_DIR)
+        .join(REPOS_DIR)
+        .join(repo_group_key(env.root()));
+    assert_eq!(
+        json(&stats)["memory_dir"],
+        expected.to_str().expect("utf-8 data home"),
+        "{}",
+        text(&stats)
+    );
+}
+
 #[test]
 fn writer_lock_collision_exits_busy_for_scan_rescan_and_cache_clear() {
     let env = Env::new();
     assert_eq!(code(&env.run(&["scan", "--quiet"])), 0);
-    let mut holder = env
-        .command(&["watch"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("watch");
-    // Wait until the watcher owns the lock, by probing it rather than by scanning: each probing scan
-    // held the lock itself, and `watch` gives up after half a second of contention, so on a loaded
-    // machine it exited busy and the loop waited out its deadline.
-    let workspace = env
-        .home
-        .path()
-        .join(CACHE_DIR)
-        .join(WORKSPACES_DIR)
-        .join(workspace_key(env.root()));
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while !matches!(probe_writer_lock(&workspace), WriterProbe::Held { .. }) {
-        if let Some(status) = holder.try_wait().expect("poll watch") {
-            panic!("watch exited ({status}) before it took the lock");
-        }
-        assert!(Instant::now() < deadline, "watch never took the lock");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    let mut holder = env.hold_writer_lock();
     let scan = env.run(&["scan", "--quiet"]);
     assert_eq!(code(&scan), 3, "scan must not run next to a writer: {}", text(&scan));
     assert!(
@@ -292,13 +346,19 @@ fn live_daemon_serves_rescan_memory_and_blocks_destructive_commands() {
     if cfg!(feature = "memory") {
         let put = env.run(&["memory", "put", "k1", "forwarded value"]);
         assert_eq!(code(&put), 0, "memory put must forward, not fail: {}", text(&put));
+        let own = env.run(&["memory", "put", "k2", "forwarded own note", "--individual"]);
+        assert_eq!(code(&own), 0, "{}", text(&own));
         let get = env.run(&["memory", "get", "k1"]);
         assert_eq!(code(&get), 0, "{}", text(&get));
         assert!(text(&get).contains("forwarded value"), "{}", text(&get));
         let cleared = env.run(&["--json", "memory", "clear", "--yes"]);
         assert_eq!(code(&cleared), 0, "memory clear must forward: {}", text(&cleared));
-        assert_eq!(json(&cleared)["notes_removed"], 1, "{}", text(&cleared));
+        assert_eq!(json(&cleared)["notes_removed"], 2, "{}", text(&cleared));
         assert_eq!(json(&env.run(&["--json", "memory", "get", "k1"]))["found"], false);
+        assert_eq!(
+            json(&env.run(&["--json", "memory", "get", "k2", "--individual"]))["found"],
+            false
+        );
     }
 
     let callers = env.run(&["--json", "code", "callers", "a.rs", "alpha"]);
