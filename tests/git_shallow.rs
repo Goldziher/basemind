@@ -95,7 +95,7 @@ fn answers_computed_while_shallow_are_recomputed_once_the_clone_is_unshallowed()
         .iter()
         .map(|commit| commit.sha.clone())
         .collect();
-    assert_eq!(shallow_log, [head.clone()]);
+    assert_eq!(shallow_log, std::slice::from_ref(&head));
     cache.commit_files(&repo, &head).unwrap();
     for sub in ["blame", "log", "commit_files"] {
         assert_eq!(cached_files(&basemind_dir, sub), 0, "{sub} cached while shallow");
