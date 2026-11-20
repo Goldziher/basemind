@@ -128,6 +128,30 @@ impl LanceStore {
         })
     }
 
+    /// Delete one note's rows like [`Self::delete_memory`], then purge the table
+    /// ([`super::batch::purge_table`]): the rows are gone from its files and from every earlier
+    /// version, not only hidden. Returns the number of rows deleted.
+    pub fn purge_memory(&self, scope: &str, visibility: &str, agent_id: &str, key: &str) -> Result<u64> {
+        let predicate = memory_keys_predicate(scope, visibility, agent_id, &[key]);
+        self.inner.rt().block_on(async {
+            let table = self.memory_table().await?;
+            let result = table.delete(&predicate).await.context("delete memory rows")?;
+            super::batch::purge_table(&table)
+                .await
+                .context("purge the memory table")?;
+            anyhow::Ok(result.num_deleted_rows)
+        })
+    }
+
+    /// Rows of the memory table that a delete marked and no data file has dropped yet.
+    #[cfg(test)]
+    pub(crate) fn memory_rows_marked_deleted(&self) -> Result<Option<usize>> {
+        self.inner.rt().block_on(async {
+            let table = self.memory_table().await?;
+            anyhow::Ok(table.stats().await.context("memory table stats")?.num_deleted_rows)
+        })
+    }
+
     async fn memory_table(&self) -> Result<lancedb::Table> {
         self.inner
             .connection

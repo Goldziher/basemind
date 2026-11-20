@@ -720,6 +720,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `basemind memory delete` removes the note's vector rows from the store of every embedding model
+  of the repository group, not only the configured one, and purges each store after: the deleted
+  rows are rewritten out of the data files and every earlier table version is dropped, so a store
+  written by an earlier release, whose rows carried the note's text, no longer keeps it. The
+  `memory_save` description and the memory manual now say notes are plain text on local disk and
+  must not hold secrets (#324).
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

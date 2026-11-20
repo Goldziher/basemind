@@ -14,6 +14,11 @@ agent working in the same repository should know. Notes are keyed, tagged and se
 ## Contracts
 
 - `memory_save` with an existing `key` replaces the note.
+- Notes are plain text on local disk, in the basemind cache. Never save a secret, a token or a
+  credential in one.
+- `basemind memory delete` removes the note and its vector rows from the store of every embedding
+  model the repository has used, and purges those stores, so no earlier version of them still holds
+  the note.
 - `memory_search` takes at most one of `query`, `key` and `prefix`; with none it lists every note.
   `tag` filters a search or a listing. A listing shows the first 200 characters of each value and
   pages with `next_cursor`; `key` reads a note whole.

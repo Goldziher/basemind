@@ -42,7 +42,8 @@ impl BasemindServer {
     #[tool(
         title = "Save a note",
         description = "Use to remember a decision, convention or finding for later sessions and \
-        other agents working in this repository. Saving an existing `key` replaces it. \
+        other agents working in this repository. Saving an existing `key` replaces it. Notes are \
+        plain text on local disk: never save secrets. \
         Example: {\"key\":\"decision/auth-tokens\",\"value\":\"Tokens rotate every 24h.\",\"tags\":[\"auth\"]}",
         annotations(
             read_only_hint = false,
