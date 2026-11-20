@@ -246,7 +246,8 @@ Next: `basemind code read <path> --line <n>` on a cited text file.";
 pub const ADMIN_REPO: &str = "\
 When to use: you need the index health together with the branch and HEAD.
 
-Returns: what `basemind status` returns, plus the branch and HEAD sha.
+Returns: the same result as `basemind status`, the MCP tool `index_status`, which carries the
+branch and HEAD sha.
 
 Example:
   basemind admin repo
