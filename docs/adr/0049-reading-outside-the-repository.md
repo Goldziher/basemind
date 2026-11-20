@@ -45,8 +45,8 @@ basemind already contains reads that reach outside the tree:
    on the operator's request: an explicit command the user runs (#128), or a grant in the process
    environment (#132). A repository's own configuration never grants it; `src/config/trust.rs`
    enforces this on the file layer, as it does for `follow_symlinks`.
-3. **Containment.** Paths are canonicalized; a walk follows no symlink out of its root, reuses the
-   `extra_roots` containment and keeps the per-root refusal of a filesystem root.
+3. **Containment.** Paths are canonicalized and must stay under their root; a walk follows no
+   symlink out of it. The transcript reader also refuses a filesystem root as a root.
 4. **Read only.** Nothing is written into a root outside the repository.
 5. **Tested before the code lands.** Each feature ships with an escape test (a symlink out of a
    root, a repository configuration naming a root) in the same commit as its reader.
@@ -100,22 +100,25 @@ basemind already contains reads that reach outside the tree:
   `enabled = false`, `direct_only = true`, `max_packages = 200` and `max_bytes_per_package = 2 MiB`;
   the schema snapshot is regenerated.
 - **Package roots.** The direct dependencies come from the manifest and lockfile pairs:
-  `Cargo.toml` with `Cargo.lock`, `package.json` with `package-lock.json` or `pnpm-lock.yaml`,
-  `pyproject.toml` with `uv.lock` or `poetry.lock`, and `go.mod` with `go.sum`. Each resolves to
-  one installed source: `node_modules/<pkg>`, `site-packages/<pkg>*` of `.venv` or
-  `$VIRTUAL_ENV`, `~/.cargo/registry/src/*/<pkg>-<ver>`, `$GOMODCACHE/<mod>@<ver>`. Only README,
-  CHANGELOG and `docs/**` are indexed from it.
+  `Cargo.toml` with `Cargo.lock`, `package.json` with `package-lock.json`, `pyproject.toml` with
+  `uv.lock` or `poetry.lock`, and `go.mod` alone (`pnpm-lock.yaml` and `go.sum` only trigger a
+  re-resolve when they change). Each resolves to one installed source: `node_modules/<pkg>`; the
+  `<pkg>-<ver>.dist-info` in `site-packages` of `.venv` or `$VIRTUAL_ENV`, its README read from
+  `METADATA`; `vendor/`, else `$CARGO_HOME/registry/src/*/<pkg>-<ver>` (`~/.cargo` by default);
+  `vendor/`, else `$GOMODCACHE/<mod>@<ver>` (else `$GOPATH/pkg/mod`, else `~/go/pkg/mod`). Only
+  README, CHANGELOG and `docs/**` are indexed from it.
 - **Trust.** The repository's `basemind.toml` may enable the feature for package roots inside the
   repository tree. A root outside it (the cargo registry, the Go module cache, a virtual
   environment outside the tree) is read only under the operator grant
-  `BASEMIND_ALLOW_DEPENDENCY_ROOTS`, read in `src/config/trust.rs` like the existing grants;
+  `BASEMIND_ALLOW_DEPENDENCY_ROOTS`, defined in `src/config/trust.rs` and read by `cli::env_config`
+  like the existing grants (ADR-0050);
   without it those packages are listed as unavailable.
 - **Virtual paths.** Each document is stored under `deps/<ecosystem>/<name>@<version>/<file>`, so
   `docs_search {path:"deps/npm/react@*/**"}` filters by package with no new MCP field.
 - **Columns.** `docs` gains nullable `package` and `package_version` columns so a hit cites the
   version; `VECTOR_STORE_VER` is bumped (ADR-0037 rule 2).
 - A dependency that is not installed, or not granted, is listed in `index_status` under
-  `deps_unavailable`. A changed lockfile hash re-indexes the dependency source.
+  `deps_unavailable`. A changed manifest or lockfile re-resolves the dependencies.
 
 ## Consequences
 

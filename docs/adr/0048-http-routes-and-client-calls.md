@@ -19,7 +19,7 @@ answer it today. What exists:
   `;; section: <name>` blocks (`symbols`, `imports`, `calls`, `implementations`, `docs`). A
   language without an override falls back to its adapted TSLP `tags.scm`, but a language with an
   override reads every section from it (`query_source`, `src/lang.rs`). Overrides exist for
-  JavaScript, TypeScript, TSX, Python, Rust and Go; Java has none.
+  JavaScript, TypeScript, TSX, Python, Rust, Go and Markdown; Java has none.
 - A `Symbol` carries `name`, `kind` and `signature`; a `Call` carries `callee` and its position
   (`src/extract/mod.rs`). `symbols_by_name` and `calls_by_callee` index both by name.
 - `SymbolKind` maps to fixed ordinals in `symbol_kind_byte` (`src/index/keys.rs`); the last is
@@ -91,7 +91,7 @@ answer it today. What exists:
 - No eval task kind exists for routes (no gold source). Extraction counts on the gin and django
   harden repositories are reported instead, so the routes do not count toward the gate.
 - Fixtures per framework under `tests/fixtures/http/` and a new `tests/http_routes_smoke.rs` cover
-  extraction; `tests/rust_extraction_smoke.rs` covers axum.
+  extraction, axum included.
 
 ## Alternatives considered
 
