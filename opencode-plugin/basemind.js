@@ -2,9 +2,13 @@
  * basemind plugin for OpenCode (V2 API).
  *
  * Registers the basemind MCP server (`basemind serve`) and the skills shipped
- * with this package. OpenCode discovers the plugin from the `plugins` array in
- * `opencode.json(c)`; the default export is a `Plugin.define({ id, setup })`
- * definition whose `setup` registers domain transforms.
+ * with this package. The server is registered only when a `basemind` binary is
+ * on PATH; a missing binary, or one from another minor version, is reported as
+ * one line on stderr naming the install command (`./binary-check.js`; the
+ * terminal half shows the same line as a toast). OpenCode discovers the plugin
+ * from the `plugins` array in `opencode.json(c)`; the default export is a
+ * `Plugin.define({ id, setup })` definition whose `setup` registers domain
+ * transforms.
  *
  * The proactive agent-comms notifications live in the sibling `./tui`
  * entrypoint (`tui.js`), which OpenCode loads into the terminal client, so this
@@ -12,6 +16,7 @@
  */
 
 import { Plugin } from "@opencode/plugin";
+import { checkBinary, packageVersion } from "./binary-check.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -91,8 +96,15 @@ function loadSkills(dir) {
 export default Plugin.define({
   id: "basemind",
   async setup(ctx) {
+    const binary = await checkBinary({ expected: packageVersion() });
     await ctx.mcp.transform((editor) => {
-      if (!editor.get("basemind")) {
+      if (editor.get("basemind")) {
+        return;
+      }
+      if (binary.message) {
+        console.error(binary.message);
+      }
+      if (binary.status !== "missing") {
         editor.set("basemind", { type: "local", command: ["basemind", "serve"] });
       }
     });

@@ -150,6 +150,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git_diff {}` (#263); a diff of the staged index (`--cached`, `--staged`) or `--no-index` is left
   alone. Its `code_grep` suggestion for a `Grep` call carries that call's `path` (relative to the
   repository root, a directory as `dir/`) and `glob` (a glob without `/` as `**/<glob>`) in `path`.
+- The OpenCode plugin checks the `basemind` binary on `PATH` at startup (#240): with none, or one
+  that cannot report its version within 5 seconds, it skips the MCP server; with one from another
+  minor version it warns. Either way OpenCode shows one message naming the install command
+  (`pnpm add -g basemind@<version>`, or `pip install basemind==<version>`).
 
 ### Changed
 

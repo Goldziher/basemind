@@ -73,10 +73,10 @@ def verify_legacy_npm(archive: Path) -> int:
     if actual["name"] != manifest["name"] or actual["version"] != manifest["version"]:
         raise ValueError("Legacy npm package name or version mismatch")
     count = verify_resources(files, ROOT, ["skills", "commands", ".pi/extensions"])
-    for name in ("basemind.js", "tui.js"):
+    for name in ("basemind.js", "tui.js", "binary-check.js"):
         if files.get(name) != (ROOT / "opencode-plugin" / name).read_bytes():
             raise ValueError(f"Missing or changed legacy adapter: {name}")
-    return count + 2
+    return count + 3
 
 
 if __name__ == "__main__":
