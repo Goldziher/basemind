@@ -400,7 +400,8 @@ fn spawn_serve_watcher_thread(
         .spawn(move || {
             let _runtime = handle.enter();
             tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
-            let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, kind| {
+            let health = &writer.ws.watch_health;
+            let result = crate::watcher::watch_paths(&root, &config, health, shutdown_rx, |paths, kind| {
                 if stopping.load(std::sync::atomic::Ordering::Acquire) {
                     tracing::debug!("serve watcher: stopping; batch not scanned");
                     return;

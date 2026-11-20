@@ -168,6 +168,9 @@ pub(crate) struct Workspace {
     /// `index_status` reports it: a paged git walk that spans the end of a sync is refused,
     /// because the index orders commits differently from the live walk.
     pub(crate) history_syncing: Arc<AtomicBool>,
+    /// The working-tree watcher's watch counts, which `index_status` reports. Stays empty on a host
+    /// that runs no per-directory watcher.
+    pub(crate) watch_health: crate::watch_health::WatchHealth,
     /// The host's git-history sync ([`OpenOptions::history_sync`]).
     pub(crate) history_sync: Option<fn(&Workspace)>,
     /// Keeps the host process up while a git-history sync of this workspace runs detached. Set for a
@@ -353,6 +356,7 @@ impl Workspace {
             read_only: options.read_only,
             history_catch_up: options.background,
             history_syncing: Arc::new(AtomicBool::new(false)),
+            watch_health: crate::watch_health::WatchHealth::default(),
             history_sync: options.history_sync,
             work_pin: None,
             tracked: std::sync::Mutex::default(),

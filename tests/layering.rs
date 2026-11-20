@@ -132,6 +132,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("testing", Root),
     ("textmatch", Core),
     ("version", Core),
+    ("watch_health", Core),
     ("watcher", Root),
     ("wire", Core),
 ];

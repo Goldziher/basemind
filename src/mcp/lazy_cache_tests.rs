@@ -237,6 +237,35 @@ async fn index_status_says_when_a_rescan_is_owed() {
     assert!(note.contains("basemind scan"), "{note}");
 }
 
+/// `index_status` carries the watcher's watch counts, and names the sysctl once the inotify watch
+/// limit left directories unwatched. A workspace whose watcher published nothing has no block.
+#[tokio::test]
+async fn index_status_reports_watch_limit_exhaustion() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let server = oneshot_server(tmp.path());
+    let before = json_of(
+        &server
+            .index_status_call(IndexStatusParams {})
+            .await
+            .expect("index_status"),
+    );
+    assert!(before.get("watches").is_none(), "{before}");
+
+    server.state.shared.watch_health.record(5, 2);
+    let payload = json_of(
+        &server
+            .index_status_call(IndexStatusParams {})
+            .await
+            .expect("index_status"),
+    );
+    let watches = &payload["watches"];
+    assert_eq!(watches["held"], 5, "{payload}");
+    assert_eq!(watches["unwatched"], 2, "{payload}");
+    let note = watches["note"].as_str().expect("an exhausted limit has a note");
+    assert!(note.contains("2 directories are not watched"), "{note}");
+    assert!(note.contains("fs.inotify.max_user_watches"), "{note}");
+}
+
 /// Publishing the map of the index the server opened changes no outline: a cursor cut before the
 /// lazy build (on `serve`, the boot-time warm) must still page after it. Both used to bump the one
 /// generation every cursor is stamped with, so the next page read as a changed index.

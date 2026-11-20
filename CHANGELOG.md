@@ -716,6 +716,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- On Linux, a directory the inotify watch limit refused a watch no longer goes stale without a
+  word (#334). `index_status` gains `watches`: the watches the daemon holds (`held`) and, once
+  `fs.inotify.max_user_watches` is exhausted, the directories left unwatched (`unwatched`), the
+  current limit (`limit`) and a `note` naming the sysctl to raise. The daemon log warns once per
+  pass that leaves more directories unwatched instead of once per directory. A refused directory is
+  retried whenever its subtree is armed again.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
