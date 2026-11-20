@@ -25,7 +25,10 @@ pub enum RebuildOutcome {
     /// worktree whose HEAD does not descend from the indexed head (`reason` says why). Tools read via
     /// the live walk at this head; the main checkout owns the index.
     Skipped { reason: &'static str },
-    /// Wiped and rebuilt from scratch (`reason` describes why), indexing `commits` commits.
+    /// Wiped and rebuilt from scratch, indexing `commits` commits. `reason` is `"initial"` (nothing
+    /// was indexed), `"interrupted"` (a build did not finish), `"deepened"` (the shallow clone it was
+    /// built in has been deepened or unshallowed) or `"history-rewrite"` (HEAD no longer descends from
+    /// the indexed history).
     FullRebuild { reason: &'static str, commits: u32 },
 }
 
@@ -126,6 +129,8 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, Gi
         "interrupted"
     } else if index.is_empty() {
         "initial"
+    } else if deepened {
+        "deepened"
     } else {
         "history-rewrite"
     };

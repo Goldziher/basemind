@@ -744,7 +744,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   graft, a walk that ends at the boundary) were cached by commit sha and outlived `git fetch
   --unshallow`; they are no longer cached, and a daemon re-reads whether the clone is shallow on
   every call instead of once at open. A git-history index built in a shallow clone is rebuilt once
-  its oldest commit has a parent. `GIT_CACHE_SCHEMA` moves, so payloads of earlier builds are misses.
+  its oldest commit has a parent, with the reason `deepened`. `GIT_CACHE_SCHEMA` moves, so payloads of earlier builds are misses.
 - A shallow clone's boundary commit is a root commit to both the git-history index and the live
   walk (#301): it adds every file in its tree, as `git log` shows it. The index listed no files for
   it while the live walk matched it for every path it holds, so `git_log` with a `path` answered

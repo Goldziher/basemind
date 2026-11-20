@@ -150,7 +150,7 @@ fn a_history_index_built_while_shallow_is_rebuilt_once_the_clone_is_unshallowed(
     assert_eq!(
         builder::sync(&index, &repo, &basemind_dir).unwrap(),
         RebuildOutcome::FullRebuild {
-            reason: "history-rewrite",
+            reason: "deepened",
             commits: 3
         }
     );
