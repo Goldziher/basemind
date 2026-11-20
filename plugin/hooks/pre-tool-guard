@@ -80,7 +80,9 @@ Bash)
 Grep)
   # The Grep tool's pattern is a regex, so the suggested call carries it verbatim with regex on.
   grep_call='code_grep {"pattern":"…","regex":true}'
-  grep_pattern="$(json_get "${fields}" tool_input.pattern string)"
+  # The sentinel keeps the pattern's trailing newlines, which the substitution would strip.
+  grep_pattern="$(json_get "${fields}" tool_input.pattern string; printf x)"
+  grep_pattern="${grep_pattern%x}"
   if [ -n "${grep_pattern}" ]; then
     grep_call="code_grep {\"pattern\":\"$(json_escape "${grep_pattern}")\",\"regex\":true}"
   fi

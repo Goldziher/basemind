@@ -8,7 +8,8 @@
 #   <path> TAB <type> TAB <value>
 #
 # A path joins object keys and array indices with dots (`tool_input.command`, `messages.0.id`; the
-# root is the empty path). The type is object, array, string, number, boolean or null. A string's
+# root is the empty path). A dot inside a key is written `\.`, so a key named `a.b` never reads as
+# the member `b` of `a`. The type is object, array, string, number, boolean or null. A string's
 # value is decoded and then encoded for the line: a backslash as `\\`, a line feed, tab or carriage
 # return as `\n`, `\t` or `\r`, so json_get can turn it back with printf %b. A container's value is
 # empty and its line comes before its members'. A document that does not parse lists nothing.
@@ -19,7 +20,15 @@ function skip_ws() {
   while (pos <= n && (ch[pos] == " " || ch[pos] == "\t" || ch[pos] == "\n" || ch[pos] == "\r")) pos++
 }
 function put(path, type, value) { out = out path "\t" type "\t" value "\n" }
-function member(path, key) { return path == "" ? key : (path "." key) }
+function member(path, key,    k, at) {
+  k = ""
+  while ((at = index(key, ".")) > 0) {
+    k = k substr(key, 1, at - 1) "\\."
+    key = substr(key, at + 1)
+  }
+  k = k key
+  return path == "" ? k : (path "." k)
+}
 function hex4(at,    i, d, v) {
   v = 0
   for (i = 0; i < 4; i++) {
@@ -69,7 +78,7 @@ function str(    s, start, c) {
   start = pos
   while (pos <= n) {
     c = ch[pos]
-    if (c != "\"" && c != "\\" && c != "\n" && c != "\t" && c != "\r") {
+    if (c != "\"" && c != "\\" && c >= " ") {
       pos++
       continue
     }
