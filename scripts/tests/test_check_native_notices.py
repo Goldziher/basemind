@@ -102,6 +102,25 @@ class ProblemsTests(unittest.TestCase):
                 repo = Repo(locked=locked).write(self.root / f"repo-{index}")
                 self.assertEqual(self.checker.problems(repo), expected)
 
+    def test_a_version_is_named_only_by_the_whole_token(self) -> None:
+        cases = (
+            ("2.0.0", "2.0.0-rc.15", ["Cargo.lock has ort-sys 2.0.0, ATTRIBUTIONS.md does not name `ort-sys` 2.0.0"]),
+            ("2.0.0-rc.15", "2.0.0-rc.15", []),
+            (
+                "2.0.0-rc.1",
+                "2.0.0-rc.15",
+                ["Cargo.lock has ort-sys 2.0.0-rc.1, ATTRIBUTIONS.md does not name `ort-sys` 2.0.0-rc.1"],
+            ),
+            ("2.0.0", "2.0.0.", []),
+        )
+        for index, (locked, named, expected) in enumerate(cases):
+            with self.subTest(locked=locked, named=named):
+                repo = Repo(
+                    locked={**{name: [v] for name, v in VERSIONS.items()}, "ort-sys": [locked]},
+                    named={**VERSIONS, "ort-sys": named},
+                ).write(self.root / f"repo-{index}")
+                self.assertEqual(self.checker.problems(repo), expected)
+
     def test_packaging_and_smoke_lists_must_agree(self) -> None:
         repo = Repo(checked=("licenses/a.txt",)).write(self.root / "repo")
         self.assertEqual(
