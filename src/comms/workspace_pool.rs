@@ -38,10 +38,10 @@ static READ_STACK_BUILD_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Se
 #[cfg(all(feature = "comms", any(unix, windows)))]
 const READ_STACK_BUILD_GATE_WAIT: Duration = Duration::from_secs(15 * 60);
 
-/// Run `build` on a blocking thread while holding one permit of `gate`. The permit is owned by the
-/// blocking closure, so it is released when the BUILD ends, not when the awaiting future is dropped:
-/// a cancelled caller (client disconnect, timeout, drain) cannot free the gate while its build is
-/// still running and let a second O(corpus) build start beside it.
+/// Run `build` on the background pool ([`crate::mcp::background_pool`]) while holding one permit of
+/// `gate`. The permit is owned by the build's closure, so it is released when the BUILD ends, not
+/// when the awaiting future is dropped: a cancelled caller (client disconnect, timeout, drain) cannot
+/// free the gate while its build is still running and let a second O(corpus) build start beside it.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 async fn run_gated_build<T: Send + 'static>(
     gate: std::sync::Arc<tokio::sync::Semaphore>,
@@ -52,12 +52,13 @@ async fn run_gated_build<T: Send + 'static>(
         .await
         .map_err(|_| anyhow::anyhow!("timed out after {wait:?} waiting for the read stack build gate"))?
         .map_err(|closed| anyhow::anyhow!("read stack build gate closed: {closed}"))?;
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        build()
-    })
-    .await
-    .map_err(|join| anyhow::anyhow!("hosted read stack build panicked: {join}"))
+    crate::mcp::background_pool::background()
+        .run(move || {
+            let _permit = permit;
+            build()
+        })
+        .await
+        .ok_or_else(|| anyhow::anyhow!("hosted read stack build panicked"))
 }
 
 /// Default number of daemon-hosted READ STACKS kept warm at once — deliberately far below

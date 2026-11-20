@@ -27,6 +27,28 @@ fn spawn_logged(panicked: &'static str, work: impl FnOnce() + Send + 'static) {
     });
 }
 
+/// [`spawn_logged`] for work that scans: a daemon-hosted workspace's (`hosted`) first takes one of
+/// the daemon's scan slots ([`crate::comms::scan_slots`]), waiting for it without holding a thread.
+#[cfg_attr(
+    not(all(feature = "comms", any(unix, windows))),
+    allow(unused_variables, reason = "only a daemon-hosted workspace takes a scan slot")
+)]
+fn spawn_scan_logged(hosted: bool, panicked: &'static str, work: impl FnOnce() + Send + 'static) {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if hosted {
+        let slotted = crate::comms::scan_slots::on_blocking_slot(&crate::comms::scan_slots::RESCAN_SLOTS, work);
+        tokio::spawn(async move {
+            if let Err(error) = slotted.await
+                && error.is_panic()
+            {
+                tracing::error!(%error, "{panicked}");
+            }
+        });
+        return;
+    }
+    spawn_logged(panicked, work);
+}
+
 /// Run an in-process blob GC once on a blocking thread, logging the outcome and swallowing any error.
 pub(super) fn spawn_background_gc(ws: Arc<Workspace>) {
     spawn_logged("background blob GC task panicked", move || run_background_gc(&ws));
@@ -142,10 +164,14 @@ impl Writer {
 pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
     tracing::info!("empty index on startup; running initial scan in background");
     let writer = Writer::of(&state);
-    spawn_logged("initial background scan task panicked", move || {
+    // Set before the pass waits for a scan slot: an empty index is still being built meanwhile.
+    writer
+        .ws
+        .initial_scan_active
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    spawn_scan_logged(writer.hosted(), "initial background scan task panicked", move || {
         use std::sync::atomic::Ordering;
         let ws = &writer.ws;
-        ws.initial_scan_active.store(true, Ordering::Relaxed);
         let started = std::time::Instant::now();
         match writer.scan(None, EmbedMode::Deferred) {
             Ok((scanned, updated, _)) if writer.hosted() => tracing::info!(
@@ -166,9 +192,9 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
         ws.initial_scan_ms
             .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
         ws.initial_scan_active.store(false, Ordering::Relaxed);
-        spawn_logged("background embedding pass task panicked", move || {
+        let hosted = writer.hosted();
+        spawn_scan_logged(hosted, "background embedding pass task panicked", move || {
             let embed_started = std::time::Instant::now();
-            let hosted = writer.hosted();
             if hosted {
                 tracing::info!("background embedding pass starting (forwarded to daemon)");
             } else {
@@ -214,7 +240,7 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
     let writer = Writer::of(&state);
     let rescanning = writer.ws.mark_rescan();
     let pin = writer.ws.work_pin.as_ref().map(|pin| pin());
-    spawn_logged("catch-up scan task panicked", move || {
+    spawn_scan_logged(writer.hosted(), "catch-up scan task panicked", move || {
         if warm_first {
             writer.ws.warm();
         }
@@ -245,7 +271,7 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
             }
         };
         if changed {
-            spawn_logged("catch-up embedding pass task panicked", move || {
+            spawn_scan_logged(writer.hosted(), "catch-up embedding pass task panicked", move || {
                 let _pin = pin;
                 if let Err(error) = writer.scan(None, EmbedMode::Inline) {
                     tracing::warn!(%error, "catch-up embedding pass failed");
@@ -278,13 +304,13 @@ pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
     );
 }
 
-/// Build the term index on a blocking thread so the first `symbols` / `dependents` call after
-/// a full cache publish doesn't pay for it. A no-op outside a Tokio runtime (queries then build
-/// it lazily).
+/// Build the term index on the background pool ([`super::background_pool`]) so the first
+/// `symbols` / `dependents` call after a full cache publish doesn't pay for it, and no request
+/// waits for a thread behind it. A no-op outside a Tokio runtime (queries then build it lazily).
 pub(super) fn warm_terms(cache: &Arc<MapCache>) {
-    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+    if tokio::runtime::Handle::try_current().is_ok() {
         let cache = Arc::clone(cache);
-        runtime.spawn_blocking(move || {
+        super::background_pool::background().spawn(move || {
             cache.terms();
         });
     }
@@ -393,7 +419,7 @@ fn spawn_serve_watcher_thread(
     drop(state);
     let root = writer.ws.root.clone();
     let config = Arc::clone(&writer.ws.config);
-    // ~keep A hosted scan warms the published map's term index on the runtime's blocking pool.
+    // ~keep A hosted batch drains on the runtime, and its scan warms the published map's term index there.
     let handle = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("basemind-mcp-serve-watcher".to_string())
@@ -406,22 +432,16 @@ fn spawn_serve_watcher_thread(
                     tracing::debug!("serve watcher: stopping; batch not scanned");
                     return;
                 }
-                let rescanning = writer.ws.mark_rescan();
-                let outcome = match kind {
-                    BatchKind::FullRescan => writer.tree_pass(EmbedMode::Inline),
-                    _ => writer.scan(Some(paths), EmbedMode::Inline).map(Some),
+                let batch = match kind {
+                    BatchKind::FullRescan => None,
+                    _ => Some(paths),
                 };
-                drop(rescanning);
-                match outcome {
-                    Ok(None) => tracing::debug!("serve watcher: whole-tree rescan cancelled: the daemon is draining"),
-                    Ok(Some((scanned, updated, removed))) => {
-                        tracing::debug!(scanned, updated, removed, "serve watcher: incremental rescan complete")
-                    }
-                    Err(error) => tracing::warn!(
-                        %error,
-                        "serve watcher: incremental rescan failed (watcher continues)"
-                    ),
+                #[cfg(all(feature = "comms", any(unix, windows)))]
+                if writer.hosted() {
+                    queue_hosted_pass(&writer, batch, &stopping);
+                    return;
                 }
+                watcher_pass(&writer, batch);
             });
             health.clear();
             if let Err(error) = result {
@@ -432,6 +452,68 @@ fn spawn_serve_watcher_thread(
             drop(exit);
         })
         .ok();
+}
+
+/// One serve-watcher pass over a batch's `paths`, or over the whole tree for `None`, counted in the
+/// workspace's lifecycle while it runs, and logged.
+fn watcher_pass(writer: &Writer, paths: Option<Vec<std::path::PathBuf>>) {
+    let rescanning = writer.ws.mark_rescan();
+    let outcome = match paths {
+        None => writer.tree_pass(EmbedMode::Inline),
+        Some(paths) => writer.scan(Some(paths), EmbedMode::Inline).map(Some),
+    };
+    drop(rescanning);
+    match outcome {
+        Ok(None) => tracing::debug!("serve watcher: whole-tree rescan cancelled: the daemon is draining"),
+        Ok(Some((scanned, updated, removed))) => {
+            tracing::debug!(scanned, updated, removed, "serve watcher: incremental rescan complete")
+        }
+        Err(error) => tracing::warn!(
+            %error,
+            "serve watcher: incremental rescan failed (watcher continues)"
+        ),
+    }
+}
+
+/// Queue a daemon-hosted workspace's watcher batch for the daemon's scan slots, which every scan
+/// it runs shares ([`crate::comms::scan_slots`]). The batch joins the pass already waiting for a
+/// slot, or starts the drain that runs it; the watcher goes straight back to its events, so the
+/// batches that arrive meanwhile merge into the same pass.
+///
+/// The drain holds the workspace only while a pass runs: a stack dropped while its pass waits ends
+/// the drain, and a pass taken once the watcher is stopping is not scanned.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn queue_hosted_pass(
+    writer: &Writer,
+    batch: Option<Vec<std::path::PathBuf>>,
+    stopping: &Arc<std::sync::atomic::AtomicBool>,
+) {
+    use crate::engine::scan_queue::QueuedPass;
+
+    if !writer.ws.scan_queue.submit(batch) {
+        return;
+    }
+    let (ws, pool, stopping) = (Arc::downgrade(&writer.ws), writer.pool.clone(), Arc::clone(stopping));
+    let queued = ws.clone();
+    tokio::spawn(crate::comms::scan_slots::drain(
+        &crate::comms::scan_slots::RESCAN_SLOTS,
+        move || queued.upgrade()?.scan_queue.take(),
+        move |pass| {
+            let Some(ws) = ws.upgrade() else {
+                return;
+            };
+            if stopping.load(std::sync::atomic::Ordering::Acquire) {
+                tracing::debug!("serve watcher: stopping; queued pass not scanned");
+                return;
+            }
+            let paths = match pass {
+                QueuedPass::Paths(paths) => Some(paths),
+                QueuedPass::WholeTree => None,
+            };
+            let writer = Writer { ws, pool: pool.clone() };
+            watcher_pass(&writer, paths);
+        },
+    ));
 }
 
 /// Reopen the working store read-only for a MapCache rebuild. Only a read-only `serve` runs this

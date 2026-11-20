@@ -143,6 +143,9 @@ pub(crate) struct Workspace {
     /// Held through [`RescanMark`], which shares the counter rather than the workspace, so a pass
     /// that drops its mark last holds no reference once the workspace reads settled.
     rescans_active: Arc<AtomicUsize>,
+    /// Watcher batches of a daemon-hosted workspace waiting for a scan slot, merged into one pass
+    /// (see [`crate::engine::scan_queue`]). `index_status` reports what waits.
+    pub(crate) scan_queue: crate::engine::scan_queue::ScanQueue,
     /// True when the in-RAM code map is built ON DEMAND — at the first
     /// [`await_cache_ready`](crate::mcp::ServerState::await_cache_ready) barrier — instead of at construction.
     ///
@@ -351,6 +354,7 @@ impl Workspace {
             cache_warm_ms: AtomicU64::new(0),
             warm_gate: WarmGate::default(),
             rescans_active: Arc::new(AtomicUsize::new(0)),
+            scan_queue: Default::default(),
             lazy_cache: options.lazy_cache,
             lazy_cache_built: std::sync::OnceLock::new(),
             read_only: options.read_only,

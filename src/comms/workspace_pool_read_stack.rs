@@ -287,18 +287,26 @@ impl WorkspacePool {
     }
 
     /// Start the full scan a freshly opened workspace owes when its index was wiped or is empty over
-    /// a populated file map. Detached: the open must not wait on a whole-tree scan. The entry's
-    /// `rebuild_pending` flag makes a racing client rescan run full too, and the scan coalesces.
-    fn spawn_pending_rebuild(self: &std::sync::Arc<Self>, entry: &WorkspaceEntry) {
+    /// a populated file map, detached on a scan slot: the open must not wait on a whole-tree scan. The
+    /// entry's `rebuild_pending` flag makes a racing client rescan run full too, and the scan coalesces.
+    /// The flag is read again once the slot is held, so a rebuild queued behind an earlier one that
+    /// cleared it does not walk the tree twice.
+    fn spawn_pending_rebuild(self: &std::sync::Arc<Self>, entry: &std::sync::Arc<WorkspaceEntry>) {
+        use super::scan_slots::RESCAN_SLOTS;
+
         if !entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire) {
             return;
         }
         let pool = std::sync::Arc::clone(self);
-        let root = entry.root.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Err(error) = pool.rescan(&root, None, true, false, &pool.scan_cancel) {
-                tracing::warn!(root = %root.display(), %error, "index rebuild scan failed");
+        let entry = std::sync::Arc::clone(entry);
+        let rebuild = move || {
+            if !entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire) {
+                return;
             }
-        });
+            if let Err(error) = pool.rescan(&entry.root, None, true, false, &pool.scan_cancel) {
+                tracing::warn!(root = %entry.root.display(), %error, "index rebuild scan failed");
+            }
+        };
+        tokio::spawn(super::scan_slots::on_blocking_slot(&RESCAN_SLOTS, rebuild));
     }
 }

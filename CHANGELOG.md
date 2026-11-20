@@ -1508,6 +1508,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no line start in a chunk's last `overlap` characters, the next chunk starts at the first word
   start there (#314). Before, an unwrapped paragraph or a one-line file got no overlap at all. The
   extraction digest is `doc/5`: the next scan extracts and embeds every document once.
+- The daemon's watcher scans are bounded across workspaces (#281). A hosted workspace's watcher
+  batch now takes one of the four scan slots a client's rescan takes, and the batches that arrive
+  while it waits for one merge into the same pass, so twenty worktrees switching branches at once
+  run four passes at a time instead of twenty, and each waiting workspace scans its batches once. The boot, catch-up, embedding and
+  index-rebuild passes take a slot too. The wait holds no thread, and read-stack builds and
+  term-index warms run on two threads of their own, so an agent's read is not queued behind them.
+  `index_status` gains `queued_scan` while a pass waits: the batches merged into it (`batches`), the
+  paths it will scan (`paths`) and whether it rescans the whole tree (`whole_tree`).
 
 ## [0.33.0] - 2026-11-14
 

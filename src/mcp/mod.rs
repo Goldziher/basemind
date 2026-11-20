@@ -15,6 +15,7 @@ pub(crate) mod admission;
 mod agent_context;
 pub mod agent_tools;
 mod background;
+pub(crate) mod background_pool;
 mod cli_only;
 mod completions;
 pub mod lead_tools;

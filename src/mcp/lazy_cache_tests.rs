@@ -87,6 +87,35 @@ async fn one_shot_server_does_not_preload_the_code_map() {
     );
 }
 
+async fn status_of(server: &BasemindServer) -> Value {
+    json_of(
+        &server
+            .index_status_call(IndexStatusParams {})
+            .await
+            .expect("index_status"),
+    )
+}
+
+/// `index_status` reports the watcher pass waiting for a scan slot: the batches merged into it and
+/// the distinct paths it will scan. A workspace with nothing queued has no block.
+#[tokio::test]
+async fn index_status_reports_the_scan_waiting_for_a_slot() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let server = oneshot_server(tmp.path());
+    let before = status_of(&server).await;
+    assert!(before.get("queued_scan").is_none(), "{before}");
+
+    let queue = &server.state.shared.scan_queue;
+    assert!(queue.submit(Some(vec![tmp.path().join("a.rs"), tmp.path().join("b.rs")])));
+    assert!(!queue.submit(Some(vec![tmp.path().join("b.rs")])));
+    let payload = status_of(&server).await;
+    assert_eq!(
+        payload["queued_scan"],
+        serde_json::json!({"batches": 2, "paths": 2}),
+        "{payload}"
+    );
+}
+
 /// `outline` is PATH-KEYED: it needs one file's L1, and it already falls back to a single blob read
 /// when the in-RAM map misses. So it must answer from the store rather than force a whole-corpus
 /// build — otherwise the commonest navigation call pays the full corpus cost to read one file.
