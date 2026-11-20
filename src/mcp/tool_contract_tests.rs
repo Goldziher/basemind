@@ -43,22 +43,28 @@ fn server_over(
     open: impl FnOnce(&std::path::Path) -> Store,
 ) -> BasemindServer {
     crate::store::init_isolated_cache();
-    {
-        let mut store = Store::open(root, VIEW_WORKING).expect("open rw");
-        if scanned {
-            scan(
-                root,
-                &mut store,
-                &config,
-                ScanSource::WorkingTree,
-                EmbedMode::Inline,
-                crate::retrieval_wiring::backend(),
-            )
-            .expect("scan");
-        } else {
-            store.flush().expect("persist the empty file map");
-        }
-    }
+    // The document tier's LanceDB writes `block_on` internally, which panics inside the test's
+    // tokio runtime; scan on a plain thread.
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let mut store = Store::open(root, VIEW_WORKING).expect("open rw");
+            if scanned {
+                scan(
+                    root,
+                    &mut store,
+                    &config,
+                    ScanSource::WorkingTree,
+                    EmbedMode::Inline,
+                    crate::retrieval_wiring::backend(),
+                )
+                .expect("scan");
+            } else {
+                store.flush().expect("persist the empty file map");
+            }
+        })
+        .join()
+        .expect("scan thread");
+    });
     let store = open(root);
     let git_cache = Arc::new(GitCache::open(&store.basemind_dir, 16, false).expect("git cache"));
     BasemindServer::new_oneshot(store, root.to_path_buf(), Arc::new(config), None, git_cache)
