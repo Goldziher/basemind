@@ -72,7 +72,7 @@ basemind code refs parse_config  # a function name from your repository
 | **Documents** | Search by meaning and by words over PDFs, Office files, HTML, email, notebooks, Markdown and images, with citations. | `docs_search` |
 | **Memory** | Notes agents save and search by meaning, kept per clone and shared by its worktrees. | `memory_save` · `memory_search` |
 | **Agent messaging** | Threads and per-agent inboxes for the agents on one machine. | `agent_post` · `agent_inbox` · `agent_threads` |
-| **Index** | Whether the index is fresh, and a refresh after edits. | `index_status` · `index_rescan` |
+| **Index** | Whether the index is fresh, and a re-index of the files a result calls stale (the index already follows edits). | `index_status` · `index_rescan` |
 
 <!-- markdownlint-enable MD013 -->
 

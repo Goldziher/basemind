@@ -179,7 +179,10 @@ fn render_usage_rules(out: &mut String, caps: &[Capability]) {
         }
     }
     out.push_str(
-        "\nWhen a result is unexpectedly empty call `index_status {}`; after edits call `index_rescan {}`.\n\n",
+        "\nWhen a result is unexpectedly empty call `index_status {}`. The index follows your edits: if a \
+         result says `stale` or a new file is missing, call `index_rescan {\"paths\":[\"src/store.rs\"]}` \
+         for the files you touched, and `index_rescan {}` only when `index_status` reports an empty or \
+         degraded index.\n\n",
     );
 
     out.push_str(
@@ -322,6 +325,31 @@ mod tests {
         ] {
             assert!(!body.contains(retired), "the block still names `{retired}`");
         }
+    }
+
+    /// The daemon watches the workspace, so the block steers a rescan to the edited paths and keeps
+    /// the whole-workspace rescan for an empty or degraded index.
+    #[test]
+    fn usage_rules_steer_a_rescan_to_the_edited_paths() {
+        let body = render_block_body(
+            &all(),
+            BlockSections {
+                usage_rules: true,
+                setup_notes: false,
+            },
+        );
+        assert!(
+            body.contains(
+                "if a result says `stale` or a new file is missing, call \
+                 `index_rescan {\"paths\":[\"src/store.rs\"]}` for the files you touched"
+            ),
+            "{body}"
+        );
+        assert!(
+            body.contains("`index_rescan {}` only when `index_status` reports an empty or degraded index"),
+            "{body}"
+        );
+        assert!(!body.contains("after edits call `index_rescan {}`"), "{body}");
     }
 
     #[test]

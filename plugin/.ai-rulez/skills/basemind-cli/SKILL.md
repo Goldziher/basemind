@@ -96,8 +96,8 @@ command covers the question.
 | "Score retrieval quality?" | `basemind admin eval --tasks tasks.jsonl` | CLI-only; see `benchmarks/eval/README.md`. |
 | "Clear caches?" | `basemind cache clear --component blobs --yes` | Destructive; `--yes` is required off a terminal. `views` / `all` need the offline CLI. |
 | "Keep index fresh?" | `basemind watch` | Live re-index watcher; no MCP server (that's `serve`). |
-| "Refresh the index after edits?" | `basemind scan` | Full or incremental scan. |
-| "Refresh changed paths?" | `basemind rescan [path…]` | Re-index in the live server. |
+| "Build the index, or rebuild an empty or degraded one?" | `basemind scan` | Full or incremental scan. |
+| "Refresh files I edited?" | `basemind rescan <path>…` | Re-index just those paths in the live server, which already watches the tree. |
 | "Per-tool activity summary?" | `basemind admin telemetry [--window today\|1h\|24h\|all]` | CLI only. Histogram + estimated tokens saved. |
 | "Is this install healthy?" | `basemind doctor` | Checks root, config, index, grammars, hook, daemon; exits 1 on failure. |
 | "Block commits from staling the index?" | `basemind hook install` | Pre-commit `scan --staged`; see Notes. |
@@ -126,7 +126,8 @@ Fjall inverted index into the machine-global cache (Linux `~/.local/share/basemi
 `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`). A few seconds for small
 repos, ~22 s for an ~80k-file TypeScript monorepo.
 
-Re-run `basemind scan` after large changes, or run `basemind watch` to keep the index fresh.
+A running daemon (`basemind serve`) watches the tree and keeps the index fresh; without one, run
+`basemind watch`, or `basemind rescan <path>…` for the files you changed.
 
 ## Examples
 
