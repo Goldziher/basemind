@@ -83,6 +83,10 @@ pub const GLOBAL_FLAGS: &[(&str, &str)] = &[
         "view",
         "selects the index view; an MCP server is bound to one view at startup",
     ),
+    (
+        "help_json",
+        "describes the CLI's own command line; MCP lists its tools in tools/list",
+    ),
 ];
 
 const REPEATABLE: &str = "repeatable CLI flag for the MCP list";
