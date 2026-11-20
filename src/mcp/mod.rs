@@ -23,6 +23,7 @@ pub(crate) use crate::engine::cursor;
 mod cursor_bind;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;
+mod error_kind;
 mod helpers;
 pub(crate) use adapter::BUSY_DATA;
 

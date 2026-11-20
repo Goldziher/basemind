@@ -2892,6 +2892,38 @@ async fn refused(
     error_text(&result)
 }
 
+/// A refusal carries its error code and retry flag as `structuredContent` on the wire, next to the
+/// message text: an argument the tool does not take and a path the repository does not hold are both
+/// `invalid_argument`, which retrying unchanged does not fix.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refusal_carries_its_error_code_and_retry_flag() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    for (tool, args) in [
+        ("code_grep", json!({ "pattern": "x", "glob": "*.rs" })),
+        ("code_outline", json!({ "path": "no/such/file.rs" })),
+    ] {
+        let result = service
+            .call_tool(call_params(tool, args.clone()))
+            .await
+            .unwrap_or_else(|error| panic!("`{tool}` {args} must answer with a tool result, got {error}"));
+        assert!(!error_text(&result).is_empty(), "`{tool}` {args} keeps its message");
+        assert_eq!(
+            result.structured_content,
+            Some(json!({ "error": "invalid_argument", "retryable": false })),
+            "`{tool}` {args}"
+        );
+    }
+
+    let _ = service.cancel().await;
+}
+
 /// The argument contract of the code and index verb tools: an argument the tool does not take is
 /// refused naming the field it most likely meant and the accepted set, a missing required field is
 /// named, and an argument shape with no meaning is refused naming the shapes that have one. Every

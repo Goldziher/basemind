@@ -78,8 +78,9 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
   resolve through `engine::pick::pick_symbol`: a missing file or symbol is an error, and a name
   several definitions share is an error listing each until `line` picks one.
 - **Failures are results.** `BasemindServer::answer` (`src/mcp/tool_contract.rs`) turns an `McpError`
-  into an `isError: true` result whose text names the fix; an overloaded server answers the same way
-  (`server_busy`, retry).
+  into an `isError: true` result whose text names the fix and whose `structuredContent` carries its
+  `error` code and `retryable` flag (`src/mcp/error_kind.rs`); an overloaded server answers the same
+  way (`busy`, with `retry_after_ms`).
 - **Notices.** An empty index is never a plain empty result: a `notice` (`empty_index`,
   `warming_up`, `building_index`, `rescanning`) says why.
 - **Inline results.** A Task only for a call still running past `tasks::SLOW_CALLS`

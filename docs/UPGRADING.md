@@ -166,6 +166,21 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   naming the fix (a path that is not indexed, an empty index, a compiled-out feature) instead of a
   JSON-RPC error. An empty index is reported with a `notice` (`state: "empty_index"`), never as a
   plain empty list.
+- **Errors carry a code.** Every `isError` result sets `structuredContent` to
+  `{"error": <code>, "retryable": <bool>}` next to the unchanged text, so a client tells failures
+  apart without parsing the message:
+
+  | Code | Meaning | `retryable` |
+  |---|---|---|
+  | `invalid_argument` | the call cannot be answered as given; change the arguments | `false` |
+  | `unavailable` | not available in this workspace, session or build | `false` |
+  | `index_unavailable` | the index is empty, damaged or held by another process | `true` |
+  | `busy` | another call or process holds what the call needs | `true` |
+  | `cancelled` | the request was cancelled before it finished | `true` |
+  | `internal` | a failure inside basemind the caller cannot fix | `false` |
+
+  `retryable` says whether the same call, unchanged, can succeed later. The overload refusal's code
+  is `busy` (it was `server_busy`) and it keeps `retry_after_ms`.
 - **Default token budget.** Every list honours a default `max_tokens` of 6000 and sets `budgeted`
   when it trims; page with `next_cursor`, or raise `max_tokens`.
 - **`git_diff` reads the working tree.** With no arguments it returns the status (staged, modified,

@@ -121,7 +121,7 @@ pub fn run_tool(tool: &str, result: Result<CallToolResult, McpError>) -> Result<
                  sole writer and serves this call), or stop the process holding the lock and retry."
             ));
         }
-        anyhow::anyhow!("{tool}: {e}")
+        anyhow::anyhow!("{tool}: {}: {}", e.code.0, e.message)
     })
 }
 
@@ -216,5 +216,14 @@ mod tests {
             exit::ERROR,
             "any other failure stays a runtime error"
         );
+    }
+
+    /// The error code an MCP client reads from `data` is not printed to a terminal.
+    #[test]
+    fn a_failed_tool_prints_its_message_without_its_data() {
+        let unreadable = rmcp::ErrorData::from(crate::engine::EngineError::index_unavailable("the index is damaged"));
+        let error = run_tool("code_outline", Err(unreadable)).expect_err("failed");
+        assert_eq!(error.to_string(), "code_outline: -32600: the index is damaged");
+        assert_eq!(exit::exit_code_for(&error), exit::ERROR);
     }
 }

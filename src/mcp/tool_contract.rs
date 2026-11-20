@@ -9,14 +9,18 @@ use rmcp::model::{CallToolResult, ContentBlock, MetaObject};
 use serde_json::Value;
 
 use super::BasemindServer;
+use super::error_kind::ErrorKind;
 use super::strict::{Strict, ToolArgs};
 
 /// `_meta` key that keeps a tool's schema loaded in hosts that defer MCP tools and load only names.
 pub(crate) const ALWAYS_LOAD_META_KEY: &str = "anthropic/alwaysLoad";
 
-/// A failure the caller can act on, as a tool result rather than a JSON-RPC error.
-pub(super) fn tool_error(message: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![ContentBlock::text(message.into())])
+/// A failure the caller can act on, as a tool result rather than a JSON-RPC error: the message as
+/// text, and the failure's code and retry flag as `structuredContent`.
+pub(super) fn tool_error(kind: ErrorKind, message: impl Into<String>) -> CallToolResult {
+    let mut result = CallToolResult::error(vec![ContentBlock::text(message.into())]);
+    result.structured_content = Some(kind.structured());
+    result
 }
 
 /// Report a tool body's error as an `isError` result. JSON-RPC errors are left to the protocol
@@ -24,7 +28,7 @@ pub(super) fn tool_error(message: impl Into<String>) -> CallToolResult {
 pub(super) fn into_tool_result(result: Result<CallToolResult, McpError>) -> CallToolResult {
     match result {
         Ok(result) => result,
-        Err(error) => tool_error(error.message.into_owned()),
+        Err(error) => tool_error(ErrorKind::of(&error), error.message.into_owned()),
     }
 }
 
@@ -42,7 +46,7 @@ impl BasemindServer {
             Ok(params) if self.cli => body(params).await,
             Ok(params) => Ok(into_tool_result(body(params).await)),
             Err(message) if self.cli => Err(McpError::invalid_params(message, None)),
-            Err(message) => Ok(tool_error(message)),
+            Err(message) => Ok(tool_error(ErrorKind::InvalidArgument, message)),
         }
     }
 }
@@ -154,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn a_body_error_becomes_an_is_error_result_carrying_its_message() {
+    fn a_body_error_becomes_an_is_error_result_carrying_its_message_and_code() {
         let result = into_tool_result(Err(McpError::invalid_params("run `index_rescan`", None)));
         assert_eq!(result.is_error, Some(true));
         let text = match result.content.first() {
@@ -162,5 +166,44 @@ mod tests {
             other => panic!("expected text content, got {other:?}"),
         };
         assert_eq!(text, "run `index_rescan`");
+        assert_eq!(
+            result.structured_content,
+            Some(json!({ "error": "invalid_argument", "retryable": false }))
+        );
+    }
+
+    /// One engine error per variant, through the adapter's mapping and the shim's report, comes back
+    /// as an `isError` result carrying that variant's code.
+    #[test]
+    fn each_engine_error_variant_is_reported_with_its_code() {
+        use crate::engine::EngineError;
+
+        let cases = [
+            (EngineError::invalid_argument("bad path"), "invalid_argument", false),
+            (EngineError::unavailable("no git"), "unavailable", false),
+            (
+                EngineError::index_unavailable("the index is empty"),
+                "index_unavailable",
+                true,
+            ),
+            (EngineError::busy("held"), "busy", true),
+            (EngineError::Cancelled, "cancelled", true),
+            (EngineError::internal("broken"), "internal", false),
+        ];
+        for (error, code, retryable) in cases {
+            let message = error.to_string();
+            let result = into_tool_result(Err(McpError::from(error)));
+            assert_eq!(result.is_error, Some(true), "{code}");
+            assert_eq!(
+                result.structured_content,
+                Some(json!({ "error": code, "retryable": retryable })),
+                "{code}"
+            );
+            let text = match result.content.first() {
+                Some(ContentBlock::Text(text)) => text.text.clone(),
+                other => panic!("expected text content, got {other:?}"),
+            };
+            assert_eq!(text, message, "{code}");
+        }
     }
 }

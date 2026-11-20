@@ -13,6 +13,7 @@ const DEFAULT_RETRY_AFTER_MS: u64 = 500;
 /// Under the stdio relay's 180 s request deadline, so the daemon answers before the relay gives up.
 const DEFAULT_HEAVY_DEADLINE: Duration = Duration::from_secs(150);
 const SERVER_BUSY_CODE: i32 = -32003;
+const RETRY_AFTER_MS_KEY: &str = "retry_after_ms";
 
 /// Request class used at the MCP dispatch boundary. Control calls deliberately never acquire a
 /// heavy permit, so health, task status, and comms remain responsive while scans saturate the host.
@@ -150,7 +151,7 @@ impl From<ServerBusy> for ErrorData {
             "server_busy",
             Some(serde_json::json!({
                 "retryable": true,
-                "retry_after_ms": DEFAULT_RETRY_AFTER_MS
+                RETRY_AFTER_MS_KEY: DEFAULT_RETRY_AFTER_MS
             })),
         )
     }
@@ -165,11 +166,9 @@ impl ServerBusy {
             "server_busy: basemind is running as many heavy calls as it allows and this one was not started. \
              Nothing was changed. Retry the same call in about {DEFAULT_RETRY_AFTER_MS} ms."
         ))]);
-        result.structured_content = Some(serde_json::json!({
-            "error": "server_busy",
-            "retryable": true,
-            "retry_after_ms": DEFAULT_RETRY_AFTER_MS
-        }));
+        let mut structured = super::error_kind::ErrorKind::Busy.structured();
+        structured[RETRY_AFTER_MS_KEY] = serde_json::json!(DEFAULT_RETRY_AFTER_MS);
+        result.structured_content = Some(structured);
         result
     }
 
@@ -215,7 +214,7 @@ mod tests {
         assert_eq!(
             result.structured_content,
             Some(serde_json::json!({
-                "error": "server_busy",
+                "error": "busy",
                 "retryable": true,
                 "retry_after_ms": DEFAULT_RETRY_AFTER_MS
             }))
