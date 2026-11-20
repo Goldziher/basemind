@@ -268,6 +268,21 @@ def proc_open_paths(pid: int) -> list[str]:
     return _open_paths_mac(pid) if IS_MAC else _open_paths_linux(pid) if IS_LINUX else []
 
 
+def is_live_lsm_table(path: str) -> bool:
+    """Whether `path` is a table file of a Fjall database (`<db>/keyspaces/<n>/tables/<id>`) that is
+    still on disk. A table compaction deleted while a descriptor still holds it is not live: Linux
+    names it `<path> (deleted)`, and on macOS the path is gone."""
+    parts = Path(path).parts
+    return len(parts) >= 4 and parts[-2] == "tables" and parts[-4] == "keyspaces" and Path(path).is_file()
+
+
+def live_lsm_table_fds(pid: int) -> int | None:
+    """How many of `pid`'s descriptors are live Fjall tables; None where open files cannot be listed."""
+    if not (IS_MAC or IS_LINUX):
+        return None
+    return sum(1 for path in proc_open_paths(pid) if is_live_lsm_table(path))
+
+
 def all_pids() -> dict[int, int]:
     """pid -> ppid for every process of this user (every process on Windows)."""
     if IS_WINDOWS:

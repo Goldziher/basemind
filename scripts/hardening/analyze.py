@@ -115,6 +115,29 @@ def growth_rule(
     )
 
 
+def tables_rule(v: Verdict, role: str, pid: int, series: list[dict[str, Any]], args: argparse.Namespace) -> None:
+    """R3 on Linux and macOS. A daemon sample that counts its live Fjall table descriptors is judged
+    net of them: each is a table on disk, opened by the database's descriptor cache and closed when
+    a compaction deletes it, so their number follows the tables the stores hold (their growth is
+    R8's), not a leak. A descriptor kept on a deleted table is not live, so it is still judged."""
+    if not series or series[0].get("fds_lsm_tables") is None:
+        growth_rule(v, f"R3 {role} {pid} open fds", [(r["t"], r["fds"]) for r in series], args.fd_tol, "fds")
+        return
+    growth_rule(
+        v,
+        f"R3 {role} {pid} open fds net of live LSM tables",
+        [(r["t"], r["fds"] - r["fds_lsm_tables"]) for r in series],
+        args.fd_tol,
+        "fds",
+    )
+    tables = [r["fds_lsm_tables"] for r in series]
+    v.add(
+        f"R3t {role} {pid} live LSM table fds",
+        True,
+        f"not judged: {tables[0]} -> {tables[-1]} over load, peak {max(tables)}",
+    )
+
+
 def _quiescent(rows: list[dict[str, Any]], phase: str, start: float | None, settle: float) -> list[dict[str, Any]]:
     return [r for r in rows if r["phase"] == phase and start is not None and r["t"] >= start + settle]
 
@@ -276,7 +299,7 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
                 "handles",
             )
         else:
-            growth_rule(v, f"R3 {role} {pid} open fds", [(r["t"], r["fds"]) for r in series], args.fd_tol, "fds")
+            tables_rule(v, role, pid, series, args)
         thread_rule(v, f"R4 {role} {pid} threads", by_pid[pid], marks, args)
 
     # ---- R5: no process accumulation during load ----
