@@ -360,7 +360,8 @@ mod tests {
 
     #[test]
     fn a_recorded_blob_schema_names_the_namespace_before_the_version_does() {
-        let cases: &[(Option<u16>, Option<&str>, bool, Option<BlobNamespace>)] = &[
+        type Case<'a> = (Option<u16>, Option<&'a str>, bool, Option<BlobNamespace>);
+        let cases: &[Case] = &[
             (Some(34), Some("0.33.0"), false, Some(BlobNamespace::Schema(34))),
             (Some(34), None, false, Some(BlobNamespace::Schema(34))),
             (None, Some("0.33.0"), true, Some(BlobNamespace::Unnamespaced)),
