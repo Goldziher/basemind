@@ -73,6 +73,12 @@ pub trait ScanObserver {
     fn on_batch(&mut self, live_results: usize) {
         let _ = live_results;
     }
+
+    /// `path` read as unchanged, but its index entry took a new stamp (a touch, a checkout, or a
+    /// stamp that settled out of the racy window). Called before the path's [`on_file`](Self::on_file).
+    fn on_restamp(&mut self, path: &str) {
+        let _ = path;
+    }
 }
 
 /// Drops every result. The right observer for any caller that reads only `ScanReport.stats`.
@@ -516,6 +522,9 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
         }
         if let Some(entry) = o.upsert.take() {
             ctx.store.upsert(&o.path, entry);
+            if matches!(o.status, FileStatus::Unchanged) {
+                ctx.observer.on_restamp(&o.path);
+            }
         }
         #[cfg(feature = "documents")]
         if let Some(tombstone) = o.doc_tombstone.take() {

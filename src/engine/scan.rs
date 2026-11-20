@@ -15,7 +15,8 @@ use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanError, ScanObserver,
 use crate::store::Store;
 
 /// The only thing a rescan wants out of a scan's per-file outcomes: which paths to fold into
-/// the cache delta, and which to drop from it.
+/// the cache delta, and which to drop from it. A restamped path is folded in like an updated one:
+/// its content is unchanged, but the stamp the map holds for it moved.
 ///
 /// A [`ScanObserver`] rather than a filter over a collected `Vec`, because the two projections here
 /// are all that ever needed to survive a file's result — the status, the buffered index entry and
@@ -33,6 +34,10 @@ impl ScanObserver for RescanPaths {
             FileStatus::Removed => self.removed.push(RelPath::from(result.path.as_str())),
             _ => {}
         }
+    }
+
+    fn on_restamp(&mut self, path: &str) {
+        self.updated.push(RelPath::from(path));
     }
 }
 
@@ -86,15 +91,14 @@ impl Workspace {
         })?;
 
         let was_scoped = scoped_paths.is_some();
-        let (report, paths) = self
+        let (report, RescanPaths { updated, removed }) = self
             .scan_into_store(scoped_paths, embed, named)
             .map_err(|e| rescan_error(&e))?;
 
-        if was_scoped && report.stats.updated == 0 && report.stats.removed == 0 {
+        if was_scoped && updated.is_empty() && removed.is_empty() {
             return Ok(report);
         }
 
-        let RescanPaths { updated, removed } = paths;
         let new_cache = {
             let store = self.store_read();
             let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();

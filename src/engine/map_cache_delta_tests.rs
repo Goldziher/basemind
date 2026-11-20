@@ -313,6 +313,62 @@ fn a_map_patched_from_scoped_scans_equals_a_rebuilt_one() {
     }
 }
 
+fn set_mtime(path: &Path, since_epoch: std::time::Duration) {
+    let file = std::fs::OpenOptions::new().write(true).open(path).expect("open");
+    file.set_modified(std::time::UNIX_EPOCH + since_epoch)
+        .expect("set mtime");
+}
+
+/// A watcher batch that only moved a file's stamp (a touch) leaves its content unchanged but its
+/// index entry restamped; the workspace's patched map takes the new stamp a rebuild reads. Both
+/// stamps are settled, years from the clock, so the scan records them as they are.
+#[test]
+fn a_scoped_rescan_of_a_touched_file_maps_its_new_stamp() {
+    crate::store::init_isolated_cache();
+    let (tmp, git_cache) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let root = tmp.path();
+    let file = root.join("a.rs");
+    std::fs::write(&file, source("delta_touch", 0)).unwrap();
+    set_mtime(&file, std::time::Duration::from_secs(1_000_000_000));
+    let ws = crate::engine::workspace::Workspace::new(
+        Store::open(root, VIEW_WORKING).unwrap(),
+        root.to_path_buf(),
+        Arc::new(crate::config::Config::with_defaults()),
+        None,
+        Arc::new(crate::git_cache::GitCache::open(git_cache.path(), 1, false).unwrap()),
+        None,
+        crate::engine::workspace::OpenOptions {
+            background: false,
+            read_only: false,
+            forwards_writes: false,
+            lazy_cache: false,
+            history_sync: None,
+            #[cfg(feature = "memory")]
+            memory_owner: |_| "owner".to_string(),
+        },
+    );
+    ws.rescan(None, crate::scanner::EmbedMode::Deferred, false).unwrap();
+
+    set_mtime(&file, std::time::Duration::from_secs(1_100_000_000));
+    let report = ws
+        .rescan(Some(vec![file.clone()]), crate::scanner::EmbedMode::Deferred, false)
+        .unwrap();
+    assert_eq!(
+        (report.stats.updated, report.stats.skipped_unchanged),
+        (0, 1),
+        "the touch reads as unchanged content"
+    );
+
+    let rel = RelPath::from("a.rs");
+    let patched = ws.cache.load();
+    let meta = patched
+        .file_metas()
+        .find(|(path, _)| **path == rel)
+        .map(|(_, meta)| meta);
+    assert_eq!(meta.map(|meta| meta.mtime_ns), Some(1_100_000_000_000_000_000));
+    assert_same(&patched, &MapCache::build(&ws.store_read(), 0), "touch");
+}
+
 fn doc_entry() -> crate::store::DocEntry {
     crate::store::DocEntry {
         hash_hex: "d".repeat(64),
