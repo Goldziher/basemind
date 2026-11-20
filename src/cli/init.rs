@@ -330,12 +330,9 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
     // ~keep and doing it first means a `.local` file is never written uncovered, even for an instant.
     for target in &gitignore_targets {
         if let Some(pattern) = init_gitignore::local_pattern(root, target)
-            && let Some(gitignore_path) = init_gitignore::ensure_coverage(root, target, &pattern, args.yes)?
+            && let Some(gitignore) = init_gitignore::ensure_coverage(root, target, &pattern, args.yes)?
         {
-            println!(
-                "added {pattern:?} to .gitignore ({NOT_COVERED}): {}",
-                gitignore_path.display()
-            );
+            println!("added {pattern:?} to .gitignore ({NOT_COVERED}): {gitignore}");
         }
     }
 
@@ -351,8 +348,8 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
                 }
-                std::fs::write(path, contents).with_context(|| format!("write {}", path.display()))?;
-                println!("{} {what}: {}", verb.past(), path.display());
+                let written = super::init_write::write_file(root, path, contents.as_bytes(), args.yes)?;
+                println!("{} {what}: {written}", verb.past());
                 any_write = true;
             }
             Change::NoOp { note } => println!("{note}"),

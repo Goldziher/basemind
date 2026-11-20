@@ -726,6 +726,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current limit (`limit`) and a `note` naming the sysctl to raise. The daemon log warns once per
   pass that leaves more directories unwatched instead of once per directory. A refused directory is
   retried whenever its subtree is armed again.
+- `basemind init` writes the rules file, `.claude/settings*.json`, `basemind.toml` and `.gitignore`
+  atomically (#327): each goes to a temporary file beside it that is renamed over it, keeping the
+  file's permissions, so a crash or a failed write leaves the original intact instead of truncated.
+  A symlinked target is written through, keeping the link, and reported as `via symlink → <target>`;
+  a target that resolves outside the repository is refused unless `--yes` is passed. It was followed
+  silently, wherever it pointed.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
