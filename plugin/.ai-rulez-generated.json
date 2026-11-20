@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d",
+  "source_hash": "blake3:04aa0be6a8aa5083679dfb0aecae0810b3a7d20847347ee195c879166b15a9a1",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:36f4c5d42de76b97fcdd6b403dbf02672a487f20ded1da4874805a58e3a4d019",
@@ -127,7 +127,7 @@
       "mode": "0644"
     },
     ".hermes/package/pyproject.toml": {
-      "content_hash": "blake3:76623714d0eaaaeb805dfbd65b590bbc6d78dfe5d1c17dd0cb9992910ab2ea45",
+      "content_hash": "blake3:feea53c2494d469e595bfa15ad88134f81863de5a8ce29101aef72112ac42236",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/__init__.py": {
@@ -159,11 +159,11 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/hermes.py": {
-      "content_hash": "blake3:1f79aead172fbb99d893b76628fe63d9a854e84d46604e8ee2415eef542f838c",
+      "content_hash": "blake3:3ee8f2316675701e41e21211cf416f173b301c654258ec41bce22efb670a3c0f",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/plugin.yaml": {
-      "content_hash": "blake3:b142312a4350bf15636697660a2c102d6e0cd096e53016129843bf067be7d744",
+      "content_hash": "blake3:970b61bf3fae0ccb5929793711e9f472dd24de1b27c2b8354bb19169c8f51c7e",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-cli/SKILL.md": {
@@ -275,11 +275,11 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/hermes.py": {
-      "content_hash": "blake3:1f79aead172fbb99d893b76628fe63d9a854e84d46604e8ee2415eef542f838c",
+      "content_hash": "blake3:3ee8f2316675701e41e21211cf416f173b301c654258ec41bce22efb670a3c0f",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/plugin.yaml": {
-      "content_hash": "blake3:b142312a4350bf15636697660a2c102d6e0cd096e53016129843bf067be7d744",
+      "content_hash": "blake3:970b61bf3fae0ccb5929793711e9f472dd24de1b27c2b8354bb19169c8f51c7e",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind-cli/SKILL.md": {

@@ -361,7 +361,7 @@ jobs:
       # ~keep The tests import the GENERATED package under plugin/.hermes/package (conftest.py puts it first
       # ~keep on sys.path), so this also fails when the checked-in generated output is missing.
       - name: pytest
-        run: uv run --no-project --with pytest --with mcp==1.28.1 python -m pytest pip-package-hermes/tests
+        run: uv run --no-project --with pytest --with mcp==2.3.0 python -m pytest pip-package-hermes/tests
       - name: Build and validate the wheel metadata
         run: |
           set -euo pipefail

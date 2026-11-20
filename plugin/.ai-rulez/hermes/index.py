@@ -27,7 +27,6 @@ import shutil
 import subprocess
 import warnings
 from builtins import BaseExceptionGroup, ExceptionGroup
-from datetime import timedelta
 from pathlib import Path
 
 _PKG_DIR = Path(__file__).resolve().parent
@@ -288,7 +287,7 @@ def error_details(error: BaseException) -> str:
 async def call_tool(arguments: dict[str, object], **_kwargs: object) -> dict[str, object]:
     """Call one supported MCP tool using the installed local CLI."""
     from mcp.client.stdio import stdio_client
-    from mcp.shared.exceptions import McpError
+    from mcp.shared.exceptions import MCPError
 
     from mcp import ClientSession, StdioServerParameters
 
@@ -307,17 +306,17 @@ async def call_tool(arguments: dict[str, object], **_kwargs: object) -> dict[str
         async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
             async with (
                 stdio_client(server) as (read, write),
-                ClientSession(read, write, read_timeout_seconds=timedelta(seconds=REQUEST_TIMEOUT_SECONDS)) as session,
+                ClientSession(read, write, read_timeout_seconds=REQUEST_TIMEOUT_SECONDS) as session,
             ):
                 await session.initialize()
                 if tool == DISCOVERY_TOOL:
                     result = await session.list_tools()
                 else:
                     result = await session.call_tool(tool, parameters)
-                return result.model_dump(mode="json", exclude_none=True)
+                return result.model_dump(mode="json", exclude_none=True, by_alias=True)
     except TimeoutError:
         return {"error": f"{CLI_COMMAND} MCP request timed out; reduce the workload or inspect server diagnostics."}
-    except (McpError, OSError, ExceptionGroup, ValueError) as error:
+    except (MCPError, OSError, ExceptionGroup, ValueError) as error:
         return {"error": f"{CLI_COMMAND} MCP request failed: {error_details(error)}"}
 
 

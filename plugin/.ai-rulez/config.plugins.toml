@@ -39,7 +39,7 @@ brand_color = "#F97316"
 
 [plugin.hermes]
 requires_python = ">=3.11"
-dependencies = ["mcp==1.30.0", "PyYAML==6.0.3"]
+dependencies = ["mcp==2.3.0", "PyYAML==6.0.3"]
 
 
 [plugin.codex]

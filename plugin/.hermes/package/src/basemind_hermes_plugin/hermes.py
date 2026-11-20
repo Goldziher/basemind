@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:1f79aead172fbb99d893b76628fe63d9a854e84d46604e8ee2415eef542f838c
-# Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+# Content-Hash: blake3:3ee8f2316675701e41e21211cf416f173b301c654258ec41bce22efb670a3c0f
+# Source-Hash: blake3:04aa0be6a8aa5083679dfb0aecae0810b3a7d20847347ee195c879166b15a9a1
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -32,7 +32,6 @@ import shutil
 import subprocess
 import warnings
 from builtins import BaseExceptionGroup, ExceptionGroup
-from datetime import timedelta
 from pathlib import Path
 
 _PKG_DIR = Path(__file__).resolve().parent
@@ -293,7 +292,7 @@ def error_details(error: BaseException) -> str:
 async def call_tool(arguments: dict[str, object], **_kwargs: object) -> dict[str, object]:
     """Call one supported MCP tool using the installed local CLI."""
     from mcp.client.stdio import stdio_client
-    from mcp.shared.exceptions import McpError
+    from mcp.shared.exceptions import MCPError
 
     from mcp import ClientSession, StdioServerParameters
 
@@ -312,17 +311,17 @@ async def call_tool(arguments: dict[str, object], **_kwargs: object) -> dict[str
         async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
             async with (
                 stdio_client(server) as (read, write),
-                ClientSession(read, write, read_timeout_seconds=timedelta(seconds=REQUEST_TIMEOUT_SECONDS)) as session,
+                ClientSession(read, write, read_timeout_seconds=REQUEST_TIMEOUT_SECONDS) as session,
             ):
                 await session.initialize()
                 if tool == DISCOVERY_TOOL:
                     result = await session.list_tools()
                 else:
                     result = await session.call_tool(tool, parameters)
-                return result.model_dump(mode="json", exclude_none=True)
+                return result.model_dump(mode="json", exclude_none=True, by_alias=True)
     except TimeoutError:
         return {"error": f"{CLI_COMMAND} MCP request timed out; reduce the workload or inspect server diagnostics."}
-    except (McpError, OSError, ExceptionGroup, ValueError) as error:
+    except (MCPError, OSError, ExceptionGroup, ValueError) as error:
         return {"error": f"{CLI_COMMAND} MCP request failed: {error_details(error)}"}
 
 

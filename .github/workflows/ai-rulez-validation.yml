@@ -101,8 +101,8 @@ jobs:
           git -C "$hermes_sdk" checkout --detach FETCH_HEAD
           test "$(git -C "$hermes_sdk" rev-parse HEAD)" = "$HERMES_SDK_REVISION"
           PYTHONPATH="$hermes_sdk" uv run --no-project --with PyYAML==6.0.3 \
-            --with python-dotenv==1.2.2 --with mcp==1.28.1 python scripts/tests/native_hermes_registration.py
+            --with python-dotenv==1.2.4 --with mcp==2.3.0 python scripts/tests/native_hermes_registration.py
       - name: Verify required skill and MCP error propagation
         run: >-
-          uv run --no-project --with pytest --with mcp==1.28.1 python -m pytest
+          uv run --no-project --with pytest --with mcp==2.3.0 python -m pytest
           pip-package-hermes/tests/test_hermes_register.py

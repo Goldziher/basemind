@@ -580,6 +580,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - cargo-deny checks the `full` dependency graph the release binaries are built from.
 
+- The Hermes plugin depends on `mcp==2.3.0`, the version Hermes Agent v0.23 pins, so the two install
+  into one environment again; its MCP bridge follows the 2.x client API (`MCPError`, a float read
+  timeout) and still answers with the wire field names (`structuredContent`, `isError`).
+
 ### Removed
 
 - `BASEMIND_MCP_LEAN` and its three wrapper tools (`list_tools`, `get_tool_schema`,
