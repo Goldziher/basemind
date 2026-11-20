@@ -165,7 +165,9 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         timeout-minutes: 45
         shell: bash
-        run: python scripts/hardening/functional_sweep.py --binary "$BASEMIND_BIN" --out "$HARDENING_REPORTS/sweep"
+        run: |
+          python scripts/hardening/functional_sweep.py --binary "$BASEMIND_BIN" \
+            --features "${{ steps.build.outputs.built }}" --out "$HARDENING_REPORTS/sweep"
 
       - name: Soak
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

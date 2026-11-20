@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Prove functional_sweep.py's matchers: each runs on answers in the shipped shapes, one that must
-pass and one that must fail, so a matcher that misreads a shape is caught whether it then never
-matches or always does.
+"""Prove functional_sweep.py's matchers and verdict: each runs on answers in the shipped shapes,
+one that must pass and one that must fail, so a matcher that misreads a shape is caught whether it
+then never matches or always does.
 
 Usage:
     selftest_sweep.py
@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from functional_sweep import any_row_mentions, file_listed, items, outline_has  # noqa: E402
+from functional_sweep import Outcome, any_row_mentions, file_listed, items, outline_has, sweep_passes  # noqa: E402
 
 GREP_LITERAL = {
     "hits": {
@@ -35,6 +35,10 @@ GREP_REGEX = {
 }
 GREP_OUTSIDE_SYMBOLS = {"hits": {"src/lib.rs": {"": ["1: // total_reading"]}}}
 REFS = {"hits": {"src/lib.rs": ["28:5 compute_total"]}}
+
+PASS = [Outcome("a", "mcp", "pass")]
+SKIP = [*PASS, Outcome("b", "mcp", "skip")]
+FAIL = [*PASS, Outcome("c", "cli", "fail")]
 
 CASES: list[tuple[str, Callable[[], object], object]] = [
     (
@@ -71,6 +75,13 @@ CASES: list[tuple[str, Callable[[], object], object]] = [
         lambda: outline_has("compute_total")({"symbols": [{"name": "compute_total", "line": 27}]}),
         None,
     ),
+    ("a passing run", lambda: sweep_passes(PASS, [], "comms"), True),
+    ("a skip outside full", lambda: sweep_passes(SKIP, [], "comms"), True),
+    ("a skip in full", lambda: sweep_passes(SKIP, [], "full"), False),
+    ("a skip in full with another feature", lambda: sweep_passes(SKIP, [], "full,system-allocator"), False),
+    ("a failure", lambda: sweep_passes(FAIL, [], "comms"), False),
+    ("an uncovered tool", lambda: sweep_passes(PASS, ["code_new"], "comms"), False),
+    ("a run that checked nothing", lambda: sweep_passes([Outcome("b", "mcp", "skip")], [], "comms"), False),
 ]
 
 
