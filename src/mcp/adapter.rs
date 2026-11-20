@@ -24,13 +24,16 @@ pub(crate) type Op<P, R> = fn(&Workspace, P) -> Result<R, EngineError>;
 /// Key of the `data` field that marks a tool error as contention for the workspace writer lock.
 pub(crate) const BUSY_DATA: &str = "busy";
 
-/// Each variant keeps its message; the code is what the CLI turns into an exit status.
+/// Each variant keeps its message; the code is what the CLI turns into an exit status. An
+/// unavailable index shares its JSON-RPC code with an unavailable operation, so its `data` names its
+/// [`ErrorKind`](super::error_kind::ErrorKind).
 impl From<EngineError> for McpError {
     fn from(error: EngineError) -> Self {
         match error {
             EngineError::InvalidArgument(message) => McpError::invalid_params(message, None),
-            EngineError::Unavailable(message) | EngineError::IndexUnavailable(message) => {
-                McpError::invalid_request(message, None)
+            EngineError::Unavailable(message) => McpError::invalid_request(message, None),
+            EngineError::IndexUnavailable(message) => {
+                McpError::invalid_request(message, Some(super::error_kind::ErrorKind::IndexUnavailable.data()))
             }
             EngineError::Busy(message) => {
                 McpError::invalid_request(message, Some(serde_json::json!({ BUSY_DATA: true })))
@@ -235,7 +238,6 @@ mod tests {
         let cases = [
             (EngineError::invalid_argument("bad path"), ErrorCode::INVALID_PARAMS),
             (EngineError::unavailable("no git"), ErrorCode::INVALID_REQUEST),
-            (EngineError::index_unavailable("busy"), ErrorCode::INVALID_REQUEST),
             (EngineError::internal("broken"), ErrorCode::INTERNAL_ERROR),
         ];
         for (error, code) in cases {
@@ -245,6 +247,13 @@ mod tests {
             assert_eq!(mapped.message, message);
             assert!(mapped.data.is_none());
         }
+        let unreadable = McpError::from(EngineError::index_unavailable("the index is empty"));
+        assert_eq!(unreadable.code, ErrorCode::INVALID_REQUEST);
+        assert_eq!(unreadable.message, "the index is empty");
+        assert_eq!(
+            unreadable.data,
+            Some(serde_json::json!({ "error": "index_unavailable" }))
+        );
         let busy = McpError::from(EngineError::busy("held"));
         assert_eq!(busy.code, ErrorCode::INVALID_REQUEST);
         assert_eq!(busy.message, "held");

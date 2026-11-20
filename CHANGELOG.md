@@ -143,6 +143,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** every `isError` tool result carries `structuredContent: {"error", "retryable"}`
+  next to its unchanged text (#256). `error` is one of `invalid_argument`, `unavailable`,
+  `index_unavailable`, `busy`, `cancelled` and `internal`; `retryable` is true for
+  `index_unavailable`, `busy` and `cancelled`. The overload refusal's code is `busy`, where it was
+  `server_busy`, and it keeps `retry_after_ms`. A CLI command that fails prints the error's code and
+  message without its JSON `data`.
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
   `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`

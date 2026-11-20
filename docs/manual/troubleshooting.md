@@ -26,4 +26,7 @@ Every step here uses the CLI, so it works while the MCP server is down.
    every feature. See `basemind manual setup`.
 
 A failed tool call is a result with `isError` whose text names the fix: follow it before
-diagnosing further.
+diagnosing further. Its `structuredContent` holds a stable `error` code and a `retryable` flag:
+`invalid_argument` (change the call), `unavailable` (not in this workspace, session or build),
+`index_unavailable` and `busy` (retry; the overload refusal adds `retry_after_ms`), `cancelled`,
+and `internal` (a fault inside basemind).

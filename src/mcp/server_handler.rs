@@ -231,9 +231,10 @@ pub(super) fn server_config() -> ServerConfig {
          goes on (a limit cut is paging, not truncation); a list trimmed to its token budget also \
          sets budgeted; a cut the caller did not ask for sets truncated and truncated_reason, with \
          omitted counting the items left out where known (follow next_cursor if there is one, else \
-         narrow the call); a failure is a \
-         tool result with isError naming the fix; a notice field means the result is incomplete \
-         and says why. An unknown argument is rejected, never ignored.\n\
+         narrow the call); a failure is a tool result with isError naming the fix and \
+         structuredContent {error, retryable}, error being invalid_argument, unavailable, \
+         index_unavailable, busy, cancelled or internal; a notice field means the result is \
+         incomplete and says why. An unknown argument is rejected, never ignored.\n\
          Only when collaborating with other agents in this repository: the deferred tools agent_post, \
          agent_inbox and agent_threads (find them by tool search) carry threads of messages; reading \
          marks read, and a subagent passes `as` to keep its own inbox. Skip them when working alone.",
