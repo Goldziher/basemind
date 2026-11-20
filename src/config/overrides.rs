@@ -360,7 +360,7 @@ fn record_provenance(provenance: &mut Option<&mut ProvenanceMap>, source: Config
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, FromArgMatches, Parser};
 
     use super::*;
 
@@ -370,8 +370,13 @@ mod tests {
         documents: DocumentsCliOverrides,
     }
 
+    /// Parse `args` alone: every argument's `env` source is dropped, so a `BASEMIND_DOCUMENTS_*`
+    /// variable the test process inherited cannot change the result.
     fn parse(args: &[&str]) -> Result<DocumentsCliOverrides, clap::Error> {
-        Cli::try_parse_from(std::iter::once("basemind").chain(args.iter().copied())).map(|cli| cli.documents)
+        let matches = Cli::command()
+            .mut_args(|arg| arg.env(None::<&'static str>))
+            .try_get_matches_from(std::iter::once("basemind").chain(args.iter().copied()))?;
+        Cli::from_arg_matches(&matches).map(|cli| cli.documents)
     }
 
     type ReadFlag = fn(&DocumentsCliOverrides) -> Option<bool>;
