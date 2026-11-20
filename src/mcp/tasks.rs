@@ -74,7 +74,6 @@ pub(super) fn deadline_exceeded(deadline: Duration) -> McpError {
     )
 }
 
-/// Whether `error` is a [`deadline_exceeded`] stop.
 /// How a task stopped at its deadline ends: an agent reads the stop as a tool result, like the direct
 /// path and `server_busy`; a CLI keeps the JSON-RPC error.
 fn deadline_stop(cli: bool, deadline: Duration) -> Result<CallToolResult, TaskExit> {
@@ -85,6 +84,7 @@ fn deadline_stop(cli: bool, deadline: Duration) -> Result<CallToolResult, TaskEx
     Ok(super::tool_contract::tool_error(stopped.message))
 }
 
+/// Whether `error` is a [`deadline_exceeded`] stop.
 pub(super) fn is_deadline_exceeded(error: &McpError) -> bool {
     error.code == rmcp::model::ErrorCode(DEADLINE_EXCEEDED_CODE)
 }
