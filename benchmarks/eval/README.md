@@ -244,6 +244,9 @@ BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)" \
   tasks without `rg` on PATH (its version goes into `run.tsv`), refuses a binary whose `code cycles --json`
   `coverage` has no Rust resolver row (no `code-intel`) for a task file with `impact` / `cycles` tasks, scans each repository,
   runs `basemind admin eval --tasks ... --min-recall 0.8`, and stops any daemon it could have started on exit.
+  It runs everything with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `LC_ALL=C`, and `admin eval`
+  sets the same three on each baseline command, so a host `core.autocrlf` or `color.ui` changes neither the checkout
+  nor what a baseline prints.
 - `gate.py RESULTS_DIR` turns the per-corpus reports into `gate.md` / `gate.json`.
 - The binary: each report's `build` holds the Cargo version, `build_id` (a hash of the executable) and the features
   compiled in (`code-intel` when both its parts are, so a `tokenizer,code-intel` build reads as such), and `run.tsv` adds `source_commit`, the commit of the checkout `run_gate.sh` runs from (`-dirty` with

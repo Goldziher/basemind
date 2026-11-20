@@ -23,6 +23,16 @@ pub struct BaselineRun {
     pub items: Option<Vec<Item>>,
 }
 
+/// The environment every baseline command runs in, on top of the caller's, so what it prints, and
+/// so its token count, is the same on every machine: no system or global git configuration (a
+/// `color.ui`, `core.autocrlf`, pager or diff driver there changes what `git` prints) and the C
+/// locale.
+const BASELINE_ENV: &[(&str, &str)] = &[
+    ("GIT_CONFIG_NOSYSTEM", "1"),
+    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+    ("LC_ALL", "C"),
+];
+
 /// Run `spec` in `root`. A non-zero exit from a grep-style command is tolerated (`git grep` exits
 /// 1 on "no match", which is a legitimate empty output); failing to spawn, or a signal/exit >1,
 /// is an error so a typo'd command cannot masquerade as a tiny baseline.
@@ -38,7 +48,8 @@ pub fn run_baseline(root: &Path, spec: &BaselineSpec, count: fn(&str) -> u64) ->
                 .arg(cmd)
                 .current_dir(root)
                 .stdin(Stdio::null())
-                .stderr(Stdio::null());
+                .stderr(Stdio::null())
+                .envs(BASELINE_ENV.iter().copied());
             // Git for Windows' `sh` rewrites an argument that looks like a POSIX path into a
             // Windows path before it runs a native program, so `git blame -L '/fn alpha/,/^}/'`
             // reached git as a path and exited 129. A baseline means its arguments verbatim.
@@ -118,6 +129,20 @@ mod tests {
         };
         let items = run_baseline(dir.path(), &read, count).unwrap().items.unwrap();
         assert_eq!(items, vec![Item::parse("f.rs:1"), Item::parse("f.rs:2")]);
+    }
+
+    #[test]
+    fn commands_run_without_host_git_configuration_in_the_c_locale() {
+        let dir = tempfile::tempdir().unwrap();
+        let spec = BaselineSpec {
+            grep: Some(OneOrMany::One(
+                r#"test "$GIT_CONFIG_NOSYSTEM" = 1 && test "$GIT_CONFIG_GLOBAL" = /dev/null && test "$LC_ALL" = C && printf ok"#
+                    .into(),
+            )),
+            read: vec![],
+            items: None,
+        };
+        assert_eq!(run_baseline(dir.path(), &spec, count).unwrap().tokens, 2);
     }
 
     #[test]
