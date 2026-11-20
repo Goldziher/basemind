@@ -239,14 +239,7 @@ impl Workspace {
         let key_prefix_filter = params.prefix.clone().unwrap_or_default();
         let cursor_bytes = params.cursor.as_ref().map(Cursor::decode_fjall).transpose()?;
 
-        let page = self.memory_list_page(
-            vis_byte,
-            owner,
-            &key_prefix_filter,
-            params.tag.as_deref(),
-            limit,
-            cursor_bytes,
-        )?;
+        let page = self.memory_list_page(vis_byte, owner, &key_prefix_filter, &params.tags, limit, cursor_bytes)?;
         // ~keep Derived from the count rather than the wire flag, which also reports a `limit` cut.
         let truncated = page.total as usize > ops::list_scan_cap(limit);
         Ok(MemoryListResponse {
@@ -266,7 +259,7 @@ impl Workspace {
         vis_byte: u8,
         owner: &str,
         prefix: &str,
-        tag: Option<&str>,
+        tags: &[String],
         limit: usize,
         cursor: Option<Vec<u8>>,
     ) -> Result<ops::ListResult, EngineError> {
@@ -279,7 +272,7 @@ impl Workspace {
                 vis_byte,
                 owner,
                 key_prefix: prefix,
-                tag,
+                tags,
                 limit,
                 cursor: cursor.as_deref(),
             },

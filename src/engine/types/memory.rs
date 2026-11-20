@@ -44,9 +44,9 @@ pub struct MemorySearchToolParams {
     /// List notes whose key starts with this.
     #[serde(default)]
     pub prefix: Option<String>,
-    /// Only notes carrying this tag. Not with `key`.
+    /// Notes carrying any of these. Not with `key`.
     #[serde(default)]
-    pub tag: Option<String>,
+    pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub visibility: Option<Visibility>,
     /// Max notes (default 10 for `query`, 100 for a listing). Not with `key`.
@@ -133,8 +133,9 @@ pub(crate) struct MemoryEntry {
 pub struct MemoryListParams {
     #[serde(default)]
     pub prefix: Option<String>,
+    /// Notes carrying any of these; empty lists every note.
     #[serde(default)]
-    pub tag: Option<String>,
+    pub tags: Vec<String>,
     #[serde(default)]
     pub limit: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Stable across rescans
@@ -178,8 +179,9 @@ pub struct MemorySearchParams {
     pub query: String,
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Notes carrying any of these; empty searches every note.
     #[serde(default)]
-    pub tag: Option<String>,
+    pub tags: Vec<String>,
     /// Memory tier: `group` (shared, default) or `individual` (per-agent). An individual
     /// search never returns another agent's rows; a group search only sees group rows.
     #[serde(default)]

@@ -191,7 +191,7 @@ fn a_memory_hit_carries_the_stamp_of_the_write_it_was_embedded_from() {
     let store = LanceStore::open(dir.path(), 4, "test").unwrap();
     store.upsert_memory(memory_row("k", "old text", 7)).unwrap();
 
-    let hits = store.search_memory("s", "group", "", vec![0.0; 4], 10, None).unwrap();
+    let hits = store.search_memory("s", "group", "", vec![0.0; 4], 10, &[]).unwrap();
 
     assert_eq!(hits.len(), 1);
     assert_eq!((hits[0].key.as_str(), hits[0].updated_at), ("k", 7));
@@ -229,7 +229,7 @@ fn a_repeated_batch_upsert_leaves_one_row_per_key() {
     store.upsert_memory_rows(&rows).unwrap();
     store.upsert_memory_rows(&rows).unwrap();
 
-    let hits = store.search_memory("s", "group", "", vec![0.0; 4], 10, None).unwrap();
+    let hits = store.search_memory("s", "group", "", vec![0.0; 4], 10, &[]).unwrap();
     assert_eq!(hits.len(), 2, "{hits:?}");
     assert!(store.memory_stamps("s", "group", "").unwrap().duplicated.is_empty());
 }
@@ -439,7 +439,7 @@ fn an_upsert_from_an_earlier_write_spares_the_row_of_a_later_one() {
     store.upsert_memory_rows(&[memory_row("k", "old text", 100)]).unwrap();
 
     let stamps: Vec<i64> = store
-        .search_memory("s", "group", "", vec![0.0; 4], 10, None)
+        .search_memory("s", "group", "", vec![0.0; 4], 10, &[])
         .unwrap()
         .into_iter()
         .map(|hit| hit.updated_at)
@@ -455,10 +455,10 @@ fn an_upsert_from_an_earlier_write_spares_the_row_of_a_later_one() {
     assert!(found.duplicated.is_empty(), "a later write removes every earlier row");
 }
 
-/// The tag is part of the search, not a filter over its result: a tagged row further from the
-/// query than an untagged one is still found within the limit.
+/// The tags are part of the search, not a filter over its result: a row carrying one of them further
+/// from the query than one carrying none is still found within the limit.
 #[test]
-fn a_memory_search_by_tag_is_filtered_in_the_store() {
+fn a_memory_search_by_tags_is_filtered_in_the_store() {
     let dir = tempfile::tempdir().unwrap();
     let store = LanceStore::open(dir.path(), 4, "test").unwrap();
     let mut near = memory_row("near", "", 1);
@@ -468,19 +468,26 @@ fn a_memory_search_by_tag_is_filtered_in_the_store() {
     far.tags = vec!["wanted".into(), "it's".into()];
     store.upsert_memory_rows(&[near, far]).unwrap();
 
-    let keys = |tag: Option<&str>| -> Vec<String> {
+    let keys = |tags: &[&str]| -> Vec<String> {
+        let tags: Vec<String> = tags.iter().map(|tag| tag.to_string()).collect();
         store
-            .search_memory("s", "group", "", vec![0.0; 4], 1, tag)
+            .search_memory("s", "group", "", vec![0.0; 4], 1, &tags)
             .unwrap()
             .into_iter()
             .map(|hit| hit.key)
             .collect()
     };
 
-    assert_eq!(keys(None), ["near"]);
-    assert_eq!(keys(Some("wanted")), ["far"]);
-    assert_eq!(keys(Some("it's")), ["far"], "a quote in a tag is escaped");
-    assert!(keys(Some("absent")).is_empty());
+    assert_eq!(keys(&[]), ["near"]);
+    assert_eq!(keys(&["wanted"]), ["far"]);
+    assert_eq!(
+        keys(&["absent", "wanted"]),
+        ["far"],
+        "a row carrying any of the tags is kept"
+    );
+    assert_eq!(keys(&["it's"]), ["far"], "a quote in a tag is escaped");
+    assert!(keys(&["absent"]).is_empty());
+    assert!(keys(&["absent", "missing"]).is_empty());
 }
 
 /// The temp file `meta.json` is written through is named by pid. Something another process has
@@ -718,7 +725,7 @@ fn metadata_cached_after_writes(session: Arc<lancedb::Session>, writes: i64) -> 
     let store = LanceStore::open_with(dir.path(), 4, "test", OPEN_LOCK_WAIT, &tables, Arc::clone(&session)).unwrap();
     for i in 0..writes {
         store.upsert_memory(memory_row(&format!("k{}", i % 4), "", i)).unwrap();
-        store.search_memory("s", "group", "", vec![0.0; 4], 4, None).unwrap();
+        store.search_memory("s", "group", "", vec![0.0; 4], 4, &[]).unwrap();
     }
     store.inner.rt().block_on(session.metadata_cache_stats()).size_bytes
 }
@@ -792,7 +799,7 @@ fn a_dropped_store_leaves_no_open_handle_in_its_directory() {
     let store = LanceStore::open(dir.path(), 4, "test").unwrap();
     let rows: Vec<MemoryRow> = (0..64).map(|i| memory_row(&format!("k{i}"), "text", i)).collect();
     store.upsert_memory_rows(&rows).unwrap();
-    let hits = store.search_memory("s", "group", "", vec![0.0; 4], 10, None).unwrap();
+    let hits = store.search_memory("s", "group", "", vec![0.0; 4], 10, &[]).unwrap();
     assert_eq!(hits.len(), 10, "the search read the table");
     let runtime = store.inner.rt().handle().clone();
     assert!(

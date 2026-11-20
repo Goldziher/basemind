@@ -40,7 +40,7 @@ fn read(key: &str, visibility: Option<Visibility>) -> MemorySearchToolParams {
         query: None,
         key: Some(key.into()),
         prefix: None,
-        tag: None,
+        tags: None,
         visibility,
         limit: None,
         cursor: None,

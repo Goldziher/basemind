@@ -187,6 +187,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `find_files`' `path_prefix` and `basemind code find|files --path-prefix` are renamed `path` /
   `--path`. A `path` no indexed file passes is refused with the rule it was read by, and a value
   holding `*` that is not a glob is refused with an example.
+- **BREAKING:** `memory_search` takes `tags`, a list, where it took one `tag` (#252), as
+  `memory_save` does: a search or a listing keeps the notes carrying any of them.
+  `basemind memory search|list --tag` is repeatable.
 
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields
