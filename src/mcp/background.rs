@@ -136,13 +136,13 @@ impl Writer {
             let embed = matches!(embed, EmbedMode::Inline);
             let (stats, cancelled) = pool
                 .hosted_rescan(&self.ws.root, None, false, embed, false)
-                .map_err(|error| EngineError::internal(format!("host rescan: {error}")))?;
+                .map_err(|error| super::daemon_forward::pool_error("host rescan", error))?;
             if cancelled {
                 return Ok(None);
             }
             let store = pool
                 .read_store(&self.ws.root)
-                .map_err(|error| EngineError::internal(format!("reopen read-only store: {error}")))?;
+                .map_err(|error| super::daemon_forward::pool_error("reopen read-only store", error))?;
             if let Some(cache) = self.ws.publish_store_if_changed(store) {
                 warm_terms(&cache);
             }

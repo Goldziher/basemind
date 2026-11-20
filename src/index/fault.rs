@@ -117,6 +117,12 @@ impl IndexFault {
 const POISONED: &str = "index handle poisoned";
 const STORAGE_FULL: &str = "disk full";
 
+/// Whether a latched [`IndexFault::reason`] is a full disk, which freeing space cures, rather than a
+/// poisoned handle.
+pub fn is_storage_full(reason: &str) -> bool {
+    reason.starts_with(STORAGE_FULL)
+}
+
 /// Classify `error` as fatal: the disk is full, or fjall has declared the handle poisoned or
 /// unrecoverable. Walks the source chain, because the `StorageFull` io error arrives wrapped
 /// (`fjall::Error::Io`, or `lsm_tree::Error::Io` inside `fjall::Error::Storage`).
@@ -173,6 +179,16 @@ mod tests {
         fault.record(&IndexError::Fjall(fjall::Error::Poisoned));
         fault.clear_recoverable();
         assert!(fault.is_poisoned());
+    }
+
+    #[test]
+    fn a_full_disk_reason_reads_as_a_full_disk_and_a_poisoned_one_does_not() {
+        let full_disk = IndexFault::default();
+        full_disk.record(&full());
+        assert!(is_storage_full(&full_disk.reason().expect("latched")));
+        let poisoned = IndexFault::default();
+        poisoned.record(&IndexError::Fjall(fjall::Error::Poisoned));
+        assert!(!is_storage_full(&poisoned.reason().expect("latched")));
     }
 
     #[test]
