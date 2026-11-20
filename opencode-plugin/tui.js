@@ -7,13 +7,16 @@
  * asks the daemon of basemind for an announcing read of the agent inbox and
  * surfaces any unread messages as a toast. The daemon records what it has
  * announced, so a message is announced once and stays unread until the agent
- * reads it with agent_inbox.
+ * reads it with agent_inbox. At startup it also shows, once, the line from
+ * `./binary-check.js` when the `basemind` binary on PATH is missing or from
+ * another minor version.
  *
  * This half imports `@opencode/plugin/tui` (TUI context) and therefore must
  * NOT be loaded by the server-side half in `basemind.js`.
  */
 
 import { Plugin } from "@opencode/plugin/tui";
+import { checkBinary, packageVersion } from "./binary-check.js";
 import { execFile } from "child_process";
 import fs from "fs";
 import path from "path";
@@ -72,9 +75,15 @@ export default Plugin.define({
     const location = context.location ?? context.data.location.default();
     const directory = location?.directory ?? process.cwd();
 
-    const surface = (message) => {
-      context.ui.toast.show({ title: "basemind", message, variant: "info" });
+    const surface = (message, variant = "info") => {
+      context.ui.toast.show({ title: "basemind", message, variant });
     };
+
+    checkBinary({ expected: packageVersion() }).then((binary) => {
+      if (binary.message) {
+        surface(binary.message, binary.status === "missing" ? "error" : "warning");
+      }
+    });
 
     const announce = async () => {
       const inbox = await announceCommsInbox(directory, 10);

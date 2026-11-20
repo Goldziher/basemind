@@ -26,6 +26,7 @@
   },
   "files": [
     "basemind.js",
+    "binary-check.js",
     "tui.js",
     "skills/",
     "commands/",

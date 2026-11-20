@@ -23,7 +23,7 @@ if (skills.length !== 10) throw new Error(`Expected 10 product skills, found ${s
 console.log(`Staging ${skills.length} skills, the Pi extension, and OpenCode adapters`);
 JS
 cp "$repo_root/opencode-plugin/package.json" "$repo_root/opencode-plugin/README.md" "$repo_root/LICENSE" "$destination/"
-cp "$repo_root/opencode-plugin/basemind.js" "$repo_root/opencode-plugin/tui.js" "$destination/"
+cp "$repo_root/opencode-plugin/basemind.js" "$repo_root/opencode-plugin/tui.js" "$repo_root/opencode-plugin/binary-check.js" "$destination/"
 cp -R "$repo_root/opencode-plugin/commands" "$destination/commands"
 mkdir -p "$destination/.pi/extensions"
 cp "$repo_root/.pi/extensions/basemind.ts" "$destination/.pi/extensions/"
