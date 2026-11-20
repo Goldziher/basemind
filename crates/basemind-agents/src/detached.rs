@@ -255,13 +255,10 @@ fn signal_group(group: i32, members: &[&ProcInfo]) {
     let unchanged = members
         .iter()
         .all(|member| procinfo::info(member.pid).is_some_and(|now| now.start == member.start && now.pgid == group));
-    if !unchanged || !group_is_only(group, members) {
-        return;
-    }
-    #[cfg(unix)]
-    {
+    if unchanged && group_is_only(group, members) {
         // SAFETY: a negative pid signals that process group; it is not init's, the kernel's or
         // this process's, and every member was just checked to be the session's.
+        #[cfg(unix)]
         unsafe {
             libc::kill(-group, libc::SIGKILL);
         }
