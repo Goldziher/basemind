@@ -86,7 +86,10 @@ use crate::path::RelPath;
 ///
 /// `+9` recreates every keyspace at [`KEYSPACE_MEMTABLE_BYTES`]: fjall persists the memtable size
 /// at keyspace creation, so a store created at the 64 MiB default would keep it.
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 9;
+///
+/// `+10` rebuilds the stored authors: a name that is not UTF-8 was stored as `?` and its email as
+/// empty, so every such author was one person. The byte format is unchanged.
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 10;
 
 /// Memtable ceiling of each keyspace, in bytes. At fjall's 64 MiB default, eight keyspaces with up
 /// to four sealed memtables queued behind each would let one database (the daemon keeps one per

@@ -803,6 +803,7 @@ dependencies = [
  "criterion",
  "directories",
  "dunce",
+ "encoding_rs",
  "fjall",
  "form_urlencoded",
  "fs2",

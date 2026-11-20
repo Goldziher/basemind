@@ -31,8 +31,7 @@ pub(super) fn build_commit_info(local: &gix::Repository, id: gix::ObjectId, incl
         .map(|b| b.to_string())
         .unwrap_or_default();
     let author_ref = commit.author().ok()?;
-    let author = std::str::from_utf8(author_ref.name).unwrap_or("?").to_string();
-    let author_email = std::str::from_utf8(author_ref.email).unwrap_or("").to_string();
+    let (author, author_email) = super::signature::author_text(&commit, &author_ref);
     let author_time_unix = author_ref.time().ok().map(|t| t.seconds).unwrap_or(0);
 
     let files = if include_files {

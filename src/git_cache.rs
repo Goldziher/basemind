@@ -41,8 +41,9 @@ use crate::git::{BlameResult, ChangeKind, CommitInfo, GitError, Repo};
 ///
 /// The offset is `+2` since commit file lists stopped naming directories and started naming a
 /// merge's files only when they differ from every parent: the cached lists of earlier builds are
-/// misses. `+3` since a root commit's list stopped naming the directories of its tree.
-pub const GIT_CACHE_SCHEMA: u16 = crate::version::RELEASE_MINOR + 3;
+/// misses. `+3` since a root commit's list stopped naming the directories of its tree. `+4` since an
+/// author name or email that is not UTF-8 is decoded instead of cached as `?` or empty.
+pub const GIT_CACHE_SCHEMA: u16 = crate::version::RELEASE_MINOR + 4;
 pub const GIT_CACHE_DIR: &str = "git-cache";
 
 #[derive(Debug, Error)]

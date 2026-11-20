@@ -760,6 +760,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancels such a read frees the lane the same way, and so does the stdio relay: a request it answers
   with `backend_timeout` is cancelled on the daemon (`notifications/cancelled`). Abandoned reads
   beyond the overflow pool keep their lane permit, so hung work stays bounded.
+- An author name or email that is not UTF-8 is decoded by the commit's `encoding` header, or as
+  Windows-1252 when it has none or the header does not read it. It was `?` with an empty email, so
+  `git hotspots` counted every such author as one, and `git log`, blame and `code explain` named
+  them `?`. `GIT_HISTORY_SCHEMA` and `GIT_CACHE_SCHEMA` are bumped: the git-history index rebuilds
+  once on the next scan and cached git answers are recomputed (#305).
+
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

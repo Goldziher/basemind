@@ -12,6 +12,7 @@ mod diff;
 mod eol_config;
 mod export;
 mod remote;
+mod signature;
 mod status;
 mod tracked;
 mod worktree;
@@ -107,7 +108,8 @@ pub struct CommitInfo {
     pub short_sha: String,
     pub summary: String,
     pub author: String,
-    /// Author email (`user@host`), empty when the commit has none or it isn't valid UTF-8.
+    /// Author email (`user@host`), empty when the commit has none. Like `author`, decoded by the
+    /// commit's `encoding` header when it is not UTF-8.
     pub author_email: String,
     pub author_time_unix: i64,
     /// Full commit message body (everything after the summary line), empty for summary-only
@@ -672,7 +674,7 @@ impl Repo {
                     let author = commit
                         .author()
                         .ok()
-                        .and_then(|a| std::str::from_utf8(a.name).ok().map(|s| s.to_string()))
+                        .map(|a| signature::author_text(&commit, &a).0)
                         .unwrap_or_else(|| "?".to_string());
                     let time = commit
                         .author()
