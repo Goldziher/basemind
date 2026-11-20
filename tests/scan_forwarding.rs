@@ -11,6 +11,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use basemind::comms::singleton::{comms_socket_path, generation_dir, probe_alive};
+use basemind::scanner_hold::{TEST_HOLD_SCAN_ENV, held_marker};
 use tempfile::TempDir;
 
 const BIN: &str = env!("CARGO_BIN_EXE_basemind");
@@ -98,7 +99,20 @@ struct Daemon {
 
 impl Daemon {
     fn start(env: &Env) -> Self {
-        let child = Command::new(BIN)
+        Self::spawn(env, None)
+    }
+
+    /// A daemon whose scans wait while `gate` exists (see `basemind::scanner_hold`).
+    fn holding(env: &Env, gate: &Path) -> Self {
+        Self::spawn(env, Some(gate))
+    }
+
+    fn spawn(env: &Env, gate: Option<&Path>) -> Self {
+        let mut command = Command::new(BIN);
+        if let Some(gate) = gate {
+            command.env(TEST_HOLD_SCAN_ENV, gate);
+        }
+        let child = command
             .args(["comms", "daemon"])
             .env("BASEMIND_COMMS_DIR", env.comms_dir())
             .env("BASEMIND_DATA_HOME", env.home.path())
@@ -244,36 +258,90 @@ fn a_flag_the_daemon_cannot_apply_is_refused_with_its_name() {
     );
 }
 
+/// The in-flight work count a refused `comms stop` names, or `None` once the daemon accepted it.
+fn work_in_flight(env: &Env) -> Option<usize> {
+    let out = Command::new(BIN)
+        .args(["comms", "stop"])
+        .env("BASEMIND_COMMS_DIR", env.comms_dir())
+        .output()
+        .expect("run comms stop");
+    if out.status.success() {
+        return None;
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let count = stderr
+        .split_once("work=")
+        .map(|(_, rest)| rest.chars().take_while(char::is_ascii_digit).collect::<String>())
+        .unwrap_or_else(|| panic!("a refused stop names the work in flight: {stderr}"));
+    Some(count.parse().unwrap_or_else(|_| panic!("work count in: {stderr}")))
+}
+
+/// Fail if `child` has already exited.
+fn assert_running(child: &mut Child, what: &str) {
+    if let Some(status) = child.try_wait().expect("poll") {
+        panic!("the {what} exited ({status}) while the daemon's rescan was held");
+    }
+}
+
 #[test]
 fn a_scan_while_the_daemon_is_mid_rescan_waits_for_it() {
     let env = Env::new();
-    for i in 0..6000 {
+    for i in 0..200 {
         std::fs::write(
             env.root().join(format!("f{i}.rs")),
             format!("pub fn f{i}() {{ f{}() }}\n", i + 1),
         )
         .unwrap();
     }
-    let _daemon = Daemon::start(&env);
+    let hold = tempfile::tempdir().expect("hold tempdir");
+    let gate = hold.path().join("gate");
+    let _daemon = Daemon::holding(&env, &gate);
+    std::fs::write(&gate, b"").unwrap();
     let mut rescan = env
         .command(&["rescan"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("rescan");
-    std::thread::sleep(Duration::from_millis(300));
-    let overlapped = rescan.try_wait().expect("poll").is_none();
-    let scan = env.run(&["scan"]);
+    let marker = held_marker(&gate);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !marker.exists() {
+        assert_running(&mut rescan, "rescan");
+        assert!(Instant::now() < deadline, "the daemon's rescan was never held");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // The daemon counts each rescan it is serving: one while the first pass is held, two once the
+    // forwarded scan reached it, so the scan is waiting on that pass rather than racing it.
+    assert_eq!(work_in_flight(&env), Some(1), "only the held rescan is in flight");
+    let mut scan = env
+        .command(&["scan"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("scan");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        assert_running(&mut rescan, "rescan");
+        assert_running(&mut scan, "forwarded scan");
+        let work = work_in_flight(&env).expect("a stop is refused while the rescan is held");
+        if work == 2 {
+            break;
+        }
+        assert_eq!(work, 1, "only the two rescans are in flight");
+        assert!(Instant::now() < deadline, "the forwarded scan never reached the daemon");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::fs::remove_file(&gate).unwrap();
+
+    assert!(rescan.wait().expect("rescan").success());
+    let scan = scan.wait_with_output().expect("scan");
     assert_eq!(code(&scan), 0, "never a collision error: {}", text(&scan));
     assert!(text(&scan).contains("scan via daemon"), "{}", text(&scan));
-    assert!(rescan.wait().expect("rescan").success());
-    if !overlapped {
-        eprintln!("note: the rescan finished before the scan started on this machine");
-    }
-    let files = env.run(&["--json", "code", "symbols", "f5999"]);
+    let files = env.run(&["--json", "code", "symbols", "f199"]);
     assert_eq!(code(&files), 0, "{}", text(&files));
     assert!(
-        String::from_utf8_lossy(&files.stdout).contains("f5999.rs"),
+        String::from_utf8_lossy(&files.stdout).contains("f199.rs"),
         "{}",
         text(&files)
     );

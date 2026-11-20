@@ -64,6 +64,7 @@ pub(crate) mod scanner_drive;
 pub mod scanner_file;
 pub(crate) mod scanner_filter;
 pub(crate) mod scanner_flush;
+pub mod scanner_hold;
 pub(crate) mod scanner_index_batch;
 pub(crate) mod scanner_integrity;
 pub mod scanner_lanes;
