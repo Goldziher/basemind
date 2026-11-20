@@ -853,7 +853,7 @@ pub(crate) enum GitDiffResult {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HotspotsParams {
-    /// Window ending at HEAD's author time: `<N>d`, `<N>w` or `<N>y`; default `90d`.
+    /// Window ending at HEAD's commit time: `<N>d`, `<N>w` or `<N>y`; default `90d`.
     #[serde(default)]
     pub since: Option<String>,
     /// Only files at this path or under this directory.
@@ -907,7 +907,7 @@ pub(crate) struct HotspotRow {
 pub(crate) struct HotspotsResponse {
     /// The window as asked (`90d`).
     pub since: String,
-    /// Unix seconds: the window is `[window_start, window_end]`, ending at HEAD's author time.
+    /// Unix seconds: the window is `[window_start, window_end]`, ending at HEAD's commit time.
     pub window_start: i64,
     pub window_end: i64,
     /// Commits in the window.

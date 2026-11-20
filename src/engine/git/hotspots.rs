@@ -37,8 +37,10 @@ const INDEXED_COMMIT_CAP: usize = 20_000;
 const LIVE_COMMIT_CAP: usize = 1_000;
 /// Commits fetched from the index per round.
 const CHUNK: usize = 500;
-/// Consecutive commits authored before the window that end the walk. Author dates are not monotonic
-/// in commit order (a rebase or cherry-pick keeps the original date), so one old commit does not.
+/// Consecutive commits made before the window that end the walk. The walk is newest first by commit
+/// time, which clock skew can leave out of order, so one such commit does not. A commit authored
+/// before the window but made in it (a rebased or cherry-picked commit keeps its author date) is not
+/// counted, and does not end the walk either.
 const OUT_OF_WINDOW_RUN: usize = 50;
 const SECS_PER_DAY: i64 = 86_400;
 
@@ -111,11 +113,21 @@ impl Window {
     }
 }
 
-/// Walk `fetch(skip, take)` (newest first, with files) back to `span` seconds before the first
-/// commit's author time, or to `cap` commits.
-fn collect_window(mut fetch: impl FnMut(usize, usize) -> Vec<CommitInfo>, span: i64, cap: usize) -> Window {
-    let mut window = Window::default();
-    let mut anchored = false;
+/// Walk `fetch(skip, take)` (newest first by commit time, with files) for the commits authored in
+/// the `span` seconds up to `end`, until a run of commits made before the window or `cap` commits.
+/// `committed` is a commit's commit time, read only for those authored before the window.
+fn collect_window(
+    mut fetch: impl FnMut(usize, usize) -> Vec<CommitInfo>,
+    committed: impl Fn(&CommitInfo) -> Option<i64>,
+    end: i64,
+    span: i64,
+    cap: usize,
+) -> Window {
+    let mut window = Window {
+        start: end.saturating_sub(span),
+        end,
+        ..Window::default()
+    };
     let mut inspected = 0usize;
     let mut out_run = 0usize;
     loop {
@@ -123,20 +135,19 @@ fn collect_window(mut fetch: impl FnMut(usize, usize) -> Vec<CommitInfo>, span: 
         let chunk = fetch(inspected, take);
         let fetched = chunk.len();
         for commit in chunk {
-            if !anchored {
-                anchored = true;
-                window.end = commit.author_time_unix;
-                window.start = window.end.saturating_sub(span);
-            }
-            if commit.author_time_unix < window.start {
-                out_run += 1;
-                if out_run >= OUT_OF_WINDOW_RUN {
-                    return window;
-                }
+            if commit.author_time_unix >= window.start {
+                out_run = 0;
+                window.add(commit);
                 continue;
             }
-            out_run = 0;
-            window.add(commit);
+            if committed(&commit).unwrap_or(commit.author_time_unix) >= window.start {
+                out_run = 0;
+                continue;
+            }
+            out_run += 1;
+            if out_run >= OUT_OF_WINDOW_RUN {
+                return window;
+            }
         }
         inspected += fetched;
         if fetched < take {
@@ -154,9 +165,15 @@ fn collect_window(mut fetch: impl FnMut(usize, usize) -> Vec<CommitInfo>, span: 
 fn window_of(ws: &Workspace, span: i64) -> Result<Window, EngineError> {
     let repo = require_git_repo(ws)?;
     let head = head_sha(repo)?;
+    let end = repo
+        .commit_time(&head)
+        .ok_or_else(|| EngineError::internal(format!("HEAD {head}: no commit time")))?;
+    let committed = |commit: &CommitInfo| repo.commit_time(&commit.sha);
     if let Some(index) = git_history_if_fresh(ws, &head) {
         return Ok(collect_window(
             |skip, take| index.recent_commits(skip, take, true),
+            committed,
+            end,
             span,
             INDEXED_COMMIT_CAP,
         ));
@@ -167,6 +184,8 @@ fn window_of(ws: &Workspace, span: i64) -> Result<Window, EngineError> {
         .map_err(|e| EngineError::internal(format!("log: {e}")))?;
     let mut window = collect_window(
         |skip, take| log.iter().skip(skip).take(take).cloned().collect(),
+        committed,
+        end,
         span,
         LIVE_COMMIT_CAP,
     );

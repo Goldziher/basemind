@@ -38,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `basemind git hotspots [--since 90d] [--path P] [--limit N]` (CLI only, #134): the files a commit in
   the window touched where two or more of commits, distinct authors, lines, symbols, the longest
   function and importers are in their top 10%, as raw numbers with no score. The window ends at
-  HEAD's author time.
+  HEAD's commit time and counts the commits authored in it; the walk ends at a run of commits made
+  before the window, so a merged or rebased branch whose commits keep older author dates does not
+  end it (#299).
 - `basemind code explain <symbol|path|path:line>` (CLI only, #120): one briefing composed from the
   outline, `code_refs`, the import graph and git history. A symbol gets its definition (line span,
   signature, doc comment, read across attributes and decorators), its body when it has 60 lines or

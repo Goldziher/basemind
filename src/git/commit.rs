@@ -519,6 +519,14 @@ impl Repo {
         build_commit_info(&local, id, true)
     }
 
+    /// When the commit `sha` names was made (its committer time, not its author time), in unix
+    /// seconds. `None` when `sha` does not resolve to a commit or the time does not parse.
+    pub fn commit_time(&self, sha: &str) -> Option<i64> {
+        let local = self.local();
+        let id = Self::resolve_oid(&local, sha)?;
+        local.find_commit(id).ok()?.time().ok().map(|time| time.seconds)
+    }
+
     /// True when `ancestor` is an ancestor of (or equal to) `descendant`. Uses the commit-graph-
     /// backed merge-base: `a` is an ancestor of `b` iff `merge_base(a, b) == a`.
     pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> bool {
