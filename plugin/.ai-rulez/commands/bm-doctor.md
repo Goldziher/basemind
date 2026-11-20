@@ -28,7 +28,7 @@ version-matched binary, `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>` (in
 plugin launcher exists:
 
 1. Check the index: `basemind status`.
-2. Check for a lock holder: with a daemon running, `basemind scan` is forwarded to it; otherwise a lock error (exit 3) names the holder (command + pid) from the workspace cache's `.lock.meta`.
+2. Check for a lock holder: with a daemon running, `basemind scan` is forwarded to it; otherwise a lock error (exit 3) names the holder (command + pid) when the workspace cache's `.lock.meta` records it, and is generic when it does not.
 3. Rebuild the index if needed: `basemind scan`.
 4. Reconnect the MCP server (client-specific — this is the only way to restart it).
 

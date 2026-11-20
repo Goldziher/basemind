@@ -33,9 +33,9 @@ tool search needed. Agent messaging is the exception: `agent_post`, `agent_inbox
   implementations, importers. The code map (outline, symbols, refs) covers code only.
 - **Exact text search**: `code_grep` (literal or regex) over code and markdown, config and data
   files.
-- **Search by meaning**: `code_search` over code; `docs_search` over documents, the one tool for
-  PDFs, Office files, HTML and email (images too, when the build has `documents-ocr`), with
-  cross-encoder reranking.
+- **Search by meaning**: `code_search` over code; `docs_search` over documents, including PDFs,
+  Office files, HTML and email (images too, when the build has `documents-ocr`), with cross-encoder
+  reranking. For exact text in an indexed HTML file, `code_grep` reads it as text too.
 - **Git history**: log, blame, and diffs at symbol resolution.
 - **Shared memory**: per-repo notes that persist across sessions (`memory_save`, `memory_search`).
 
@@ -219,8 +219,9 @@ A 1000-line file becomes a 30-line table of contents.
   names the field.
 - The code map (`code_outline`, `code_symbols`, `code_refs`) covers code only. `code_grep` also
   finds exact text in markdown, config and data files; `docs_search` is for searching by meaning,
-  and for PDFs, Office files, HTML and email. `find_files` lists every file, and `code_read` with a
-  line span reads any text file.
+  and for PDFs, Office files, HTML and email. `find_files` lists the indexed files and the other
+  files git tracks, not an untracked file the index leaves out (a local `.env`) or a file outside a
+  git work tree; `code_read` with a line span reads any text file.
 - A `notice` field means the result is incomplete and says why (empty index, scan in progress).
 - The git tools require `basemind serve` to be running inside a git repository.
 - `code_search` needs the `code-search` Cargo feature, `docs_search` needs `documents`, and the
