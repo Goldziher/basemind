@@ -567,6 +567,7 @@ mod load_failure {
             "no such file",
             "network",
             "connect",
+            "offline mode",
         ]
         .iter()
         .any(|marker| message.contains(marker))
@@ -763,6 +764,16 @@ mod tests {
         );
         assert!(super::load_failure::remember(model, Ok(())).is_ok());
         assert!(super::load_failure::recent(model).is_ok());
+    }
+
+    #[test]
+    fn a_model_missing_from_the_cache_in_offline_mode_is_a_load_failure() {
+        let missing = anyhow!(
+            "Hugging Face offline mode is enabled and 'bge-base-en-v1.5/model.onnx' from \
+             xberg-io/embedding-models@main is not available in the local cache"
+        );
+        assert!(super::is_load_failure(&missing));
+        assert!(!super::is_load_failure(&anyhow!("embed: input text must not be empty")));
     }
 
     /// The reranker is held on the residency books while it runs, and a reranker that failed to load

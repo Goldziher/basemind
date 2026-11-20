@@ -170,6 +170,7 @@ pub fn is_document_markup(lang: &str, path: &Path) -> bool {
 /// Fetch the underlying tree-sitter Language for a given `LangId`.
 pub fn language(lang: LangId) -> Result<Language, LangError> {
     configure_grammar_dir();
+    crate::lang_grammars::refuse_offline_download(lang)?;
     tree_sitter_language_pack::get_language(lang).map_err(|e| LangError::Pack(format!("{e}")))
 }
 

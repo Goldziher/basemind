@@ -32,6 +32,16 @@ repository. A truthy value is `1`, `true` or `yes`.
 | `BASEMIND_RELAY_REQUEST_TIMEOUT_SECS` | Deadline for one request through the stdio relay (default 180, `0` disables). |
 | `BASEMIND_COMMS_REQUEST_TIMEOUT_SECS` | Deadline for one daemon request (default 10). |
 
+## Network
+
+| Variable | Effect |
+|---|---|
+| `BASEMIND_OFFLINE` | Never download a grammar or a model, for this process and the daemon it starts; a missing one is an error naming it. Sets `HF_HUB_OFFLINE` for the models. |
+| `HF_ENDPOINT` | The Hugging Face server the models are downloaded from (default `https://huggingface.co`), for a mirror. |
+| `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL` | Where the grammar manifest is fetched from, for a mirror (`https://` or `file://`). |
+
+Every outbound host, and what triggers each download, is listed in `docs/network.md`.
+
 ## Indexing and cache
 
 | Variable | Effect |

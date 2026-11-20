@@ -311,6 +311,8 @@ fn main() -> std::process::ExitCode {
     // the same user can write requests into its stdin through /proc in the meantime.
     #[cfg(all(feature = "comms", unix))]
     serve_lead::seal_if_lead();
+    // SAFETY: the command thread below is the process's second thread; none exists yet.
+    unsafe { basemind::cli::env_config::export_model_hub_offline() };
     let outcome = std::thread::Builder::new()
         .name("basemind-cli".to_owned())
         .stack_size(CLI_STACK_SIZE)

@@ -28,6 +28,10 @@ use crate::store_layout::DATA_HOME_ENV;
 
 pub const PARSE_TIMEOUT_MS_ENV: &str = "BASEMIND_PARSE_TIMEOUT_MS";
 pub const GRAMMAR_OFFLINE_ENV: &str = "BASEMIND_GRAMMAR_OFFLINE";
+/// Turns off every download basemind makes at run time: grammars and the Hugging Face models.
+pub const OFFLINE_ENV: &str = "BASEMIND_OFFLINE";
+/// The Hugging Face client's own offline switch, the one the model downloads read.
+pub const HF_HUB_OFFLINE_ENV: &str = "HF_HUB_OFFLINE";
 /// The language pack's own override of its grammar cache base, honoured as before.
 pub const GRAMMAR_CACHE_DIR_ENV: &str = "TREE_SITTER_LANGUAGE_PACK_CACHE_DIR";
 pub const GIT_DELTA_CACHE_BYTES_ENV: &str = "BASEMIND_GIT_DELTA_CACHE_BYTES";
@@ -78,7 +82,7 @@ pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineCo
     if let Some(millis) = text(&lookup, PARSE_TIMEOUT_MS_ENV).and_then(|raw| raw.parse::<u64>().ok()) {
         config.parse_timeout = Duration::from_millis(millis);
     }
-    config.grammars.offline = text(&lookup, GRAMMAR_OFFLINE_ENV).is_some_and(|v| v != "0" && !v.is_empty());
+    config.grammars.offline = grant(&lookup, OFFLINE_ENV) || grant(&lookup, GRAMMAR_OFFLINE_ENV);
     // Blank counts as unset, as the language pack reads it. ~keep
     config.grammars.cache_dir = lookup(GRAMMAR_CACHE_DIR_ENV)
         .filter(|value| value.to_str().is_none_or(|value| !value.trim().is_empty()))
@@ -154,6 +158,26 @@ fn absolute(value: OsString) -> PathBuf {
     }
 }
 
+/// The variable and value to set so the model downloads stay offline, when `lookup` sets
+/// `BASEMIND_OFFLINE`. The models are fetched by the Hugging Face client, which reads only its own
+/// `HF_HUB_OFFLINE`; set, a model missing from the local cache is an error naming its file.
+pub fn model_hub_offline(lookup: impl Fn(&str) -> Option<OsString>) -> Option<(&'static str, &'static str)> {
+    grant(&lookup, OFFLINE_ENV).then_some((HF_HUB_OFFLINE_ENV, "1"))
+}
+
+/// Apply [`model_hub_offline`] to this process's environment, which the processes it starts inherit.
+///
+/// # Safety
+///
+/// Call it before the process starts a second thread: setting a variable races with any read of
+/// the environment on another thread.
+pub unsafe fn export_model_hub_offline() {
+    if let Some((name, value)) = model_hub_offline(|name| std::env::var_os(name)) {
+        // SAFETY: the caller guarantees no other thread exists yet.
+        unsafe { std::env::set_var(name, value) };
+    }
+}
+
 /// Build this process's engine from its environment. A variable with a value it cannot use, or
 /// one of a removed setting, is warned about once per process.
 pub fn install_from_env() -> Result<Engine, EngineError> {
@@ -199,12 +223,16 @@ mod tests {
     use super::*;
     use crate::daemon_lock::MAX_LIVE_DAEMONS;
 
-    fn config_of(vars: &[(&str, &str)]) -> EngineConfig {
+    fn lookup_of(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + use<> {
         let vars: HashMap<String, OsString> = vars
             .iter()
             .map(|(name, value)| ((*name).to_string(), OsString::from(value)))
             .collect();
-        engine_config_from(|name| vars.get(name).cloned())
+        move |name| vars.get(name).cloned()
+    }
+
+    fn config_of(vars: &[(&str, &str)]) -> EngineConfig {
+        engine_config_from(lookup_of(vars))
     }
 
     #[test]
@@ -282,13 +310,41 @@ mod tests {
     }
 
     #[test]
-    fn the_grammar_offline_variable_is_on_unless_empty_or_zero() {
+    fn either_offline_variable_keeps_grammars_offline_on_a_truthy_value_only() {
         let offline = |vars: &[(&str, &str)]| config_of(vars).grammars.offline;
         assert!(!offline(&[]));
-        assert!(!offline(&[(GRAMMAR_OFFLINE_ENV, "")]));
-        assert!(!offline(&[(GRAMMAR_OFFLINE_ENV, "0")]));
-        assert!(offline(&[(GRAMMAR_OFFLINE_ENV, "1")]));
-        assert!(offline(&[(GRAMMAR_OFFLINE_ENV, "false")]));
+        for name in [GRAMMAR_OFFLINE_ENV, OFFLINE_ENV] {
+            for word in ["1", "true", " TRUE ", "yes"] {
+                assert!(offline(&[(name, word)]), "{name}={word:?} is offline");
+            }
+            for word in ["", "0", "false", "no", "off"] {
+                assert!(!offline(&[(name, word)]), "{name}={word:?} is online");
+            }
+        }
+        assert!(
+            offline(&[(OFFLINE_ENV, "1"), (GRAMMAR_OFFLINE_ENV, "false")]),
+            "BASEMIND_OFFLINE wins over the grammar variable"
+        );
+    }
+
+    #[test]
+    fn the_offline_variable_turns_the_model_hub_offline() {
+        let export = |vars: &[(&str, &str)]| model_hub_offline(lookup_of(vars));
+        assert_eq!(export(&[(OFFLINE_ENV, "1")]), Some(("HF_HUB_OFFLINE", "1")));
+        assert_eq!(export(&[(OFFLINE_ENV, "yes")]), Some(("HF_HUB_OFFLINE", "1")));
+        assert_eq!(
+            export(&[(OFFLINE_ENV, "true"), (HF_HUB_OFFLINE_ENV, "0")]),
+            Some(("HF_HUB_OFFLINE", "1")),
+            "BASEMIND_OFFLINE wins over the hub's own switch"
+        );
+        assert_eq!(export(&[]), None);
+        assert_eq!(export(&[(OFFLINE_ENV, "false")]), None);
+        assert_eq!(export(&[(OFFLINE_ENV, "0")]), None);
+        assert_eq!(
+            export(&[(GRAMMAR_OFFLINE_ENV, "1")]),
+            None,
+            "the grammar variable leaves the models alone"
+        );
     }
 
     #[test]

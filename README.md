@@ -280,7 +280,8 @@ Copy the files unchanged from the GitHub release. The launcher downloads the arc
 checksums file from the mirror and installs nothing whose SHA-256 does not match. It asks GitHub for
 nothing while a mirror is set, so it cannot fall back to another release of the same minor when the
 mirror lacks the pinned one; a cached binary of that minor still serves. On a machine with no network
-at all, install the binary yourself and set `BASEMIND_BIN` to it, as for a local build.
+at all, install the binary yourself and set `BASEMIND_BIN` to it, as for a local build; every host
+basemind downloads from is listed in [`docs/network.md`](docs/network.md).
 
 ### 2. As an MCP server
 
@@ -1147,6 +1148,12 @@ A cap variable must be a positive integer; anything else falls back to the defau
 | `BASEMIND_MAX_DAEMONS` | Ceiling on live daemons per machine before a spawn is refused; default 8. |
 | `BASEMIND_BIN`, `BASEMIND_FORCE_VERSION` | Plugin launcher: run a local build / pin a release (see [Installation](#1-as-a-plugin-recommended)). |
 | `BASEMIND_RELEASE_BASE_URL` | Plugin launcher: download releases from a mirror instead of GitHub (see [Installation](#1-as-a-plugin-recommended)). |
+| `BASEMIND_OFFLINE=1` | Download nothing: no grammar, no model, and no binary from the plugin launcher; a missing one is an error naming it. |
+
+**Network access.** [`docs/network.md`](docs/network.md) lists every host basemind downloads from,
+what triggers each download, the variables that point it at a mirror (`BASEMIND_RELEASE_BASE_URL`,
+`HF_ENDPOINT`, `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL`), and how to prepare a machine for
+`BASEMIND_OFFLINE`.
 
 **Reload.** The daemon re-reads a workspace's `basemind.toml` on the next request after it changes
 (size or modification time) and logs `config changed`. A file that no longer parses keeps the last

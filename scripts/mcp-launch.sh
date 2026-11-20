@@ -383,6 +383,25 @@ ASSET="basemind-${TRIPLE}.${EXT}"
 ASSET_URL="${BASE_URL}/${ASSET}"
 SUMS_URL="${BASE_URL}/basemind_${VERSION}_checksums.txt"
 
+# BASEMIND_OFFLINE turns every download off, this one included, with basemind's boolean spellings. ~keep
+# Offline, a cached binary of the pinned minor still serves; past that the session gets no server. ~keep
+offline_value="$(printf '%s' "${BASEMIND_OFFLINE:-}" | tr '[:upper:]' '[:lower:]')"
+offline_value="${offline_value#"${offline_value%%[![:space:]]*}"}"
+offline_value="${offline_value%"${offline_value##*[![:space:]]}"}"
+case "$offline_value" in
+'' | 0 | false | no | off) ;;
+1 | true | yes | on)
+  fb="$(newest_compatible_cached)"
+  if [ -n "$fb" ]; then
+    log "BASEMIND_OFFLINE is set and v${VERSION} is not installed; using the cached basemind $(binary_version "$fb") at $fb"
+    mark_used "$(dirname "$fb")"
+    exec "$fb" "$@"
+  fi
+  die "BASEMIND_OFFLINE is set and basemind v${VERSION} is not installed, so $ASSET was not downloaded. Put the v${VERSION} binary at $MANAGED_BIN, set BASEMIND_BIN to a vendored binary, or unset BASEMIND_OFFLINE"
+  ;;
+*) die "BASEMIND_OFFLINE=\"${BASEMIND_OFFLINE}\" is not a boolean: use 1, true, yes, on or 0, false, no, off" ;;
+esac
+
 if have curl; then
   fetch() { curl -fsSL --retry 3 -o "$2" "$1"; }
 elif have wget; then

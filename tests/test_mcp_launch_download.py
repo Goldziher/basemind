@@ -8,6 +8,7 @@ laid out like the release download URLs, so every case runs offline and determin
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -122,7 +123,12 @@ class DownloadTests(unittest.TestCase):
         return log.read_text().splitlines() if log.exists() else []
 
     def launch(
-        self, *args: str, latest: str = "", offline: bool = False, mirror: str | None = None
+        self,
+        *args: str,
+        latest: str = "",
+        offline: bool = False,
+        mirror: str | None = None,
+        extra: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess:
         env = {
             "PATH": f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin",
@@ -135,6 +141,7 @@ class DownloadTests(unittest.TestCase):
         }
         if mirror is not None:
             env["BASEMIND_RELEASE_BASE_URL"] = mirror
+        env.update(extra or {})
         self.github.mkdir(parents=True, exist_ok=True)
         return subprocess.run(
             ["bash", str(LAUNCHER), *args], env=env, capture_output=True, text=True, timeout=120, check=False
@@ -221,6 +228,60 @@ class DownloadTests(unittest.TestCase):
         self.assertIn(
             'BASEMIND_RELEASE_BASE_URL="mirror.example/basemind" is not an https://, http:// or file:/// URL',
             result.stderr,
+        )
+        self.assertEqual(self.requests(), [])
+
+    def cache(self, version: str) -> None:
+        """Install v`version` in the launcher's cache, as an earlier launch would have."""
+        directory = self.root / "cache/basemind/versions" / version
+        directory.mkdir(parents=True)
+        binary = directory / "basemind"
+        binary.write_text(
+            f'#!/bin/sh\nif [ "$1" = "--version" ]; then echo "basemind {version}"; exit 0; fi\necho "ran {version} $*"\n'
+        )
+        binary.chmod(0o755)
+
+    def test_basemind_offline_downloads_nothing_and_names_what_is_missing(self) -> None:
+        self.pin("9.9.0")
+        self.publish("9.9.0")
+        for value in ("1", "true", " YES ", "on"):
+            with self.subTest(value=value):
+                result = self.launch("serve", extra={"BASEMIND_OFFLINE": value})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    f"BASEMIND_OFFLINE is set and basemind v9.9.0 is not installed, so {self.asset} was not "
+                    "downloaded. Put the v9.9.0 binary at ",
+                    result.stderr,
+                )
+                self.assertIn("set BASEMIND_BIN to a vendored binary", result.stderr)
+                self.assertEqual(self.requests(), [])
+
+    def test_basemind_offline_runs_a_cached_binary_of_the_pinned_minor(self) -> None:
+        self.pin("9.9.1")
+        self.publish("9.9.1")
+        self.cache("9.9.0")
+        result = self.launch("serve", extra={"BASEMIND_OFFLINE": "1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "ran 9.9.0 serve")
+        self.assertEqual(self.requests(), [])
+
+    def test_a_false_basemind_offline_downloads_as_usual(self) -> None:
+        self.pin("9.9.0")
+        self.publish("9.9.0")
+        for value in ("", "0", "false", "No", "off"):
+            with self.subTest(value=value):
+                shutil.rmtree(self.root / "cache", ignore_errors=True)
+                result = self.launch("serve", extra={"BASEMIND_OFFLINE": value})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), "ran 9.9.0 serve")
+
+    def test_a_basemind_offline_value_that_is_not_a_boolean_is_refused_by_name(self) -> None:
+        self.pin("9.9.0")
+        self.publish("9.9.0")
+        result = self.launch("serve", extra={"BASEMIND_OFFLINE": "maybe"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            'BASEMIND_OFFLINE="maybe" is not a boolean: use 1, true, yes, on or 0, false, no, off', result.stderr
         )
         self.assertEqual(self.requests(), [])
 
