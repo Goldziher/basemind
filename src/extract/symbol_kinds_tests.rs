@@ -49,14 +49,18 @@ const TS_SYMBOLS: &[(&str, SymbolKind)] = &[
     ("Store", Interface),
     ("find", Method),
     ("find", Method),
+    ("get", Method),
     ("greet", Function),
     ("handleClick", Method),
     ("label", Field),
     ("label", Field),
     ("legacy", Variable),
     ("legacyHandler", Function),
+    ("set", Method),
     ("size", Field),
     ("size", Field),
+    ("total", Getter),
+    ("total", Setter),
 ];
 
 const TS_IMPLS: &[(&str, &str)] = &[
@@ -92,11 +96,15 @@ fn javascript_outlines_var_class_fields_and_commonjs_exports() {
         ("VERSION", Const),
         ("build", Function),
         ("count", Field),
+        ("get", Method),
         ("handleClick", Method),
         ("helper", Function),
         ("legacy", Variable),
         ("legacyHandler", Function),
         ("module.exports", Function),
+        ("set", Method),
+        ("total", Getter),
+        ("total", Setter),
     ];
     assert_eq!(got, symbols(&want));
     assert_eq!(got_impls, impls(&[("Panel", "Component")]));
@@ -148,11 +156,13 @@ fn python_outlines_annotated_fields_and_type_aliases() {
 fn go_outlines_type_aliases_and_interface_methods() {
     let (got, got_impls) = outline("go", include_str!("../../tests/fixtures/symbol_kinds/kinds.go"));
     let want = [
+        ("Closer", Type),
         ("Get", Method),
         ("ID", Type),
         ("Name", Type),
         ("Put", Method),
         ("Record", Type),
+        ("Shut", Method),
         ("Store", Type),
         ("Use", Function),
     ];

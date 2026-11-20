@@ -9,8 +9,12 @@
 ;; `type A = B` is a `type_alias`, not a `type_spec`.
 (type_declaration (type_alias name: (type_identifier) @symbol.name)) @symbol.type
 
-;; The method set of a named interface.
+;; The method set of a named interface, declared as a type or as an alias.
 (type_spec
+  type: (interface_type
+    (method_elem name: (field_identifier) @symbol.name) @symbol.method))
+
+(type_alias
   type: (interface_type
     (method_elem name: (field_identifier) @symbol.name) @symbol.method))
 

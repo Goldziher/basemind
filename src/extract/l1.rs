@@ -217,6 +217,7 @@ fn build_symbol(q: &Query, m: &QueryMatch, root: Node, source: &[u8], lang: Lang
             if let Ok(text) = node.utf8_text(source) {
                 signature = signature_slice(header_text(node, text));
                 if matches!(kind, Some(SymbolKind::Method))
+                    && ACCESSOR_NODES.contains(&node.kind())
                     && let Some(promoted) = detect_accessor(text)
                 {
                     kind = Some(promoted);
@@ -352,6 +353,10 @@ fn whole_word(s: &str, start: usize, len: usize) -> bool {
     let after = s[start + len..].chars().next().is_none_or(|c| !is_word(c));
     before && after
 }
+
+/// The JS/TS method nodes that can be a `get`/`set` accessor. A class field promoted to `method`
+/// is not one, even when it is named `get` or `set` (`get = () => 1`).
+const ACCESSOR_NODES: &[&str] = &["method_definition", "method_signature", "abstract_method_signature"];
 
 /// Promote a `method_definition` capture to `Getter` or `Setter` when the source slice
 /// starts with the `get`/`set` keyword (after skipping any leading modifier keywords).
