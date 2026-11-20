@@ -40,8 +40,23 @@ repository. A truthy value is `1`, `true` or `yes`.
 | `BASEMIND_GRAMMAR_OFFLINE` | Never download a grammar; a missing one is reported instead. |
 | `BASEMIND_PARSE_TIMEOUT_MS` | Time after which parsing one file is abandoned. |
 | `BASEMIND_MIN_FREE_MB` | Headroom a scan needs free on disk on top of its size estimate (1.5 times the index, plus the index rows, blobs and vectors of the files no file map lists yet), or it refuses. |
-| `BASEMIND_CACHE_BUDGET_MB` | Budget for the cache in MiB, enforced by eviction (`0`: unlimited). Unset: `min(20 GiB, (cache size + free space) / 2)`, the free space being that of the cache's volume. |
+| `BASEMIND_CACHE_BUDGET_MB` | Budget for the cache in MiB, enforced by eviction (`0`: unlimited). Unset: `[cache] budget_mb` in the user settings file (below), else `min(20 GiB, (cache size + free space) / 2)`, the free space being that of the cache's volume. `basemind cache stats` reports `budget_warning` when a set budget is larger than the cache plus that free space. |
 | `BASEMIND_BLOB_GC_GRACE_SECS` | Age under which `basemind cache gc` keeps an unreferenced blob (default 6 h). |
 | `BASEMIND_PRUNE_AFTER_DAYS` | Days the plugin launcher keeps an unused version, and the blob sweep an older version's blobs after their last write (default 14). |
 
 Logging follows `RUST_LOG`; `-v` and `-q` adjust it per command. `NO_COLOR` disables colour.
+
+## User settings file
+
+`settings.toml` in basemind's user configuration directory (`~/.config/basemind/` on Linux,
+`~/Library/Application Support/basemind/` on macOS, under the account's home directory as the user
+database names it) holds machine-wide settings every basemind process reads at start, the daemon an
+MCP host spawns included. A variable naming the same setting wins over the file. A file that does not
+parse, or holds an unknown key, is ignored with a warning.
+
+```toml
+[cache]
+budget_mb = 8192   # as BASEMIND_CACHE_BUDGET_MB; 0 disables enforcement
+```
+
+A running daemon reads the file when it starts: restart it (`basemind comms stop`) after an edit.
