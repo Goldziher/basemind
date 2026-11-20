@@ -1248,6 +1248,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the index warms, builds, rescans, rebuilds after a partial scan or is empty, the answer carries the
   same `notice` object (`state`, `message`, `retry`). On `docs_search` it takes the place of the
   document store's own `notice` text, so an answer has one.
+- docs.rs builds the crate (#274). 0.31.0, 0.31.1 and 0.32.0 failed there: the build script of
+  tree-sitter-language-pack downloads its parser sources, and docs.rs has no network.
+  `[package.metadata.docs.rs]` sets `TSLP_OFFLINE`, and CI builds the docs the same way, offline.
 
 ## [0.33.0] - 2026-11-14
 

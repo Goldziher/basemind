@@ -297,6 +297,47 @@ jobs:
         with:
           command: check
 
+  # ~keep docs.rs builds the default features with no network, so a build script that downloads
+  # ~keep fails there and nowhere else. This builds the docs the same way: the `cargo-args` from
+  # ~keep `[package.metadata.docs.rs]`, dependencies fetched first, then `cargo doc` in a network
+  # ~keep namespace with no interfaces.
+  docs-rs:
+    name: docs.rs build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: docs-rs
+          cache-on-failure: true
+      - run: cargo fetch --locked
+      # ~keep Ubuntu's AppArmor refuses unprivileged user namespaces, which `unshare` needs.
+      - name: Allow unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      # ~keep Prove the harness before trusting its verdict: a namespace that still reached the
+      # ~keep network would pass a build docs.rs fails.
+      - name: Confirm the namespace has no network
+        run: |
+          unshare --net --map-current-user -- true
+          if unshare --net --map-current-user -- curl -fsS --max-time 10 -o /dev/null https://github.com; then
+            echo "::error::the network namespace reached github.com"
+            exit 1
+          fi
+      - name: cargo doc offline, as docs.rs builds it
+        env:
+          DOCS_RS: "1"
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          set -euo pipefail
+          mapfile -t args < <(cargo metadata --no-deps --format-version 1 --offline |
+            jq -r '.packages[] | select(.name == "basemind") | .metadata.docs.rs["cargo-args"] // [] | .[]')
+          unshare --net --map-current-user -- cargo doc --no-deps --locked --offline "${args[@]}"
+
   # ~keep The test legs compile four feature sets; a feature built alone or in another documented
   # ~keep combination can carry dead code or a missing import that none of them sees (`comms memory`
   # ~keep did). Clippy, not `cargo check`: on dependencies it costs the same, and the lints are what
