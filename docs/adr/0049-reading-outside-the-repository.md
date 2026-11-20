@@ -58,24 +58,25 @@ basemind already contains reads that reach outside the tree:
   entry. Its parity row is `cli_only(...)`. No MCP tool or argument exposes it.
 - Hosts: Claude Code and Codex, behind a `TranscriptParser` trait in a new `src/sessions/`
   (`mod.rs`, `claude.rs`, `codex.rs`). Others are follow-up work.
-- A transcript is read only when its recorded `cwd` is this repository's root or one of its
-  live worktrees, or a directory below one of them (resolved first when it holds `..`). Claude Code
-  files such a session under a project directory whose slug extends the checkout's, so those are
-  walked too; a sibling the lossy slug also matches is dropped by its `cwd`. Claude Code keeps a
-  slug of up to 200 characters whole and cuts a longer one to 200, followed by `-` and a hash
-  that differs between its runtimes (`sanitizePath`), so such a project directory is matched by
-  those 200 characters and `-`.
+- A transcript is read only when its recorded `cwd` is this repository's root, one of its live
+  worktrees or a removed worktree the next rule admits, or a directory below one of them (resolved
+  first when it holds `..`). Claude Code files such a session under a project directory whose slug
+  extends the checkout's, so those are walked too; a sibling the lossy slug also matches is
+  dropped by its `cwd`. Claude Code keeps a slug of up to 200 characters whole and cuts a longer
+  one to 200, followed by `-` and a hash that differs between its runtimes (`sanitizePath`), so
+  such a project directory is matched by those 200 characters and `-`.
 - A session of a removed worktree is this repository's. A worktree is removed when its gitdir is
   gone and `git worktree list` no longer lists it. Git keeps no record of where a removed worktree
-  was, so it is recognised by where worktrees are made: a directory, no checkout itself, that holds
-  one of the repository's live linked worktrees and no other repository (every child that is a git checkout
-  is one of its checkouts or has a `.git` file naming a gitdir under its `worktrees/`). A child of
-  that directory which is no live checkout is a removed worktree when it is gone, or when its
-  `.git` file names such a gitdir that is gone; one that exists without that file is not. The probe
-  stats the child and reads at most 4 KiB of its `.git` file, never through a symlink. The Claude
-  Code project directories whose slug extends that directory's are walked for them. A directory
-  that also holds another repository (`~/code` beside other clones) names no removed worktree, and
-  the sessions of a worktree removed there count under `other_directories`.
+  was, so it is recognised by where worktrees are made: a directory, no checkout itself, that
+  holds one of the repository's live linked worktrees (one whose checkout exists) and no other
+  repository (every child that is a git checkout is one of its checkouts or has a `.git` file
+  naming a gitdir under its `worktrees/`). A child of that directory which is no live checkout is
+  a removed worktree when it is gone, or when its `.git` file names such a gitdir that is gone;
+  one that exists without that file is not. The probe stats the child and reads at most 4 KiB of
+  its `.git` file, never through a symlink. The Claude Code project directories whose slug extends
+  that directory's are walked for them. A directory that also holds another repository (`~/code`
+  beside other clones) names no removed worktree, and the sessions of a worktree removed there
+  count under `other_directories`.
 - A relative path a host tool, shell command or patch names is taken from the session's working
   directory, then made repository-relative; a basemind `path` argument is already
   repository-relative. Paths are compared as text in either platform's shape (`/`, drive and UNC

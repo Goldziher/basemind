@@ -34,10 +34,14 @@ pub struct WorktreeDir {
 
 /// The directories that hold the `linked` worktrees and nothing but `checkouts` and other worktrees
 /// of the repository whose canonical common git directory is `common`, deepest first. A checkout is
-/// none: a directory gone from it is one of its own.
+/// none: a directory gone from it is one of its own. Only a linked worktree whose checkout exists
+/// admits its directory: git still lists one whose directory was deleted until it is pruned.
 pub fn dirs(linked: &[Checkout], checkouts: &[Checkout], common: &Path) -> Vec<WorktreeDir> {
     let mut dirs: Vec<WorktreeDir> = Vec::new();
     for worktree in linked {
+        if !worktree.path.is_dir() {
+            continue;
+        }
         let Some(path) = worktree.path.parent() else {
             continue;
         };
@@ -135,6 +139,33 @@ mod tests {
     fn write_gitfile(dir: &Path, gitdir: &Path) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    }
+
+    #[test]
+    fn only_a_linked_worktree_whose_checkout_exists_admits_its_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let common = base.join("repo/.git");
+        std::fs::create_dir_all(common.join("worktrees/live")).unwrap();
+        let wts = base.join("wts");
+        std::fs::create_dir_all(&wts).unwrap();
+        let admitted = |names: &[&str]| -> Vec<PathBuf> {
+            let listed = std::iter::once((base.join("repo"), "main".to_owned()))
+                .chain(names.iter().map(|name| (wts.join(name), (*name).to_owned())));
+            let scope = super::super::Scope::new(listed);
+            let checkouts = scope.checkouts();
+            dirs(&checkouts[1..], checkouts, &common)
+                .into_iter()
+                .map(|found| found.path)
+                .collect()
+        };
+        assert_eq!(
+            admitted(&["deleted"]),
+            Vec::<PathBuf>::new(),
+            "a deleted checkout admits nothing"
+        );
+        write_gitfile(&wts.join("live"), &common.join("worktrees/live"));
+        assert_eq!(admitted(&["deleted", "live"]), [wts.clone()]);
     }
 
     #[test]
