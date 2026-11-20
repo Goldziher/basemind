@@ -46,20 +46,33 @@ REMOVED_SPELLING = re.compile(
 
 class SessionStartTests(unittest.TestCase):
     def setUp(self) -> None:
-        jq = shutil.which("jq")
-        if jq is None:
-            self.skipTest("jq is required")
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        for command in ("jq", "dirname", "sed", "grep", "wc", "tr", "cat", "sleep", "pkill", "id", "mkdir", "ls", "rm"):
+        # The system commands the hook needs, and no jq: it must not depend on one.
+        for command in (
+            "awk",
+            "dirname",
+            "sed",
+            "grep",
+            "wc",
+            "tr",
+            "cat",
+            "sleep",
+            "pkill",
+            "id",
+            "mkdir",
+            "ls",
+            "rm",
+        ):
             (self.bin / command).symlink_to(shutil.which(command))
         hooks = self.root / "hooks"
         hooks.mkdir()
         self.hook = hooks / "session-start"
         shutil.copyfile(HOOK, self.hook)
+        shutil.copyfile(HOOK.parent / "json-lib.sh", hooks / "json-lib.sh")
         scripts = self.root / "scripts"
         scripts.mkdir()
         self.executable(
@@ -142,6 +155,33 @@ esac""",
         self.assertIn("launcher could not run `basemind status` (exit 1", failed)
         unreadable = self.invoke("not JSON")
         self.assertIn("unreadable status", unreadable)
+
+    def test_the_index_counts_are_read_from_the_top_level_of_a_pretty_status(self) -> None:
+        status = json.dumps(
+            {
+                "file_count": 631,
+                "note": 'a "file_count": 9 in text',
+                "degraded": {"file_count": 2},
+                "schema_version": 33,
+            },
+            indent=2,
+        )
+        self.assertIn("basemind verified: 631 files indexed (schema 33).", self.invoke(status))
+        self.assertIn("unreadable status", self.invoke('{"file_count":"631","schema_version":33}'))
+
+    def test_the_status_line_hint_is_dropped_once_settings_name_basemind(self) -> None:
+        settings = self.root / ".claude/settings.json"
+        settings.parent.mkdir()
+        status = '{"file_count":5,"schema_version":33}'
+        cases = {
+            '{"statusLine":{"type":"command","command":"bash /opt/BaseMind/statusline.sh"}}': False,
+            '{"statusLine":{"type":"command","command":"bash ~/bin/other.sh"},"note":"basemind"}': True,
+            "not JSON": True,
+        }
+        for text, hinted in cases.items():
+            with self.subTest(settings=text):
+                settings.write_text(text)
+                self.assertEqual("/bm-statusline" in self.invoke(status), hinted)
 
     def test_the_index_verdict_is_left_for_the_guard_only_when_verified(self) -> None:
         verdict = self.root / f"basemind-{os.getuid()}" / "indexed" / "s1"

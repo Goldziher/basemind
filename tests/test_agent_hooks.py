@@ -70,18 +70,17 @@ esac
 
 class AgentHookTests(unittest.TestCase):
     def setUp(self) -> None:
-        if shutil.which("jq") is None:
-            self.skipTest("jq is required")
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        for command in ("jq", "dirname", "cat", "tr", "sed", "grep", "sleep", "pkill"):
+        # The system commands the hooks need, and no jq: they must not depend on one.
+        for command in ("awk", "dirname", "cat", "tr", "sed", "grep", "sleep", "pkill"):
             (self.bin / command).symlink_to(shutil.which(command))
         hooks = self.root / "hooks"
         hooks.mkdir()
-        for name in ("agent-as", "inbox-notify"):
+        for name in ("agent-as", "inbox-notify", "json-lib.sh"):
             shutil.copyfile(HOOKS / name, hooks / name)
         scripts = self.root / "scripts"
         scripts.mkdir()

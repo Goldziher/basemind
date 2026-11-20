@@ -25,15 +25,19 @@ set -euo pipefail
 MODE="${BASEMIND_GUARD:-nudge}"
 [ "${MODE}" = "off" ] && exit 0
 
-# Need jq to read the event payload + emit well-formed JSON; degrade to no-op if absent.
-command -v jq >/dev/null 2>&1 || exit 0
+# The event is read and the answer written without jq (json-lib.sh); without the library the
+# guard is a no-op.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source-path=SCRIPTDIR source=json-lib.sh
+. "${SCRIPT_DIR}/json-lib.sh" 2>/dev/null || exit 0
 
 input="$(cat 2>/dev/null || true)"
 [ -n "${input}" ] || exit 0
-tool="$(printf '%s' "${input}" | jq -r '.tool_name // empty' 2>/dev/null || true)"
-session="$(printf '%s' "${input}" | jq -r '.session_id // "nosession"' 2>/dev/null || echo nosession)"
-
-agent="$(printf '%s' "${input}" | jq -r '.agent_id // "main"' 2>/dev/null || echo main)"
+fields="$(printf '%s' "${input}" | json_fields)"
+tool="$(json_get "${fields}" tool_name string)"
+session="$(json_get "${fields}" session_id string)"
+agent="$(json_get "${fields}" agent_id string)"
+[ -n "${agent}" ] || agent="main"
 
 # Name the basemind call that replaces a Bash search or history command; empty when the
 # command is something else. Only a command in leading position counts (start, or after
@@ -65,7 +69,7 @@ classify_bash() {
 kind="${tool}"
 case "${tool}" in
 Bash)
-  command_text="$(printf '%s' "${input}" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+  command_text="$(json_get "${fields}" tool_input.command string)"
   [ -n "${command_text}" ] || exit 0
   classify_bash "${command_text}"
   [ -n "${bash_kind}" ] || exit 0
@@ -76,12 +80,9 @@ Bash)
 Grep)
   # The Grep tool's pattern is a regex, so the suggested call carries it verbatim with regex on.
   grep_call='code_grep {"pattern":"…","regex":true}'
-  grep_pattern="$(printf '%s' "${input}" | jq -r '.tool_input.pattern // empty' 2>/dev/null || true)"
+  grep_pattern="$(json_get "${fields}" tool_input.pattern string)"
   if [ -n "${grep_pattern}" ]; then
-    grep_args="$(jq -cn --arg p "${grep_pattern}" '{pattern:$p,regex:true}' 2>/dev/null || true)"
-    if [ -n "${grep_args}" ]; then
-      grep_call="code_grep ${grep_args}"
-    fi
+    grep_call="code_grep {\"pattern\":\"$(json_escape "${grep_pattern}")\",\"regex\":true}"
   fi
   alt="basemind ${grep_call} (indexed code), code_symbols {\"name\":\"…\"} for a definition or code_refs {\"name\":\"…\"} for usages; markdown, config and data files: docs_search {\"query\":\"…\"}"
   ;;
@@ -96,12 +97,11 @@ esac
 # Advice carries no permissionDecision: "allow" would skip the host's own permission prompt for the
 # command, and this hook only looks at how the command starts.
 emit_advice() {
-  jq -cn --arg m "$1" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$m}}'
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"%s"}}\n' "$(json_escape "$1")"
 }
 emit_deny() {
-  jq -cn --arg m "$1" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$m}}'
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' \
+    "$(json_escape "$1")"
 }
 
 # The markers live in a directory only this user can write: $XDG_RUNTIME_DIR/basemind, else
