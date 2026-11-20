@@ -55,7 +55,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 The code, git, memory, document and index rows are 15 tools, one per job, each with its own exact
 schema; there is no `mode` argument. They are always loaded (`_meta["anthropic/alwaysLoad"]`), so a host that defers MCP tools
 needs no tool-search round trip: call them directly. Their `tools/list` entry is about 20 KB (about
-5k tokens). The three agent tools (`comms` builds) carry no such marker, so a host that defers tools loads them only on demand; the session-start hook and the server instructions name them. An unknown argument is
+5k tokens). The three agent tools (`comms` builds) are listed separately and are needed only when collaborating; the session-start hook and the server instructions name them. An unknown argument is
 rejected with a did-you-mean suggestion, every line number is 1-based, and a failure the caller can
 fix comes back as an `isError` result that names the fix. Arguments, examples and the mapping from
 the previous `code` / `git` / `memory` / `admin` tools: the
