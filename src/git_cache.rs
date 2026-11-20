@@ -12,7 +12,8 @@
 //!   (`CATEGORY_MEM_BUDGET_BYTES`), because these values have no natural size.
 //! - **Disk** — sha-keyed `.msgpack` files under `.basemind/git-cache/`. Optional;
 //!   `GitCache::open(.., persist=false)` skips disk altogether for ephemeral
-//!   `basemind cache` operations.
+//!   `basemind cache` operations. Each subdirectory is held to a byte budget by background sweeps
+//!   (`crate::git_cache_disk`).
 //!
 //! Both layers are content-addressed by the inputs the agent passed; we never
 //! invalidate, only roll off via LRU. The schema version is baked into every
@@ -29,6 +30,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::git::{BlameResult, ChangeKind, CommitInfo, GitError, Repo};
+pub use crate::git_cache_disk::LOG_CACHE_DEFAULT_MAX_BYTES;
+use crate::git_cache_disk::{DiskTier, Subdir};
 
 /// Git-cache payload schema version, derived from [`crate::version::RELEASE_MINOR`] so it
 /// moves in lock-step with the other on-disk caches (`crate::extract::SCHEMA_VER`,
@@ -214,20 +217,15 @@ pub struct GitCache {
     commit_files: Mutex<Charged<String, Arc<Vec<CommitFileChange>>>>,
     log: Mutex<Charged<LogKey, Arc<Vec<CommitInfo>>>>,
     blame: Mutex<Charged<BlameKey, Arc<BlameResult>>>,
-    disk: Option<PathBuf>,
+    disk: Option<Arc<DiskTier>>,
 }
 
 impl GitCache {
-    /// Open the cache. When `persist=true`, the disk dir is created under `basemind_dir`;
-    /// when `false`, only the RAM layer is used.
+    /// Open the cache. When `persist=true`, the disk dir is created under `basemind_dir` and swept
+    /// down to its budget on a background thread; when `false`, only the RAM layer is used.
     pub fn open(basemind_dir: &Path, mem_capacity: usize, persist: bool) -> Result<Self, CacheError> {
         let disk = if persist {
-            let root = basemind_dir.join(GIT_CACHE_DIR);
-            ensure_subdir(&root, "commit_files")?;
-            ensure_subdir(&root, "log")?;
-            ensure_subdir(&root, "blame")?;
-            evict_disk_cache(&root, log_cache_max_bytes());
-            Some(root)
+            Some(open_disk(&basemind_dir.join(GIT_CACHE_DIR), log_cache_max_bytes())?)
         } else {
             None
         };
@@ -237,7 +235,7 @@ impl GitCache {
     /// Assemble the three charged LRUs. Split out of [`GitCache::open`] so a test can pick a tiny
     /// budget instead of synthesising 32 MiB of git history; production always passes
     /// [`CATEGORY_MEM_BUDGET_BYTES`].
-    fn with_budget(disk: Option<PathBuf>, mem_capacity: usize, budget_bytes: u64) -> Self {
+    fn with_budget(disk: Option<Arc<DiskTier>>, mem_capacity: usize, budget_bytes: u64) -> Self {
         Self {
             commit_files: Mutex::new(Charged::new(
                 mem_capacity,
@@ -340,18 +338,20 @@ impl GitCache {
     /// Drop the on-disk cache + reset RAM. Returns the number of disk files removed.
     pub fn clear(&self) -> Result<usize, CacheError> {
         let mut removed = 0usize;
-        if let Some(root) = &self.disk
-            && root.exists()
+        if let Some(disk) = &self.disk
+            && disk.root().exists()
         {
+            let root = disk.root();
             removed += count_files(root);
             fs::remove_dir_all(root).map_err(|source| CacheError::Io {
-                path: root.clone(),
+                path: root.to_path_buf(),
                 source,
             })?;
             fs::create_dir_all(root).map_err(|source| CacheError::Io {
-                path: root.clone(),
+                path: root.to_path_buf(),
                 source,
             })?;
+            disk.reset();
         }
         category(&self.commit_files).clear();
         category(&self.log).clear();
@@ -373,7 +373,7 @@ impl GitCache {
     }
 
     fn write_commit_files_disk(&self, sha: &str, files: &[CommitFileChange]) {
-        let Some(path) = self.commit_files_path(sha) else {
+        let (Some(disk), Some(path)) = (&self.disk, self.commit_files_path(sha)) else {
             return;
         };
         let payload = CommitFilesOut {
@@ -383,7 +383,7 @@ impl GitCache {
         let Ok(bytes) = rmp_serde::to_vec_named(&payload) else {
             return;
         };
-        let _ = atomic_write(&path, &bytes);
+        disk.write(Subdir::CommitFiles, &path, &bytes);
     }
 
     fn read_log_disk(&self, key: &LogKey) -> Option<Vec<CommitInfo>> {
@@ -400,7 +400,7 @@ impl GitCache {
     }
 
     fn write_log_disk(&self, key: &LogKey, commits: &[CommitInfo]) {
-        let Some(path) = self.log_path(key) else {
+        let (Some(disk), Some(path)) = (&self.disk, self.log_path(key)) else {
             return;
         };
         let payload = LogOut {
@@ -410,7 +410,7 @@ impl GitCache {
         let Ok(bytes) = rmp_serde::to_vec_named(&payload) else {
             return;
         };
-        let _ = atomic_write(&path, &bytes);
+        disk.write(Subdir::Log, &path, &bytes);
     }
 
     fn read_blame_disk(&self, key: &BlameKey) -> Option<BlameResult> {
@@ -427,7 +427,7 @@ impl GitCache {
     }
 
     fn write_blame_disk(&self, key: &BlameKey, result: &BlameResult) {
-        let Some(path) = self.blame_path(key) else {
+        let (Some(disk), Some(path)) = (&self.disk, self.blame_path(key)) else {
             return;
         };
         let payload = BlameOut {
@@ -437,17 +437,17 @@ impl GitCache {
         let Ok(bytes) = rmp_serde::to_vec_named(&payload) else {
             return;
         };
-        let _ = atomic_write(&path, &bytes);
+        disk.write(Subdir::Blame, &path, &bytes);
     }
 
     fn blame_path(&self, key: &BlameKey) -> Option<PathBuf> {
-        let root = self.disk.as_ref()?;
+        let dir = self.disk.as_ref()?.dir(Subdir::Blame);
         let path_hash = blake3::hash(key.path.as_bytes());
         let range_tag = match key.range {
             None => "all".to_string(),
             Some((lo, hi)) => format!("{lo}-{hi}"),
         };
-        Some(root.join("blame").join(format!(
+        Some(dir.join(format!(
             "{}__{}__{range_tag}.msgpack",
             key.suspect_sha,
             hex::encode(&path_hash.as_bytes()[..8])
@@ -455,12 +455,12 @@ impl GitCache {
     }
 
     fn commit_files_path(&self, sha: &str) -> Option<PathBuf> {
-        let root = self.disk.as_ref()?;
-        Some(root.join("commit_files").join(format!("{sha}.msgpack")))
+        let dir = self.disk.as_ref()?.dir(Subdir::CommitFiles);
+        Some(dir.join(format!("{sha}.msgpack")))
     }
 
     fn log_path(&self, key: &LogKey) -> Option<PathBuf> {
-        let root = self.disk.as_ref()?;
+        let dir = self.disk.as_ref()?.dir(Subdir::Log);
         let scope = match &key.path {
             None => format!("all-{}-{}", key.limit, key.include_files as u8),
             Some(p) => {
@@ -468,7 +468,7 @@ impl GitCache {
                 format!("path-{}-{}", hex::encode(&h.as_bytes()[..8]), key.limit)
             }
         };
-        Some(root.join("log").join(format!("{}__{}.msgpack", key.head_sha, scope)))
+        Some(dir.join(format!("{}__{}.msgpack", key.head_sha, scope)))
     }
 }
 
@@ -531,18 +531,6 @@ fn ensure_subdir(root: &Path, sub: &str) -> Result<(), CacheError> {
     fs::create_dir_all(&path).map_err(|source| CacheError::Io { path, source })
 }
 
-/// Monotonic per-process counter that makes temp-file names unique. PID alone collides when
-/// two threads in the *same* process write the same cache key concurrently — both would pick
-/// `<key>.msgpack.<pid>.tmp` and clobber each other mid-write. The counter splits them.
-static ATOMIC_WRITE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let seq = ATOMIC_WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = path.with_extension(format!("msgpack.{}.{seq}.tmp", std::process::id()));
-    fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path)
-}
-
 fn count_files(dir: &Path) -> usize {
     let mut count = 0;
     let mut stack = vec![dir.to_path_buf()];
@@ -560,69 +548,19 @@ fn count_files(dir: &Path) -> usize {
     count
 }
 
-/// Default disk budget for each subdirectory of the cache (256 MiB). Tuneable via
-/// `BASEMIND_GIT_CACHE_LOG_MAX_BYTES`, which despite its name sets every subdirectory's budget;
-/// setting it to 0 disables eviction.
-pub const LOG_CACHE_DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
-
-/// A `*.tmp` file older than this was left by a writer that died between its write and its rename.
-const STALE_TMP_AGE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
-
-/// The cache's subdirectories, each one flat directory of payload files.
-const DISK_SUBDIRS: [&str; 3] = ["log", "blame", "commit_files"];
-
 fn log_cache_max_bytes() -> u64 {
     crate::config::engine::with(|config| config.git.cache_max_bytes)
 }
 
-/// Mtime-LRU sweep of every cache subdirectory, a cheap one-shot pass at process start: stat every
-/// file, sum sizes, and if over budget delete the oldest until under. None of them is immortal:
-/// `log/` keys on HEAD, `blame/` on the HEAD a blame was asked at, so every HEAD move mints new
-/// entries in both, and a payload of an older schema is never read again in any of them. A `*.tmp`
-/// file past [`STALE_TMP_AGE`] is removed whatever the budget. Errors during traversal and removal
-/// are swallowed: cache size is best-effort, not load-bearing.
-pub(crate) fn evict_disk_cache(cache_root: &Path, max_bytes: u64) {
-    for sub in DISK_SUBDIRS {
-        evict_disk_subdir(&cache_root.join(sub), max_bytes);
+/// Create the disk tier's subdirectories under `root` and start the sweep that holds each to
+/// `max_bytes`, on a background thread so an open never stats the cache.
+fn open_disk(root: &Path, max_bytes: u64) -> Result<Arc<DiskTier>, CacheError> {
+    for sub in Subdir::ALL {
+        ensure_subdir(root, sub.name())?;
     }
-}
-
-fn evict_disk_subdir(dir: &Path, max_bytes: u64) {
-    let now = std::time::SystemTime::now();
-    let mut entries: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
-    let mut total: u64 = 0;
-    if let Ok(rd) = fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            let path = entry.path();
-            let Ok(md) = entry.metadata() else { continue };
-            if !md.is_file() {
-                continue;
-            }
-            let size = md.len();
-            let mtime = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            if path.extension().is_some_and(|ext| ext == "tmp") {
-                if now.duration_since(mtime).is_ok_and(|age| age > STALE_TMP_AGE) {
-                    let _ = fs::remove_file(&path);
-                }
-                continue;
-            }
-            total = total.saturating_add(size);
-            entries.push((path, size, mtime));
-        }
-    }
-    if max_bytes == 0 || total <= max_bytes {
-        return;
-    }
-    entries.sort_by_key(|(_, _, mtime)| *mtime);
-    let mut over = total - max_bytes;
-    for (path, size, _) in entries {
-        if over == 0 {
-            break;
-        }
-        if fs::remove_file(&path).is_ok() {
-            over = over.saturating_sub(size);
-        }
-    }
+    let disk = DiskTier::new(root.to_path_buf(), max_bytes);
+    disk.sweep_in_background();
+    Ok(disk)
 }
 
 #[cfg(test)]
@@ -850,75 +788,53 @@ mod tests {
         assert!(!cache.blame.is_poisoned());
     }
 
-    /// Concurrent same-process writers to the *same* destination key must not clobber each
-    /// other's temp file mid-write: the final file is always one complete payload, never a
-    /// torn/empty file. PID-only temp names broke this; the per-process sequence fixes it.
+    /// Opening a persistent cache no longer sweeps on the caller's thread, but it still sweeps: what
+    /// an earlier process left over budget is evicted in the background, oldest first.
     #[test]
-    fn concurrent_same_key_writes_never_tear() {
+    fn open_sweeps_what_earlier_processes_left() {
         let dir = tempfile::tempdir().unwrap();
-        let dest = dir.path().join("k.msgpack");
-        let payloads: Vec<Vec<u8>> = (0..16u8).map(|i| vec![i; 4096]).collect();
-        std::thread::scope(|scope| {
-            for p in &payloads {
-                let dest = dest.clone();
-                scope.spawn(move || atomic_write(&dest, p).expect("atomic_write"));
+        let root = dir.path().join(GIT_CACHE_DIR);
+        let blame = root.join(Subdir::Blame.name());
+        fs::create_dir_all(&blame).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        for (name, mtime) in [("old.msgpack", Some(old)), ("new.msgpack", None)] {
+            let path = blame.join(name);
+            fs::write(&path, vec![0u8; 600]).unwrap();
+            if let Some(mtime) = mtime {
+                fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .and_then(|file| file.set_modified(mtime))
+                    .unwrap();
             }
-        });
-        let got = std::fs::read(&dest).expect("dest exists");
-        assert_eq!(got.len(), 4096, "final file must be a complete payload");
-        let byte = got[0];
-        assert!(
-            got.iter().all(|&b| b == byte) && byte < 16,
-            "final file must be exactly one writer's payload, not a mix"
-        );
-        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|e| e.path().extension().is_some_and(|x| x == "tmp"))
-            .collect();
-        assert!(leftovers.is_empty(), "temp files must be renamed away, not orphaned");
+        }
+
+        let disk = open_disk(&root, 1000).unwrap();
+        disk.wait_for_sweep();
+
+        assert!(!blame.join("old.msgpack").exists(), "the oldest payload is evicted");
+        assert!(blame.join("new.msgpack").exists(), "the newest stays");
+        assert_eq!(disk.tracked(Subdir::Blame), 600);
+        for sub in Subdir::ALL {
+            assert!(root.join(sub.name()).is_dir(), "{} is created", sub.name());
+        }
     }
 
-    /// Only `log/` was capped. `blame/` keys on the HEAD a blame was asked at and grew with every
-    /// HEAD move, and a writer killed between write and rename left its temp file for good.
+    /// Every payload the cache writes is charged to its directory's running total, the count that
+    /// decides when the next sweep runs.
     #[test]
-    fn every_subdirectory_is_capped_and_stale_temp_files_go() {
+    fn a_disk_write_charges_its_bytes() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 3600);
-        let age = |path: &Path| {
-            std::fs::File::options()
-                .write(true)
-                .open(path)
-                .and_then(|file| file.set_modified(old))
-                .unwrap();
-        };
-        for sub in DISK_SUBDIRS {
-            ensure_subdir(root, sub).unwrap();
-            let oldest = root.join(sub).join("old.msgpack");
-            std::fs::write(&oldest, vec![0u8; 600]).unwrap();
-            age(&oldest);
-            std::fs::write(root.join(sub).join("new.msgpack"), vec![0u8; 600]).unwrap();
-            let stale_tmp = root.join(sub).join("x.msgpack.1.0.tmp");
-            std::fs::write(&stale_tmp, b"torn").unwrap();
-            age(&stale_tmp);
-            std::fs::write(root.join(sub).join("y.msgpack.1.1.tmp"), b"in flight").unwrap();
-        }
+        let disk = open_disk(&dir.path().join(GIT_CACHE_DIR), 0).unwrap();
+        disk.wait_for_sweep();
+        let cache = GitCache::with_budget(Some(Arc::clone(&disk)), 4, CATEGORY_MEM_BUDGET_BYTES);
+        let key = log_key("head");
 
-        evict_disk_cache(root, 1000);
+        cache.write_log_disk(&key, &commits("aaa", 512));
 
-        for sub in DISK_SUBDIRS {
-            let dir = root.join(sub);
-            assert!(
-                !dir.join("old.msgpack").exists(),
-                "{sub}: the oldest payload is evicted"
-            );
-            assert!(dir.join("new.msgpack").exists(), "{sub}: the newest stays");
-            assert!(!dir.join("x.msgpack.1.0.tmp").exists(), "{sub}: a stale temp file goes");
-            assert!(
-                dir.join("y.msgpack.1.1.tmp").exists(),
-                "{sub}: a fresh one may be in flight"
-            );
-        }
+        let written = fs::metadata(cache.log_path(&key).unwrap()).unwrap().len();
+        assert!(written > 512, "the payload carries the body, got {written}");
+        assert_eq!(disk.tracked(Subdir::Log), written);
+        assert_eq!(disk.tracked(Subdir::Blame), 0);
     }
 }
