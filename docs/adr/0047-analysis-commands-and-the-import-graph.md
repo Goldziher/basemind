@@ -78,13 +78,20 @@ these arguments and fields:
 | `code_refs` | `relation` gains `cycles`; `depth` (with `importers` and `path`); `name` optional, its shapes enforced in the body | #121, #135 |
 | `code_refs` | `changed`; route linking (`path_match`) | #122, ADR-0048 |
 | `code_grep` | `changed` | #122 |
-| `code_symbols` | `changed`; `kind` value `route` | #122, ADR-0048 |
+| `code_symbols` | `changed`; `kind` value `route`; `path` and `language` | #122, ADR-0048, #252 |
 | `find_files` | `changed`; `min_lines` | #122, #127 |
-| `code_search` | `changed` | #122 |
+| `code_search` | `changed`; `path` and `language` | #122, #254, #252 |
 | `index_status` | response fields `large_files`, `most_imported`, `deps_unavailable` (no argument) | #127, #131, ADR-0049 |
 
-`docs_search` gains nothing: dependency documents are filtered by its existing `path` glob
-(ADR-0049).
+`docs_search` gains nothing: dependency documents are filtered by its existing `path` (ADR-0049).
+
+**One path filter (#252).** `path` is the one path filter of `code_grep`, `find_files`,
+`docs_search`, `code_symbols` and `code_search`: a repo-relative prefix (`src/mcp/`), or a glob over
+the whole path when it holds `*` (`*` stays within a segment, `**` crosses `/`). It replaces
+`code_grep`'s substring, `find_files`' `path_prefix` and `docs_search`'s glob-only `path`.
+`docs_search`'s `kind` filter is named `format`, and `memory_search` takes a `tags` list, as
+`memory_save` does, where it took one `tag`. A `path` or `language` that no indexed file passes is
+refused.
 
 ### 3. Schema bytes are reclaimed, the ceiling stays
 
@@ -92,6 +99,7 @@ these arguments and fields:
 - Every `max_tokens` doc is one short clause, and field docs hold no `\n`.
 - The byte count is measured after every merge. If an addition would cross 20,000 bytes, the cuts
   are, in order, `changed` on `code_search`, then the `resolution` filter (the per-row value stays).
+  Removing `ranges` (ADR-0053) frees the bytes that `changed` on `code_search` costs.
 
 ### 4. The file-level import edge row
 
@@ -179,7 +187,14 @@ these arguments and fields:
 
 ### 7. Queries scoped to a change (#122)
 
-- `changed` takes a rev, diffed against the working tree (`""` means `HEAD`), or a range `A..B`.
+- `changed` takes a rev, a range `A..B` or a range `A...B` (#254):
+  - a bare rev is its merge base with `HEAD` diffed against the working tree, plus untracked files:
+    a branch's own changes, committed or not, without what the rev gained since (`""` means `HEAD`);
+  - `A..B` diffs the two trees;
+  - `A...B` diffs the merge base of `A` and `B` against `B`: what `B` changed since it left `A`.
+
+  An empty side of a range is `HEAD`, as in git.
+
   The suffix `+importers` adds the depth-1 importers of every changed file through the graph.
 - The scope is a path predicate in each op's existing filter step (`src/engine/filters.rs`), and a
   post-filter on `code_search`. The response adds `scope_files`. An empty scope answers
