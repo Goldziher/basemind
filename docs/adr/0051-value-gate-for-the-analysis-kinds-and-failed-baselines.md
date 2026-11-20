@@ -69,6 +69,11 @@ ADR-0031 stands except where this record adds to it.
    features the binary was compiled with. `run_gate.sh` records the commit of the checkout it runs
    from (with `-dirty` for uncommitted tracked changes), and `gate.md` prints all of them.
 
+8. **Baselines that answered wrongly.** A baseline that printed something but scored recall 0 is
+   not a failure: it stays in the ratio and the verdict. The report gives each kind's median ratio
+   both ways, with those tasks and without them, so a wrong shell answer that happens to be short
+   cannot pass for the shell's win unseen.
+
 ## Consequences
 
 - On the second 0.34 run's numbers, more tools fail. `code_refs` also fails on `impact` (basemind
@@ -94,3 +99,6 @@ ADR-0031 stands except where this record adds to it.
   the baseline look better than it is.
 - **Gate recall parity on reducing kinds now that `explain` has items**: deferred. ADR-0031 gates
   parity for locating kinds only, and a new threshold needs its own record.
+- **Count a baseline that answered with recall 0 as failed**: rejected. The shell did answer, and an
+  agent pays for that answer before it learns it is wrong; rule 8 prints the ratio without those
+  tasks beside the one the verdict takes.
