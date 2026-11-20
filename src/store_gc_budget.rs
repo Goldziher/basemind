@@ -442,8 +442,8 @@ pub(crate) fn enforce_cache_budget_in(
 /// `blobs_root` except the namespaces of a blob schema newer than `schema` (see
 /// [`cache_footprint`]). Blobs an eviction orphans are reclaimed
 /// in `blobs_dir`, the namespace the evicted workspaces of this version referenced. `budget` maps
-/// the footprint first measured, a newer basemind's bytes included since they occupy the same
-/// disk, to the budget of the pass.
+/// the bytes the cache occupies ([`occupied_bytes`]), a newer basemind's workspaces and blob
+/// namespaces included since they occupy the same disk, to the budget of the pass.
 pub(crate) fn enforce_cache_budget_at(
     workspaces_dir: &Path,
     blobs_root: &Path,
@@ -455,8 +455,9 @@ pub(crate) fn enforce_cache_budget_at(
 ) -> Result<EvictReport, GcError> {
     // Within budget counting a newer basemind's workspaces, the cache is within it without them:
     // telling them apart reads a view of every workspace, so only a cache over budget pays for it.
-    let raw = cache_footprint(workspaces_dir, blobs_root, schema, &[])?;
-    let budget_bytes = budget(raw);
+    let occupied = occupied_bytes(workspaces_dir, blobs_root, &[])?;
+    let budget_bytes = budget(occupied);
+    let raw = occupied.saturating_sub(newer_namespace_bytes(blobs_root, schema)?);
     if raw <= budget_bytes {
         return Ok(EvictReport {
             budget_bytes,
@@ -754,12 +755,17 @@ fn workspaces_of_a_newer_basemind(workspaces_dir: &Path) -> Vec<PathBuf> {
     )
 }
 
-/// The bytes the budget is held against: the workspaces other than `newer`, the group directories
-/// (`cache/groups/`, beside `workspaces_dir`) other than those of `newer`, and the blob store
-/// without the namespaces of a schema newer than `schema`. What is left out belongs to a newer
-/// basemind sharing the cache. This binary never deletes it, so counting it would have it evict
-/// workspaces every cycle to make up for bytes no eviction can free.
+/// The bytes the budget is held against: [`occupied_bytes`] without the blob namespaces of a
+/// schema newer than `schema`. What is left out belongs to a newer basemind sharing the cache. This
+/// binary never deletes it, so counting it would have it evict workspaces every cycle to make up
+/// for bytes no eviction can free.
 fn cache_footprint(workspaces_dir: &Path, blobs_root: &Path, schema: u16, newer: &[PathBuf]) -> Result<u64, GcError> {
+    Ok(occupied_bytes(workspaces_dir, blobs_root, newer)?.saturating_sub(newer_namespace_bytes(blobs_root, schema)?))
+}
+
+/// The bytes the cache occupies on disk: the workspaces other than `newer`, the group directories
+/// (`cache/groups/`, beside `workspaces_dir`) other than those of `newer`, and the whole blob store.
+fn occupied_bytes(workspaces_dir: &Path, blobs_root: &Path, newer: &[PathBuf]) -> Result<u64, GcError> {
     let groups_dir = workspaces_dir
         .parent()
         .map(|cache| cache.join(crate::store_layout::GROUPS_DIR));
@@ -776,16 +782,23 @@ fn cache_footprint(workspaces_dir: &Path, blobs_root: &Path, schema: u16, newer:
             total = total.saturating_sub(dir_size_or_zero(&group)?);
         }
     }
-    if blobs_root.exists() {
-        for entry in read_dir(blobs_root)?.flatten() {
-            let newer = entry
-                .file_name()
-                .to_str()
-                .and_then(crate::store_gc_namespaces::namespace_schema)
-                .is_some_and(|found| found > schema);
-            if newer && entry.path().is_dir() {
-                total = total.saturating_sub(dir_size(&entry.path())?);
-            }
+    Ok(total)
+}
+
+/// The bytes under `blobs_root` in the namespaces of a blob schema newer than `schema`.
+fn newer_namespace_bytes(blobs_root: &Path, schema: u16) -> Result<u64, GcError> {
+    if !blobs_root.exists() {
+        return Ok(0);
+    }
+    let mut total = 0;
+    for entry in read_dir(blobs_root)?.flatten() {
+        let newer = entry
+            .file_name()
+            .to_str()
+            .and_then(crate::store_gc_namespaces::namespace_schema)
+            .is_some_and(|found| found > schema);
+        if newer && entry.path().is_dir() {
+            total += dir_size(&entry.path())?;
         }
     }
     Ok(total)
