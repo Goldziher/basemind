@@ -69,6 +69,15 @@ class Basemind < Formula
     bin.install_symlink libexec/"basemind"
   end
 
+  def caveats
+    <<~CAVEATS
+      basemind keeps its index, memory notes and daemon state outside the Homebrew prefix;
+      \`brew uninstall basemind\` leaves them. Where they live and how to remove them:
+        https://basemind.ai/start/uninstall/
+        basemind manual data
+    CAVEATS
+  end
+
   test do
     assert_match version.to_s, shell_output("#{bin}/basemind --version")
   end

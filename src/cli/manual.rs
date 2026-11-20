@@ -41,6 +41,7 @@ pages!(
     "paging",
     "cli",
     "setup",
+    "data",
     "exit-codes",
     "environment",
     "troubleshooting",
