@@ -6,8 +6,9 @@
 
 mod changes;
 mod commit;
+pub use commit::TouchingSpan;
 #[cfg(test)]
-pub(crate) use commit::FILE_LISTINGS;
+pub(crate) use commit::{FILE_LISTINGS, TOUCHING_TESTS};
 mod diff;
 mod eol_config;
 mod export;

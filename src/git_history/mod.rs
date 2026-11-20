@@ -210,6 +210,9 @@ pub enum GitHistoryError {
     Decode(#[from] rmp_serde::decode::Error),
     #[error("git error: {0}")]
     Git(#[from] crate::git::GitError),
+    /// A stored row is missing or does not decode where the index's own keys say it is.
+    #[error("git-history index is corrupt: {0}")]
+    Corrupt(String),
     /// The git-history index is disabled by configuration (`BASEMIND_GH_INDEX=0`). Returned by the
     /// daemon's runner for a forwarded op.
     #[error("git-history index disabled (BASEMIND_GH_INDEX=0)")]
@@ -578,8 +581,18 @@ impl LocalDb {
     /// (sha / time / author / summary), skipping the changed-file list and its allocation — the
     /// reader passes it for `include_files=false` tools like `commits_touching`.
     pub(crate) fn commit_meta(&self, ord: u32, want_files: bool) -> Option<CommitMeta> {
-        let bytes = self.commit_by_ord.get(keys::u32_key(ord)).ok().flatten()?;
+        self.stored_commit(ord, want_files).ok()
+    }
+
+    /// [`LocalDb::commit_meta`] for an ordinal the index's own keys name, where a missing or
+    /// undecodable row is an error rather than an absent commit.
+    pub(crate) fn stored_commit(&self, ord: u32, want_files: bool) -> Result<CommitMeta, GitHistoryError> {
+        let bytes = self
+            .commit_by_ord
+            .get(keys::u32_key(ord))?
+            .ok_or_else(|| GitHistoryError::Corrupt(format!("commit ordinal {ord} has no row")))?;
         decode_commit_value(&bytes, want_files)
+            .ok_or_else(|| GitHistoryError::Corrupt(format!("commit ordinal {ord} does not decode")))
     }
 
     pub(crate) fn ord_for_sha(&self, sha20: &[u8; 20]) -> Option<u32> {
@@ -588,9 +601,21 @@ impl LocalDb {
     }
 
     pub(crate) fn path_id(&self, rel: &RelPath) -> Option<u32> {
-        let key = keys::path_id_by_path_key(rel)?;
-        let bytes = self.path_id_by_path.get(&key).ok().flatten()?;
+        self.stored_path_id(rel).ok().flatten()
+    }
+
+    /// The id `rel` was interned under, `Ok(None)` when no indexed commit touches it, and an error
+    /// when the lookup failed.
+    pub(crate) fn stored_path_id(&self, rel: &RelPath) -> Result<Option<u32>, GitHistoryError> {
+        let Some(key) = keys::path_id_by_path_key(rel) else {
+            return Ok(None);
+        };
+        let Some(bytes) = self.path_id_by_path.get(&key)? else {
+            return Ok(None);
+        };
         keys::parse_u32(&bytes)
+            .map(Some)
+            .ok_or_else(|| GitHistoryError::Corrupt(format!("the path id of `{rel}` does not decode")))
     }
 
     pub(crate) fn path_for_id(&self, path_id: u32) -> Option<RelPath> {
@@ -599,7 +624,13 @@ impl LocalDb {
     }
 
     pub(crate) fn posting_bytes(&self, path_id: u32) -> Option<fjall::Slice> {
-        self.path_to_ords.get(keys::u32_key(path_id)).ok().flatten()
+        self.stored_posting(path_id).ok().flatten()
+    }
+
+    /// The posting list of `path_id`, `Ok(None)` when it has none, and an error when the lookup
+    /// failed.
+    pub(crate) fn stored_posting(&self, path_id: u32) -> Result<Option<fjall::Slice>, GitHistoryError> {
+        Ok(self.path_to_ords.get(keys::u32_key(path_id))?)
     }
 
     /// Raw newest-first posting bytes for one `(field, term)` search key, or `None` if unindexed.

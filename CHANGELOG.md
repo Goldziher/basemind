@@ -815,6 +815,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   takes a directory past `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` starts a sweep that evicts the oldest
   payloads down to nine tenths of it. The sweep at open runs in the background too, so opening a
   stack no longer stats every cached file.
+- `git_log` with a file `path` trusts an empty answer from a git-history index that holds HEAD
+  (#297): a new, untracked or mistyped path answers at index speed instead of walking every commit
+  to return nothing. A lookup that fails is now an error of its own, and only that falls back to the
+  live walk. The live walk, of a file's history and a symbol's, tests at most 10 000 commits per page;
+  a page that runs out first says `truncated_reason: "span_limit"` and its `next_cursor` resumes at
+  the first commit left untested. A live-walk cursor now counts commits of the whole history, so one
+  an earlier release issued resumes elsewhere: repeat the call without it.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

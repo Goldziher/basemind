@@ -81,6 +81,7 @@ fn git_commits_touching(root: &Path, path: &str) -> Vec<String> {
 fn index_commits_touching(index: &GitHistoryIndex, path: &str) -> Vec<String> {
     index
         .commits_touching(&path.as_bytes().into(), 0, 1000)
+        .expect("index read")
         .into_iter()
         .map(|c| c.sha)
         .collect()
@@ -218,10 +219,11 @@ fn reset_back_diverges_and_triggers_full_rebuild() {
 fn live_commits_touching(root: &Path, path: &str) -> Vec<String> {
     let repo = Repo::discover(root).expect("repo discover");
     let head = capture(root, &["rev-parse", "HEAD"]);
-    repo.log_window_touching(head.trim(), &path.as_bytes().into(), 0, 1000)
+    repo.touching_span(head.trim(), &path.as_bytes().into(), 0, 1000, usize::MAX)
         .expect("live walk")
+        .commits
         .into_iter()
-        .map(|c| c.sha)
+        .map(|(_, c)| c.sha)
         .collect()
 }
 
@@ -404,14 +406,17 @@ fn bench_warm_query_latency() {
     assert!(!sample.is_empty(), "index has commits to sample paths from");
 
     for p in sample.iter().take(50) {
-        let _ = index.commits_touching(&p.as_bytes().into(), 0, 20);
+        let _ = index.commits_touching(&p.as_bytes().into(), 0, 20).expect("index read");
     }
     let n = 2000usize;
     let start = std::time::Instant::now();
     let mut hits = 0usize;
     for i in 0..n {
         let p = &sample[i % sample.len()];
-        hits += index.commits_touching(&p.as_bytes().into(), 0, 20).len();
+        hits += index
+            .commits_touching(&p.as_bytes().into(), 0, 20)
+            .expect("index read")
+            .len();
     }
     let elapsed = start.elapsed();
     let per_us = elapsed.as_micros() as f64 / n as f64;
