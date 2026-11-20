@@ -143,6 +143,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`[documents] embed_exclude` now defaults to the structured data formats**
+  ([#260](https://github.com/Goldziher/basemind/issues/260)): `*.json`, `*.jsonl`, `*.ndjson`,
+  `*.yaml`, `*.yml`, `*.toml`, `*.csv`, `*.tsv` and `*.xml`. They are still extracted, chunked and
+  keyword-ranked by `docs_search`, and `code_grep` still searches them, but they get no vectors, so a
+  default scan embeds prose documents only. Setting the key replaces the list; `embed_exclude = []`
+  embeds them as before. The default is part of the embed-policy fingerprint, so the first full scan
+  of an existing index deletes their vector rows without re-extracting or re-embedding anything
+  (`docs/UPGRADING.md`).
+
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
   `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`

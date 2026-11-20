@@ -520,6 +520,13 @@ mod tests {
         other.documents.embed_exclude = vec!["x".to_string()];
         assert_ne!(embed_policy_digest(&other), digest);
         let mut other = base.clone();
+        other.documents.embed_exclude = Vec::new();
+        assert_ne!(
+            embed_policy_digest(&other),
+            digest,
+            "an index built before structured data left the embed scope reconciles on its next scan"
+        );
+        let mut other = base.clone();
         other.code_search.enabled = false;
         assert_ne!(embed_policy_digest(&other), digest);
         let mut other = base;

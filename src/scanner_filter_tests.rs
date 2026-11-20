@@ -482,6 +482,67 @@ fn default_document_excludes_drop_vectors_lockfiles_and_test_data() {
 }
 
 #[test]
+fn default_embed_scope_indexes_structured_data_but_embeds_only_prose() {
+    let config = crate::config::default_for_root(Path::new("."));
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
+    for (path, embedded) in [
+        ("data/report.json", false),
+        ("logs/events.jsonl", false),
+        ("logs/events.ndjson", false),
+        ("config/settings.yaml", false),
+        (".github/workflows/ci.yml", false),
+        ("pyproject.toml", false),
+        ("data/report.csv", false),
+        ("data/report.tsv", false),
+        ("pom.xml", false),
+        ("README.md", true),
+        ("docs/guide.rst", true),
+        ("notes/readme.txt", true),
+        ("docs/manual.pdf", true),
+        ("docs/spec.docx", true),
+        ("site/index.html", true),
+        ("notebooks/demo.ipynb", true),
+    ] {
+        assert!(filters.doc_allowed(path), "{path} stays indexed as a document");
+        assert_eq!(
+            filters.doc_embed_allowed(path),
+            embedded,
+            "default embed decision for {path}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_embed_exclude_opts_structured_data_back_into_embedding() {
+    let mut config = crate::config::default_for_root(Path::new("."));
+    config.documents.embed_exclude = Vec::new();
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
+    for path in [
+        "data/report.json",
+        "config/settings.yaml",
+        "pyproject.toml",
+        "data/report.csv",
+        "pom.xml",
+    ] {
+        assert!(filters.doc_embed_allowed(path), "{path} is embedded once opted in");
+    }
+
+    config.documents.embed_exclude = vec!["*.csv".to_string()];
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
+    assert!(
+        !filters.doc_embed_allowed("data/report.csv"),
+        "a custom list keeps its own entries"
+    );
+    assert!(
+        filters.doc_embed_allowed("data/report.json"),
+        "unlisted defaults are replaced, not merged"
+    );
+}
+
+#[test]
 fn user_document_excludes_replace_the_defaults_so_they_can_reinclude() {
     let mut config = crate::config::default_for_root(Path::new("."));
     config.documents.exclude = Vec::new();
