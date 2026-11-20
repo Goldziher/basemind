@@ -584,6 +584,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   into one environment again; its MCP bridge follows the 2.x client API (`MCPError`, a float read
   timeout) and still answers with the wire field names (`structuredContent`, `isError`).
 
+- JavaScript dependency upgrades: OpenCode plugin wrappers `@opencode/plugin` 2.3.2, npm wrapper
+  `tar` 7.5.23, website `astro` 7.4.13 and `@astrojs/starlight` 0.43.1.
+
 ### Removed
 
 - `BASEMIND_MCP_LEAN` and its three wrapper tools (`list_tools`, `get_tool_schema`,

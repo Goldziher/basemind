@@ -33,7 +33,7 @@
   },
   "dependencies": {
     "adm-zip": "^0.6.1",
-    "tar": "^7.5.22"
+    "tar": "^7.5.23"
   },
   "engines": {
     "node": ">=22"
