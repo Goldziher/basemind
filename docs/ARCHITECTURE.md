@@ -1,15 +1,16 @@
 # Architecture
 
-basemind is a single Rust crate that builds one binary (`basemind`) and exposes
-its internals as a library. The binary serves three roles: `basemind scan` indexes
+basemind is published as one Rust crate, `basemind`, that builds one binary (`basemind`) and
+exposes its internals as a library. The binary serves three roles: `basemind scan` indexes
 a workspace, the daemon (`basemind comms daemon`, auto-spawned; singleton per user) is the sole
 writer managing a machine-global cache and hosts the MCP router over one shared read stack per
 workspace, and `basemind serve` is a thin stdio relay that ensures the daemon and pumps bytes to it
 (HTTP-native clients dial the daemon directly). `serve` needs the `comms` feature; the one-shot CLI
 (`basemind code …`, `git …`) opens the store itself and does not.
 
-The Cargo workspace also vendors four crates under `crates/` — `stack-graphs`,
-`tree-sitter-graph`, `tree-sitter-stack-graphs`, `lsp-positions` — a tree-sitter-0.26 fork of
+The Cargo workspace has five more members under `crates/`. `basemind-agents` is the agent-launch
+provider layer (see [Agent launch](#agent-launch)). The other four — `stack-graphs`,
+`tree-sitter-graph`, `tree-sitter-stack-graphs`, `lsp-positions` — are a tree-sitter-0.26 fork of
 the upstream stack-graphs project, maintained in-tree because upstream targets an older
 tree-sitter. The fork root-caused and fixed two upstream panics and drops the C-FFI, serde,
 sqlite, and visualization modules basemind doesn't use. It backs the Python/Java half of the
@@ -161,9 +162,9 @@ src/
 │   ├── overrides.rs        — DocumentsCliOverrides — backs the clap flags
 │   ├── layered.rs          — merge_layers (Mcp > Cli > Env > File > Default)
 │   └── source.rs           — ConfigSource + ProvenanceMap ledger
-├── mcp/                    — MCP server: 15 tools, one per job, each with its own exact
-│                             schema (ADR-0018), plus the three deferred agent tools
-│                             in `comms` builds — see "MCP surface" below
+├── mcp/                    — MCP server: the verb tools (`VERB_TOOLS`), one per job, each with
+│                             its own exact schema (ADR-0018), plus the three deferred agent
+│                             tools in `comms` builds — see "MCP surface" below
 │   ├── mod.rs, state.rs    — server bootstrap; shared ServerState
 │   ├── types_tools.rs      — wire arguments: one deny_unknown_fields struct per tool, and
 │   │                         VERB_TOOLS, the tool names in declaration order
@@ -184,15 +185,19 @@ src/
 │   │                         (index_status, index_rescan), comms (→ `agent_post`, `agent_inbox`, `agent_threads`)
 │   ├── tasks.rs            — Tasks extension: results are inline; index_rescan, code_search
 │   │                         and docs_search become a task only if still running after 3 s
-│   ├── helpers.rs, helpers_admin.rs, helpers_telemetry.rs — what stays on the MCP side: the
-│   │                         index_status / index_rescan bodies and the telemetry hook; every
-│   │                         other body is an engine operation (engine/ below)
+│   ├── helpers.rs, helpers_telemetry.rs — what stays on the MCP side: the JSON result, the
+│   │                         telemetry summary and the telemetry hook; every tool body is an
+│   │                         engine operation (engine/ below)
+│   ├── cli_only.rs         — the CLI-only commands (analysis, `overview`, …) a daemon session
+│   │                         answers by name, off `tools/list`
+│   ├── lead_tools.rs       — `agent_launch` / `agent_stop`, listed only by `serve --lead`
+│   │                         (see "Agent launch" below)
 │   ├── agent_tools/        — the agent_post / agent_inbox / agent_threads bodies (comms)
 │   ├── savings.rs          — token-savings heuristics, keyed by tool name (rows recorded
 │   │                         under the old domain:mode keys are mapped to it)
 │   ├── telemetry.rs        — per-call telemetry.jsonl writer; the key is the tool name
-│   └── toon.rs, notifications.rs, completions.rs, prompts.rs, background.rs,
-│       daemon_forward.rs, identity.rs — TOON output shaping, notifications,
+│   └── notifications.rs, completions.rs, prompts.rs, background.rs,
+│       daemon_forward.rs, identity.rs — notifications, completions, prompts,
 │       daemon-forward plumbing for Seam B
 ├── engine/                 — the engine API (ADR-0039): no rmcp type; the MCP shims and the CLI
 │   │                         both run these operations through mcp/adapter.rs
@@ -207,8 +212,16 @@ src/
 │                             contract every body shares: token budget, cursors, refused
 │                             filters, files changed since the scan, pinned symbols, indexed
 │                             paths, EngineError
+├── wire.rs                 — the text block each verb tool answers with, encoded per tool
+│                             (rows, `rg --heading` groups or TOON; ADR-0053) and decoded for eval
 ├── stdio_relay.rs          — protocol-aware stdio relay behind `basemind serve`; survives a
 │                             daemon replacement without closing the host's pipes
+├── lead/                   — `basemind serve --lead`: the operator's `agents.toml` policy and the
+│                             supervisor host behind `agent_launch` / `agent_stop` (Unix)
+├── sessions/               — `basemind sessions`: tool-use counts from the local Claude Code and
+│                             Codex transcripts
+├── deps_docs/              — `[documents.dependencies]`: the dependencies' README, CHANGELOG
+│                             and docs, located from the manifests and lockfiles
 ├── comms/                  — agent-comms daemon: broker, memory, worktree registry; `comms/v2/` is
 │                             the agent store and its rules (see "Agent comms" below); workspace_pool.rs is
 │                             the daemon's hot-workspace + warm-read-stack pool;
@@ -241,9 +254,9 @@ src/
 ├── queries/<pack-name>.scm — hand-written extraction queries (override TSLP tags.scm)
 ├── render.rs, hashing.rs, watcher.rs                   — supporting modules
 
-crates/                    — vendored tree-sitter-0.26 stack-graphs fork (workspace members):
-                             stack-graphs, tree-sitter-graph, tree-sitter-stack-graphs,
-                             lsp-positions
+crates/                    — workspace members: basemind-agents (agent launch) and the vendored
+                             tree-sitter-0.26 stack-graphs fork (stack-graphs, tree-sitter-graph,
+                             tree-sitter-stack-graphs, lsp-positions)
 ```
 
 ## Scan pipeline
@@ -1189,3 +1202,28 @@ last five minutes is left as it is, since every prompt hook says `Hello`, and a 
 to the filesystem root is not registered. It is read-only to serving sessions and
 listed by `basemind workspace workspaces` / `worktrees` / `branches`; it has no MCP tool and holds
 no claims.
+
+## Agent launch
+
+A lead agent can start a peer agent in another harness and talk to it over agent comms (ADR-0040,
+ADR-0044). The provider layer is the `crates/basemind-agents` library: one synchronous adapter per
+harness protocol (Claude Code's `stream-json`, Codex's `app-server`, and the Agent Client Protocol
+for Cursor, Gemini CLI, Grok Build, Hermes Agent and OpenCode), each turning a launch into a session
+of typed events (text, tool call, approval request, finished, error) that takes approve, deny,
+follow-up and stop. It depends on no other basemind crate. A launch has two halves: the trusted
+`LaunchConfig` from the operator's configuration (harness and executable, root, identity,
+environment, injected MCP server, permission mode, opt-ins, caps) and the `LaunchRequest` a model
+may choose (the brief, a working directory under the root, a model and an effort, and a wall time
+and turn count clamped to the caps).
+
+Only `basemind serve --lead` hosts a launcher (Unix, `comms` builds; `src/lead/`). That one process
+reads the operator's `agents.toml` from basemind's configuration directory under the account's home
+(found from the user database, never `HOME`), builds the supervisor and lists `agent_launch` and
+`agent_stop` on its own stdio (`src/mcp/lead_tools.rs`). The daemon, its HTTP front-end, a plain
+`serve` and the CLI never list or answer them, and a repository's `basemind.toml` `[agents]` table is
+ignored with a warning. Without the file, launching stays off and the tools are not listed.
+
+A launched agent runs at depth 1 in a worktree of its own, with every approval request denied and
+no permission bypass. It gets `BASEMIND_AGENT_ID`, `BASEMIND_HOST`, `BASEMIND_AGENT_DEPTH` and
+`BASEMIND_LAUNCH_TOKEN`, and `basemind serve` injected as an MCP server in the harness's own form,
+so it reaches the same daemon and posts as the identity its lead announced. Each lead's launches are audited.
