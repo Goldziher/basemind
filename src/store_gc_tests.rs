@@ -747,7 +747,7 @@ fn the_blob_store_sweep_reaps_the_current_namespace_and_the_superseded_ones() {
     let newer = plant_blob(&paths.root.join("v65000"), 'e');
     assert!(orphan.exists());
 
-    let report = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO, &NO_HOLDS).expect("sweep");
+    let report = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO, || NO_HOLDS).expect("sweep");
 
     assert!(
         !orphan.exists(),
@@ -803,7 +803,7 @@ fn superseded_namespaces_are_reaped_although_the_live_set_cannot_be_read() {
     let flat = plant_blob(&paths.root, 'c');
     let orphan = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.orphan_stem));
 
-    let swept = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO, &NO_HOLDS);
+    let swept = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO, || NO_HOLDS);
 
     assert!(
         swept.is_err(),
@@ -835,7 +835,7 @@ fn a_view_of_a_newer_basemind_neither_stops_the_sweep_nor_is_touched_by_it() {
     fs::write(&newer_map, &bytes).expect("write");
     let orphan = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.orphan_stem));
 
-    let report = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO, &NO_HOLDS).expect("sweep");
+    let report = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO, || NO_HOLDS).expect("sweep");
 
     assert!(report.removed >= 1, "{report:?}");
     assert!(

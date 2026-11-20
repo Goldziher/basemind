@@ -423,23 +423,27 @@ pub fn gc_global_blobs(data: &DataRoot) -> Result<GcReport, GcError> {
         &data.global_blobs_root(),
         crate::extract::SCHEMA_VER,
         blob_gc_grace(),
-        &Holds::under(data),
+        || Holds::under(data),
     )
 }
 
 /// Sweep a whole blob store: the unreferenced blobs of the `schema` namespace under `blobs_root`,
-/// and everything older builds left there that `holds` lets go (see [`crate::store_gc_namespaces`]).
-/// The second sweep needs no live set, so it runs whatever became of the first: a workspace whose
-/// references cannot be read must not also keep the superseded namespaces on disk.
+/// and everything older builds left there that the `holds` read lets go (see
+/// [`crate::store_gc_namespaces`]). The second sweep needs no live set, so it runs whatever became
+/// of the first: a workspace whose references cannot be read must not also keep the superseded
+/// namespaces on disk. The holds are read only once the first sweep is done, so a basemind that
+/// registered while it ran is seen; one registering after the read is not. No lock can close that
+/// window: the releases up to 0.33 register without one. It lasts one sweep of the superseded
+/// namespaces, and only a namespace unwritten for the hold is at stake.
 pub(crate) fn gc_blob_store_in(
     workspaces_dir: &Path,
     blobs_root: &Path,
     schema: u16,
     grace: Duration,
-    holds: &Holds,
+    holds: impl FnOnce() -> Holds,
 ) -> Result<GcReport, GcError> {
     let current = gc_global_blobs_in(workspaces_dir, &blobs_root.join(format!("v{schema}")), grace);
-    let superseded = crate::store_gc_namespaces::sweep_superseded_namespaces(blobs_root, schema, grace, holds);
+    let superseded = crate::store_gc_namespaces::sweep_superseded_namespaces(blobs_root, schema, grace, &holds());
     if let (Err(_), Ok(superseded)) = (&current, &superseded)
         && superseded.removed > 0
     {
