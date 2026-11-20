@@ -78,14 +78,15 @@ fn listable(local: &gix::Repository, id: gix::ObjectId) -> bool {
 /// branch's own commits, which the walk lists. Unlike `git log -- <path>`, the walk prunes no side
 /// of a merge, so a commit on the side a merge did not keep is still listed. When a file is reported with
 /// different statuses against different parents, the higher-severity kind wins (Added > Modified ≈
-/// Renamed > Deleted).
+/// Renamed > Deleted). Only the parents this clone holds are compared against
+/// ([`readable_parent_trees`]).
 pub(super) fn commit_files(
     local: &gix::Repository,
     commit_id: gix::ObjectId,
 ) -> Option<Vec<(crate::path::RelPath, ChangeKind)>> {
     let commit = local.find_commit(commit_id).ok()?;
     let tree = commit.tree().ok()?;
-    let parents: Vec<gix::ObjectId> = commit.parent_ids().map(|p| p.detach()).collect();
+    let parents = readable_parent_trees(local, &commit);
     if parents.is_empty() {
         let mut recorder = tree.traverse().breadthfirst.files().ok()?;
         recorder.sort_by(|a, b| a.filepath.cmp(&b.filepath));
@@ -102,13 +103,7 @@ pub(super) fn commit_files(
     // parent (by its 1-based count) it was seen against.
     let mut changed: ahash::AHashMap<crate::path::RelPath, (ChangeKind, usize, usize)> = ahash::AHashMap::new();
     let mut compared = 0usize;
-    for pid in parents {
-        let Ok(parent_commit) = local.find_commit(pid) else {
-            continue;
-        };
-        let Ok(parent_tree) = parent_commit.tree() else {
-            continue;
-        };
+    for parent_tree in parents {
         let mut platform = match parent_tree.changes() {
             Ok(p) => p,
             Err(_) => continue,
@@ -156,6 +151,18 @@ pub(super) fn commit_files(
     Some(out)
 }
 
+/// The trees of `commit`'s parents that this clone holds. A shallow clone lacks the parents of its
+/// boundary commits; [`commit_files`] and [`commit_touches_path`] both compare against only the
+/// parents held, so a commit with none is a root commit to both (every file in its tree added), as
+/// `git log` shows a shallow clone's boundary. The git-history index is built from the first and
+/// the live walk filters on the second, so they agree on a shallow clone.
+fn readable_parent_trees<'repo>(local: &'repo gix::Repository, commit: &gix::Commit<'repo>) -> Vec<gix::Tree<'repo>> {
+    commit
+        .parent_ids()
+        .filter_map(|parent| local.find_commit(parent.detach()).ok()?.tree().ok())
+        .collect()
+}
+
 /// Priority ordering used when the same file shows up with different kinds across multiple
 /// parent diffs. Higher number = takes precedence. Added beats Modified because the file is
 /// genuinely new from at least one merge leg's perspective.
@@ -184,20 +191,15 @@ pub(super) fn commit_touches_path(local: &gix::Repository, commit_id: gix::Objec
     };
     let current = entry_ident_at(&tree, &components);
 
-    let parents: Vec<gix::ObjectId> = commit.parent_ids().map(|p| p.detach()).collect();
+    let parents = readable_parent_trees(local, &commit);
     if parents.is_empty() {
         return current.is_some();
     }
     // A merge touches the path only when it differs there from every parent: one that took the path
     // unchanged from a branch did not change it. No side is pruned, unlike `git log -- <path>`.
-    parents.into_iter().all(|pid| {
-        let parent = local
-            .find_commit(pid)
-            .ok()
-            .and_then(|pc| pc.tree().ok())
-            .and_then(|pt| entry_ident_at(&pt, &components));
-        current != parent
-    })
+    parents
+        .iter()
+        .all(|parent| current != entry_ident_at(parent, &components))
 }
 
 /// `(blob oid, mode)` of the entry at the given path components in `tree`, or `None` when the

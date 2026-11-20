@@ -160,3 +160,103 @@ fn a_history_index_built_while_shallow_is_rebuilt_once_the_clone_is_unshallowed(
         RebuildOutcome::Fresh
     );
 }
+
+/// Commit every change in `root` with author and committer time on `day` of January 2025, so a
+/// walk by commit time has one order.
+fn commit_on(root: &Path, day: u32, message: &str) {
+    let date = format!("2025-01-{day:02}T00:00:00");
+    let status = Command::new("git")
+        .args(["commit", "-qam", message])
+        .current_dir(root)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@e.x")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@e.x")
+        .env("GIT_AUTHOR_DATE", &date)
+        .env("GIT_COMMITTER_DATE", &date)
+        .status()
+        .expect("git in PATH");
+    assert!(status.success(), "git commit {message:?} failed");
+}
+
+/// A `--depth 3` clone whose boundary commit `c2` is the third of five upstream commits:
+/// `c0` adds `a.rs` and `b.rs`, `c1` changes `b.rs`, `c2` adds `c.rs`, `c3` changes `b.rs`, and
+/// `c4` changes `c.rs`. Returns the clone's path and the upstream shas, `c0` first.
+fn depth_3_clone() -> (TempDir, PathBuf, Vec<String>) {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = dir.path().join("upstream");
+    fs::create_dir_all(&upstream).unwrap();
+    run(&upstream, &["init", "-q"]);
+    run(&upstream, &["config", "commit.gpgsign", "false"]);
+    let steps: [(&str, &str); 5] = [
+        ("a.rs", "a\n"),
+        ("b.rs", "b 1\n"),
+        ("c.rs", "c\n"),
+        ("b.rs", "b 2\n"),
+        ("c.rs", "c 1\n"),
+    ];
+    fs::write(upstream.join("b.rs"), "b\n").unwrap();
+    let mut shas = Vec::new();
+    for (day, (file, content)) in (1..).zip(steps) {
+        fs::write(upstream.join(file), content).unwrap();
+        run(&upstream, &["add", "-A"]);
+        commit_on(&upstream, day, &format!("c{}", day - 1));
+        shas.push(Repo::discover(&upstream).unwrap().resolve_rev("HEAD").unwrap());
+    }
+    let url = format!("file://{}", upstream.display());
+    run(dir.path(), &["clone", "-q", "--depth", "3", &url, "clone"]);
+    let clone = dir.path().join("clone");
+    (dir, clone, shas)
+}
+
+#[test]
+fn the_history_index_and_the_live_walk_agree_on_a_shallow_clones_boundary_commit() {
+    let (_dir, clone, c) = depth_3_clone();
+    let repo = Repo::discover(&clone).unwrap();
+    assert!(repo.is_shallow());
+    let basemind_dir = clone.join(".basemind");
+    fs::create_dir_all(&basemind_dir).unwrap();
+    let index = GitHistoryIndex::open(&basemind_dir).unwrap();
+    assert_eq!(
+        builder::sync(&index, &repo, &basemind_dir).unwrap(),
+        RebuildOutcome::FullRebuild {
+            reason: "initial",
+            commits: 3
+        }
+    );
+
+    let expected = [
+        ("a.rs", vec![c[2].clone()]),
+        ("b.rs", vec![c[3].clone(), c[2].clone()]),
+        ("c.rs", vec![c[4].clone(), c[2].clone()]),
+    ];
+    for (path, touching) in expected {
+        let live: Vec<String> = repo
+            .log_for_path(path, 10)
+            .unwrap()
+            .into_iter()
+            .map(|commit| commit.sha)
+            .collect();
+        let indexed: Vec<String> = index
+            .commits_touching(&RelPath::from(path), 0, 10)
+            .into_iter()
+            .map(|commit| commit.sha)
+            .collect();
+        assert_eq!(live, touching, "live walk of {path}");
+        assert_eq!(indexed, touching, "git-history index for {path}");
+    }
+    let boundary: Vec<(String, ChangeKind)> = repo
+        .commit_files_uncached(&c[2])
+        .unwrap()
+        .into_iter()
+        .map(|(path, kind)| (path.to_str_lossy().into_owned(), kind))
+        .collect();
+    assert_eq!(
+        boundary,
+        [
+            ("a.rs".to_string(), ChangeKind::Added),
+            ("b.rs".to_string(), ChangeKind::Added),
+            ("c.rs".to_string(), ChangeKind::Added),
+        ]
+    );
+}

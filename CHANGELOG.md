@@ -849,6 +849,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --unshallow`; they are no longer cached, and a daemon re-reads whether the clone is shallow on
   every call instead of once at open. A git-history index built in a shallow clone is rebuilt once
   its oldest commit has a parent. `GIT_CACHE_SCHEMA` moves, so payloads of earlier builds are misses.
+- A shallow clone's boundary commit is a root commit to both the git-history index and the live
+  walk (#301): it adds every file in its tree, as `git log` shows it. The index listed no files for
+  it while the live walk matched it for every path it holds, so `git_log` with a `path` answered
+  differently depending on which one served it. A merge with a parent the clone lacks is compared
+  against the parents it holds, in both.
 - The watcher no longer discards the OS's "events were dropped" signal (FSEvents `MustScanSubDirs`,
   inotify queue overflow). A signal naming a subdirectory rescans that subtree; one naming the root,
   or none, runs the whole-tree stat-and-hash pass of `index_rescan {}`; a burst of signals is one
