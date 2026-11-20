@@ -215,14 +215,15 @@ jobs:
           cp target/release/basemind "$RUNNER_TEMP/leak-bin/basemind"
 
       # ~keep The runs go in parallel, one per core; a run past --run-timeout is killed and fails, so
-      # ~keep the report is written before the step's own limit cuts the job.
+      # ~keep the report is written before the step's own limit cuts the job. The grammar warm-up
+      # ~keep (600 s at most) plus 2400 s leaves ten minutes for the fixtures and the report.
       - name: One-shot leak check (${{ matrix.leak_tool }})
         if: ${{ !cancelled() && steps.leak_build.outcome == 'success' }}
         timeout-minutes: 60
         shell: bash
         run: |
           python scripts/hardening/leak_check.py --binary "$RUNNER_TEMP/leak-bin/basemind" \
-            --tool "${{ matrix.leak_tool }}" --run-timeout 3000 --out "$HARDENING_REPORTS/leaks"
+            --tool "${{ matrix.leak_tool }}" --run-timeout 2400 --out "$HARDENING_REPORTS/leaks"
 
       - name: One-shot leak check skipped (Windows)
         if: ${{ matrix.leak_tool == '' }}

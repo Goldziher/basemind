@@ -6,6 +6,7 @@ outlives the run timeout.
   owns it, past the allocator and Rust's allocation shims.
 - A clean report passes; a report with no leak summary is a run the checker could not inspect.
 - A run killed at the run timeout fails on the timeout, with what it wrote until then.
+- A target's extra commands start only after its scan has finished, while targets run in parallel.
 
 Usage:
     selftest_leak_check.py
@@ -15,6 +16,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,7 +26,7 @@ if TYPE_CHECKING:
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from leak_check import judge, judge_valgrind, run_bounded, valgrind_sites  # noqa: E402
+from leak_check import judge, judge_valgrind, run_bounded, run_per_target, valgrind_sites  # noqa: E402
 
 PID = "==4242=="
 BIN = "(in /opt/basemind)"
@@ -85,10 +88,38 @@ def check_timeout() -> list[str]:
     return problems
 
 
+def check_target_order() -> list[str]:
+    events: list[tuple[str, str, str]] = []
+    lock = threading.Lock()
+
+    def record(target: str, argv: list[str]) -> dict:
+        with lock:
+            events.append(("start", target, argv[0]))
+        time.sleep(0.2 if argv == ["scan"] else 0)
+        with lock:
+            events.append(("end", target, argv[0]))
+        return {"label": f"{target}-{argv[0]}"}
+
+    targets = ["fixture", "scale60", "scale600"]
+    results = run_per_target(targets, [["scan"], ["status"]], record, jobs=6)
+    problems = []
+    for target in targets:
+        if events.index(("start", target, "status")) < events.index(("end", target, "scan")):
+            problems.append(f"{target}: status started before its scan finished")
+    want = [f"{target}-{argv}" for target in targets for argv in ("scan", "status")]
+    if [r["label"] for r in results] != want:
+        problems.append(f"results {[r['label'] for r in results]}, want {want}")
+    scans_started = [e for e in events[: len(targets)] if e[0] == "start" and e[2] == "scan"]
+    if len(scans_started) != len(targets):
+        problems.append(f"first events {events[: len(targets)]}, want every target's scan started together")
+    return problems
+
+
 CHECKS: list[tuple[str, Callable[[], list[str]]]] = [
     ("allocation sites", check_sites),
     ("verdicts", check_verdicts),
     ("run timeout", check_timeout),
+    ("per-target run order", check_target_order),
 ]
 
 

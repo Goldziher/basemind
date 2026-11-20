@@ -186,8 +186,9 @@ inspect, and on a run killed at `--run-timeout` (default 3000 s): `leaks --atExi
 `MallocStackLogging=1`) on macOS counts every unreachable block, `valgrind --leak-check=full` on
 Linux every "definitely lost" one. Windows has no checker wired up.
 
-The runs go in parallel, `--jobs` at a time (default one per core): valgrind serialises a process's
-threads onto one core, so the wall time is the slowest run's, not the sum. Before them a native
+The targets go in parallel, `--jobs` at a time (default one per core), and each runs its `scan`
+before its `--cmd` one-shots, which read what the scan indexed: valgrind serialises a process's
+threads onto one core, so the wall time is the slowest target's, not the sum. Before them a native
 `basemind lang install` fills one grammar cache that every run shares
 (`TREE_SITTER_LANGUAGE_PACK_CACHE_DIR`, a temporary directory unless already set), so no checked run
 downloads grammars. valgrind runs with `--undef-value-errors=no`, since only leaks are judged, and
