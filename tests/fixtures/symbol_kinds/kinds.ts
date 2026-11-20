@@ -22,6 +22,12 @@ class Panel extends React.Component {
     const clicked = true;
     return clicked;
   };
+  get = () => 1;
+  set = (value: number) => value;
+  get total(): number {
+    return 1;
+  }
+  set total(value: number) {}
 }
 
 declare function greet(name: string): void;

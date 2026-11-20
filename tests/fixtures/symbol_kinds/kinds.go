@@ -15,6 +15,10 @@ type Store interface {
 	fmt.Stringer
 }
 
+type Closer = interface {
+	Shut() error
+}
+
 func Use(s Store) {
 	var probe interface{ Close() error }
 	_ = probe

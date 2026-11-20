@@ -10,6 +10,14 @@ class Panel extends React.Component {
     return clicked;
   };
   count = 0;
+  get = () => 1;
+  set = (value) => value;
+  get total() {
+    return this.count;
+  }
+  set total(value) {
+    this.count = value;
+  }
 }
 
 module.exports = function main() {
