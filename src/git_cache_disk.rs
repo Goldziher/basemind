@@ -5,7 +5,9 @@
 //! a background thread, which measures what earlier processes left behind. After that every write
 //! adds its bytes to a running total for its directory, and the write that takes a directory past
 //! its budget starts another background sweep, so a daemon that hosts a workspace for days stays
-//! within budget without statting the directories on a request.
+//! within budget without statting the directories on a request. One sweep runs at a time: a write
+//! past the budget while one runs leaves a request for it, and the running sweep passes over every
+//! directory again before it ends, so a directory it had already visited is not left over budget.
 //!
 //! A sweep is an mtime-LRU pass: stat every file, sum the sizes, and when the sum is over budget
 //! delete the oldest payloads until it is at most [`low_water`] of the budget. Stopping below the
@@ -74,6 +76,9 @@ pub(crate) struct DiskTier {
     tracked: [AtomicU64; 3],
     /// Set while a background sweep runs, so a burst of writes past the budget starts one sweep.
     sweeping: AtomicBool,
+    /// Set by every request for a sweep and cleared by the pass that serves it, so a request made
+    /// while a sweep runs gets a pass of its own.
+    pending: AtomicBool,
 }
 
 impl DiskTier {
@@ -85,6 +90,7 @@ impl DiskTier {
             max_bytes,
             tracked: [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
             sweeping: AtomicBool::new(false),
+            pending: AtomicBool::new(false),
         })
     }
 
@@ -114,22 +120,45 @@ impl DiskTier {
         }
     }
 
-    /// Start a sweep on its own thread unless one is already running.
+    /// Request a sweep and start one on its own thread unless one is already running, in which case
+    /// the running one serves the request before it ends.
     pub(crate) fn sweep_in_background(self: &Arc<Self>) {
-        if self.sweeping.swap(true, Ordering::AcqRel) {
+        self.pending.store(true, Ordering::SeqCst);
+        if self.sweeping.swap(true, Ordering::SeqCst) {
             return;
         }
         let tier = Arc::clone(self);
         let spawned = std::thread::Builder::new()
             .name("bm-git-cache-gc".to_string())
-            .spawn(move || {
-                let _running = SweepRunning(&tier.sweeping);
-                tier.sweep(SystemTime::now());
-            });
+            .spawn(move || tier.run_sweeps());
         if let Err(error) = spawned {
-            self.sweeping.store(false, Ordering::Release);
+            self.sweeping.store(false, Ordering::SeqCst);
             tracing::warn!(%error, root = %self.root.display(), "git cache: could not start the disk sweep");
         }
+    }
+
+    /// Body of the background sweep, entered with [`DiskTier::sweeping`] claimed: sweep until no
+    /// request is pending, then release the claim. A request made between the last check and the
+    /// release finds the claim still held and starts nothing, so after releasing it the pending flag
+    /// is checked again and the claim taken back to serve it.
+    fn run_sweeps(&self) {
+        loop {
+            {
+                let _running = SweepRunning(&self.sweeping);
+                while self.pending.swap(false, Ordering::SeqCst) {
+                    self.sweep(SystemTime::now());
+                }
+            }
+            if !self.reclaim_for_pending() {
+                return;
+            }
+        }
+    }
+
+    /// Take the sweep claim back for a request left pending after it was released; `false` when
+    /// none is pending or another sweep has taken the claim, which then serves the request.
+    fn reclaim_for_pending(&self) -> bool {
+        self.pending.load(Ordering::SeqCst) && !self.sweeping.swap(true, Ordering::SeqCst)
     }
 
     /// Sweep every subdirectory on the calling thread, aging temp files against `now`, and reset
@@ -184,7 +213,7 @@ struct SweepRunning<'a>(&'a AtomicBool);
 
 impl Drop for SweepRunning<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -389,6 +418,54 @@ mod tests {
         left.sort();
         assert_eq!(left, ["1.msgpack", "2.msgpack", "3.msgpack"]);
         assert_eq!(tier.tracked(Subdir::Log), 900);
+    }
+
+    /// A sweep that had already passed a directory when a write took it over budget never came back
+    /// to it, and the write started nothing because a sweep was running, so the directory stayed
+    /// over budget until a later write. The running sweep now serves that write before it ends.
+    #[test]
+    fn a_write_during_a_sweep_is_evicted_before_the_sweep_ends() {
+        let (dir, tier) = tier(1000);
+        let log = dir.path().join("log");
+        let base = SystemTime::now() - Duration::from_secs(3600);
+        tier.sweeping.store(true, Ordering::SeqCst);
+        for i in 0..4u64 {
+            let path = log.join(format!("{i}.msgpack"));
+            tier.write(Subdir::Log, &path, &[0u8; 300]);
+            set_mtime(&path, base + Duration::from_secs(i));
+        }
+        assert_eq!(
+            fs::read_dir(&log).unwrap().count(),
+            4,
+            "the running sweep evicts, not the write"
+        );
+
+        tier.run_sweeps();
+
+        let mut left: Vec<String> = fs::read_dir(&log)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["1.msgpack", "2.msgpack", "3.msgpack"]);
+        assert_eq!(tier.tracked(Subdir::Log), 900);
+        assert!(!tier.is_sweeping());
+        assert!(!tier.pending.load(Ordering::SeqCst));
+    }
+
+    /// A request left pending after the claim was released takes the claim back, unless another
+    /// sweep took it first; with nothing pending the sweep ends.
+    #[test]
+    fn a_request_pending_after_the_release_reclaims_the_sweep() {
+        let (_dir, tier) = tier(1000);
+        assert!(!tier.reclaim_for_pending(), "nothing pending");
+        assert!(!tier.is_sweeping());
+
+        tier.pending.store(true, Ordering::SeqCst);
+        assert!(tier.reclaim_for_pending(), "a pending request takes the claim back");
+        assert!(tier.is_sweeping());
+
+        assert!(!tier.reclaim_for_pending(), "a claim another sweep holds is left to it");
     }
 
     /// A budget of `0` disables eviction however much is written.
