@@ -357,6 +357,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    # An upstream release can break this without a change here; it must not block a release.
+    continue-on-error: true
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
