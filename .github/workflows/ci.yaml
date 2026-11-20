@@ -349,6 +349,19 @@ jobs:
       - name: node (npm wrapper installer)
         run: node --test tests/npm_install_https.test.cjs tests/npm_install_staging.test.cjs
 
+  # ~keep The publish jobs check the generated plugins and public skills before they upload; running
+  # ~keep the same task on every push catches a stale generated file here instead of on tag day.
+  plugin-verify:
+    name: generated plugins and public skills are fresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: xberg-io/actions/setup-mise@v1
+        with:
+          install-args: python node
+      - run: mise run plugin:verify
+
   hermes:
     name: hermes plugin package
     runs-on: ubuntu-latest
