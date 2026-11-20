@@ -103,6 +103,7 @@ src/
 │                             `cache/gc.lock` that serialises sweeps
 ├── store_gc_budget.rs      — cache size budget + `gc-state.json` (last sweep health)
 ├── store_gc_workspace.rs   — orphaned-workspace reaper for the machine-global cache
+├── store_gc_legacy_views.rs — removes the per-view indexes of releases up to 0.33 once the group adopts them
 ├── store_group.rs          — the group index's lock and the file-map checks of each view
 ├── store_group_live.rs     — which contents a group still holds, for content-keyed sweeps
 ├── store_cache_admin.rs    — cache clear / stats admin surface (CLI + MCP)
@@ -576,6 +577,9 @@ live process of that version is registered under the data home (`daemons/`, `hos
 record names the blob schema its process reads, one a release up to 0.33 wrote only its version) and
 until nothing was written into it for `BASEMIND_PRUNE_AFTER_DAYS` days (14 by default, the launcher's
 retention of an unused version); once it is reaped, that install re-extracts on its next scan.
+The daemon's cache sweep also deletes the per-view `index.fjall` of releases up to 0.33 in every
+workspace whose repository's group index exists (`src/store_gc_legacy_views.rs`, ADR-0054), under
+the workspace lock and after moving any notes it holds, and none while a 0.33 daemon is registered.
 
 Before eviction or the orphan reaper removes a workspace, each view whose index still holds the notes
 keyspace of a release before 0.30 has its notes moved to the group store by a writer open under the
