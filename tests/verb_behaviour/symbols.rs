@@ -70,7 +70,7 @@ async fn code_symbols_answers_byte_for_byte() {
         let actual = without_cursor(&answer(&client, arguments.clone()).await);
         rows.push((format!("code_symbols {arguments}"), actual, expected.to_string()));
     }
-    let first: Value = serde_json::from_str(&answer(&client, json!({ "name": "outline", "limit": 2 })).await).unwrap();
+    let first = basemind::wire::decode(&answer(&client, json!({ "name": "outline", "limit": 2 })).await).unwrap();
     let cursor = first["next_cursor"].as_str().expect("a second page").to_string();
     let rest = answer(&client, json!({ "name": "outline", "limit": 2, "cursor": cursor })).await;
     rows.push((

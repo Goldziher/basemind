@@ -279,8 +279,8 @@ async fn code_search_refuses_another_query_s_cursor() {
         .expect("code_search");
     let text = super::text_of(&first);
     assert_ne!(first.is_error, Some(true), "the keyword lane needs no model: {text}");
-    let body: Value =
-        serde_json::from_str(&text).unwrap_or_else(|error| panic!("code_search: non-JSON payload ({error}): {text}"));
+    let body: Value = basemind::wire::decode(&text)
+        .unwrap_or_else(|error| panic!("code_search: unreadable payload ({error}): {text}"));
     let cursor = body["next_cursor"].clone();
     assert!(cursor.is_string(), "several chunks mention `outline`: {body}");
 

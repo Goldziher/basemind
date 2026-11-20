@@ -353,7 +353,8 @@ async fn git_log_of_a_mistyped_symbol_says_so_on_every_page_and_ends_in_the_erro
         if result.is_error == Some(true) {
             break text;
         }
-        let page: Value = serde_json::from_str(&text).expect("json");
+        let page =
+            basemind::wire::decode(&text).unwrap_or_else(|error| panic!("git_log: unreadable ({error}): {text}"));
         assert_eq!(page["history"], json!([]), "{page}");
         let why = page["unmatched"].as_str().unwrap_or_default();
         assert!(

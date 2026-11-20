@@ -58,7 +58,8 @@ async fn call(service: &RunningService<RoleClient, ()>, tool: &'static str, args
     let params = CallToolRequestParams::new(tool).with_arguments(args.as_object().expect("an object").clone());
     let result = service.call_tool(params).await.expect("tool call");
     assert_ne!(result.is_error, Some(true), "`{tool}` refused: {}", text(&result));
-    serde_json::from_str(&text(&result)).expect("a JSON reply")
+    let reply = text(&result);
+    basemind::wire::decode(&reply).unwrap_or_else(|error| panic!("`{tool}`: unreadable reply ({error}): {reply}"))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

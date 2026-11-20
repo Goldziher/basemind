@@ -862,7 +862,7 @@ fn plugin_content_names_only_tools_the_binary_serves_and_each_answers() {
             Ok(result) => {
                 let text = result_text(&result);
                 collect_keys(&result["structuredContent"], &mut served.words);
-                if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
+                if let Ok(parsed) = basemind::wire::decode(&text) {
                     collect_keys(&parsed, &mut served.words);
                 }
                 match expect {
