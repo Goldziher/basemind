@@ -234,6 +234,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `basemind code cycles --fail-on-cycle` (#135) exits 1 for CI when the list (after `--path` and
   `--max-size`) holds a cycle. A cycle among Rust modules of one crate, which the compiler accepts,
   fails it only with `--strict`; a report from an index that is not ready exits 1 instead of passing.
+- The plugin launcher downloads releases from a mirror when `BASEMIND_RELEASE_BASE_URL` is set
+  (#207): `<base>/v<version>/` holds the platform archives and `basemind_<version>_checksums.txt`, as
+  a GitHub release does, and the archive is verified against that checksums file before it is
+  installed. With a mirror set the launcher asks GitHub for nothing, and a mirror missing the pinned
+  release is named in the error with the files it needs.
 
 ### Changed
 
