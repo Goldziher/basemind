@@ -26,6 +26,28 @@
   left: (identifier) @symbol.name
   right: (_)) @symbol.const
 
+;; An annotation without a value (`name: str`) is a field in a class body (dataclass, pydantic and
+;; `TypedDict` fields) and a variable at module level.
+(class_definition
+  body: (block
+    (assignment
+      left: (identifier) @symbol.name
+      type: (_)
+      !right) @symbol.field))
+
+(module
+  (assignment
+    left: (identifier) @symbol.name
+    type: (_)
+    !right) @symbol.variable)
+
+;; `type Alias = …` and the generic `type Pair[T] = …`.
+(type_alias_statement
+  left: (type [
+    (identifier) @symbol.name
+    (generic_type (identifier) @symbol.name)
+  ])) @symbol.type
+
 ;; section: imports
 
 (import_statement) @import.range
@@ -46,6 +68,17 @@
   name: (identifier) @impl.implementor
   superclasses: (argument_list
     (attribute attribute: (identifier) @impl.trait_name))) @impl.range
+
+;; Subscripted base: `class Foo(Generic[T]):` and `class Foo(typing.Generic[T]):`, named by the
+;; subscripted class.
+(class_definition
+  name: (identifier) @impl.implementor
+  superclasses: (argument_list
+    (subscript
+      value: [
+        (identifier) @impl.trait_name
+        (attribute attribute: (identifier) @impl.trait_name)
+      ]))) @impl.range
 
 ;; section: calls
 

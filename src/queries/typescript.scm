@@ -4,6 +4,8 @@
 
 (class_declaration name: (type_identifier) @symbol.name) @symbol.class
 
+(abstract_class_declaration name: (type_identifier) @symbol.name) @symbol.class
+
 (interface_declaration name: (type_identifier) @symbol.name) @symbol.interface
 
 (type_alias_declaration name: (type_identifier) @symbol.name) @symbol.type
@@ -19,6 +21,26 @@
 ;; `module "foo" {…}` (in .d.ts files) lowers to `module`.
 (internal_module name: (identifier) @symbol.name) @symbol.namespace
 (module name: (identifier) @symbol.name) @symbol.namespace
+
+;; `declare function f(): void;` has no body, so it is a `function_signature`, not a declaration.
+(ambient_declaration
+  (function_signature name: (identifier) @symbol.name) @symbol.function)
+
+;; Class fields are `field`; one holding an arrow function or function expression (a React class
+;; component's `handleClick = () => …`) is promoted to `method` by the dedupe pass in `extract/l1.rs`.
+(public_field_definition name: (property_identifier) @symbol.name) @symbol.field
+
+(public_field_definition
+  name: (property_identifier) @symbol.name
+  value: [(arrow_function) (function_expression)]) @symbol.method
+
+(abstract_method_signature name: (property_identifier) @symbol.name) @symbol.method
+
+(interface_body
+  (method_signature name: (property_identifier) @symbol.name) @symbol.method)
+
+(interface_body
+  (property_signature name: (property_identifier) @symbol.name) @symbol.field)
 
 ;; Generic `const X = …` capture — kind `const`. The more specific arrow/function-expression
 ;; pattern below also fires and is promoted by the dedupe pass in `extract/l1.rs` to kind
@@ -37,6 +59,15 @@
     name: (identifier) @symbol.name
     value: (function_expression))) @symbol.function
 
+;; `var` declarations: kind `variable`, promoted to `function` like a `const` when it holds a function.
+(variable_declaration
+  (variable_declarator name: (identifier) @symbol.name)) @symbol.variable
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @symbol.name
+    value: [(arrow_function) (function_expression)])) @symbol.function
+
 ;; section: implementations
 ;;
 ;; `class Foo extends Bar` — extends_clause.value is the parent expression.
@@ -44,25 +75,54 @@
 ;; `interface Foo extends Bar` — extends_type_clause.type children.
 ;; One @impl.trait_name per parent yields one Implementation record per inheritance edge.
 
-;; class extends
+;; class extends: `Base`, `Base<T>`, or a member expression (`React.Component`) named by its last
+;; segment, as a dotted Python base is.
 (class_declaration
   name: (type_identifier) @impl.implementor
   (class_heritage
     (extends_clause
-      value: (identifier) @impl.trait_name))) @impl.range
+      value: [
+        (identifier) @impl.trait_name
+        (member_expression property: (property_identifier) @impl.trait_name)
+      ]))) @impl.range
 
-;; class implements (one pattern per implemented type)
+(abstract_class_declaration
+  name: (type_identifier) @impl.implementor
+  (class_heritage
+    (extends_clause
+      value: [
+        (identifier) @impl.trait_name
+        (member_expression property: (property_identifier) @impl.trait_name)
+      ]))) @impl.range
+
+;; class implements (one match per implemented type); a generic type (`Repo<T>`) is named by its
+;; type name.
 (class_declaration
   name: (type_identifier) @impl.implementor
   (class_heritage
     (implements_clause
-      (type_identifier) @impl.trait_name))) @impl.range
+      [
+        (type_identifier) @impl.trait_name
+        (generic_type name: (type_identifier) @impl.trait_name)
+      ]))) @impl.range
+
+(abstract_class_declaration
+  name: (type_identifier) @impl.implementor
+  (class_heritage
+    (implements_clause
+      [
+        (type_identifier) @impl.trait_name
+        (generic_type name: (type_identifier) @impl.trait_name)
+      ]))) @impl.range
 
 ;; interface extends
 (interface_declaration
   name: (type_identifier) @impl.implementor
   (extends_type_clause
-    (type_identifier) @impl.trait_name)) @impl.range
+    [
+      (type_identifier) @impl.trait_name
+      (generic_type name: (type_identifier) @impl.trait_name)
+    ])) @impl.range
 
 ;; section: imports
 

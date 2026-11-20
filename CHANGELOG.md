@@ -726,6 +726,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current limit (`limit`) and a `note` naming the sysctl to raise. The daemon log warns once per
   pass that leaves more directories unwatched instead of once per directory. A refused directory is
   retried whenever its subtree is armed again.
+- Outlines, `code_symbols` and implementations no longer miss common declarations (#311).
+  TypeScript and TSX: abstract classes and their abstract methods, class fields (`field`, or
+  `method` when one holds a function, as a React class component's `handleClick = () => …` does),
+  interface methods and properties, `declare function` and `var` (`variable`, or `function` when it
+  holds one). JavaScript: `var`, class fields and CommonJS exports (`exports.x = …` and
+  `module.exports.x = …` define `x`, `module.exports = …` defines `module.exports`). Java: enums,
+  records, annotation types and their elements, constructors, and fields (`const` when
+  `static final`, as interface fields are). Python: annotated fields without a value (dataclass,
+  pydantic and `TypedDict` fields; a module-level `x: int` is a `variable`) and `type` aliases. Go:
+  `type A = B` aliases and interface methods. A base written as a member expression
+  (`extends React.Component`), a generic type (`implements Repo<T>`, `interface A extends B<T>`) or a
+  Python subscript (`Generic[T]`) is now an implementation, named by its last segment.
+  `EXTRACT_EPOCH` is 7.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

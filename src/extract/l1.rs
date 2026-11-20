@@ -205,7 +205,10 @@ fn build_symbol(q: &Query, m: &QueryMatch, root: Node, source: &[u8], lang: Lang
             if !nested_rust_fn(node) && is_function_local(root, node) {
                 return None;
             }
-            kind = Some(SymbolKind::from_capture_suffix(suffix));
+            kind = Some(match SymbolKind::from_capture_suffix(suffix) {
+                SymbolKind::Field if is_static_final(node) => SymbolKind::Const,
+                other => other,
+            });
             start_byte = node.start_byte() as u32;
             end_byte = node.end_byte() as u32;
             let p = node.start_position();
@@ -232,6 +235,26 @@ fn build_symbol(q: &Query, m: &QueryMatch, root: Node, source: &[u8], lang: Lang
         signature,
         decorators,
     })
+}
+
+/// True when a field declaration's `modifiers` child holds both `static` and `final` (a Java
+/// constant), in either order. Read from the grammar's keyword nodes rather than a query: a
+/// separate `const` pattern would tie with the `field` one in [`dedupe_symbols`].
+fn is_static_final(node: Node) -> bool {
+    let mut cursor = node.walk();
+    let Some(modifiers) = node.children(&mut cursor).find(|c| c.kind() == "modifiers") else {
+        return false;
+    };
+    let mut cursor = modifiers.walk();
+    let (mut is_static, mut is_final) = (false, false);
+    for keyword in modifiers.children(&mut cursor) {
+        match keyword.kind() {
+            "static" => is_static = true,
+            "final" => is_final = true,
+            _ => {}
+        }
+    }
+    is_static && is_final
 }
 
 /// Node kinds (across the bundled grammars) whose subtree is a function, method or lambda body.

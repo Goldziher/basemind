@@ -20,6 +20,8 @@ pub mod locals;
 mod query_walk;
 mod rationale;
 mod rust_macro_items;
+#[cfg(test)]
+mod symbol_kinds_tests;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -103,7 +105,12 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 ///   its call expression.
 /// - 6: Rust trait impls for a reference, tuple, unit, array, slice, pointer or primitive self type
 ///   become implementations, named by the type as written (`&mut T`, `(IpAddr, u16)`).
-pub const EXTRACT_EPOCH: u16 = 6;
+/// - 7: TypeScript, TSX, JavaScript, Java, Python and Go outlines gain the declarations their queries
+///   missed (abstract classes, class and interface members, `var`, CommonJS exports, Java enums,
+///   records, annotation types, constructors and fields, Python annotated fields and `type` aliases,
+///   Go type aliases and interface methods), and member-expression and generic bases become
+///   implementations.
+pub const EXTRACT_EPOCH: u16 = 7;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {

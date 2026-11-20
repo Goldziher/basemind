@@ -1,5 +1,6 @@
 //! Java's override `src/queries/java.scm` replaces the adapted TSLP `tags.scm` for every section
-//! (ADR-0048), so its symbols, calls and implementations must match exactly what the fallback did.
+//! (ADR-0048), so it must keep everything the fallback extracted: its calls and implementations match
+//! the fallback exactly, and its symbols are a superset, adding the declarations the fallback missed.
 
 use tree_sitter::{Query, Tree};
 
@@ -36,7 +37,12 @@ fn java_override_matches_what_the_tslp_fallback_extracted() {
             .expect("override section");
         let (want, got) = (captures(&fallback, &tree), captures(&ours, &tree));
         assert!(!want.is_empty(), "the fixture exercises the {} section", kind.name());
-        assert_eq!(got, want, "java {} section differs from the TSLP fallback", kind.name());
+        if kind == QueryKind::Symbols {
+            let missing: Vec<_> = want.iter().filter(|c| !got.contains(c)).collect();
+            assert!(missing.is_empty(), "java symbols lost fallback captures: {missing:?}");
+        } else {
+            assert_eq!(got, want, "java {} section differs from the TSLP fallback", kind.name());
+        }
     }
 }
 
@@ -50,8 +56,14 @@ fn java_extraction_keeps_the_fallback_counts() {
         .filter(|s| s.kind != super::SymbolKind::Route)
         .map(|s| (s.name.as_str(), s.kind))
         .collect();
-    // Measured on the fixture with the TSLP fallback, before `java.scm` existed.
-    assert_eq!(code.len(), 13, "{code:?}");
+    // 13 measured on the fixture with the TSLP fallback, before `java.scm` existed, plus the field
+    // and the constructor the fallback missed.
+    assert_eq!(code.len(), 15, "{code:?}");
+    assert!(code.contains(&("owners", super::SymbolKind::Field)), "{code:?}");
+    assert!(
+        code.contains(&("OwnerController", super::SymbolKind::Constructor)),
+        "{code:?}"
+    );
     assert_eq!(l2.calls.len(), 13, "{:?}", l2.calls);
     assert_eq!(l1.implementations.len(), 1, "{:?}", l1.implementations);
 }

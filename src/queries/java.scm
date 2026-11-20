@@ -1,6 +1,7 @@
-;; Java. An override replaces the TSLP `tags.scm` fallback for every section, so the symbols, calls
-;; and implementations sections below are the adapted upstream `tags.scm` patterns, unchanged; the
-;; parity test in `src/extract/java_parity_tests.rs` holds them to what the fallback extracted.
+;; Java. An override replaces the TSLP `tags.scm` fallback for every section. The calls and
+;; implementations sections below are the adapted upstream `tags.scm` patterns, unchanged, and the
+;; symbols section extends them with the declarations the fallback missed; the parity test in
+;; `src/extract/java_parity_tests.rs` holds the override to everything the fallback extracted.
 
 ;; section: symbols
 
@@ -12,6 +13,34 @@
 
 (interface_declaration
   name: (identifier) @symbol.name) @symbol.interface
+
+(enum_declaration
+  name: (identifier) @symbol.name) @symbol.enum
+
+(record_declaration
+  name: (identifier) @symbol.name) @symbol.class
+
+;; `@interface Marker {…}` is an interface; its elements (`String value() default "";`) are methods.
+(annotation_type_declaration
+  name: (identifier) @symbol.name) @symbol.interface
+
+(annotation_type_element_declaration
+  name: (identifier) @symbol.name) @symbol.method
+
+(constructor_declaration
+  name: (identifier) @symbol.name) @symbol.constructor
+
+;; A record's compact canonical constructor: `Point { … }`.
+(compact_constructor_declaration
+  name: (identifier) @symbol.name) @symbol.constructor
+
+;; One symbol per declarator (`int a, b;` declares two). A `static final` field is promoted to
+;; `const` in `extract/l1.rs`; an interface's fields are constants by definition.
+(field_declaration
+  declarator: (variable_declarator name: (identifier) @symbol.name)) @symbol.field
+
+(constant_declaration
+  declarator: (variable_declarator name: (identifier) @symbol.name)) @symbol.const
 
 ;; section: calls
 
