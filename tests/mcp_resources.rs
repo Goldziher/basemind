@@ -76,7 +76,7 @@ async fn resources_list_read_and_complete() {
         })
         .unwrap();
     let strip = |s: &str| {
-        let mut v: serde_json::Value = serde_json::from_str(s).unwrap();
+        let mut v = basemind::wire::decode(s).unwrap_or_else(|e| panic!("{e}\n{s}"));
         v.as_object_mut().map(|o| o.remove("elapsed_us"));
         v
     };
