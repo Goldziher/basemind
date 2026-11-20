@@ -28,6 +28,9 @@ pub(super) struct ThreadRecord {
     pub paths: Vec<RelPath>,
     pub open: bool,
     pub archived: bool,
+    /// Whether the thread cap archived it, rather than its creator or its last member leaving.
+    #[serde(default)]
+    pub archived_by_cap: bool,
     pub creator: Actor,
     /// Sequence number of the newest message.
     pub head: u64,
@@ -41,7 +44,10 @@ pub(super) struct ThreadRecord {
 impl ThreadRecord {
     /// The facts the rules decide on, for `caller`.
     pub fn access(&self, caller: &Caller, member: bool) -> Access {
-        Access::of(caller, &self.repo, &self.creator, self.open, self.archived, member)
+        Access {
+            archived_by_cap: self.archived_by_cap,
+            ..Access::of(caller, &self.repo, &self.creator, self.open, self.archived, member)
+        }
     }
 }
 
@@ -200,6 +206,22 @@ impl<'a> Reader<'a> {
             let seq = keys::parse_message_seq(&key).ok_or_else(|| corrupt("message key"))?;
             Ok((seq, decode::<MessageMeta>("a message", &value)?))
         })
+    }
+
+    /// Stored messages of `thread` from another actor than `actor` with a sequence number above
+    /// `floor`, up to `head`: what `actor` has not read when `floor` is where its reads start.
+    /// Reads message rows without bodies.
+    pub fn unread(&self, thread: &ThreadId, floor: u64, head: u64, actor: &Actor) -> Result<u64, CommsError> {
+        if floor >= head {
+            return Ok(0);
+        }
+        let mut unread = 0;
+        for entry in self.metas(thread, floor + 1..=head) {
+            if entry?.1.from != *actor {
+                unread += 1;
+            }
+        }
+        Ok(unread)
     }
 
     /// The reply form of message `seq` of `thread`, its body in `form`.

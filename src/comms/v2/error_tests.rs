@@ -20,7 +20,8 @@ fn every_known_variant() -> Vec<CommsError> {
         CommsError::NotMember { thread: id.clone() },
         CommsError::ThreadClosed { thread: id.clone() },
         CommsError::NotCreator { thread: id.clone() },
-        CommsError::ThreadArchived { thread: id },
+        CommsError::ThreadArchived { thread: id.clone() },
+        CommsError::ThreadArchivedByCap { thread: id, cap: 256 },
         CommsError::MultipleUpdates {
             fields: vec!["join".to_string(), "archive".to_string()],
         },
@@ -254,6 +255,20 @@ fn refusals_say_what_to_do_next() {
                 cap: 256,
             },
             "more than 256 members: invite fewer",
+        ),
+        (
+            CommsError::ThreadArchivedByCap {
+                thread: thread("t-aaaaab"),
+                cap: 256,
+            },
+            "limit of 256 active threads",
+        ),
+        (
+            CommsError::ThreadArchivedByCap {
+                thread: thread("t-aaaaab"),
+                cap: 256,
+            },
+            "posting with `subject`, naming its members in `to`",
         ),
         (
             CommsError::from(InvalidId::new(IdKind::Thread, "backend")),

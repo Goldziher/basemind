@@ -175,14 +175,7 @@ fn summarize(
     // ~keep A principal that joins in this call has no member row in the snapshot yet: it
     // starts at the head, with nothing unread.
     let floor = position.map_or(record.head, |(position, _)| position.floor(ReadKind::Marking));
-    let mut unread = 0;
-    if floor < record.head {
-        for entry in reader.metas(id, floor + 1..=record.head) {
-            if entry?.1.from != *actor {
-                unread += 1;
-            }
-        }
-    }
+    let unread = reader.unread(id, floor, record.head, actor)?;
     members.retain(|member| member.as_str() != actor.principal());
     members.sort();
     Ok(ThreadSummary {

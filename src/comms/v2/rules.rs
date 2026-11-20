@@ -13,11 +13,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::api::{
-    Actor, COMMS_STORE_VER, Caller, CommsError, Cursor, InboxMessage, InboxReply, MAX_RECIPIENTS, MAX_THREAD_MEMBERS,
-    MessageId, Principal, ReadKind, RepoKey, SEEN_REFRESH_INTERVAL, SEEN_TTL, ThreadAction, ThreadFilter, ThreadId,
-    ThreadListing, WaitOutcome, check_recipient_count, deliverable, effective_limit, inline_body, message_cost,
-    new_thread_recipients, normalize_query, normalize_subject, normalize_thread_path, normalize_thread_paths,
-    path_selects, subject_matches,
+    Actor, COMMS_STORE_VER, Caller, CommsError, Cursor, InboxMessage, InboxReply, MAX_ACTIVE_THREADS_PER_REPO,
+    MAX_RECIPIENTS, MAX_THREAD_MEMBERS, MessageId, Principal, ReadKind, RepoKey, SEEN_REFRESH_INTERVAL, SEEN_TTL,
+    ThreadAction, ThreadFilter, ThreadId, ThreadListing, WaitOutcome, check_recipient_count, deliverable,
+    effective_limit, inline_body, message_cost, new_thread_recipients, normalize_query, normalize_subject,
+    normalize_thread_path, normalize_thread_paths, path_selects, subject_matches,
 };
 use crate::path::RelPath;
 
@@ -64,7 +64,8 @@ pub fn seen_due(recorded_micros: Option<i64>, now_micros: i64) -> bool {
     recorded_micros.is_none_or(|recorded| now_micros.saturating_sub(recorded) >= ttl_micros(SEEN_REFRESH_INTERVAL))
 }
 
-/// An actor's two marks in one thread, and how far its own posts above them were passed over.
+/// An actor's two marks in one thread, how far its own posts above them were passed over, and
+/// whether it was told that the thread cap archived the thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
     /// Sequence number of the last message read.
@@ -76,6 +77,10 @@ pub struct Position {
     /// in which the actor posted more than one read's scan budget from being read without end.
     #[serde(default)]
     pub scan_seq: u64,
+    /// Whether a marking read told the actor that the thread cap archived the thread. Not a mark
+    /// either: a sibling, and an actor whose marks a sweep removed, is told again.
+    #[serde(default)]
+    pub told_cap_archive: bool,
 }
 
 impl Position {
@@ -89,6 +94,7 @@ impl Position {
             read_seq: seq,
             notified_seq: seq,
             scan_seq: seq,
+            told_cap_archive: false,
         }
     }
 
@@ -136,19 +142,37 @@ pub struct Access {
     pub same_repo: bool,
     /// Whether the thread is archived.
     pub archived: bool,
+    /// Whether the thread cap archived it. Implies `archived`.
+    pub archived_by_cap: bool,
     /// Whether the caller's principal created the thread.
     pub creator: bool,
 }
 
 impl Access {
-    /// The access of `caller` to a thread of `repo` created by `creator`.
+    /// The access of `caller` to a thread of `repo` created by `creator`, archived by anything
+    /// but the thread cap when it is.
     pub fn of(caller: &Caller, repo: &RepoKey, creator: &Actor, open: bool, archived: bool, member: bool) -> Self {
         Self {
             member,
             open,
             same_repo: *repo == caller.repo,
             archived,
+            archived_by_cap: false,
             creator: creator.principal() == caller.actor.principal(),
+        }
+    }
+
+    /// The refusal of a post, join or invitation into the thread, which is archived: one that
+    /// names the thread cap when that archived it.
+    fn archived_refusal(&self, thread: &ThreadId) -> CommsError {
+        let thread = thread.clone();
+        if self.archived_by_cap {
+            CommsError::ThreadArchivedByCap {
+                thread,
+                cap: MAX_ACTIVE_THREADS_PER_REPO,
+            }
+        } else {
+            CommsError::ThreadArchived { thread }
         }
     }
 }
@@ -245,7 +269,7 @@ pub fn authorize_post(
         return Err(CommsError::MessageNotFound { id: message.clone() });
     }
     if access.archived {
-        return Err(CommsError::ThreadArchived { thread: thread.clone() });
+        return Err(access.archived_refusal(thread));
     }
     Ok(())
 }
@@ -319,7 +343,7 @@ pub fn authorize_update(
     match action {
         ThreadAction::Join if access.member => Ok(Change::Nothing),
         ThreadAction::Join if !access.open || !access.same_repo => Err(CommsError::ThreadClosed { thread: thread() }),
-        ThreadAction::Join if access.archived => Err(CommsError::ThreadArchived { thread: thread() }),
+        ThreadAction::Join if access.archived => Err(access.archived_refusal(id)),
         ThreadAction::Join => {
             check_member_cap(id, members, 1)?;
             Ok(Change::Join)
@@ -337,7 +361,7 @@ pub fn authorize_update(
                 return Ok(Change::Nothing);
             }
             if access.archived {
-                return Err(CommsError::ThreadArchived { thread: thread() });
+                return Err(access.archived_refusal(id));
             }
             check_member_cap(id, members, adding.len())?;
             Ok(Change::Invite(adding))
@@ -345,6 +369,19 @@ pub fn authorize_update(
         ThreadAction::Archive if !access.creator => Err(CommsError::NotCreator { thread: thread() }),
         ThreadAction::Archive if access.archived => Ok(Change::Nothing),
         ThreadAction::Archive => Ok(Change::Archive),
+    }
+}
+
+/// Whether a read of `kind` over all the caller's threads, `resumed` from a cursor or not, tells
+/// it about each thread the thread cap archived that it has not been told about: a marking read,
+/// which records that it told, and the first page of a peek, which records nothing and so tells
+/// again. Such a thread's messages stay out of the read; the notice says how many are unread and
+/// how to read them.
+pub fn tells_cap_archive(kind: ReadKind, resumed: bool) -> bool {
+    match kind {
+        ReadKind::Marking => true,
+        ReadKind::Peek => !resumed,
+        ReadKind::ById | ReadKind::Announcing | ReadKind::History => false,
     }
 }
 
@@ -474,7 +511,8 @@ pub fn last_delivered(delivered: &[InboxMessage]) -> BTreeMap<&ThreadId, u64> {
     last_delivered
 }
 
-/// An inbox reply as a store returns it: no notices, and no wait, which is the daemon's.
+/// An inbox reply as a store returns it before it adds its notices, and with no wait, which is
+/// the daemon's.
 pub fn inbox_reply(
     messages: Vec<InboxMessage>,
     read_to: Vec<MessageId>,
@@ -504,20 +542,25 @@ pub struct DeliveredRange {
 }
 
 /// What a marking read delivered, kept against its replay key: one range per thread and not the
-/// bodies, so a replay renders them again from the store. A read that moved nothing keeps
-/// nothing, so repeating it reads afresh.
+/// bodies, so a replay renders them again from the store, and the notices, which a replay could
+/// not work out again once the read recorded that it told them. A read that delivered and told
+/// nothing keeps nothing, so repeating it reads afresh.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Delivered {
     /// The ranges delivered, in thread order.
     pub ranges: Vec<DeliveredRange>,
     /// Whether the first delivery left messages out.
     pub more: bool,
+    /// The notices of the first reply.
+    #[serde(default)]
+    pub notices: Vec<String>,
 }
 
 impl Delivered {
-    /// What to keep for a read that delivered `ranges`; `None` when it delivered nothing.
-    pub fn of(ranges: Vec<DeliveredRange>, more: bool) -> Option<Self> {
-        (!ranges.is_empty()).then_some(Self { ranges, more })
+    /// What to keep for a read that delivered `ranges` and told `notices`; `None` when it did
+    /// neither.
+    pub fn of(ranges: Vec<DeliveredRange>, more: bool, notices: Vec<String>) -> Option<Self> {
+        (!ranges.is_empty() || !notices.is_empty()).then_some(Self { ranges, more, notices })
     }
 
     /// The reply of a replay, given the messages of the ranges that are still stored, as
@@ -530,7 +573,10 @@ impl Delivered {
             .into_iter()
             .map(|range| MessageId::new(range.thread, range.to))
             .collect::<Result<_, _>>()?;
-        Ok(inbox_reply(messages, read_to, self.more, None))
+        Ok(InboxReply {
+            notices: self.notices,
+            ..inbox_reply(messages, read_to, self.more, None)
+        })
     }
 }
 
