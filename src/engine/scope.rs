@@ -4,21 +4,25 @@
 //!
 //! The contract later callers rely on:
 //!
-//! - A change is named by a [`ChangeSpec`]: a revision diffed against the working tree (`""` or
-//!   `HEAD` is the working tree against `HEAD`), `A..B` diffed tree to tree (an empty side is
-//!   `HEAD`, as in git), or the staged changes. A `+importers` suffix asks for the files that
-//!   import the changed ones; this module only parses it, and the caller expands the scope through
-//!   the file-edge graph.
-//! - A working-tree scope holds what `git diff --name-only <rev>` lists plus every untracked file,
-//!   listed one by one however `status.showUntrackedFiles` collapses them. A file changed since
-//!   `<rev>` and then restored on disk to its content at `<rev>` is left out; one the comparison
-//!   cannot read as a regular file (a symlink, a submodule) or whose clean filter fails is kept, so
-//!   a scope never misses a change it could not check.
+//! - A change is named by a [`ChangeSpec`]: a revision, whose merge base with `HEAD` is diffed
+//!   against the working tree (`""` or `HEAD` is the working tree against `HEAD`); `A..B` diffed
+//!   tree to tree; `A...B`, the merge base of `A` and `B` diffed tree to tree against `B`, which is
+//!   what `B`'s side changed since the two diverged (in both forms an empty side is `HEAD`, as in
+//!   git); or the staged changes. A `+importers` suffix asks for the files that import the changed
+//!   ones; this module only parses it, and the caller expands the scope through the file-edge graph.
+//! - A working-tree scope of `<rev>` holds what `git diff --name-only $(git merge-base <rev> HEAD)`
+//!   lists plus every untracked file, listed one by one however `status.showUntrackedFiles`
+//!   collapses them: a branch's own changes, committed or not, without what `<rev>` gained since the
+//!   branch left it. A file changed since the merge base and then restored on disk to its content
+//!   there is left out; one the comparison cannot read as a regular file (a symlink, a submodule)
+//!   or whose clean filter fails is kept, so a scope never misses a change it could
+//!   not check.
 //! - Paths are repository-relative, as the index keys them. Deleted files and both sides of a
 //!   rename are in the scope, so the caller filters to what the index holds.
 //! - [`ChangeScope::len`] is the `scope_files` count. An empty scope is an answer, not an error:
 //!   the caller reports `scope_files: 0`, which tells "nothing changed" from "no hit in the change".
-//! - An unknown revision is [`EngineError::InvalidArgument`] naming it and the accepted forms.
+//! - An unknown revision is [`EngineError::InvalidArgument`] naming it and the accepted forms, and so
+//!   are two revisions whose histories share no commit, which have no merge base.
 //!
 //! Everything goes through `crate::git` (gix); nothing shells out.
 
@@ -46,6 +50,8 @@ pub(crate) enum ChangeBase {
     WorkingTree(Option<String>),
     /// The tree of `from` against the tree of `to`.
     Range { from: String, to: String },
+    /// The tree of the merge base of `from` and `to` against the tree of `to`.
+    MergeBase { from: String, to: String },
     /// The staging index against `HEAD`.
     Staged,
 }
@@ -59,27 +65,28 @@ pub(crate) struct ChangeSpec {
 }
 
 impl ChangeSpec {
-    /// Parses a `changed` value: `<rev>`, `""`, `A..B`, `A..` or `..B`, each optionally followed by
-    /// `+importers`. Surrounding whitespace is ignored. The three-dot form and `..` alone are
-    /// refused; whether a revision exists is checked by [`change_scope`], not here. The staged base
-    /// has no spelling in a value and is built directly.
+    /// Parses a `changed` value: `<rev>`, `""`, `A..B`, `A..`, `..B`, `A...B`, `A...` or `...B`, each
+    /// optionally followed by `+importers`. Surrounding whitespace is ignored. `..` and `...` alone
+    /// are refused; whether a revision exists is checked by [`change_scope`], not here. The staged
+    /// base has no spelling in a value and is built directly.
     pub(crate) fn parse(value: &str) -> Result<Self, EngineError> {
         let value = value.trim();
         let (value, importers) = match value.strip_suffix(IMPORTERS_SUFFIX) {
             Some(rest) => (rest.trim_end(), true),
             None => (value, false),
         };
-        if value.contains("...") {
-            return Err(refuse_form(value, "uses the three-dot form, which is not supported"));
-        }
-        let base = match value.split_once("..") {
-            Some(("", "")) => return Err(refuse_form(value, "names no revision")),
-            Some((from, to)) => ChangeBase::Range {
+        let base = match (value.split_once("..."), value.split_once("..")) {
+            (Some(("", "")), _) | (None, Some(("", ""))) => return Err(refuse_form(value, "names no revision")),
+            (Some((from, to)), _) => ChangeBase::MergeBase {
                 from: or_head(from),
                 to: or_head(to),
             },
-            None if value.is_empty() || value == "HEAD" => ChangeBase::WorkingTree(None),
-            None => ChangeBase::WorkingTree(Some(value.to_string())),
+            (None, Some((from, to))) => ChangeBase::Range {
+                from: or_head(from),
+                to: or_head(to),
+            },
+            (None, None) if value.is_empty() || value == "HEAD" => ChangeBase::WorkingTree(None),
+            (None, None) => ChangeBase::WorkingTree(Some(value.to_string())),
         };
         Ok(Self { base, importers })
     }
@@ -91,8 +98,8 @@ fn or_head(side: &str) -> String {
 
 fn refuse_form(value: &str, why: &str) -> EngineError {
     EngineError::invalid_argument(format!(
-        "change `{value}` {why}; pass a revision (\"\" for HEAD) or `A..B`, optionally followed by \
-         `{IMPORTERS_SUFFIX}`"
+        "change `{value}` {why}; pass a revision (\"\" for HEAD), `A..B` or `A...B`, optionally followed \
+         by `{IMPORTERS_SUFFIX}`"
     ))
 }
 
@@ -143,14 +150,23 @@ pub(crate) fn change_scope(repo: &Repo, base: &ChangeBase) -> Result<ChangeScope
             .map_err(|error| unknown_revision(error, &format!("{from}..{to}")))?
             .into_iter()
             .collect(),
+        ChangeBase::MergeBase { from, to } => {
+            let value = format!("{from}...{to}");
+            let base = merge_base(repo, from, to, &value)?;
+            repo.changed_paths_between(&base, to)
+                .map_err(|error| unknown_revision(error, &value))?
+                .into_iter()
+                .collect()
+        }
         ChangeBase::WorkingTree(rev) => working_tree(repo, rev.as_deref())?,
     };
     Ok(ChangeScope { paths })
 }
 
-/// The working tree against `rev` (`None`: `HEAD`): the status, which is the working tree against
-/// `HEAD`, joined with `rev`'s tree against `HEAD`'s. Only a file in both can have returned to its
-/// content at `rev`, so only those are compared on disk.
+/// The working tree against the merge base of `rev` and `HEAD` (`None`: `HEAD`): the status, which
+/// is the working tree against `HEAD`, joined with the merge base's tree against `HEAD`'s. Only a
+/// file in both can have returned to its content at the merge base, so only those are compared on
+/// disk.
 fn working_tree(repo: &Repo, rev: Option<&str>) -> Result<AHashSet<RelPath>, EngineError> {
     let status = repo.status_per_file()?;
     let mut paths: AHashSet<RelPath> = [
@@ -166,9 +182,7 @@ fn working_tree(repo: &Repo, rev: Option<&str>) -> Result<AHashSet<RelPath>, Eng
     let Some(rev) = rev else {
         return Ok(paths);
     };
-    let commit = repo
-        .resolve_rev(&format!("{rev}^{{commit}}"))
-        .map_err(|error| unknown_revision(error, rev))?;
+    let commit = merge_base(repo, rev, "HEAD", rev)?;
     let committed = repo
         .changed_paths_between(&commit, "HEAD")
         .map_err(|error| unknown_revision(error, rev))?;
@@ -216,12 +230,25 @@ fn on_disk_as_at(repo: &Repo, commit: &str, path: &RelPath) -> Result<bool, Engi
     Ok(at_commit == on_disk)
 }
 
+/// The merge base of `one` and `two`, which `value` (the form the caller passed) names. Histories
+/// that share no commit have none, which the caller must fix.
+fn merge_base(repo: &Repo, one: &str, two: &str, value: &str) -> Result<String, EngineError> {
+    repo.merge_base(one, two)
+        .map_err(|error| unknown_revision(error, value))?
+        .ok_or_else(|| {
+            EngineError::invalid_argument(format!(
+                "`{one}` and `{two}` share no commit, so `{value}` has no merge base; pass `{one}..{two}` to \
+                 diff their trees"
+            ))
+        })
+}
+
 /// A revision git cannot resolve is the caller's to fix; any other git failure is the engine's.
 fn unknown_revision(error: GitError, value: &str) -> EngineError {
     match error {
         GitError::RevParse { msg, .. } => EngineError::invalid_argument(format!(
             "`{value}` does not name a revision in this repository ({msg}); pass a commit, branch or tag \
-             (\"\" for HEAD) or `A..B`"
+             (\"\" for HEAD), `A..B` or `A...B`"
         )),
         other => other.into(),
     }

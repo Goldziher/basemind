@@ -12,8 +12,10 @@
 use ahash::AHashSet;
 
 use super::filters::Filters;
+use super::scope::ChangeScope;
 use super::types::search::{CodeSearchHit, CodeSearchRanking, LaneUnavailable};
 use super::{EngineError, Workspace};
+use crate::path::RelPath;
 use crate::search::bm25::bm25_search;
 use crate::search::exact::exact_lane_chunk_ids;
 use crate::search::hydrate::ChunkHydrator;
@@ -28,23 +30,31 @@ use crate::store::Store;
 /// it passes among them.
 const FILTERED_LANE_DEPTH: usize = 1_000;
 
+/// How many more chunks the lanes rank when a `changed` scope will drop the ones outside it.
+const SCOPED_OVERFETCH: usize = 8;
+
 /// The ranking of `query` over `lane` (default `hybrid`), at most `limit` hits after hydration, each
-/// in a file `filters` passes.
+/// in a file `filters` passes. With a `scope`, the lanes rank [`SCOPED_OVERFETCH`] times as deep and
+/// only the hits in its files are kept, so a change's chunks ranked below that depth are not found.
 pub(super) fn retrieve(
     ws: &Workspace,
     query: String,
     lane: Option<&str>,
     limit: usize,
     filters: &Filters<'_>,
+    scope: Option<&ChangeScope>,
 ) -> Result<CodeSearchRanking, EngineError> {
     let rr = &ws.config.code_search.reranker;
     let (rerank_enabled, rerank_top_k) = (rr.enabled, rr.top_k);
     let fetch_n = if rerank_enabled { limit.max(rerank_top_k) } else { limit };
-    let depth = if filters.is_empty() {
+    let mut depth = if filters.is_empty() {
         fetch_n
     } else {
         FILTERED_LANE_DEPTH.max(fetch_n)
     };
+    if scope.is_some() {
+        depth = depth.max(fetch_n.saturating_mul(SCOPED_OVERFETCH));
+    }
 
     let mode = lane.map(str::trim).unwrap_or("hybrid");
     let (seeds, report): (Vec<CodeSearchHit>, LaneReport) = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
@@ -67,7 +77,7 @@ pub(super) fn retrieve(
     } else {
         0
     };
-    let hydrated = hydrate_hits(&ws.store_read(), seeds, fetch_n, keep_text, filters);
+    let hydrated = hydrate_hits(&ws.store_read(), seeds, fetch_n, keep_text, filters, scope);
 
     // The reranker reorders the head of the ranking and drops nothing; a reranker that cannot run
     // leaves the fused order and says why, as a lane that did not run.
@@ -365,15 +375,16 @@ struct Hydrated {
 
 /// Resolve ranked seeds into hits, in rank order: the chunk's metadata comes from its sidecar
 /// (decoded once per content hash), `path` and `also_at` from the view's file map now, keeping the
-/// paths `filters` passes. A chunk no indexed file holds is dropped and counted; one held only by
-/// files the filters leave out is dropped; an id ranked twice (one vector row per copy of a file)
-/// keeps its first rank.
+/// paths `filters` passes and, with a `scope`, only those in its files. A chunk no indexed file holds
+/// is dropped and counted; one held only by files the filters or the scope leave out is dropped
+/// silently; an id ranked twice (one vector row per copy of a file) keeps its first rank.
 fn hydrate_hits(
     store: &Store,
     seeds: Vec<CodeSearchHit>,
     limit: usize,
     keep_text: usize,
     filters: &Filters<'_>,
+    scope: Option<&ChangeScope>,
 ) -> Hydrated {
     let mut hydrator = ChunkHydrator::new(store);
     hydrator.resolve_paths(seeds.iter().map(|s| s.chunk_id.as_str()));
@@ -396,10 +407,11 @@ fn hydrate_hits(
             continue;
         }
         let mut kept = live.iter().filter(|path| {
-            filters.is_empty()
-                || store
-                    .lookup(path.as_bytes())
-                    .is_some_and(|entry| filters.passes(path.as_bytes(), &entry.language))
+            super::changed::admits(scope, &RelPath::from(path.as_str()))
+                && (filters.is_empty()
+                    || store
+                        .lookup(path.as_bytes())
+                        .is_some_and(|entry| filters.passes(path.as_bytes(), &entry.language)))
         });
         let Some(path) = kept.next() else {
             continue;

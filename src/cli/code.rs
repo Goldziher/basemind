@@ -58,8 +58,8 @@ pub enum CodeCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
-        /// Only files changed since this revision (`HEAD`: the uncommitted changes) or in `A..B`;
-        /// append `+importers` to add the files importing them.
+        /// Only files changed since this revision's merge base with `HEAD` (`HEAD`: the uncommitted
+        /// changes), in `A..B` or in `A...B`; append `+importers` to add the files importing them.
         #[arg(long)]
         changed: Option<String>,
     },
@@ -105,8 +105,8 @@ pub enum CodeCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
-        /// Only files changed since this revision (`HEAD`: the uncommitted changes) or in `A..B`;
-        /// append `+importers` to add the files importing them.
+        /// Only files changed since this revision's merge base with `HEAD` (`HEAD`: the uncommitted
+        /// changes), in `A..B` or in `A...B`; append `+importers` to add the files importing them.
         #[arg(long)]
         changed: Option<String>,
     },
@@ -130,6 +130,10 @@ pub enum CodeCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
+        /// Only files changed since this revision's merge base with `HEAD` (`HEAD`: the uncommitted
+        /// changes), in `A..B` or in `A...B`; append `+importers` to add the files importing them.
+        #[arg(long)]
+        changed: Option<String>,
     },
     /// Usages of a name: call sites (default), implementations, importers, or the definition a
     /// reference binds to; or a file's importers (`--relation importers --path`) and the import
@@ -169,8 +173,9 @@ pub enum CodeCmd {
         /// `imported`, `scope_resolved`, `elsewhere`, `name_only`, `external`, `path_match`).
         #[arg(long)]
         resolution: Option<String>,
-        /// Call sites only: only files changed since this revision (`HEAD`: the uncommitted
-        /// changes) or in `A..B`; append `+importers` to add the files importing them.
+        /// Call sites only: only files changed since this revision's merge base with `HEAD` (`HEAD`:
+        /// the uncommitted changes), in `A..B` or in `A...B`; append `+importers` to add the files
+        /// importing them.
         #[arg(long)]
         changed: Option<String>,
     },
@@ -254,8 +259,8 @@ pub enum CodeCmd {
         /// Only code files of at least this many lines, largest first, with their line counts.
         #[arg(long)]
         min_lines: Option<u32>,
-        /// Only files changed since this revision (`HEAD`: the uncommitted changes) or in `A..B`;
-        /// append `+importers` to add the files importing them.
+        /// Only files changed since this revision's merge base with `HEAD` (`HEAD`: the uncommitted
+        /// changes), in `A..B` or in `A...B`; append `+importers` to add the files importing them.
         #[arg(long)]
         changed: Option<String>,
     },
@@ -404,6 +409,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             limit,
             cursor,
             max_tokens,
+            changed,
         } => (
             "code_search",
             tools
@@ -417,6 +423,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         limit,
                         cursor: cursor.map(Cursor),
                         max_tokens,
+                        changed,
                     },
                     async |s, p| s.code_search_call(p).await,
                 )

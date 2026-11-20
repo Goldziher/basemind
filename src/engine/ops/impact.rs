@@ -56,7 +56,7 @@ impl Workspace {
 fn shape(problem: &str) -> EngineError {
     EngineError::invalid_argument(format!(
         "`code impact`: {problem}; pass a file `path`, a `symbol` name, or a `diff` (a revision, \"\" for HEAD, \
-         or `A..B`), with an optional `depth`"
+         `A..B` or `A...B`), with an optional `depth`"
     ))
 }
 

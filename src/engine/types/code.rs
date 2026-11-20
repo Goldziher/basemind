@@ -270,7 +270,8 @@ pub struct CodeSymbolsParams {
     /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.
+    /// Files changed since rev's merge base (empty: HEAD), in A..B or A...B (e.g. main...HEAD);
+    /// +importers adds importers.
     #[serde(default)]
     pub changed: Option<String>,
 }

@@ -32,13 +32,14 @@ mod enabled {
     use crate::engine::error::EngineError;
     use crate::engine::filters::{Filters, grep_selects_no_file, parse_path};
     use crate::engine::ranked::{RANKED_FETCH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset, ranked_retrieval};
+    use crate::engine::scope::ChangeScope;
     use crate::engine::timing::elapsed_us;
     use crate::engine::types::search::{CodeSearchPage, CodeSearchParams, GetChunkParams, GetChunkResponse};
     use crate::engine::workspace::Workspace;
 
     impl Workspace {
         /// `code_search`: the ranking of the query (computed once per index generation and kept),
-        /// and the page of it the cursor points at.
+        /// cut to the `changed` scope when one is passed, and the page of it the cursor points at.
         pub(crate) fn code_search(&self, p: CodeSearchParams) -> Result<CodeSearchPage, EngineError> {
             let started = std::time::Instant::now();
             let generation = self.index_generation.load(Ordering::Relaxed);
@@ -50,12 +51,16 @@ mod enabled {
                 path: path.as_ref(),
                 language: p.language.as_deref(),
             };
-            let arguments = serde_json::json!({
+            let scope = crate::engine::changed::resolve(self, "code_search", p.changed.as_deref())?;
+            let mut arguments = serde_json::json!({
                 "query": &p.query,
                 "lane": &p.lane,
                 "path": &p.path,
                 "language": &p.language,
             });
+            if let Some(scope) = &scope {
+                arguments["scope"] = scope_digest(scope).into();
+            }
             let ranking = ranked_retrieval(
                 &self.ranked,
                 "code_search",
@@ -68,6 +73,7 @@ mod enabled {
                         p.lane.as_deref(),
                         RANKED_FETCH as usize,
                         &filters,
+                        scope.as_ref(),
                     )
                 },
                 crate::engine::code_search::is_cacheable,
@@ -91,6 +97,7 @@ mod enabled {
             ranking.hits = page.hits;
             Ok(CodeSearchPage {
                 ranking,
+                scope_files: scope.as_ref().map(ChangeScope::len),
                 budgeted: page.budgeted,
                 depth_cut: page.depth_cut,
                 next_cursor: page.next_cursor,
@@ -164,5 +171,17 @@ mod enabled {
                 elapsed_us: elapsed_us(started),
             })
         }
+    }
+
+    /// The files `scope` holds, as one key: a ranking cut to one scope is not another scope's.
+    fn scope_digest(scope: &ChangeScope) -> String {
+        let mut paths: Vec<&[u8]> = scope.paths().iter().map(crate::path::RelPath::as_bytes).collect();
+        paths.sort_unstable();
+        let mut hasher = blake3::Hasher::new();
+        for path in paths {
+            hasher.update(path);
+            hasher.update(&[0]);
+        }
+        hasher.finalize().to_hex().to_string()
     }
 }

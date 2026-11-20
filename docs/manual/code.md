@@ -68,9 +68,12 @@ symbol or span you need. Paths are repository-relative with forward slashes.
   no importers or no cycles. Type-only imports and Rust `mod` declarations are left out.
 - `find_files` covers code, documents and every other file git tracks; a query with one typo still
   finds its file. `min_lines` lists code files of at least that many lines, largest first, as `{"<path>": <lines>}`.
-- `changed` on `code_grep`, `code_symbols`, `code_refs` (call sites) and `find_files` keeps only
-  the files changed since a revision, diffed against the working tree (`""` means `HEAD`: the
-  uncommitted changes), or between `A..B`. Append `+importers` to add the files importing them.
+- `changed` on `code_grep`, `code_symbols`, `code_refs` (call sites), `find_files` and
+  `code_search` keeps only the files a change touched: a revision's merge base with `HEAD` diffed
+  against the working tree (`""` means `HEAD`: the uncommitted changes; `main` is the branch's own
+  changes since it left `main`), `A..B` diffed tree to tree, or `A...B`, what `B` changed since its
+  merge base with `A` (`main...HEAD+importers`). Append `+importers` to add the files importing
+  them. `code_search` ranks eight times as deep under a scope and keeps only the hits in it.
   The response counts the files in scope as `scope_files`; an empty scope is a result, an unknown
   revision an error.
 
@@ -86,7 +89,7 @@ definitions share lists each of them so you can add `line`.
 These read the index (the daemon answers them when one runs) and have no MCP tool:
 
 - `basemind code impact <target>` lists the files that depend on a file (`path` or `path:line`), on
-  a symbol's defining files (`--symbol`), or on a change (`--diff <rev>`, `--diff A..B`,
+  a symbol's defining files (`--symbol`), or on a change (`--diff <rev>`, `--diff A..B`, `--diff A...B`,
   `--changed` for the uncommitted changes), transitively through the import graph up to
   `--depth` levels (default 1, at most 5), each with its depth and whether it sits in a cycle.
 - `basemind code cycles` lists import cycles, smallest first, each with an import chain that closes
