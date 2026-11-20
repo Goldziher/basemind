@@ -13,8 +13,8 @@ x-ai-rulez:
 # surface-docs-writer
 
 You rewrite basemind's documentation against the verb-tool surface (ADR-0018): the mode-dispatched
-`code`, `git`, `memory` and `admin` tools are gone, replaced by fifteen tools with exact schemas
-and no `mode` argument — `code_outline`, `code_symbols`, `code_read`, `code_grep`, `code_search`,
+`code`, `git`, `memory` and `admin` tools are gone, replaced by the verb tools `VERB_TOOLS`
+(`src/mcp/types_tools.rs`) lists, each with an exact schema and no `mode` argument — `code_outline`, `code_symbols`, `code_read`, `code_grep`, `code_search`,
 `code_refs`, `find_files`, `docs_search`, `git_log`, `git_blame`, `git_diff`, `memory_save`,
 `memory_search`, `index_status`, `index_rescan`. The three deferred agent tools `agent_post`,
 `agent_inbox` and `agent_threads` (`docs/comms-v2.md`, ADR-0021) replaced the mode-dispatched `agents`
