@@ -1513,7 +1513,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while it waits for one merge into the same pass, so twenty worktrees switching branches at once
   run four passes at a time instead of twenty, and each waiting workspace scans its batches once. The boot, catch-up, embedding and
   index-rebuild passes take a slot too. The wait holds no thread, and read-stack builds and
-  term-index warms run on two threads of their own, so an agent's read is not queued behind them.
+  term-index warms run on threads of their own, so an agent's read is not queued behind them. Up to
+  one read-stack build per four cores, at most three, runs at once instead of one machine-wide,
+  with one more thread kept for term-index warms.
   `index_status` gains `queued_scan` while a pass waits: the batches merged into it (`batches`), the
   paths it will scan (`paths`) and whether it rescans the whole tree (`whole_tree`).
 

@@ -901,62 +901,6 @@ fn in_flight_operation_blocks_lru_eviction_and_idle_sweep() {
     );
 }
 
-#[cfg(all(feature = "comms", any(unix, windows)))]
-#[tokio::test]
-async fn gated_build_keeps_its_permit_until_the_build_ends_even_if_the_caller_is_dropped() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
-    let running = std::sync::Arc::new(AtomicUsize::new(0));
-    let peak = std::sync::Arc::new(AtomicUsize::new(0));
-    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-    let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
-
-    let first = {
-        let (running, peak) = (running.clone(), peak.clone());
-        tokio::spawn(run_gated_build(gate.clone(), Duration::from_secs(5), move || {
-            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
-            peak.fetch_max(now, Ordering::SeqCst);
-            started_tx.send(()).unwrap();
-            release_rx.recv().unwrap();
-            running.fetch_sub(1, Ordering::SeqCst);
-        }))
-    };
-    tokio::task::spawn_blocking(move || started_rx.recv().unwrap())
-        .await
-        .unwrap();
-    // The caller goes away mid-build (client disconnect / timeout / drain).
-    first.abort();
-    let _ = first.await;
-
-    let second = {
-        let (running, peak) = (running.clone(), peak.clone());
-        tokio::spawn(run_gated_build(gate.clone(), Duration::from_secs(5), move || {
-            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
-            peak.fetch_max(now, Ordering::SeqCst);
-            running.fetch_sub(1, Ordering::SeqCst);
-        }))
-    };
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        !second.is_finished(),
-        "second build must wait for the orphaned first build"
-    );
-    release_tx.send(()).unwrap();
-    second.await.unwrap().expect("second build runs after the first ends");
-    assert_eq!(peak.load(Ordering::SeqCst), 1, "builds never overlapped");
-}
-
-#[cfg(all(feature = "comms", any(unix, windows)))]
-#[tokio::test]
-async fn gated_build_times_out_instead_of_waiting_forever() {
-    let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
-    let _held = gate.clone().acquire_owned().await.unwrap();
-    let error = run_gated_build(gate, Duration::from_millis(50), || ())
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("timed out"), "{error}");
-}
-
 #[path = "workspace_pool_rebuild_tests.rs"]
 mod rebuild_tests;
 

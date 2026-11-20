@@ -59,12 +59,9 @@ impl WorkspacePool {
                         std::sync::Arc::clone(&entry),
                         root.to_path_buf(),
                     );
-                    // One build at a time machine-wide: a reconnect storm after a daemon restart would
-                    // otherwise run one O(corpus) build per workspace concurrently, and the warm cap
-                    // only trims AFTER each finishes.
-                    let hosted = run_gated_build(
-                        std::sync::Arc::clone(&READ_STACK_BUILD_GATE),
-                        READ_STACK_BUILD_GATE_WAIT,
+                    let hosted = super::read_stack_gate::run_gated_build(
+                        std::sync::Arc::clone(&super::read_stack_gate::READ_STACK_BUILD_GATE),
+                        super::read_stack_gate::READ_STACK_BUILD_GATE_WAIT,
                         move || pool.host_read_stack(&building, &root_buf, git_history),
                     )
                     .await??;

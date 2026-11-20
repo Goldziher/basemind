@@ -27,40 +27,6 @@ use crate::store::{self, LockHolder, Store, VIEW_WORKING};
 /// this evicts the least-recently-used entry; it re-opens lazily on its next request.
 pub(crate) const DEFAULT_HOT_CAP: usize = 4;
 
-/// Serializes hosted read-stack builds across every workspace in the daemon. An `Arc` so the permit
-/// can be owned by the blocking build itself ([`run_gated_build`]).
-#[cfg(all(feature = "comms", any(unix, windows)))]
-static READ_STACK_BUILD_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
-    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
-
-/// How long a read-stack build may queue for the gate before giving up, so one wedged build (network
-/// FS, a giant repo) cannot park every other workspace's first use forever.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-const READ_STACK_BUILD_GATE_WAIT: Duration = Duration::from_secs(15 * 60);
-
-/// Run `build` on the background pool ([`crate::mcp::background_pool`]) while holding one permit of
-/// `gate`. The permit is owned by the build's closure, so it is released when the BUILD ends, not
-/// when the awaiting future is dropped: a cancelled caller (client disconnect, timeout, drain) cannot
-/// free the gate while its build is still running and let a second O(corpus) build start beside it.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-async fn run_gated_build<T: Send + 'static>(
-    gate: std::sync::Arc<tokio::sync::Semaphore>,
-    wait: Duration,
-    build: impl FnOnce() -> T + Send + 'static,
-) -> anyhow::Result<T> {
-    let permit = tokio::time::timeout(wait, gate.acquire_owned())
-        .await
-        .map_err(|_| anyhow::anyhow!("timed out after {wait:?} waiting for the read stack build gate"))?
-        .map_err(|closed| anyhow::anyhow!("read stack build gate closed: {closed}"))?;
-    crate::mcp::background_pool::background()
-        .run(move || {
-            let _permit = permit;
-            build()
-        })
-        .await
-        .ok_or_else(|| anyhow::anyhow!("hosted read stack build panicked"))
-}
-
 /// Default number of daemon-hosted READ STACKS kept warm at once — deliberately far below
 /// [`DEFAULT_HOT_CAP`], which governs something much cheaper.
 ///
