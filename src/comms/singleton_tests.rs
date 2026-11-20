@@ -18,8 +18,16 @@ fn the_autospawn_opt_out_reads_a_boolean_and_honours_a_mistyped_one() {
         (Some("maybe"), true),
     ];
     for (value, forbids) in cases {
-        assert_eq!(forbids_autospawn(*value), *forbids, "{value:?}");
+        assert_eq!(forbids_autospawn(value.map(OsStr::new)), *forbids, "{value:?}");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_autospawn_opt_out_forbids_spawning() {
+    use std::os::unix::ffi::OsStrExt;
+
+    assert!(forbids_autospawn(Some(OsStr::from_bytes(b"\xff"))));
 }
 
 #[test]
