@@ -110,7 +110,10 @@ BASEMIND_HARDEN_FEATURES="" BASEMIND_HARDEN_SKIP_SUITE=1 BASEMIND_HARDEN_WORKTRE
   ./scripts/harden.sh ripgrep
 ```
 
-`BASEMIND_HARDEN_WORKTREE_STEP` sets the commits between worktrees (default 50). Every worktree
+`BASEMIND_HARDEN_WORKTREE_STEP` sets the commits between worktrees (default 50). The mode fails when an
+added worktree adds more than 50% of the bytes the main checkout's scan put on disk, the bound
+`tests/worktree_lifecycle_cli.rs` holds identical worktrees to; the nightly runs it on ripgrep with
+three worktrees. Every worktree
 writes into its group index, so journal and keyspace bytes are what the group index grew by across
 that worktree's scan. The table is appended to `<harden root>/worktrees.md`, the rows to
 `worktrees.ndjson`.
