@@ -231,11 +231,12 @@ def pool_step(rng: random.Random) -> list[dict[str, Any]]:
 
 
 def thread_leak(rng: random.Random) -> list[dict[str, Any]]:
-    """One thread per minute of load is started and never exits."""
+    """One thread per minute of load is started and never exits. Its name is invented, so a report
+    of this case is not read as a basemind thread."""
     recs = healthy(rng)
     for r in recs:
         if r.get("kind") == "proc" and r["pid"] == DAEMON and r["t"] > WARMUP + QUIESCE:
-            _add_threads(r, int(min(r["t"], LOAD) - WARMUP - QUIESCE) // 60, "bm-watch")
+            _add_threads(r, int(min(r["t"], LOAD) - WARMUP - QUIESCE) // 60, "selftest-leak")
     return recs
 
 
@@ -274,7 +275,8 @@ def store_climb(rng: random.Random) -> list[dict[str, Any]]:
 
 def comms_climb(rng: random.Random) -> list[dict[str, Any]]:
     """The daemon's log in the comms dir grows 2 MiB/min between its trims: unbounded in practice
-    (a hardening run grew it 9 -> 87 MiB over 18 minutes, 93% of it dependency INFO lines)."""
+    (soak run 44541580154 grew the comms dir 74 -> 115 MiB over 18 minutes of load on Linux,
+    +4.2 MiB/min, 93% of it dependency INFO lines)."""
     recs = healthy(rng)
     for r in recs:
         if r.get("kind") == "dir":
