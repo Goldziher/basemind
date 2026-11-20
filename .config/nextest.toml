@@ -1,0 +1,20 @@
+# cargo-nextest settings. CI's test legs run `cargo nextest run --profile ci`; nextest runs no
+# doctests, so those legs run `cargo test --doc` as well.
+
+[profile.default]
+# A test running past 60 s is reported as slow every period and killed after ten: a hung test fails
+# its leg within ten minutes and the log names it.
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+# The daemon binaries start, stop and take over real daemons, and thread_churn soaks one; give them
+# thirty minutes.
+[[profile.default.overrides]]
+filter = "binary(/daemon/) | binary(thread_churn)"
+slow-timeout = { period = "120s", terminate-after = 15 }
+
+[profile.ci]
+failure-output = "immediate-final"
+
+[profile.ci.junit]
+# Written to target/nextest/ci/junit.xml.
+path = "junit.xml"
