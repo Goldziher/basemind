@@ -198,8 +198,10 @@ fn entry_ident_at(tree: &gix::Tree<'_>, components: &[&[u8]]) -> Option<(gix::Ob
 
 /// Line-diff between two byte buffers using the histogram algorithm + slider heuristics.
 /// Returns one `Hunk` per `imara_diff::Hunk` — runs without surrounding context lines,
-/// because agents have direct access to the source via the outline tools.
-pub(super) fn compute_hunks(old: &[u8], new: &[u8]) -> Vec<Hunk> {
+/// because agents have direct access to the source via the outline tools — and whether a hunk line
+/// was not valid UTF-8. Such a line is kept, its invalid bytes decoded as U+FFFD, so a hunk's text
+/// always holds as many lines as its counts say.
+pub(super) fn compute_hunks(old: &[u8], new: &[u8]) -> (Vec<Hunk>, bool) {
     use gix::diff::blob::{Algorithm, InternedInput, diff_with_slider_heuristics, sources};
 
     let input = InternedInput::new(sources::byte_lines(old), sources::byte_lines(new));
@@ -208,6 +210,7 @@ pub(super) fn compute_hunks(old: &[u8], new: &[u8]) -> Vec<Hunk> {
     let old_lines = line_byte_offsets(old);
     let new_lines = line_byte_offsets(new);
     let mut out = Vec::with_capacity(diff.count_additions() as usize + diff.count_removals() as usize);
+    let mut lossy = false;
     for hunk in diff.hunks() {
         let removed_count = hunk.before.end - hunk.before.start;
         let added_count = hunk.after.end - hunk.after.start;
@@ -217,21 +220,9 @@ pub(super) fn compute_hunks(old: &[u8], new: &[u8]) -> Vec<Hunk> {
             _ => HunkKind::Modified,
         };
         let mut removed = String::new();
-        for line in hunk.before.start..hunk.before.end {
-            if let Some((s, e)) = old_lines.get(line as usize).copied()
-                && let Ok(t) = std::str::from_utf8(&old[s as usize..e as usize])
-            {
-                removed.push_str(t);
-            }
-        }
+        lossy |= push_lines(&mut removed, old, &old_lines, hunk.before.start..hunk.before.end);
         let mut added = String::new();
-        for line in hunk.after.start..hunk.after.end {
-            if let Some((s, e)) = new_lines.get(line as usize).copied()
-                && let Ok(t) = std::str::from_utf8(&new[s as usize..e as usize])
-            {
-                added.push_str(t);
-            }
-        }
+        lossy |= push_lines(&mut added, new, &new_lines, hunk.after.start..hunk.after.end);
         let text = if removed_count == 0 {
             added
         } else if added_count == 0 {
@@ -259,7 +250,21 @@ pub(super) fn compute_hunks(old: &[u8], new: &[u8]) -> Vec<Hunk> {
             text,
         });
     }
-    out
+    (out, lossy)
+}
+
+/// Append the lines `lines` (0-based) of `buf` to `out`, each decoded lossily; true when one of
+/// them was not valid UTF-8.
+fn push_lines(out: &mut String, buf: &[u8], offsets: &[(u32, u32)], lines: std::ops::Range<u32>) -> bool {
+    let mut lossy = false;
+    for line in lines {
+        if let Some(&(start, end)) = offsets.get(line as usize) {
+            let text = String::from_utf8_lossy(&buf[start as usize..end as usize]);
+            lossy |= matches!(text, std::borrow::Cow::Owned(_));
+            out.push_str(&text);
+        }
+    }
+    lossy
 }
 
 fn line_byte_offsets(buf: &[u8]) -> Vec<(u32, u32)> {

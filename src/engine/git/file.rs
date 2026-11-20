@@ -89,6 +89,7 @@ pub(super) fn run_diff(ws: &Workspace, params: DiffFileParams) -> Result<DiffFil
         present_at_to: diff.new_exists,
         binary: diff.binary,
         too_large: diff.too_large,
+        lossy_text: diff.lossy_text,
         truncated: truncated_reason.is_some(),
         truncated_reason,
         omitted: total_hunks - hunks.len(),
