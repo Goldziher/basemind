@@ -55,28 +55,43 @@ pub(crate) fn write_file(root: &Path, path: &Path, contents: &[u8], allow_outsid
     })
 }
 
+/// How many symlinks a dangling chain may pass through before [`resolve_target`] gives up.
+const MAX_SYMLINK_HOPS: usize = 40;
+
 /// The absolute location a write to `path` lands in, with every symlink on the way resolved. A
-/// dangling symlink resolves to the file it names, which the write then creates.
+/// dangling symlink, or a chain of them, resolves to the file the last link names, which the write
+/// then creates; the links are kept.
 fn resolve_target(path: &Path) -> Result<PathBuf> {
-    let is_link = match std::fs::symlink_metadata(path) {
-        Ok(meta) => meta.file_type().is_symlink(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => return Err(anyhow::Error::new(e).context(format!("inspect {}", path.display()))),
-    };
-    if !is_link {
-        return canonical_in_parent(path);
-    }
-    match std::fs::canonicalize(path) {
-        Ok(resolved) => Ok(resolved),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let dest = std::fs::read_link(path).with_context(|| format!("read symlink {}", path.display()))?;
-            let dest = match path.parent() {
-                Some(parent) if dest.is_relative() => parent.join(dest),
-                _ => dest,
-            };
-            canonical_in_parent(&dest)
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_SYMLINK_HOPS {
+        if !is_symlink(&current)? {
+            return canonical_in_parent(&current);
         }
-        Err(e) => Err(anyhow::Error::new(e).context(format!("resolve {}", path.display()))),
+        match std::fs::canonicalize(&current) {
+            Ok(resolved) => return Ok(resolved),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let dest =
+                    std::fs::read_link(&current).with_context(|| format!("read symlink {}", current.display()))?;
+                current = match current.parent() {
+                    Some(parent) if dest.is_relative() => parent.join(dest),
+                    _ => dest,
+                };
+            }
+            Err(e) => return Err(anyhow::Error::new(e).context(format!("resolve {}", path.display()))),
+        }
+    }
+    anyhow::bail!(
+        "resolve {}: more than {MAX_SYMLINK_HOPS} symlinks in its chain",
+        path.display()
+    )
+}
+
+/// Whether `path` itself is a symlink; a missing path is not.
+fn is_symlink(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => Ok(meta.file_type().is_symlink()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(anyhow::Error::new(e).context(format!("inspect {}", path.display()))),
     }
 }
 
@@ -251,6 +266,44 @@ mod tests {
         let real = std::fs::canonicalize(root).expect("canonicalize").join("shared.md");
         assert_eq!(written.symlink_target, Some(real.clone()));
         assert_eq!(std::fs::read_to_string(&real).expect("read"), "# shared\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_chain_of_symlinks_creates_the_last_file_and_keeps_both_links() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let link = root.join("CLAUDE.md");
+        let shared = root.join("shared.md");
+        std::os::unix::fs::symlink("shared.md", &link).expect("symlink CLAUDE.md");
+        std::os::unix::fs::symlink("missing.md", &shared).expect("symlink shared.md");
+
+        let written = write_file(root, &link, b"# rules\n", false).expect("write");
+
+        let real = std::fs::canonicalize(root).expect("canonicalize").join("missing.md");
+        assert_eq!(written.symlink_target, Some(real.clone()));
+        assert_eq!(std::fs::read_to_string(&real).expect("read"), "# rules\n");
+        for (from, to) in [(&link, "shared.md"), (&shared, "missing.md")] {
+            assert_eq!(std::fs::read_link(from).expect("still a symlink"), Path::new(to));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_cycle_is_refused_and_nothing_is_written() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let link = root.join("CLAUDE.md");
+        std::os::unix::fs::symlink("loop.md", &link).expect("symlink CLAUDE.md");
+        std::os::unix::fs::symlink("CLAUDE.md", root.join("loop.md")).expect("symlink loop.md");
+
+        write_file(root, &link, b"# rules\n", false).expect_err("a cycle has no target");
+
+        assert_eq!(dir_entries(root), vec!["CLAUDE.md".to_string(), "loop.md".to_string()]);
+        assert_eq!(
+            std::fs::read_link(&link).expect("still a symlink"),
+            Path::new("loop.md")
+        );
     }
 
     #[cfg(unix)]
