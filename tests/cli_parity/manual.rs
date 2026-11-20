@@ -50,7 +50,7 @@ fn placeholder(token: &str) -> bool {
 }
 
 /// Check one `basemind …` mention against the live tree; `Err` says what is wrong.
-fn check_command(tree: &cli_tree::CliTree, mention: &str) -> Result<(), String> {
+pub(crate) fn check_command(tree: &cli_tree::CliTree, mention: &str) -> Result<(), String> {
     let mut tokens = mention.split_whitespace().skip(1).peekable();
     if let Some(first) = tokens.peek()
         && COMMS_COMMANDS.contains(first)

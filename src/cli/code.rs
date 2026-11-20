@@ -25,6 +25,7 @@ use super::{resolve_path, run_tool};
 pub enum CodeCmd {
     /// File structure: symbols with 1-based line spans, plus imports. Read this instead of the
     /// file.
+    #[command(after_long_help = crate::cli::help_code::CODE_OUTLINE)]
     Outline {
         /// Repository-relative path.
         path: String,
@@ -38,6 +39,7 @@ pub enum CodeCmd {
         max_tokens: Option<u32>,
     },
     /// Find a definition by name across every indexed file.
+    #[command(after_long_help = crate::cli::help_code::CODE_SYMBOLS)]
     Symbols {
         name: String,
         #[arg(long)]
@@ -61,6 +63,7 @@ pub enum CodeCmd {
     /// A symbol's source body (`--symbol`), or a 1-based inclusive line span (`--line`,
     /// `--end-line`).
     #[command(alias = "expand")]
+    #[command(after_long_help = crate::cli::help_code::CODE_READ)]
     Read {
         /// Repository-relative path.
         path: String,
@@ -78,6 +81,7 @@ pub enum CodeCmd {
         end_line: Option<u32>,
     },
     /// Content search across indexed code files. The pattern is literal text unless `--regex`.
+    #[command(after_long_help = crate::cli::help_code::CODE_GREP)]
     Grep {
         pattern: String,
         /// Treat the pattern as a Rust regex.
@@ -106,6 +110,7 @@ pub enum CodeCmd {
     },
     /// Search code by meaning; returns pointers, read one with `code read`.
     #[command(alias = "semantic")]
+    #[command(after_long_help = crate::cli::help_code::CODE_SEARCH)]
     Search {
         query: String,
         /// Retrieval lane (default hybrid).
@@ -124,6 +129,7 @@ pub enum CodeCmd {
     /// reference binds to; or a file's importers (`--relation importers --path`) and the import
     /// cycles (`--relation cycles`), which take no name.
     #[command(alias = "references")]
+    #[command(after_long_help = crate::cli::help_code::CODE_REFS)]
     Refs {
         name: Option<String>,
         /// What to list (default callers).
@@ -164,6 +170,7 @@ pub enum CodeCmd {
         changed: Option<String>,
     },
     /// Callers of the definition of `name` in `path`. Shorthand for `refs <name> --path <path>`.
+    #[command(after_long_help = crate::cli::help_code::CODE_CALLERS)]
     Callers {
         path: String,
         name: String,
@@ -184,6 +191,7 @@ pub enum CodeCmd {
     },
     /// Types implementing a trait / interface / base class. Shorthand for
     /// `refs <name> --relation implementations`.
+    #[command(after_long_help = crate::cli::help_code::CODE_IMPLEMENTATIONS)]
     Implementations {
         name: String,
         /// Name matching (default exact).
@@ -199,6 +207,7 @@ pub enum CodeCmd {
         max_tokens: Option<u32>,
     },
     /// Files importing a module. Shorthand for `refs <module> --relation importers`.
+    #[command(after_long_help = crate::cli::help_code::CODE_DEPENDENTS)]
     Dependents {
         module: String,
         #[arg(long)]
@@ -212,6 +221,7 @@ pub enum CodeCmd {
     },
     /// The definition the reference `name` at `path`:`line` binds to. Shorthand for
     /// `refs <name> --relation definition --path <path> --line <line>`.
+    #[command(after_long_help = crate::cli::help_code::CODE_DEFINITION)]
     Definition {
         /// Repository-relative path of the file holding the reference.
         path: String,
@@ -225,6 +235,7 @@ pub enum CodeCmd {
     },
     /// Locate a file by a fuzzy fragment of its name or path, or list indexed files when the query
     /// is omitted. Covers code and documents.
+    #[command(after_long_help = crate::cli::help_code::CODE_FIND)]
     Find {
         query: Option<String>,
         #[arg(long)]
@@ -248,6 +259,7 @@ pub enum CodeCmd {
         changed: Option<String>,
     },
     /// List indexed files. Shorthand for `find` with no query.
+    #[command(after_long_help = crate::cli::help_code::CODE_FILES)]
     Files {
         #[arg(long)]
         path_prefix: Option<String>,
@@ -263,6 +275,7 @@ pub enum CodeCmd {
         max_tokens: Option<u32>,
     },
     /// Fetch one semantic-search chunk body by path (CLI only).
+    #[command(after_long_help = crate::cli::help_code::CODE_CHUNK)]
     Chunk {
         /// Repository-relative path of the source file the chunk belongs to.
         path: String,

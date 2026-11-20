@@ -35,4 +35,5 @@ disagree.
 2. `basemind code outline <path>` before opening a file, `basemind code symbols <name>` to find a
    definition, `basemind code refs <name>` for its call sites, `basemind git log` for history.
 3. Add `--json` to any query command for the response the MCP tool returns.
-4. `basemind <command> --help` lists a command's flags; this manual explains when to use it.
+4. `basemind <command> --help` lists a command's flags, then when to use it, what it returns, an
+   example and what to call next; this manual covers each area in depth.

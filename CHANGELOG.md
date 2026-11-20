@@ -140,6 +140,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- Every command's `--help` ends with when to use it, what it returns, one example and what to call
+  next (#163); `-h` keeps the one-line summary. `basemind --help` describes what basemind is, and the
+  `init`, `memory`, `cache` and `comms status` summaries say what those commands do.
 
 ### Changed
 

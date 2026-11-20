@@ -25,13 +25,16 @@ use crate::registry::{BranchRecord, WorkspaceKind, WorkspaceRecord, WorktreeReco
 #[derive(Subcommand, Debug)]
 pub enum WorkspaceCmd {
     /// List every registered workspace in the machine registry (git + plain).
+    #[command(after_long_help = crate::cli::help::WORKSPACE_WORKSPACES)]
     Workspaces,
     /// List the worktrees of a registered repo by id.
+    #[command(after_long_help = crate::cli::help::WORKSPACE_WORKTREES)]
     Worktrees {
         /// The repo id (normalized remote URL or `path:<root>`) whose worktrees to list.
         repo_id: String,
     },
     /// List the local branches of a registered repo by id.
+    #[command(after_long_help = crate::cli::help::WORKSPACE_BRANCHES)]
     Branches {
         /// The repo id whose branches to list.
         repo_id: String,

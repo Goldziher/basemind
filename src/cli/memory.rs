@@ -28,6 +28,7 @@ fn visibility(individual: bool) -> Option<Visibility> {
 #[derive(Subcommand, Debug)]
 pub enum MemoryCmd {
     /// Store a key/value memory entry.
+    #[command(after_long_help = crate::cli::help::MEMORY_PUT)]
     Put {
         key: String,
         value: String,
@@ -39,6 +40,7 @@ pub enum MemoryCmd {
         individual: bool,
     },
     /// Semantic search over memory.
+    #[command(after_long_help = crate::cli::help::MEMORY_SEARCH)]
     Search {
         query: String,
         #[arg(long)]
@@ -49,12 +51,14 @@ pub enum MemoryCmd {
         individual: bool,
     },
     /// Read a single memory entry by key. Shorthand for one shape of `memory_search`.
+    #[command(after_long_help = crate::cli::help::MEMORY_GET)]
     Get {
         key: String,
         #[arg(long)]
         individual: bool,
     },
     /// List memory entries by key prefix and/or tag. Shorthand for one shape of `memory_search`.
+    #[command(after_long_help = crate::cli::help::MEMORY_LIST)]
     List {
         #[arg(long)]
         prefix: Option<String>,
@@ -69,12 +73,14 @@ pub enum MemoryCmd {
         cursor: Option<String>,
     },
     /// Delete a memory entry by key (CLI only).
+    #[command(after_long_help = crate::cli::help::MEMORY_DELETE)]
     Delete {
         key: String,
         #[arg(long)]
         individual: bool,
     },
     /// Semantic search over indexed documents (needs `--features documents`).
+    #[command(after_long_help = crate::cli::help::MEMORY_DOCUMENTS)]
     Documents {
         query: String,
         /// Exact MIME filter, e.g. `application/pdf`.
