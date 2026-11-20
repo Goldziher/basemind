@@ -9,7 +9,13 @@ at its root, and the binary in it must:
 1. report ``basemind <expected-version>`` from ``--version``;
 2. ``scan`` a small git fixture repository;
 3. answer ``initialize`` and ``tools/list`` over ``serve``'s stdio, advertising at least one tool,
-   and answer one ``tools/call`` of an advertised read-only tool without ``isError``.
+   and answer one ``tools/call`` of an advertised read-only tool without ``isError``;
+4. open the agent store, which ``basemind agent status`` reports as ``open``.
+
+Every run also sets the test hooks a ``test-support`` build reads (``TEST_HOOKS``, which
+``tests/layering.rs`` keeps complete), each to a value a binary that read it trips on: the fault
+lane aborts the scan, and the store-open delay holds the agent store at ``opening`` past step 4's
+deadline. The account home is read only by ``serve --lead``, which this smoke does not start.
 
 Every run gets its own ``BASEMIND_DATA_HOME``, ``BASEMIND_COMMS_DIR``, ``HOME`` (with the Windows
 ``AppData`` folders a real profile has) and cache directory, so nothing reaches a real session's index
@@ -29,10 +35,22 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 import zipfile
 from pathlib import Path
 
 TIMEOUT = 180
+
+# Seconds `basemind agent status` may report the agent store as `opening` before the smoke fails.
+STORE_OPEN_DEADLINE = 60
+
+STORE_POLL_INTERVAL = 0.5
+
+# The test hooks a `test-support` build reads, each set to a value that build trips on.
+TEST_HOOKS = {
+    "BASEMIND_TEST_FAULT_LANE": "resolve:abort",
+    "BASEMIND_TEST_COMMS_STORE_OPEN_DELAY_MS": str(60 * 60 * 1000),
+}
 
 
 def extract(archive: Path, into: Path) -> Path:
@@ -72,6 +90,8 @@ def sandbox_env(root: Path) -> dict[str, str]:
         XDG_CACHE_HOME=str(root / "cache"),
         NO_COLOR="1",
     )
+    env.update(TEST_HOOKS)
+    env["BASEMIND_TEST_ACCOUNT_HOME"] = str(root / "test-account-home")
     return env
 
 
@@ -143,6 +163,19 @@ class Server:
         self.proc.wait()
 
 
+def agent_store_state(binary: Path, repo: Path, env: dict[str, str]) -> str:
+    """The agent store's state once it is no longer ``opening``, within ``STORE_OPEN_DEADLINE``."""
+    deadline = time.monotonic() + STORE_OPEN_DEADLINE
+    while True:
+        status = json.loads(run(binary, ["--root", str(repo), "--json", "agent", "status"], env))
+        state = status["store"]["state"]
+        if state != "opening":
+            return state
+        if time.monotonic() >= deadline:
+            raise SystemExit(f"the agent store was still opening after {STORE_OPEN_DEADLINE}s")
+        time.sleep(STORE_POLL_INTERVAL)
+
+
 def probe_call(tools: list[dict]) -> tuple[str, dict]:
     """A read-only call the fixture can answer, for the tool surface this binary advertises."""
     names = {tool["name"] for tool in tools}
@@ -194,6 +227,10 @@ def main(argv: list[str]) -> int:
             f"{archive.name}: serve ({init.get('serverInfo', {}).get('name')}) advertised {len(tools)} tools; "
             f"{name} outlined the fixture"
         )
+        state = agent_store_state(binary, repo, env)
+        if state != "open":
+            raise SystemExit(f"{archive.name}: agent status reports the store {state!r}, expected 'open'")
+        print(f"{archive.name}: agent status reports the store open")
     finally:
         subprocess.run(
             [str(binary), "--root", str(work / "repo"), "comms", "stop"],
