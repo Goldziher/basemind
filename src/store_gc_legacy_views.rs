@@ -33,7 +33,7 @@ pub(crate) struct LegacyIndexReap {
 
 /// Reap the per-view index of every view the group index adopted, under the machine-global cache.
 pub(crate) fn reap_adopted_legacy_indexes(data: &DataRoot) -> Result<LegacyIndexReap, GcError> {
-    reap_adopted_legacy_indexes_in(&data.workspaces_dir(), &Holds::current().live)
+    reap_adopted_legacy_indexes_in(&data.workspaces_dir(), &Holds::under(data).live)
 }
 
 /// Whether a live basemind process may read a per-view index: one of a release that reads the
