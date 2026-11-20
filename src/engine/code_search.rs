@@ -181,7 +181,7 @@ fn hybrid_hits(
     };
 
     stop_if(cancelled)?;
-    let lanes = fjall_lanes(ws, query, fuse_limit, true);
+    let lanes = fjall_lanes(ws, query, fuse_limit, true, cancelled)?;
     match &lanes.degraded {
         Some(degraded) => report.degrade(&["keyword", "exact"], degraded.reason.clone()),
         None => report.ran.extend(["keyword", "exact"]),
@@ -274,13 +274,20 @@ fn lane_refusal(cause: LaneCause, message: String) -> EngineError {
     }
 }
 
-/// Run the keyword (BM25) + exact (symbol-name) lanes over this session's index.
+/// Run the keyword (BM25) + exact (symbol-name) lanes over this session's index. Stops with
+/// [`EngineError::Cancelled`] between the two once `cancelled` says so.
 ///
 /// Both lanes read fjall, whose directory lock is exclusive, so a session that holds no index (a CLI
 /// command or a second `serve` beside a writer, with no daemon) cannot run them: the outcome names
 /// why and the fix ([`Degraded::unreachable`]). A daemon-hosted session borrows the pool writer's
 /// index handle, so it runs them like a writer. ~keep
-fn fjall_lanes(ws: &Workspace, query: &str, limit: usize, want_exact: bool) -> LaneOutcome {
+fn fjall_lanes(
+    ws: &Workspace,
+    query: &str,
+    limit: usize,
+    want_exact: bool,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<LaneOutcome, EngineError> {
     let rescan_owed = {
         let store = ws.store_read();
         if let Some(db) = store.read_index_view() {
@@ -289,19 +296,20 @@ fn fjall_lanes(ws: &Workspace, query: &str, limit: usize, want_exact: bool) -> L
                 .map(|hit| (hit.chunk_id, hit.score))
                 .collect();
             let exact = if want_exact {
+                stop_if(cancelled)?;
                 exact_lane_chunk_ids(&store, &*db, query, limit)
             } else {
                 Vec::new()
             };
-            return LaneOutcome {
+            return Ok(LaneOutcome {
                 keyword,
                 exact,
                 degraded: None,
-            };
+            });
         }
         store.rescan_owed()
     };
-    Degraded::unreachable(rescan_owed).into()
+    Ok(Degraded::unreachable(rescan_owed).into())
 }
 
 /// What a semantic-only `code_search` can do while the vector store is unavailable.
@@ -343,7 +351,7 @@ fn semantic_hits(
 /// Each hit carries a BM25 `score` (higher = better) and no `distance`. Refused, never an empty vec,
 /// when this session cannot read the index.
 fn keyword_hits(ws: &Workspace, query: &str, limit: usize) -> Result<Vec<CodeSearchHit>, EngineError> {
-    let lanes = fjall_lanes(ws, query, limit, false);
+    let lanes = fjall_lanes(ws, query, limit, false, &|| false)?;
     // `lane: "keyword"` has no other lane to fall back on, so a degraded read is a hard error. There
     // is no honest partial here — an empty list would claim the BM25 index was searched. ~keep
     if let Some(Degraded { reason, cause }) = lanes.degraded {
