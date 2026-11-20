@@ -47,7 +47,7 @@ ADR-0031 stands except where this record adds to it.
 3. **Each kind counts against the tool it drives** (`EvalMode::tool_key`): `impact` and `cycles`
    against `code_refs`, `grep_changed` against `code_grep`, `find_large` against `find_files`,
    `read_around` against `code_grep` (one call with `context: 5`, ADR-0052 §2), and `explain`
-   against `code explain` (CLI-only, ADR-0047).
+   against `code_explain` (the CLI-only `code explain`, ADR-0047).
    `gate.py` refuses a gated kind that it lists under no tool, or under a tool other than the one the
    report names.
 
@@ -66,7 +66,7 @@ ADR-0031 stands except where this record adds to it.
    without a measured symbol accuracy.
 
 7. **Binary identity.** The report records the Cargo version, a hash of the executable and the
-   features the binary was compiled with. `run_gate.sh` records the commit of the checkout it runs
+   features compiled in that bear on the eval (`code-intel` when both its parts are). `run_gate.sh` records the commit of the checkout it runs
    from (with `-dirty` for uncommitted tracked changes), and `gate.md` prints all of them.
 
 8. **Baselines that answered wrongly.** A baseline that printed something but scored recall 0 is
@@ -77,9 +77,10 @@ ADR-0031 stands except where this record adds to it.
 ## Consequences
 
 - On the second 0.34 run's numbers, more tools fail. `code_refs` also fails on `impact` (basemind
-  0.58x), `code_grep` on `grep_changed` (basemind 0.60x), `find_files` on `find_large` (0.44x,
-  0.50x) and `code_read` on `read_around` (1.25x, 1.33x). `code_read` passed before only because no
-  analysis kind counted against it. `cycles` passes on credited alone.
+  0.58x), `code_grep` on `grep_changed` (basemind 0.60x) and `find_files` on `find_large` (0.44x,
+  0.50x). `read_around`, then `code_grep {ranges: true}` and a `code_read` of the ranges, counted
+  against `code_read` and measured 1.25x and 1.33x; rule 3 counts it against `code_grep`, which
+  answers it in one call. `cycles` passes on credited alone.
 - Rule 5 changes no verdict on that run. It drops 11 tasks from the ratio, and tokio `impact` moves
   from 0.78x to 0.87x.
 - The committed task files change only in the `cycles` and `explain` baselines.
