@@ -152,6 +152,19 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 - Every command's `--help` ends with when to use it, what it returns, one example and what to call
   next (#163); `-h` keeps the one-line summary. `basemind --help` describes what basemind is, and the
   `init`, `memory`, `cache` and `comms status` summaries say what those commands do.
+- `basemind comms cleanup [--dry-run] [--older-than <days>]` removes the rendezvous files no daemon
+  uses any more: the directories of other protocol generations under the comms directory, and the
+  files releases up to 0.33 keep directly in it (`comms.sock`, `daemon.lock`, `daemon.pid`,
+  `store.fjall/`, `daemon.log`, `daemon.log.1`, `http.addr`, `last-fatal.json`). A rendezvous goes
+  only when it has a `daemon.lock` the command can take and its newest file is older than 30 days;
+  one without a `daemon.lock`, or with one that cannot be opened, is left alone. `--older-than 0`
+  drops the age test, so the previous release's message store goes as soon as none of its daemons
+  is running. A directory is renamed aside under the lock before it is deleted, so a daemon
+  starting meanwhile finds its generation whole or absent. The command reads locks and file ages
+  only, never contacts or signals a daemon, and never touches the generation of the binary that
+  runs it (ADR-0024 rule 7). It also removes the daemon-registry records other generations left
+  for a daemon whose directory is gone or whose lock is free; with a reused pid such a record
+  counted toward the ceiling of live daemons for good.
 
 ### Changed
 
@@ -713,22 +726,6 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 - **PaddleOCR in the published binaries.** PaddleOCR is now the opt-in `documents-ocr-paddle` feature,
   which `full` does not include, so the Homebrew, npm, pip and GitHub release binaries no longer contain
   it. Tesseract OCR is unchanged.
-
-### Added
-
-- `basemind comms cleanup [--dry-run] [--older-than <days>]` removes the rendezvous files no daemon
-  uses any more: the directories of other protocol generations under the comms directory, and the
-  files releases up to 0.33 keep directly in it (`comms.sock`, `daemon.lock`, `daemon.pid`,
-  `store.fjall/`, `daemon.log`, `daemon.log.1`, `http.addr`, `last-fatal.json`). A rendezvous goes
-  only when it has a `daemon.lock` the command can take and its newest file is older than 30 days;
-  one without a `daemon.lock`, or with one that cannot be opened, is left alone. `--older-than 0`
-  drops the age test, so the previous release's message store goes as soon as none of its daemons
-  is running. A directory is renamed aside under the lock before it is deleted, so a daemon
-  starting meanwhile finds its generation whole or absent. The command reads locks and file ages
-  only, never contacts or signals a daemon, and never touches the generation of the binary that
-  runs it (ADR-0024 rule 7). It also removes the daemon-registry records other generations left
-  for a daemon whose directory is gone or whose lock is free; with a reused pid such a record
-  counted toward the ceiling of live daemons for good.
 
 ### Fixed
 
