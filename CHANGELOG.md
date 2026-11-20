@@ -716,6 +716,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The daemon's `daemon.log` no longer fills with dependency INFO lines (#200): lance and lancedb
+  logged every dataset load, commit and query plan, and rmcp every session's handshake, about
+  1.2 MiB a minute under load and 93% of the log. Without `RUST_LOG`, `lance` and `rmcp` now log
+  at `warn`; basemind's own INFO lines are unchanged.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

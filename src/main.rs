@@ -280,15 +280,23 @@ enum LangCmd {
 
 /// Default tracing directive when `RUST_LOG` is unset, derived from the parsed
 /// verbosity. `--quiet` raises the threshold to `warn` so subsystem INFO logs are
-/// suppressed during a scan; `--verbose` lowers it to `debug`; otherwise `info`.
+/// suppressed during a scan; `--verbose` lowers it to `debug`; otherwise `info`, with
+/// [`CHATTY_DEPENDENCIES`] at `warn`.
 /// An explicit `RUST_LOG` always wins (callers honor it before this fallback).
 fn default_log_directive(verbosity: Verbosity) -> &'static str {
     match verbosity {
         Verbosity::Quiet => "warn",
-        Verbosity::Default => "info",
+        Verbosity::Default => CHATTY_DEPENDENCIES,
         Verbosity::Verbose => "debug",
     }
 }
+
+/// `info`, except for dependencies that log their own internals at INFO on every call. A target
+/// directive matches by prefix, so `lance` also covers `lancedb` and the `lance_*` crates, which
+/// log each dataset load, commit, deletion and query plan; `rmcp` logs every session's handshake,
+/// the client's whole `initialize` request included, and its close. The daemon's stderr is
+/// `daemon.log`, and under a soak these lines were 93% of it, about 1.2 MiB a minute.
+const CHATTY_DEPENDENCIES: &str = "info,lance=warn,rmcp=warn";
 
 // mimalloc (why: `basemind::allocator`); the leak-check build (`system-allocator`) keeps the system
 // allocator so `leaks` and valgrind can scan the whole heap.
@@ -914,6 +922,32 @@ fn cmd_serve(root: &std::path::Path, view: &str, lead: bool) -> Result<()> {
             "`basemind serve` needs the comms daemon to host the MCP server; rebuild with \
              `--features comms` (the stdio MCP server is served by relaying to that daemon)."
         )
+    }
+}
+
+#[cfg(test)]
+mod log_directive_tests {
+    use super::{Verbosity, default_log_directive};
+    use tracing::Level;
+    use tracing_subscriber::{EnvFilter, layer::SubscriberExt};
+
+    fn enabled_by_default() -> [bool; 6] {
+        let subscriber = tracing_subscriber::registry().with(EnvFilter::new(default_log_directive(Verbosity::Default)));
+        tracing::subscriber::with_default(subscriber, || {
+            [
+                tracing::enabled!(target: "basemind::comms::daemon", Level::INFO),
+                tracing::enabled!(target: "lance::dataset_events", Level::INFO),
+                tracing::enabled!(target: "lancedb::table", Level::INFO),
+                tracing::enabled!(target: "rmcp::service", Level::INFO),
+                tracing::enabled!(target: "lance::dataset::scanner", Level::WARN),
+                tracing::enabled!(target: "rmcp::service", Level::WARN),
+            ]
+        })
+    }
+
+    #[test]
+    fn default_verbosity_keeps_basemind_info_and_dependency_warnings_only() {
+        assert_eq!(enabled_by_default(), [true, false, false, false, true, true]);
     }
 }
 
