@@ -4,8 +4,8 @@ description: Diagnose and recover basemind when it isn't working (MCP tools miss
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:d18c2a03afd47a94e196f546ca9f4252a1afc10741df2b842b29ec2b370d9817
-Source-Hash: blake3:45980c12c5a823721b78978b74a1cadcfb1b3886dad5190238b3cd88e52cbae4
+Content-Hash: blake3:bb09d679426461bdcc6e9ff526be3473e7417f91226f8db81faf04c3d0c52d73
+Source-Hash: blake3:2950a35215b5068ba96984091a9b83afe368eb1dc0a85f06bb09a6ef9e61ba66
 Schema-Version: v1
 -->
 
@@ -28,7 +28,7 @@ version-matched binary, `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>` (in
 plugin launcher exists:
 
 1. Check the index: `basemind status`.
-2. Check for a lock-holding server: a `basemind scan` lock error names the holder (command + pid) from the workspace cache's `.lock.meta`.
+2. Check for a lock holder: with a daemon running, `basemind scan` is forwarded to it; otherwise a lock error (exit 3) names the holder (command + pid) from the workspace cache's `.lock.meta`.
 3. Rebuild the index if needed: `basemind scan`.
 4. Reconnect the MCP server (client-specific — this is the only way to restart it).
 

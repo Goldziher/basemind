@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:4daab012f8e70e0958c7ac2aec2d491e72076fcceddf978aaf93553f2e36bf39
-Source-Hash: blake3:45980c12c5a823721b78978b74a1cadcfb1b3886dad5190238b3cd88e52cbae4
+Content-Hash: blake3:946805ae34bdf23eee93abb56f5bf5347cee30fb95236969e76d0f5fff5755f7
+Source-Hash: blake3:2950a35215b5068ba96984091a9b83afe368eb1dc0a85f06bb09a6ef9e61ba66
 Schema-Version: v1
 -->
 
@@ -51,15 +51,17 @@ basemind status
 
 ## 2. Is a server already running (holding the lock)?
 
-If `basemind scan` fails with a lock error, a `basemind serve` (or `watch`) already owns the index
-for this repo. The lock-contention error itself names the live holder (command + pid) — it reads
+With a basemind daemon running, `basemind scan` is forwarded to it (`scan via daemon`), so the
+daemon never makes it fail. If `basemind scan` fails with a lock error (exit 3), another process
+(`basemind watch`, another scan) holds the index for this repo. The error names the live holder
+(command + pid) — it reads
 that from the `.lock.meta` sidecar next to the workspace `.lock`. Both live in this workspace's
 directory under the machine-global cache (Linux `~/.local/share/basemind/`, macOS
 `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`), keyed by workspace — not
 in the repo.
 
-- If that `pid` is **alive** (`ps -p <pid>`), the server is up — use the MCP tools, and
-  `index_rescan {}` or `basemind rescan` to refresh. Don't run a CLI `scan` (it will contend on the lock and exit 3).
+- If that `pid` is **alive** (`ps -p <pid>`), let it finish, or stop it; meanwhile the MCP tools
+  answer, and `index_rescan {}` or `basemind rescan` refreshes the index.
 - If that `pid` is **dead**, the lock is stale. The OS releases the advisory lock when a process
   dies, so a fresh `basemind scan` / `basemind serve` should just work — retry it. (You may delete
   the stale `.lock.meta` sidecar in that workspace cache dir to clear the advisory holder record.)

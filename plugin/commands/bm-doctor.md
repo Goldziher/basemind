@@ -5,8 +5,8 @@ name: bm-doctor
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:88406afe89ac9298a0c591b114e9b32e7177c787382c0101abe6d13287ef23ae
-Source-Hash: blake3:45980c12c5a823721b78978b74a1cadcfb1b3886dad5190238b3cd88e52cbae4
+Content-Hash: blake3:0e6dd261cbe414e1429f75a22a6f6a37821cb9e9c13cb7a408d789d8c5b95010
+Source-Hash: blake3:2950a35215b5068ba96984091a9b83afe368eb1dc0a85f06bb09a6ef9e61ba66
 Schema-Version: v1
 -->
 
@@ -29,7 +29,7 @@ version-matched binary, `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>` (in
 plugin launcher exists:
 
 1. Check the index: `basemind status`.
-2. Check for a lock-holding server: a `basemind scan` lock error names the holder (command + pid) from the workspace cache's `.lock.meta`.
+2. Check for a lock holder: with a daemon running, `basemind scan` is forwarded to it; otherwise a lock error (exit 3) names the holder (command + pid) from the workspace cache's `.lock.meta`.
 3. Rebuild the index if needed: `basemind scan`.
 4. Reconnect the MCP server (client-specific — this is the only way to restart it).
 

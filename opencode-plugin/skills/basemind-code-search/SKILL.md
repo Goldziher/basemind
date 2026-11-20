@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:472d33feeed9c70264989ae4e761ac0383c855c97f698d8a97f540744e15f93d
-Source-Hash: blake3:45980c12c5a823721b78978b74a1cadcfb1b3886dad5190238b3cd88e52cbae4
+Content-Hash: blake3:fa85eb311d885b0d2e291fe4e454000b370364cb358407e5886689d08d94c936
+Source-Hash: blake3:2950a35215b5068ba96984091a9b83afe368eb1dc0a85f06bb09a6ef9e61ba66
 Schema-Version: v1
 -->
 
@@ -69,16 +69,19 @@ no tool covers the question.
 
 ```text
 code_symbols {"name":"MapCache"}
-→ src/mcp/mod.rs:79 MapCache (struct)
-  src/mcp/mod.rs:88 MapCache (impl)
+→ {"results":["src/engine/map_cache.rs:10: pub(crate) struct MapCache",
+              "src/engine/map_cache.rs:39: impl MapCache"], …}
 
 code_refs {"name":"process_file"}
-→ src/scanner.rs:142 process_file
-  src/scanner.rs:201 process_file
+→ {"total":1,"hits":{"src/scanner_file.rs":[{"line":113}]}, …}
 
-code_outline {"path":"src/mcp/tools.rs"}
-→ 31 code_outline (function)
-  52 code_symbols (function)
+code_outline {"path":"src/wire.rs"}
+→ path: src/wire.rs
+  language: rust
+  …
+  symbols[…]{name,kind,line,end_line,signature}:
+    encode,function,31,…
+    toon,function,42,…
 ```
 
 ## Notes

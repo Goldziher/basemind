@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:1856eebcf56775b0d7c17a1cdf3bf34682afadfef495a71bbaeced4961fac5ad
-Source-Hash: blake3:45980c12c5a823721b78978b74a1cadcfb1b3886dad5190238b3cd88e52cbae4
+Content-Hash: blake3:d8f5bcb866507bcc8254c77229efd16e81ad3a1cbd78a47fef11b43d783e314c
+Source-Hash: blake3:2950a35215b5068ba96984091a9b83afe368eb1dc0a85f06bb09a6ef9e61ba66
 Schema-Version: v1
 -->
 
@@ -55,15 +55,15 @@ The CLI also keeps shorthands: `git recent`, `git touching <path>`, `git search 
 
 ```text
 git_log {"limit":5}
-→ 612df7e chore(release): v0.15.0
-  1779b99 fix(git-history,serve): address code-review findings
-  ...
+→ {"commits":["612df7e3a1c4 chore(release): v0.15.0",
+              "1779b9902d5e fix(git-history,serve): address code-review findings", …],
+   "files":{"612df7e3a1c4":{"Cargo.toml":"modified",…},…}, …}
 
 git_blame {"path":"src/scanner.rs","symbol":"process_file"}
 → per-line authorship of that function's span
 
 git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
-→ + search_history (function)  - old_helper (function)
+→ the symbols in `added` and `removed`, and the count of `common` ones
 ```
 
 ## Notes

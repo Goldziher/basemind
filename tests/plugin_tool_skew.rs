@@ -79,7 +79,6 @@ const RESULT_VOCABULARY: &[(&str, &str)] = &[
         "omitted_bytes",
         "code_read / code_outline cut bodies (src/mcp/types_code.rs)",
     ),
-    ("chunk_idx", "docs_search hits (src/mcp/types_documents.rs)"),
     ("lanes_ran", "code_search (src/mcp/types_code.rs)"),
 ];
 

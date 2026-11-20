@@ -61,28 +61,30 @@ for prose and documents.
 
 ## What a hit carries
 
-`docs_search` returns chunk-level hits with `path`, `chunk_idx`, the matched `text`, byte span,
-vector `distance`, and, when enabled at scan time, a cross-encoder `rerank_score` in `[0,1]`, the
-parent document's `keywords` and named `entities` (NER, only from a build with `documents-ner`),
-and a document-level `summary`. `entity` and `keywords` constrain to documents whose parent
-carries a matching entity category or keyword (AND-combined when both are set).
+`docs_search` returns passage hits.
+Each carries its `path` (and `also_at`, other paths holding the same content), `mime_type`, the
+document `title` when it has one, `chunk` (which chunks of the document), `cite` (pages, `section` heading trail, source lines and byte range, each when the
+format has it), the matched `text` with its neighbouring chunks (`context`), the fused `score`,
+its rank in each lane (`lanes`) and, when the reranker scored it, `rerank_score`. The page reports
+`lanes_ran`, `lanes_unavailable` with the reason, and `rerank`. `entity` and `keywords` keep the
+documents whose parent carries a matching entity category or keyword (AND-combined when both are
+set); `kind` filters by format and `path` by a glob over document paths.
 
 ## Examples
 
 ```text
 docs_search {"query":"how is the index schema versioned","limit":5}
-→ docs/architecture.pdf#chunk3  rerank 0.91  "INDEX_SCHEMA_VER reads from RELEASE_MINOR…"
-  README.md#chunk12             rerank 0.74  "…wipe-on-mismatch rebuilds from source…"
+→ {"query":"how is the index schema versioned",
+   "hits":[{"path":"docs/ARCHITECTURE.md","mime_type":"text/markdown",
+            "cite":{"section":["Index"],"line_start":120,"line_end":134,…},
+            "text":"…","score":0.03,"rerank_score":0.91,…}, …],
+   "lanes_ran":["vector","lexical"],…}
 
-docs_search {"query":"rate limiting","mime_type":"text/html"}
-→ docs/site/limits.html#chunk1  rerank 0.88  "requests are capped at …"
+docs_search {"query":"…","kind":"pdf","path":"docs/**"}
 ```
 
 ## Notes
 
-- `docs_search` searches this repo's scope by default. Web ingestion was removed: pages an older
-  version scraped or crawled stay in the store under `web:<host>` and are no longer refreshed; pass
-  `"scope":"web:<host>"` to search them.
 - `memory_search` takes one selector: `query` (by meaning, ranked, no `cursor`), `key` (one note)
   or `prefix` (list by key prefix); with none it lists everything. `tag` filters a search or a
   list. A list pages by `next_cursor`; `truncated` with `truncated_reason: "scan_cap"` means its
