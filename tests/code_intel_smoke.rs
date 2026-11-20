@@ -307,3 +307,40 @@ fn reexport_cycle_terminates_and_the_search_continues_past_it() {
         "a name no file in the cycle defines resolves to nothing"
     );
 }
+
+#[test]
+fn a_named_reexport_beats_a_local_import_of_the_same_name() {
+    let app = app_importing("helper");
+    assert_app_resolves_to_impl(
+        &[
+            ("other.ts", "export function helper() {\n  return 2;\n}\n"),
+            ("impl.ts", IMPL),
+            (
+                "index.ts",
+                "import { helper } from './other';\nexport { helper } from './impl';\n",
+            ),
+            ("app.ts", app.as_str()),
+        ],
+        "helper",
+    );
+}
+
+#[test]
+fn a_shorter_path_searches_again_a_barrel_the_hop_limit_cut_on_a_longer_one() {
+    let mut barrels: Vec<(String, String)> = (1..6)
+        .map(|n| (format!("l{n}.ts"), format!("export * from './l{}';\n", n + 1)))
+        .collect();
+    barrels.push(("l6.ts".to_string(), "export * from './shared';\n".to_string()));
+    let app = app_importing("helper");
+    let mut files: Vec<(&str, &str)> = barrels
+        .iter()
+        .map(|(rel, body)| (rel.as_str(), body.as_str()))
+        .collect();
+    files.extend([
+        ("index.ts", "export * from './l1';\nexport * from './shared';\n"),
+        ("shared.ts", "export * from './impl';\n"),
+        ("impl.ts", IMPL),
+        ("app.ts", app.as_str()),
+    ]);
+    assert_app_resolves_to_impl(&files, "helper");
+}

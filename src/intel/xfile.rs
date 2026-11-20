@@ -38,7 +38,7 @@ use std::ops::Deref;
 use std::path::Path;
 use std::rc::Rc;
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 
 use crate::index::IndexDb;
 use crate::index::keys::{EdgeKinds, FileEdge, FileEdges, MAX_UNRESOLVED_SPECIFIERS};
@@ -159,15 +159,18 @@ impl<'a> FactsCatalog<'a> {
 }
 
 /// Resolve `wanted` to its ultimate exported definition starting from `target_rel`, transparently
-/// following re-export chains: a file that does not directly export `wanted` forwards it when it
-/// IMPORTS it (a package `__init__.py` re-export, a TS `import { x } …; export { x }` barrel), when a
-/// named re-export provides it (`export { a as wanted } from`), or when a star re-export may
-/// (`export * from`, every name but `default`). Forwards are tried in that order, star re-exports in
-/// source order, and the first that reaches a definition wins. Returns `(defining_file, name_start)`
+/// following re-export chains: a file that does not directly export `wanted` forwards it when a
+/// named re-export provides it (`export { a as wanted } from`), when it IMPORTS it (a package
+/// `__init__.py` re-export, a TS `import { x } …; export { x }` barrel), or when a star re-export
+/// may (`export * from`, every name but `default`). Forwards are tried in that order, so a named
+/// re-export beats a local import of the same name (the import is not what the file exports), star
+/// re-exports in source order, and the first that reaches a definition wins. Returns `(defining_file, name_start)`
 /// — the file that actually defines the export and the byte the join keys on — or `None` when the
 /// name is neither a direct export nor a followable re-export within [`MAX_REEXPORT_HOPS`] files.
-/// Cycle-guarded on `(file, name)`, so a barrel that re-exports itself, directly or around a loop,
-/// terminates.
+/// Cycle-guarded on `(file, name)` with the fewest hops it was reached at: a barrel that re-exports
+/// itself, directly or around a loop, terminates, while a pair first reached down a long chain is
+/// searched again when a shorter path reaches it, so the hop limit cut nothing the short path
+/// allows.
 ///
 /// Re-exports stay within one language (a Python import resolves to a Python file), so the importer's
 /// `resolver` is valid for every hop; each hop resolves relative to the current file in the chain.
@@ -188,20 +191,20 @@ fn resolve_export_transitively(
         catalog,
         resolver,
         probes,
-        visited: AHashSet::new(),
+        visited: AHashMap::new(),
     };
     search.find(target_rel, wanted, 0)
 }
 
 /// One [`resolve_export_transitively`] walk: the depth-first search over a file's forwards, with
-/// the `(file, name)` pairs already visited.
+/// the `(file, name)` pairs already visited and the fewest hops each was reached at.
 struct ExportSearch<'s, 'a> {
     root: &'s Path,
     store: &'s Store,
     catalog: &'s FactsCatalog<'a>,
     resolver: &'s SpecifierResolver,
     probes: &'s mut ProbeSet,
-    visited: AHashSet<(String, String)>,
+    visited: AHashMap<(String, String), usize>,
 }
 
 impl ExportSearch<'_, '_> {
@@ -216,13 +219,18 @@ impl ExportSearch<'_, '_> {
             return None;
         }
         let current_key = current_rel.as_str()?.to_string();
-        if !self.visited.insert((current_key.clone(), wanted.to_string())) {
+        let pair = (current_key.clone(), wanted.to_string());
+        if self.visited.get(&pair).is_some_and(|&seen| seen <= hops) {
             return None;
         }
+        self.visited.insert(pair, hops);
         if let Some(name_start) = self.catalog.export_start(&current_key, wanted) {
             return Some((current_rel, name_start));
         }
         let facts = self.catalog.facts(&current_key)?;
+        if let Some(found) = self.follow_reexports(&current_key, &facts, wanted, hops, true) {
+            return Some(found);
+        }
         if let Some(import) = facts
             .imports
             .iter()
@@ -233,11 +241,28 @@ impl ExportSearch<'_, '_> {
                 return Some(found);
             }
         }
-        for reexport in facts.reexports.iter().filter(|reexport| !reexport.is_type) {
+        self.follow_reexports(&current_key, &facts, wanted, hops, false)
+    }
+
+    /// Follow the runtime re-exports of `facts` that forward `wanted`: the named ones when `named`,
+    /// else the star ones, in source order. The first that reaches a definition wins.
+    fn follow_reexports(
+        &mut self,
+        current_key: &str,
+        facts: &FileFacts,
+        wanted: &str,
+        hops: usize,
+        named: bool,
+    ) -> Option<(crate::path::RelPath, u32)> {
+        for reexport in facts
+            .reexports
+            .iter()
+            .filter(|reexport| !reexport.is_type && reexport.named.is_some() == named)
+        {
             let Some(next_wanted) = reexport.forwards(wanted) else {
                 continue;
             };
-            if let Some(found) = self.follow(&current_key, &reexport.module_request(), next_wanted, hops) {
+            if let Some(found) = self.follow(current_key, &reexport.module_request(), next_wanted, hops) {
                 return Some(found);
             }
         }
