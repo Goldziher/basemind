@@ -101,7 +101,10 @@ clear/stats, `tests/upgrade_from_release.rs`).
 Product sources live in `plugin/.ai-rulez/`; root `.ai-rulez/` governs development. Runtime manifests,
 packages, marketplace indexes, and skill mirrors are generated from these sources: regenerate with
 `mise run plugin:generate` and verify with `mise run plugin:verify` before submitting changes, and
-never edit generated runtime files directly. Gemini context lives at `plugin/assets/GEMINI.md`.
+never edit generated runtime files directly. A skill section between `<!-- manual:<topic> -->` markers
+is spliced from `docs/manual/<topic>.md`, so edit the manual page, not the skill. `plugin:generate`
+runs `ai-rulez` from `PATH` (`npm install -g ai-rulez`), or the executable `AI_RULEZ` names. Gemini
+context lives at `plugin/assets/GEMINI.md`.
 Run `mise run plugin:hermes:native:test` with `HERMES_PYTHON` pointing to the Hermes SDK interpreter
 to test the Hermes plugin against Hermes itself.
 
