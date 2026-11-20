@@ -37,6 +37,12 @@ daemons (`daemons/`, every generation) and hosts (`hosting/<pid>`) registered un
    process holds. Under the lock it first moves the memory notes a release before 0.30 kept in a
    view's index to the group's notes store (`rescue_legacy_memory`); a workspace whose notes cannot
    be moved keeps its indexes. The file map (`index.msgpack`) stays, as at a writer open.
+4. **Over the cache budget, per-view indexes go first.** Budget enforcement deletes every per-view
+   index left, adopted or not, before it evicts any workspace, by rules 2 and 3, except in a
+   workspace a newer basemind wrote. This release reads none of them, and a release up to 0.33
+   rebuilds a view whose index is gone at its next writer open.
+5. **`cache stats` counts them:** `legacy_indexes` and `legacy_index_bytes` name the per-view indexes
+   left in every workspace on the machine.
 
 ## Consequences
 
@@ -44,7 +50,8 @@ daemons (`daemons/`, every generation) and hosts (`hosting/<pid>`) registered un
   sweep's report counts them (`legacy_indexes_reaped`, `legacy_index_bytes_freed`).
 - A release up to 0.33 started after the sweep finds the index of an adopted worktree gone.
 - A workspace whose repository has no group index (no worktree of it opened since the upgrade, or
-  its group evicted) keeps its per-view indexes.
+  its group evicted) keeps its per-view indexes until the cache is over its budget; the sweep's
+  report counts the ones budget enforcement removed with the adopted ones.
 - Rule 11's handling of the workspace's `lance/` is unchanged.
 
 ## Alternatives considered

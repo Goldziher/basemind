@@ -580,6 +580,9 @@ retention of an unused version); once it is reaped, that install re-extracts on 
 The daemon's cache sweep also deletes the per-view `index.fjall` of releases up to 0.33 in every
 workspace whose repository's group index exists (`src/store_gc_legacy_views.rs`, ADR-0054), under
 the workspace lock and after moving any notes it holds, and none while a 0.33 daemon is registered.
+With the cache over budget, budget enforcement deletes every per-view index left, adopted or not, by
+the same rules before it evicts any workspace; `cache stats` counts the ones left on the machine
+(`legacy_indexes`, `legacy_index_bytes`).
 
 Before eviction or the orphan reaper removes a workspace, each view whose index still holds the notes
 keyspace of a release before 0.30 has its notes moved to the group store by a writer open under the
