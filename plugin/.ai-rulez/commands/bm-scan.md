@@ -24,14 +24,15 @@ results that shouldn't be empty, or the index is stale after large changes.
 
 ```sh
 basemind scan                  # no argument
-basemind rescan ${ARGUMENTS}   # a path argument
+basemind rescan "$ARGUMENTS"   # a path argument
 ```
 
 - No argument → `basemind scan`, a full working-tree scan.
 - A path argument (`/bm-scan src/mcp`) → `basemind rescan src/mcp`, which re-indexes only that path
-  (incremental); `scan` takes no path.
+  (incremental) when a working-tree index exists; with none yet, or one that must be rebuilt, it
+  runs a full scan instead. `scan` takes no path.
 - Prefer the plugin-managed, version-matched binary: run `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh scan`
-  (or `… rescan ${ARGUMENTS}`)
+  (or `… rescan "$ARGUMENTS"`)
   (in other hosts, `scripts/mcp-launch.sh` in the plugin directory). Use bare `basemind` from `PATH`
   only when no plugin launcher exists, or build a dev binary with `cargo build --release` and use
   `./target/release/basemind`.

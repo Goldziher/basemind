@@ -38,9 +38,10 @@ no tool covers the question.
 - **`code_symbols` instead of `grep` for a definition.** It matches indexed symbol names and skips
   the comment, string and test-name noise.
 - **`code_refs` instead of grepping call sites.** Indexed call edges, not text matches.
-- **`code_grep` instead of shelling out to ripgrep.** It sweeps every indexed code file and every
-  markdown, config and data file (a trigram filter skips code files that cannot match) and returns
-  each hit's line and enclosing symbol.
+- **`code_grep` instead of shelling out to ripgrep.** It sweeps every indexed code, markdown,
+  config and data file (a trigram filter skips code files that cannot match) and returns each hit's
+  line and enclosing symbol. A file created since the last scan is not in it until the watcher or
+  an `index_rescan {"paths":[…]}` indexes it, so a miss there is not proof of absence.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 - **`index_rescan` after you edit code**, not a server reconnect. Pass `paths` to limit it.
 

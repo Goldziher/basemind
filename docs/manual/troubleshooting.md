@@ -9,7 +9,8 @@ Every step here uses the CLI, so it works while the MCP server is down.
 3. **Empty results that should not be empty.** Look for a `notice` first: `warming_up` and
    `building_index` mean retry shortly. Then check the filter: a `path` or `language` no indexed
    file has is an error, but a narrow query is not. Markdown, config and data files are not in the
-   code map: find exact text in them with `code_grep`, a topic with `docs_search`.
+   code map: find exact text in them with `basemind code grep <pattern>` (MCP: `code_grep`), a topic
+   with `docs_search`.
 4. **A result looks out of date.** Run `basemind rescan <path>` (MCP: `index_rescan`). With a
    daemon running the rescan is forwarded to it.
 5. **Exit 3 (busy).** Another process holds the workspace writer lock; the error names it. If
