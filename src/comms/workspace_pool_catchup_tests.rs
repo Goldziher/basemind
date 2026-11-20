@@ -56,6 +56,38 @@ async fn a_rebuilt_read_stack_catches_up_on_a_file_added_while_it_was_shed() {
     );
 }
 
+/// An existing file edited while its stack was shed is re-extracted by the rebuild's catch-up: its
+/// stat no longer matches the file map, so the rebuilt stack serves the new symbol and not the old.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rebuilt_read_stack_catches_up_on_a_file_edited_while_it_was_shed() {
+    store::init_isolated_cache();
+    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let workspace = workspace_with_sources();
+    pool.rescan(workspace.path(), None, false, false, &ScanCancel::default())
+        .expect("scan workspace");
+    drop(hosted_stack(&pool, workspace.path()).await);
+    assert_eq!(pool.evict_idle_read_stacks(Duration::ZERO), 1, "the stack is shed");
+
+    std::fs::write(
+        workspace.path().join("alpha.rs"),
+        "pub fn renamed_while_shed() -> u32 { 10 }\n",
+    )
+    .expect("edit alpha");
+    let rebuilt = hosted_stack(&pool, workspace.path()).await;
+    let renamed = symbols(&rebuilt, "renamed_while_shed").await;
+    assert_eq!(
+        renamed["results"],
+        serde_json::json!(["alpha.rs:1: pub fn renamed_while_shed() -> u32"]),
+        "{renamed}"
+    );
+    let alpha = symbols(&rebuilt, "alpha").await;
+    assert_eq!(
+        alpha["results"],
+        serde_json::json!([]),
+        "the edit replaced the old symbol: {alpha}"
+    );
+}
+
 /// A workspace the daemon dropped altogether (the idle sweep, or a daemon exit) reopens over its
 /// committed index, which a file added meanwhile is missing from.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
