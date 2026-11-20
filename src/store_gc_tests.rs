@@ -759,11 +759,14 @@ fn the_blob_store_sweep_reaps_the_current_namespace_and_the_superseded_ones() {
 
 /// The sweep the daemon and the CLI run over the machine-global store is the whole-store sweep: a
 /// blob of an older namespace and an un-namespaced one, both unwritten for longer than the default
-/// 14-day hold and read by no live process, go; a newer namespace stays.
+/// 14-day hold and read by no live process, go; a newer namespace stays. The data home is the
+/// test's own: blobs other tests plant in the process's shared one would be newer writes into the
+/// un-namespaced blobs, and keep them for the hold.
 #[test]
 fn the_machine_global_sweep_reaps_what_older_builds_left() {
-    crate::store::init_isolated_cache();
-    let root = crate::store_layout::global_blobs_root();
+    let home = tempfile::tempdir().expect("data home");
+    let data = crate::data_root::DataRoot::new(home.path());
+    let root = data.global_blobs_root();
     let aged = |path: &PathBuf| {
         let past_the_hold = Duration::from_secs(15 * 24 * 60 * 60);
         fs::File::options()
@@ -779,15 +782,7 @@ fn the_machine_global_sweep_reaps_what_older_builds_left() {
     aged(&flat);
     aged(&newer);
 
-    // A sweep another test is running holds the machine-wide lock and makes this call a no-op.
-    let mut attempts = 0;
-    while (older.exists() || flat.exists()) && attempts < 100 {
-        gc_global_blobs(&crate::data_root::DataRoot::current()).expect("sweep");
-        attempts += 1;
-        if older.exists() || flat.exists() {
-            std::thread::yield_now();
-        }
-    }
+    gc_global_blobs(&data).expect("sweep");
 
     assert!(!older.exists(), "an older namespace is swept by the global sweep");
     assert!(!flat.exists(), "so is an un-namespaced blob");

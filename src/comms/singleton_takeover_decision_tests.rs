@@ -142,6 +142,7 @@ impl Generation for Scripted {
             kind: DaemonKind::Comms,
             dir: self.dir.clone(),
             version: "0.49.0".to_string(),
+            blob_schema: None,
             started_unix: 1_000,
             process_start: None,
             boot: None,

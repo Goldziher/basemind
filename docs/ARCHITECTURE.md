@@ -568,7 +568,8 @@ nothing: a view of an older schema or blob layout, or one whose file map does no
 in the sweep and is passed over without the workspace lock, never removed, and its next writer open
 rebuilds it. An older install may still use such a view, but the view can outlive its blobs. The sweep
 of superseded namespaces (`src/store_gc_namespaces.rs`) leaves an older version's namespace while a
-live process of that version is registered under the data home (`daemons/`, `hosting/<pid>`) and
+live process of that version is registered under the data home (`daemons/`, `hosting/<pid>`; a
+record names the blob schema its process reads, one a release up to 0.33 wrote only its version) and
 until nothing was written into it for `BASEMIND_PRUNE_AFTER_DAYS` days (14 by default, the launcher's
 retention of an unused version); once it is reaped, that install re-extracts on its next scan.
 

@@ -191,6 +191,7 @@ fn record_holder_since(dir: &Path, pid: u32, started_unix: i64) {
         kind: DaemonKind::Comms,
         dir: dir.to_path_buf(),
         version: OLDER.to_string(),
+        blob_schema: None,
         started_unix,
         process_start: None,
         boot: None,

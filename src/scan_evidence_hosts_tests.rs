@@ -23,6 +23,7 @@ fn plant_host(hosting: &Path, pid: u32, boot: Option<&str>, started: Option<u64>
         boot: boot.map(str::to_string),
         started,
         version: None,
+        blob_schema: None,
     };
     std::fs::write(&path, serde_json::to_vec(&record).expect("encode")).expect("plant");
     path
@@ -54,6 +55,7 @@ fn a_clean_stop_retracts_the_marker_and_the_marker_names_its_boot_and_start() {
     assert_eq!(record.boot.as_deref(), Some(THIS_BOOT_ID));
     assert_eq!(record.started, crate::boot_identity::process_start(std::process::id()));
     assert_eq!(record.version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+    assert_eq!(record.blob_schema, Some(crate::extract::SCHEMA_VER));
     assert_eq!(
         std::fs::read_dir(dir.path()).expect("list").count(),
         1,
@@ -63,10 +65,10 @@ fn a_clean_stop_retracts_the_marker_and_the_marker_names_its_boot_and_start() {
     assert!(!own.exists());
 }
 
-/// The blob sweep keeps the namespace of every live host: it is told the versions of the live hosts
+/// The blob sweep keeps the namespace of every live host: it is told the builds of the live hosts
 /// only, without touching a marker.
 #[test]
-fn the_live_hosts_are_listed_by_version_and_the_dead_ones_are_not() {
+fn the_live_hosts_are_listed_by_build_and_the_dead_ones_are_not() {
     let dir = tempfile::tempdir().expect("tempdir");
     let hosting = dir.path().join("hosting");
     let _live = HostingMarker::begin_in(&hosting, Some(THIS_BOOT_ID)).expect("marker");
@@ -75,8 +77,11 @@ fn the_live_hosts_are_listed_by_version_and_the_dead_ones_are_not() {
     std::fs::write(&dead, dead_record.to_string()).expect("plant");
 
     assert_eq!(
-        live_host_versions_in(&hosting, this_boot()),
-        [env!("CARGO_PKG_VERSION").to_string()]
+        live_host_builds_in(&hosting, this_boot()),
+        [HostBuild {
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            blob_schema: Some(crate::extract::SCHEMA_VER),
+        }]
     );
     assert!(dead.exists(), "listing is read-only");
 }

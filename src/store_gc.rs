@@ -423,7 +423,7 @@ pub fn gc_global_blobs(data: &DataRoot) -> Result<GcReport, GcError> {
         &data.global_blobs_root(),
         crate::extract::SCHEMA_VER,
         blob_gc_grace(),
-        &Holds::current(),
+        &Holds::under(data),
     )
 }
 

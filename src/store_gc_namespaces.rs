@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use crate::data_root::DataRoot;
 use crate::store_gc::{GcError, GcReport, read_dir};
 
 /// How long, in whole days, an older basemind's blob namespace is kept after its last write (default
@@ -64,6 +65,21 @@ pub(crate) fn namespace_read_by(version: &str, pre_generation: bool) -> Option<B
     major.checked_mul(100)?.checked_add(minor).map(BlobNamespace::Schema)
 }
 
+/// The namespace a basemind reads, from what its registry record or hosting marker says: the blob
+/// schema a build after 0.33 records, else [`namespace_read_by`] its version. The recorded schema
+/// wins: a build's package version is bumped only at release, so between releases it can name a
+/// minor whose namespace the build does not read.
+pub(crate) fn namespace_recorded(
+    blob_schema: Option<u16>,
+    version: Option<&str>,
+    pre_generation: bool,
+) -> Option<BlobNamespace> {
+    match blob_schema {
+        Some(schema) => Some(BlobNamespace::Schema(schema)),
+        None => namespace_read_by(version?, pre_generation),
+    }
+}
+
 /// What keeps a superseded namespace on disk.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Holds {
@@ -74,31 +90,34 @@ pub(crate) struct Holds {
 }
 
 impl Holds {
-    /// The holds under the data home now: the namespaces of the live daemons and hosts registered
-    /// there, and the engine configuration's hold.
-    pub(crate) fn current() -> Self {
+    /// The holds under the data home `data`: the namespaces of the live daemons and hosts
+    /// registered there, and the engine configuration's hold.
+    pub(crate) fn under(data: &DataRoot) -> Self {
         Self {
-            live: live_namespaces(),
+            live: live_namespaces(data),
             hold: crate::config::engine::with(|config| config.gc.superseded_hold),
         }
     }
 }
 
 /// The namespaces the live daemons (`daemons/`, every generation) and hosts (`hosting/<pid>`)
-/// registered under the data home read.
+/// registered under the data home `data` read.
 #[cfg(any(unix, windows))]
-fn live_namespaces() -> Vec<BlobNamespace> {
-    let daemons = crate::daemon_lock::registered_daemons()
+fn live_namespaces(data: &DataRoot) -> Vec<BlobNamespace> {
+    let daemons = crate::daemon_lock::registered_daemons(data)
         .into_iter()
-        .filter_map(|daemon| namespace_read_by(&daemon.record.version, daemon.pre_generation));
-    let hosts = crate::scan_evidence_hosts::live_host_versions()
+        .filter_map(|daemon| {
+            let record = daemon.record;
+            namespace_recorded(record.blob_schema, Some(&record.version), daemon.pre_generation)
+        });
+    let hosts = crate::scan_evidence_hosts::live_host_builds(data)
         .into_iter()
-        .filter_map(|version| namespace_read_by(&version, false));
+        .filter_map(|host| namespace_recorded(host.blob_schema, host.version.as_deref(), false));
     daemons.chain(hosts).collect()
 }
 
 #[cfg(not(any(unix, windows)))]
-fn live_namespaces() -> Vec<BlobNamespace> {
+fn live_namespaces(_data: &DataRoot) -> Vec<BlobNamespace> {
     Vec::new()
 }
 
@@ -337,6 +356,58 @@ mod tests {
                 "{version} (pre-generation: {pre_generation})"
             );
         }
+    }
+
+    #[test]
+    fn a_recorded_blob_schema_names_the_namespace_before_the_version_does() {
+        let cases: &[(Option<u16>, Option<&str>, bool, Option<BlobNamespace>)] = &[
+            (Some(34), Some("0.33.0"), false, Some(BlobNamespace::Schema(34))),
+            (Some(34), None, false, Some(BlobNamespace::Schema(34))),
+            (None, Some("0.33.0"), true, Some(BlobNamespace::Unnamespaced)),
+            (None, Some("0.34.0"), false, Some(BlobNamespace::Schema(34))),
+            (None, None, false, None),
+        ];
+        for (blob_schema, version, pre_generation, expected) in cases {
+            assert_eq!(
+                namespace_recorded(*blob_schema, *version, *pre_generation),
+                *expected,
+                "{blob_schema:?} {version:?} (pre-generation: {pre_generation})"
+            );
+        }
+    }
+
+    /// The live set is read from the registry of the data home the sweep is given, not the
+    /// process's: an empty home holds nothing. A daemon this build registers holds the namespace it
+    /// reads whatever its version string says, and a 0.33 record in the registry root holds the
+    /// un-namespaced blobs.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn the_live_set_is_the_swept_home_s_and_this_build_holds_the_namespace_it_reads() {
+        use crate::daemon_lock::{DaemonKind, DaemonLock, DaemonLockOutcome};
+        let home = tempfile::tempdir().unwrap();
+        let data = DataRoot::new(home.path());
+        assert_eq!(Holds::under(&data).live, Vec::<BlobNamespace>::new());
+
+        let comms = tempfile::tempdir().unwrap();
+        let registry = home.path().join("daemons");
+        let outcome = DaemonLock::acquire_at(DaemonKind::Comms, comms.path(), "0.20.0", &registry.join("g1")).unwrap();
+        assert!(matches!(outcome, DaemonLockOutcome::Acquired(_)));
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let legacy = serde_json::json!({
+            "pid": std::process::id(), "kind": "comms", "dir": "/tmp/comms", "version": "0.33.0", "started_unix": now,
+        });
+        std::fs::write(registry.join("comms-legacy.pid"), legacy.to_string()).unwrap();
+
+        assert_eq!(
+            Holds::under(&data).live,
+            [
+                BlobNamespace::Unnamespaced,
+                BlobNamespace::Schema(crate::extract::SCHEMA_VER)
+            ]
+        );
     }
 
     #[test]

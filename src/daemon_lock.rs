@@ -150,6 +150,11 @@ pub struct DaemonRecord {
     pub dir: PathBuf,
     /// The daemon's build version.
     pub version: String,
+    /// The blob schema whose namespace the daemon reads ([`crate::extract::SCHEMA_VER`]). `None` in a
+    /// record a release up to 0.33 wrote: [`crate::store_gc_namespaces`] then reads the namespace
+    /// off `version`.
+    #[serde(default)]
+    pub blob_schema: Option<u16>,
     /// Unix seconds when the daemon acquired the lock.
     pub started_unix: i64,
     /// The daemon's own [`crate::boot_identity::process_start`]: the process at `pid` is the daemon
@@ -168,7 +173,12 @@ pub struct DaemonRecord {
 /// up to 0.33 keep their records directly in it; their scan reads only `*.pid` files there, so a
 /// generation subdirectory is invisible to them.
 fn daemons_root() -> PathBuf {
-    DataRoot::current().path().join(DAEMONS_SUBDIR)
+    daemons_root_of(&DataRoot::current())
+}
+
+/// The registry root of the data home `data`.
+fn daemons_root_of(data: &DataRoot) -> PathBuf {
+    data.path().join(DAEMONS_SUBDIR)
 }
 
 /// This generation's registry directory (`<data_home>/daemons/g<N>/`): where this binary's daemons
@@ -347,12 +357,12 @@ pub struct RegisteredDaemon {
     pub pre_generation: bool,
 }
 
-/// Every live daemon registered under the data home, of every generation and kind: the records in
-/// the registry root first, then those of each `g<N>/`. Read-only. A record that does not name the
-/// process now under its pid ([`crate::process_start::can_have_written`]) is passed over: a daemon
-/// that was killed left it, and the number now belongs to something else.
-pub fn registered_daemons() -> Vec<RegisteredDaemon> {
-    registered_daemons_in(&daemons_root())
+/// Every live daemon registered under the data home `data`, of every generation and kind: the
+/// records in the registry root first, then those of each `g<N>/`. Read-only. A record that does
+/// not name the process now under its pid ([`crate::process_start::can_have_written`]) is passed
+/// over: a daemon that was killed left it, and the number now belongs to something else.
+pub fn registered_daemons(data: &DataRoot) -> Vec<RegisteredDaemon> {
+    registered_daemons_in(&daemons_root_of(data))
 }
 
 /// [`registered_daemons`] over an explicit registry root.
@@ -566,6 +576,7 @@ impl DaemonLock {
             kind,
             dir: dir.to_path_buf(),
             version: version.to_string(),
+            blob_schema: Some(crate::extract::SCHEMA_VER),
             started_unix: now_unix(),
             process_start: crate::boot_identity::process_start(std::process::id()),
             boot: crate::boot_identity::current(),
