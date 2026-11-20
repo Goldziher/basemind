@@ -580,6 +580,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - cargo-deny checks the `full` dependency graph the release binaries are built from.
 
+- Release archives no longer bundle libheif or its codecs (libde265, x265, libaom, libvmaf,
+  libsharpyuv): the macOS archive ships no libraries and the Linux archives ship only
+  `libstdc++.so.6`. CI no longer installs or builds libheif, and packaging a release fails, naming
+  each one, when a library outside the per-platform allowlist in `scripts/check-bundled-libs.sh`
+  would be bundled.
+
 ### Removed
 
 - `BASEMIND_MCP_LEAN` and its three wrapper tools (`list_tools`, `get_tool_schema`,
