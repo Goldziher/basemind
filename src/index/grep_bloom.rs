@@ -67,8 +67,11 @@ fn trigram(w: &[u8]) -> u32 {
     (u32::from(w[0]) << 16) | (u32::from(w[1]) << 8) | u32::from(w[2])
 }
 
-/// Build the stored row for content the caller already holds.
+/// Build the stored row for content the caller already holds, over the trigrams of the text grep
+/// matches against ([`crate::source_text::as_text`]).
 pub fn build_row(bytes: &[u8]) -> Vec<u8> {
+    let text = crate::source_text::as_text(bytes);
+    let bytes = text.as_bytes();
     let bloom_bytes = (bytes.len() / BYTES_DIVISOR).clamp(MIN_BLOOM_BYTES, MAX_BLOOM_BYTES);
     let nbits = (bloom_bytes * 8) as u64;
     let mut row = vec![0u8; HEADER_BYTES + bloom_bytes];

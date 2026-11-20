@@ -399,8 +399,8 @@ fn deferral_summary(deferred: usize, phase_budget_secs: u64) -> Option<String> {
 /// purge must then leave the file's existing entry alone.
 ///
 /// A missing file and a path that is no longer a regular file inside the root (`InvalidInput`, see
-/// `read_working_tree`) are verdicts, as are the skips (too large, binary, non-UTF-8, no
-/// language): those entries go. Everything else that failed — an I/O error, a parse or document
+/// `read_working_tree`) are verdicts, as are the skips (too large, binary, no language): those
+/// entries go. Everything else that failed — an I/O error, a parse or document
 /// timeout, an extraction or blob-write error, a contained panic — may succeed on the next scan.
 pub(crate) fn keeps_prior_entry(status: &FileStatus) -> bool {
     match status {
@@ -445,7 +445,6 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
             #[cfg(feature = "documents")]
             FileStatus::DocUnchanged => ctx.stats.skipped_unchanged += 1,
             FileStatus::SkippedTooLarge { .. } => ctx.stats.skipped_too_large += 1,
-            FileStatus::SkippedNonUtf8 => ctx.stats.skipped_non_utf8 += 1,
             FileStatus::SkippedNoLang => ctx.stats.skipped_no_lang += 1,
             FileStatus::SkippedBinary => ctx.stats.skipped_binary += 1,
             FileStatus::Removed => ctx.stats.removed += 1,

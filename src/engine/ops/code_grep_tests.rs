@@ -57,30 +57,44 @@ fn counts_every_match_and_the_prefilter_never_changes_the_count() {
     let re = LineRegex::new(Regex::new("needle").expect("regex"));
     let finder = Finder::new("needle".as_bytes()).into_owned();
     let source = b"needle\nhay\nneedle needle\n";
-    assert_eq!(count_matches(source, &re, None), Some(3));
-    assert_eq!(count_matches(source, &re, Some(&finder)), Some(3));
-    assert_eq!(count_matches(b"hay only", &re, Some(&finder)), Some(0));
-    assert_eq!(
-        count_matches(b"needle \xff", &re, Some(&finder)),
-        None,
-        "non-UTF-8 cannot be searched, and is reported as such"
-    );
+    assert_eq!(count_matches(source, &re, None), 3);
+    assert_eq!(count_matches(source, &re, Some(&finder)), 3);
+    assert_eq!(count_matches(b"hay only", &re, Some(&finder)), 0);
     assert_eq!(
         count_matches(b"hay \xff", &re, Some(&finder)),
-        Some(0),
+        0,
         "a file without the literal cannot match, whatever its encoding"
     );
 }
 
+#[test]
+fn a_file_that_is_not_utf8_is_searched_with_its_invalid_bytes_as_stand_ins() {
+    let count = |pattern: &str, bytes: &[u8]| {
+        let re = LineRegex::new(Regex::new(&regex::escape(pattern)).expect("regex"));
+        let finder = Finder::new(pattern.as_bytes()).into_owned();
+        (
+            count_matches(bytes, &re, None),
+            count_matches(bytes, &re, Some(&finder)),
+        )
+    };
+    let latin1 = b"class Caf\xe9 {}\nString cr\xe8me = \"cr\xe8me\";\n";
+    assert_eq!(count("class Caf", latin1), (1, 1));
+    assert_eq!(count("cr_me", latin1), (2, 2), "the literal holds the stand-in");
+    assert_eq!(count("cr_me", b"String cr_me;\n"), (1, 1));
+    assert_eq!(count("cr_me", "String cr\u{e8}me;\n".as_bytes()), (0, 0));
+    assert_eq!(count("absent", latin1), (0, 0));
+}
+
 // ---- equivalence against a plain read-per-file sweep ------------------------------------
 
-/// The oracle: `read_to_string` per file for the count pass, then a second read of the selected
-/// files. No buffer reuse, no parallelism, nothing to get wrong.
+/// The oracle: one read per file as stand-in text for the count pass, then a second read of the
+/// selected files. No buffer reuse, no parallelism, nothing to get wrong.
 mod reference {
     use super::*;
 
     pub(super) fn read(root: &Path, path: &RelPath) -> Option<String> {
-        std::fs::read_to_string(root.join(path.to_path_buf())).ok()
+        let bytes = std::fs::read(root.join(path.to_path_buf())).ok()?;
+        Some(crate::source_text::as_text(&bytes).into_owned())
     }
 
     pub(super) fn count(
@@ -188,7 +202,7 @@ fn generate_corpus(dir: &Path) -> Vec<RelPath> {
             body.push_str(eol);
         }
         let bytes = match i {
-            // Invalid UTF-8: must count zero in both implementations.
+            // Invalid UTF-8: searched as stand-in text by both implementations.
             10 | 11 => {
                 let mut b = body.into_bytes();
                 b.extend_from_slice(b"needle \xff\xfe");
@@ -217,6 +231,7 @@ fn the_optimised_sweep_is_byte_identical_to_the_original_over_a_generated_corpus
         "needle|hay",
         r"fn\s+\w+",
         "post_processing",
+        "needle __",
         "naïve",
         "日本語",
         "😀",

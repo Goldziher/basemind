@@ -3,7 +3,7 @@
 //!
 //! `process_file` is the unit of work `scanner::scan` / `scan_paths` fan out over: detect the
 //! language, short-circuit an unchanged file (mtime+size, then content hash), read the bytes from
-//! the active [`ScanSource`], classify (binary / non-UTF-8 / too large), extract or reuse the L1+L2
+//! the active [`ScanSource`], classify (binary / too large), extract or reuse the L1+L2
 //! blobs, stage the Fjall index upsert, and (feature-gated) chunk / embed. The reader helpers
 //! ([`read_working_tree`] / [`read_via_git`]), the classifiers ([`looks_binary`]), the
 //! unchanged-file gates, and the [`WorkerIndexBatch`] accumulator are all in service of that one
@@ -402,10 +402,6 @@ fn process_file(
 
     if looks_binary(&bytes) {
         return FileResult::bare(rel.to_string(), FileStatus::SkippedBinary);
-    }
-
-    if std::str::from_utf8(&bytes).is_err() {
-        return FileResult::bare(rel.to_string(), FileStatus::SkippedNonUtf8);
     }
 
     // A stamp taken too close to the clock cannot vouch for the bytes just read (see `settled_mtime`).

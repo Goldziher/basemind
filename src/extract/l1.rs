@@ -6,7 +6,11 @@ use crate::lang::{
     CaptureClass, LangId, ParseOutcome, parse_with_default_timeout, try_get_classified_combined_l1_query, with_parser,
 };
 
+/// The L1 outline (symbols, imports, implementations, rationale) of `source`, parsed as
+/// [`crate::source_text::as_text`] so a file that is not UTF-8 is outlined at its own offsets.
 pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError> {
+    let text = crate::source_text::as_text(source);
+    let source = text.as_bytes();
     let outcome = with_parser(lang, |p| parse_with_default_timeout(p, source))?;
     let tree = match outcome {
         ParseOutcome::Ok(t) => t,

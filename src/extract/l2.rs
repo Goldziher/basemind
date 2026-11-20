@@ -4,7 +4,11 @@ use super::rust_macro_items::MacroBodies;
 use super::{Call, DocComment, ExtractError, FileMapL2, SCHEMA_VER, capture_name};
 use crate::lang::{LangId, ParseOutcome, QueryKind, parse_with_default_timeout, try_get_query, with_parser};
 
+/// The L2 map (calls and doc comments) of `source`, parsed as [`crate::source_text::as_text`] so a
+/// file that is not UTF-8 is mapped at its own offsets.
 pub fn extract_l2(lang: LangId, source: &[u8]) -> Result<FileMapL2, ExtractError> {
+    let text = crate::source_text::as_text(source);
+    let source = text.as_bytes();
     let outcome = with_parser(lang, |p| parse_with_default_timeout(p, source))?;
     let tree = match outcome {
         ParseOutcome::Ok(t) => t,

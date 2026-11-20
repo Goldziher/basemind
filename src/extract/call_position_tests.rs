@@ -79,3 +79,15 @@ fn method_chains_in_other_languages_are_at_their_method_names() {
     let java = "class A { void f() { builder\n    .add(1)\n    .build(); } }\n";
     assert_eq!(position("java", java, "add"), ((1, 5), "add(1)"));
 }
+
+#[test]
+fn a_call_in_a_latin1_file_is_at_its_own_offsets() {
+    let src = b"class A {\n    void f() { cr\xe8me(); }\n}\n";
+    let calls = extract_l2("java", src).expect("extract l2").calls;
+    let got: Vec<(&str, u32, u32, u32, u32)> = calls
+        .iter()
+        .map(|c| (c.callee.as_str(), c.start_byte, c.end_byte, c.start_row, c.start_col))
+        .collect();
+    assert_eq!(got, [("cr_me", 25, 32, 1, 15)]);
+    assert_eq!(&src[25..32], b"cr\xe8me()");
+}

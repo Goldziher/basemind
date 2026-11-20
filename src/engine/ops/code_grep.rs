@@ -84,8 +84,9 @@ impl Workspace {
 /// Body of `code_grep`.
 ///
 /// Scans every indexed file that passes the `path_contains` / `language` filters — the full corpus,
-/// in parallel — reads each as UTF-8 (non-UTF-8 and unreadable files are skipped and counted in
-/// `skipped_files`), and applies the compiled regex. `limit` caps returned HITS, never files
+/// in parallel — reads each as text (a byte that is not UTF-8 reads as `_`, see
+/// [`crate::source_text`]; unreadable files are skipped and counted in `skipped_files`), and
+/// applies the compiled regex. `limit` caps returned HITS, never files
 /// scanned, so `total` is exact for the scanned window. Supports
 /// in-memory pagination via `cursor` / `next_cursor` on the same
 /// `encode_in_memory(offset, generation)` scheme as `list_files`.
@@ -310,7 +311,7 @@ fn apply_byte_budget<'a, 'b>(
 /// the totals mean "matches remaining from the cursor position", not "matches in the repo".
 ///
 /// Also returns how many files could not be searched: gone, leading out of the repository, or
-/// opened and found unreadable or not UTF-8. Once `cancelled` says so, no further file is read.
+/// opened and found unreadable. Once `cancelled` says so, no further file is read.
 fn count_all(
     sweep: &Sweep<'_>,
     scanned: &[&RelPath],
@@ -330,7 +331,6 @@ fn count_all(
             with_indexed_bytes(sweep.path(path), sweep.max_file_bytes(), |bytes| {
                 count_matches(bytes, re, literal)
             })
-            .flatten()
         })
         .collect();
     let skipped = searched.iter().filter(|count| count.is_none()).count();
@@ -356,8 +356,8 @@ thread_local! {
 /// Unreadable files (deleted since the scan, permission denied), a file that now leads out of
 /// the repository (`file` is `None`) and one grown past `max_bytes` (`scan.max_file_bytes`, which
 /// no indexed file exceeded when it was scanned) yield `None` and are skipped rather than failing
-/// the whole grep. UTF-8 validity is the closure's concern, so a file that cannot match is rejected
-/// on raw bytes without paying for validation.
+/// the whole grep. Reading the bytes as text is the closure's concern, so a file that cannot match
+/// is rejected on raw bytes without paying for UTF-8 validation.
 fn with_indexed_bytes<R>(file: Option<std::path::PathBuf>, max_bytes: u64, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
     let abs = file?;
     let read = |buf: &mut Vec<u8>| -> std::io::Result<bool> {
@@ -390,17 +390,23 @@ fn with_indexed_bytes<R>(file: Option<std::path::PathBuf>, max_bytes: u64, f: im
     })
 }
 
-/// Matches of `re` in a file's bytes, or `None` for a file that is not UTF-8 and so cannot be
-/// searched. A file the literal prefilter rules out is a zero whatever its encoding.
-fn count_matches(bytes: &[u8], re: &LineRegex, literal: Option<&Finder<'static>>) -> Option<u32> {
-    if let Some(finder) = literal
-        && finder.find(bytes).is_none()
-    {
-        return Some(0);
+/// Matches of `re` in a file's bytes read as [`crate::source_text::as_text`]. A file the literal
+/// prefilter rules out is a zero.
+fn count_matches(bytes: &[u8], re: &LineRegex, literal: Option<&Finder<'static>>) -> u32 {
+    if literal.is_some_and(|finder| rules_out(finder, bytes)) {
+        return 0;
     }
-    let source = std::str::from_utf8(bytes).ok()?;
-    let text = lines_end_at_lf(re, source);
-    Some(line_matches(re, &text).count().min(u32::MAX as usize) as u32)
+    let source = crate::source_text::as_text(bytes);
+    let text = lines_end_at_lf(re, &source);
+    line_matches(re, &text).count().min(u32::MAX as usize) as u32
+}
+
+/// Whether the text of `bytes` cannot hold `finder`'s literal, judged on the raw bytes. The text
+/// differs from them only where [`crate::source_text::STAND_IN`] replaced an invalid byte, so a
+/// raw miss is decisive unless the literal holds the stand-in and the bytes are not UTF-8.
+fn rules_out(finder: &Finder<'_>, bytes: &[u8]) -> bool {
+    finder.find(bytes).is_none()
+        && (!finder.needle().contains(&crate::source_text::STAND_IN) || std::str::from_utf8(bytes).is_ok())
 }
 
 /// A byte that is whitespace to the regex engine, matches `.` and ends no line.
@@ -568,11 +574,9 @@ fn materialize(
             let path = scanned[sel.file_idx];
             let file = files.indexed_path(path);
             with_indexed_bytes(file.clone(), files.max_file_bytes, |bytes| {
-                let Ok(source) = std::str::from_utf8(bytes) else {
-                    return Vec::new();
-                };
+                let source = crate::source_text::as_text(bytes);
                 let fresh = file.as_deref().is_some_and(|file| is_fresh(sel.file_idx, file, bytes));
-                collect_hits(path, source, fresh, re, sel, context, skip_files + sel.file_idx)
+                collect_hits(path, &source, fresh, re, sel, context, skip_files + sel.file_idx)
             })
             .unwrap_or_default()
         })

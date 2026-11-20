@@ -75,6 +75,7 @@ pub mod search;
 /// `basemind sessions`: counts from the local agent transcripts of this repository (ADR-0049).
 /// CLI process only.
 pub mod sessions;
+pub mod source_text;
 pub mod store;
 pub mod store_blob;
 mod store_blob_codec;

@@ -328,7 +328,7 @@ pub(crate) struct WorkspaceGrepResponse {
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
-    /// Files this call opened and could not search: unreadable, or not UTF-8 text.
+    /// Files this call could not search: gone, unreadable, or leading out of the repository.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped_files: usize,
     /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
