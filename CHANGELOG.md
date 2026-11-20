@@ -843,6 +843,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   global-cache repositories, the version on the `no index` hint too. The unread count is every unread
   message (`100+` past one inbox page), not one page of a single message. The legacy branch's per-type
   call counts and disk and RSS figures are gone with it.
+- The plugin's MCP server starts on Windows (#238). Every generated manifest launched
+  `scripts/mcp-launch.sh` directly, which Windows cannot run, so a Windows install got no `basemind`
+  server. The manifests now launch the polyglot `scripts/mcp-launch.cmd`: cmd.exe finds Git Bash
+  (`CLAUDE_CODE_GIT_BASH_PATH`, the Program Files and per-user installs, then `bash` on `PATH`,
+  skipping the WSL launcher) and runs the launcher through it, or exits naming Git for Windows when
+  none is installed; macOS and Linux run it through its shebang.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

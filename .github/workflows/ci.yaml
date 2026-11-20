@@ -447,6 +447,17 @@ jobs:
           command -v rg
           mise run eval:pytest
 
+  # ~keep Windows starts the MCP server through the batch section of scripts/mcp-launch.cmd, which
+  # ~keep no Unix leg runs. The runner image ships Git for Windows and Python.
+  plugin-launch-windows:
+    name: plugin MCP launch / windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: unittest (MCP launch shim)
+        run: python -m unittest discover -s scripts/tests -p test_plugin_mcp_launch.py -v
+
   hermes:
     name: hermes plugin package
     runs-on: ubuntu-latest
