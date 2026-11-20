@@ -10,7 +10,7 @@ unchanged file is never extracted twice, across worktrees and repositories alike
 |---|---|---|
 | Is there an index, and how fresh? | `index_status {}` | `basemind status` |
 | Re-index files a result calls stale, or a new file | `index_rescan {"paths":["src/store.rs"]}` | `basemind rescan src/store.rs` |
-| Re-index the whole tree (an empty or degraded index only) | `index_rescan {}` | `basemind rescan` |
+| Re-index the whole tree (an empty, `degraded` or `rescan_needed` index only) | `index_rescan {}` | `basemind rescan` |
 | Build the index from scratch | none | `basemind scan` |
 
 Besides the counts per language, `index_status` lists `large_files` (code files too long to read

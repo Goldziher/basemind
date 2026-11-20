@@ -3,7 +3,7 @@ type: Playbook
 title: basemind scan
 description: Build or refresh the basemind index by running `basemind scan` via the
   CLI. Use this when basemind reports "no index" / "no indexed files", when the MCP
-  server isn't available, or when `index_status` reports a degraded index. Works without
+  server isn't available, or when `index_status` reports `degraded` or `rescan_needed`. Works without
   the MCP server — it shells the basemind binary directly.
 x-ai-rulez:
   kind: skill
@@ -28,10 +28,15 @@ basemind answers code-map questions from an index in a machine-global cache (Lin
 ## When to use
 
 - basemind / the statusline reports **no index** for this repo.
-- An MCP tool returns "no indexed files" or empty results that should not be empty.
+- An MCP tool returns "no indexed files".
 - The MCP server isn't running or isn't reachable, and you need the code map.
-- `index_status` reports a degraded index (`rescan_needed`) and you want a full rebuild. A running
-  server already re-indexes the files you edit.
+- `index_status` reports `degraded` or `rescan_needed: true` and you want a full rebuild. Either one
+  qualifies: a scan that stops after writing the code map sets `degraded` alone.
+- Files under `scan.extra_roots` changed: only a full scan re-indexes them.
+
+Not for a healthy index that misses a file you just created: run `basemind rescan <path>` (or
+`index_rescan {"paths":[…]}`) for that file. A running server already re-indexes the files you edit
+in the repository; it does not watch `scan.extra_roots`.
 
 ## How to run
 

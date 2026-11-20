@@ -211,8 +211,8 @@ esac""",
         result = self.invoke('{"file_count":631,"schema_version":33}')
         self.assertIn(
             'if a result says stale or a new file is missing, run index_rescan {"paths":["src/store.rs"]} '
-            "for the files you touched; run index_rescan {} only when index_status {} reports an empty or "
-            "degraded index.",
+            "for the files you touched; run index_rescan {} only when index_status {} reports an empty "
+            "index, degraded or rescan_needed.",
             result,
         )
         self.assertNotIn("index_rescan {} after", result)

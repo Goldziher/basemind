@@ -94,8 +94,8 @@ index and the same capabilities:
 - Regex over content: \`basemind code grep <pattern>\`
 - Git history / blame: \`basemind git recent\`, \`basemind git blame <path>\`
 - Re-index the files you edited when a result is stale or a new file is missing:
-  \`basemind rescan <path>…\` (no path rescans the whole tree: only for an empty or
-  degraded index)
+  \`basemind rescan <path>…\` (no path rescans the whole tree: only for an empty,
+  degraded or rescan_needed index)
 
 Run \`basemind scan\` once if the index is missing. Prefer these over re-reading or
 grepping files. If a pi MCP extension is installed, basemind can also be registered
