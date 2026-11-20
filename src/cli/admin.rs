@@ -115,8 +115,9 @@ pub async fn run(tools: &Tools, cmd: AdminCmd, opts: &Emit, out: &mut impl Write
 
 #[derive(Subcommand, Debug)]
 pub enum CacheCmd {
-    /// Garbage-collect orphaned extraction blobs from the machine-global cache (blobs younger than 6 h are kept;
-    /// override with `BASEMIND_BLOB_GC_GRACE_SECS`).
+    /// Reap the caches of deleted worktrees and the group directories no workspace names, then garbage-collect
+    /// orphaned extraction blobs from the machine-global cache (blobs younger than 6 h are kept; override with
+    /// `BASEMIND_BLOB_GC_GRACE_SECS`). A cache another process holds locked is skipped.
     Gc {
         /// Only count the blobs in the store; delete nothing.
         #[arg(long)]
@@ -183,7 +184,7 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
             let report = if dry_run {
                 store_gc::gc_report_only(&data).context("count blobs")?
             } else {
-                store_gc::run_gc(&data).context("run blob GC")?
+                store_gc::run_gc(&data).context("run cache GC")?
             };
             let value = serde_json::to_value(&report).context("serialize GC report")?;
             if json {

@@ -10,8 +10,8 @@
 //!
 //! This module closes that leak: it reads the [`crate::store::WorkspaceMarker`] each workspace dir
 //! records (the canonical root it was keyed from — the missing piece that makes an orphan
-//! *detectable* at all) and removes the dirs whose root no longer exists on disk. The daemon runs it
-//! immediately before the blob sweep, under the same write guard, so the blobs a reaped workspace was
+//! *detectable* at all) and removes the dirs whose root no longer exists on disk. The daemon and
+//! `basemind cache gc` run it immediately before the blob sweep, so the blobs a reaped workspace was
 //! pinning are reclaimed by that very sweep.
 //!
 //! The policy is deliberately conservative — a wrong delete here destroys a live index:
@@ -90,8 +90,9 @@ pub struct ReapReport {
 
 /// Reap orphaned workspace cache dirs under the machine-global `cache/workspaces/`.
 ///
-/// Destructive; see the module docs for the (conservative) policy. Only the daemon calls this, from
-/// inside its blob-GC write guard, so no scan is writing to a workspace mid-reap.
+/// Destructive; see the module docs for the (conservative) policy. The daemon calls this from inside
+/// its blob-GC write guard and `basemind cache gc` from its own process; either way a dir is removed
+/// only under its workspace lock, so a scan writing to it keeps it.
 pub fn reap_orphaned_workspaces(data: &DataRoot) -> Result<ReapReport, GcError> {
     reap_orphaned_workspaces_in(&data.workspaces_dir())
 }

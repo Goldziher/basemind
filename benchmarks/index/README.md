@@ -115,6 +115,31 @@ writes into its group index, so journal and keyspace bytes are what the group in
 that worktree's scan. The table is appended to `<harden root>/worktrees.md`, the rows to
 `worktrees.ndjson`.
 
+The mode fails when an added worktree adds more than 75% of the bytes the main checkout's scan put
+on disk; the nightly runs it on ripgrep with three worktrees. `tests/worktree_lifecycle_cli.rs`
+applies the same rule (`tests/support/worktree_growth.rs`, where exactly the bound passes) with a
+percent of its own, set from its fixture. The 75% comes from the run below. Its byte columns are
+allocated bytes, and the journal grew from row to row by 0 or 2,097,152 bytes, never by an amount in
+between: Fjall allocates journal space in 2 MiB segments, so what an added worktree adds is a whole
+number of segments plus its file map and other files (40,960 bytes). Against the main checkout's
+4,780,032 bytes:
+
+| an added worktree adds | bytes | share of the first scan |
+|---|---|---|
+| no segment | 40,960 | 0.9% |
+| one segment, the recorded peak | 2,138,112 | 44.7% |
+| two segments | 4,235,264 | 88.6% |
+| a second copy of the index | 4,780,032 | 100% |
+
+The logical length of the journal grew by at most 1.66 MB per worktree, under one segment, so a
+scan crosses at most one segment boundary and the measurement takes only the first two values; the
+noise is where the boundary falls, not a few percent either way. A bound at 50% sat 5 points above
+the one-segment value, which a first scan 11% smaller pushes over. At 75% one segment passes until
+the first scan shrinks to 2.85 MB, 40% below the recorded one, while two segments and a second copy
+of the index fail. These rows were taken before worktrees shared a group index, so the bound holds
+the group layout to what the per-worktree layout added between consecutive worktrees; set it again
+from the nightly's `worktrees.ndjson` if the group layout's peak lands elsewhere.
+
 ripgrep, 2026-11-16, default features, sibling seeding on, same machine and load as above
 (`harden-worktrees-2026-11-16.md`): an added worktree costs 9.0 MB, of which 8.8 MB is journal,
 168 KB keyspaces, 28 KB file map and nothing in vectors (no vector feature in this build). The

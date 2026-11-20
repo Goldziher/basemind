@@ -5,7 +5,8 @@
 //! separately), the time to open and first-scan it, and the share of that scan spent in the
 //! resolve pass. It prints a table and appends it to `<results dir>/worktrees.md`.
 //!
-//! This is a measurement, so it asserts only that each number was really taken. Run it through
+//! It asserts that each number was really taken and that no added worktree adds more than
+//! `MAX_ADDED_WORKTREE_PERCENT` of what the main checkout's scan put on disk. Run it through
 //! `scripts/harden.sh` with `BASEMIND_HARDEN_WORKTREES=<K>`.
 
 use std::fs::OpenOptions;
@@ -20,6 +21,7 @@ use basemind::store::{
     DATA_HOME_ENV, INDEX_FILE, Store, VIEW_WORKING, VIEWS_DIR, global_blobs_dir, workspace_cache_dir,
 };
 
+use super::worktree_growth::exceeds_growth_bound;
 use super::{dir_size, human_bytes, on_disk_size};
 
 /// Worktrees added when `BASEMIND_HARDEN_WORKTREES` does not parse as a count.
@@ -29,6 +31,11 @@ const DEFAULT_WORKTREES: usize = 5;
 const DEFAULT_COMMIT_STEP: usize = 50;
 /// How often the scan's phase breadcrumb is read. A phase shorter than this can be missed.
 const PHASE_POLL: Duration = Duration::from_micros(500);
+/// Upper bound, in percent of the bytes the main checkout's scan put on disk, on the bytes each added
+/// worktree adds. Allocated journal bytes grow in whole segments, so on ripgrep an added worktree adds
+/// either nothing or one segment plus its file map; the bound passes one segment with room for a much
+/// smaller first scan and fails two segments or a second copy of the index (`benchmarks/index/README.md`).
+const MAX_ADDED_WORKTREE_PERCENT: u64 = 75;
 /// Directory name of the Fjall index inside a view directory.
 const INDEX_DB_DIR: &str = "index.fjall";
 /// Directory name of the workspace's LanceDB store. The library exports it only on a build with
@@ -411,9 +418,52 @@ fn harden_worktrees() {
             failures.push(format!("{}: the scan took no measurable time", row.label));
         }
     }
+    let first = rows[0].disk.total();
+    for row in &rows[1..] {
+        let added = row.disk.total();
+        if exceeds_growth_bound(added, first, MAX_ADDED_WORKTREE_PERCENT) {
+            failures.push(format!(
+                "{}: added {} on disk, over {MAX_ADDED_WORKTREE_PERCENT}% of the main checkout's {}",
+                row.label,
+                human_bytes(added),
+                human_bytes(first)
+            ));
+        }
+    }
     assert!(
         failures.is_empty(),
-        "[harden] {repo_name} worktree measurement did not measure:\n  - {}",
+        "[harden] {repo_name} worktree measurement failed:\n  - {}",
         failures.join("\n  - ")
     );
+}
+
+/// What the main checkout's scan put on disk in the recorded ripgrep run
+/// (`benchmarks/index/harden-worktrees-2026-11-16.ndjson`).
+const RECORDED_FIRST_SCAN: u64 = 4_780_032;
+/// One allocated Fjall journal segment: the step by which the recorded journals grew.
+const JOURNAL_SEGMENT: u64 = 2 * 1024 * 1024;
+/// The recorded file map and other bytes of a worktree's own cache directory.
+const RECORDED_OWN_BYTES: u64 = 28_672 + 12_288;
+
+#[test]
+fn the_nightly_bound_passes_one_journal_segment_and_fails_two() {
+    let within = |added| !exceeds_growth_bound(added, RECORDED_FIRST_SCAN, MAX_ADDED_WORKTREE_PERCENT);
+    let one_segment = JOURNAL_SEGMENT + RECORDED_OWN_BYTES;
+    assert!(within(RECORDED_OWN_BYTES), "an added worktree that grew no segment");
+    assert!(
+        within(one_segment),
+        "the recorded peak: one segment, 44.7% of the first scan"
+    );
+    assert!(within(3_585_024), "exactly 75% is within it");
+    assert!(!within(3_585_025));
+    assert!(
+        !within(one_segment + JOURNAL_SEGMENT),
+        "two segments, 88.6% of the first scan"
+    );
+    assert!(!within(RECORDED_FIRST_SCAN), "a second full copy of the index");
+    assert!(
+        !exceeds_growth_bound(one_segment, 2_850_816, MAX_ADDED_WORKTREE_PERCENT),
+        "one segment passes down to a first scan of 2.85 MB, 40% under the recorded one"
+    );
+    assert!(exceeds_growth_bound(one_segment, 2_850_815, MAX_ADDED_WORKTREE_PERCENT));
 }

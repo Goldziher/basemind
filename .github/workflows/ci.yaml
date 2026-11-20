@@ -453,12 +453,24 @@ jobs:
       - name: run harden.sh
         run: ./scripts/harden.sh
 
+      # ~keep A root of its own: harden.sh truncates its root's results, and the bound is judged on a fresh cache.
+      - name: bound the bytes an added worktree adds (ripgrep, 3 worktrees)
+        if: ${{ !cancelled() }}
+        env:
+          BASEMIND_HARDEN_ROOT: /tmp/basemind-harden-worktrees
+          BASEMIND_HARDEN_SKIP_SUITE: "1"
+          BASEMIND_HARDEN_WORKTREES: "3"
+        run: ./scripts/harden.sh ripgrep
+
       - name: upload results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: harden-results
-          path: /tmp/basemind-harden/results.ndjson
+          path: |
+            /tmp/basemind-harden/results.ndjson
+            /tmp/basemind-harden-worktrees/worktrees.md
+            /tmp/basemind-harden-worktrees/worktrees.ndjson
 
   # ~keep The publish build (`full` on windows-2022 and in the manylinux containers) is compiled by
   # ~keep no test leg. Running the release build nightly, archives smoke-tested on clean runners,
