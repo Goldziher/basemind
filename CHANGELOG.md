@@ -726,6 +726,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current limit (`limit`) and a `note` naming the sysctl to raise. The daemon log warns once per
   pass that leaves more directories unwatched instead of once per directory. A refused directory is
   retried whenever its subtree is armed again.
+- The Codex config `.mcp.json` runs the launcher of the enabled plugin, not the most recently
+  modified `codex-mcp-launch.mjs` in any marketplace's cache (#246). It reads the
+  `[plugins."basemind@<marketplace>"]` tables of `$CODEX_HOME/config.toml`, passes over one with
+  `enabled = false`, searches only those marketplaces (only `basemind` when the config names none)
+  and runs the highest version, a release ahead of its prereleases. A stale or foreign copy no longer
+  wins, and the chosen path is logged to stderr.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

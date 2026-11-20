@@ -587,5 +587,84 @@ class McpJsonFallbackTests(unittest.TestCase):
         self.assertEqual(host(BASEMIND_HOST="mine", CLAUDECODE="1"), "mine")
 
 
+@unittest.skipIf(sys.platform == "win32" or shutil.which("node") is None, "needs node")
+class McpJsonCachedLauncherTests(unittest.TestCase):
+    """Which installed plugin's codex-mcp-launch.mjs the Codex config runs."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        server = json.loads((ROOT / ".mcp.json").read_text())["mcpServers"]["basemind"]
+        self.command = [shutil.which("node"), *server["args"]]
+        self.codex_home = self.root / "codex-home"
+        self.codex_home.mkdir()
+        self.work = self.root / "work"
+        self.work.mkdir()
+
+    def install(self, marketplace: str, version: str, *, modified_ago: int = 0) -> Path:
+        """Cache a plugin `version` from `marketplace` whose launcher prints where it came from."""
+        launcher = (
+            self.codex_home / "plugins/cache" / marketplace / "basemind" / version / "scripts/codex-mcp-launch.mjs"
+        )
+        launcher.parent.mkdir(parents=True)
+        label = f"{marketplace} {version}"
+        launcher.write_text(f'export function run(args) {{ process.stdout.write("{label} " + args.join(" ")); }}\n')
+        age(launcher, modified_ago)
+        return launcher
+
+    def configure(self, text: str) -> None:
+        (self.codex_home / "config.toml").write_text(text)
+
+    def launch(self) -> subprocess.CompletedProcess[str]:
+        env = {key: value for key, value in os.environ.items() if key not in HostDetectionTests.HARNESS_VARIABLES}
+        env.pop("BASEMIND_CODEX_HOME", None)
+        env["CODEX_HOME"] = str(self.codex_home)
+        return subprocess.run(
+            self.command, cwd=self.work, env=env, capture_output=True, text=True, timeout=30, check=True
+        )
+
+    def assert_runs(self, launcher: Path, label: str) -> None:
+        result = self.launch()
+        self.assertEqual(result.stdout, f"{label} serve")
+        self.assertEqual(result.stderr, f"basemind: launching {launcher}\n")
+
+    def test_the_highest_version_runs_rather_than_the_newest_file(self) -> None:
+        highest = self.install("basemind", "0.10.0", modified_ago=DAY)
+        self.install("basemind", "0.9.0")
+        self.assert_runs(highest, "basemind 0.10.0")
+
+    def test_a_release_outranks_its_prerelease(self) -> None:
+        release = self.install("basemind", "1.0.0", modified_ago=DAY)
+        self.install("basemind", "1.0.0-rc.1")
+        self.assert_runs(release, "basemind 1.0.0")
+
+    def test_without_a_config_only_the_basemind_marketplace_is_searched(self) -> None:
+        expected = self.install("basemind", "1.0.0", modified_ago=DAY)
+        self.install("foreign", "9.9.9")
+        self.assert_runs(expected, "basemind 1.0.0")
+
+    def test_the_enabled_plugins_marketplace_wins_over_a_higher_stale_copy(self) -> None:
+        self.install("basemind", "9.9.9")
+        enabled = self.install("curated", "1.0.0", modified_ago=DAY)
+        self.configure('model = "m"\n\n[plugins."basemind@curated"]\nenabled = true\n')
+        self.assert_runs(enabled, "curated 1.0.0")
+
+    def test_a_disabled_plugin_is_passed_over(self) -> None:
+        self.install("curated", "9.9.9")
+        enabled = self.install("basemind", "1.0.0", modified_ago=DAY)
+        self.configure(
+            '[plugins."basemind@curated"]\nenabled = false\n\n[plugins."basemind@basemind"]\nenabled = true\n'
+        )
+        self.assert_runs(enabled, "basemind 1.0.0")
+
+    def test_the_highest_version_of_the_enabled_plugin_runs(self) -> None:
+        self.install("basemind", "9.9.9")
+        highest = self.install("curated", "2.0.0", modified_ago=DAY)
+        self.install("curated", "1.5.0")
+        self.configure('[plugins."basemind@curated"]\nenabled = true\n[other]\nenabled = false\n')
+        self.assert_runs(highest, "curated 2.0.0")
+
+
 if __name__ == "__main__":
     unittest.main()
