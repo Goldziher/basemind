@@ -57,17 +57,49 @@ pub(super) fn request_cancelled() -> McpError {
     )
 }
 
-/// Race `work` against the request's cancellation signal. On cancellation the work future is dropped
-/// (releasing every guard it holds) and a `request_cancelled` error is returned immediately.
-pub(super) async fn run_until_cancelled<T>(
-    cancelled: impl std::future::Future<Output = ()>,
+/// JSON-RPC code for a cancel-aware read stopped at its deadline
+/// ([`super::admission::HeavyAdmission::deadline`]).
+const DEADLINE_EXCEEDED_CODE: i32 = -32004;
+
+/// The error a cancel-aware read stopped at `deadline` answers with.
+pub(super) fn deadline_exceeded(deadline: Duration) -> McpError {
+    McpError::new(
+        rmcp::model::ErrorCode(DEADLINE_EXCEEDED_CODE),
+        format!(
+            "deadline_exceeded: the call ran past its {} s deadline and was stopped. Nothing was changed. \
+             Narrow the query, or retry it.",
+            deadline.as_secs()
+        ),
+        Some(serde_json::json!({ "deadline_secs": deadline.as_secs(), "retryable": true })),
+    )
+}
+
+/// Whether `error` is a [`deadline_exceeded`] stop.
+pub(super) fn is_deadline_exceeded(error: &McpError) -> bool {
+    error.code == rmcp::model::ErrorCode(DEADLINE_EXCEEDED_CODE)
+}
+
+/// Run a cancel-aware read under `admission` until it answers, `ct` is cancelled, or `deadline`
+/// passes. On either of the last two the work future is dropped (releasing every guard it holds),
+/// `ct` is cancelled so a body that checks it stops, and the admission is abandoned
+/// ([`super::admission::Admission::abandon`]): blocking work still running no longer holds the
+/// heavy lane, so a hung read cannot keep the next heavy call out.
+pub(super) async fn run_bounded_read<T>(
+    admission: super::admission::Admission,
+    ct: tokio_util::sync::CancellationToken,
+    deadline: Duration,
     work: impl std::future::Future<Output = Result<T, McpError>>,
 ) -> Result<T, McpError> {
-    tokio::select! {
+    let admission = Arc::new(admission);
+    let stopped = tokio::select! {
         biased;
-        () = cancelled => Err(request_cancelled()),
-        result = work => result,
-    }
+        () = ct.cancelled() => request_cancelled(),
+        () = tokio::time::sleep(deadline) => deadline_exceeded(deadline),
+        result = super::admission::holding(Arc::clone(&admission), work) => return result,
+    };
+    ct.cancel();
+    admission.abandon();
+    Err(stopped)
 }
 
 /// Calls that CAN dominate the transport for seconds, and so are eligible to become a task when
@@ -101,15 +133,21 @@ fn matches_call(table: &[&str], name: &str, arguments: Option<&serde_json::Map<S
     })
 }
 
-/// Dispose of the tool's child task after a cancellation. The tool's token is always cancelled so a
-/// cancel-aware handler unwinds on its own; a pure read ([`CANCEL_AWARE_READS`]) is also aborted so its
-/// guards (comms link) drop immediately instead of at its next poll; the admission permit is held on by
-/// the blocking work the call started until that work ends. Anything else
-/// (rescan) is left detached to finish its write.
-fn settle_cancelled<T>(work: tokio::task::JoinHandle<T>, tool_ct: &tokio_util::sync::CancellationToken, abort: bool) {
+/// Dispose of the tool's child task after a cancellation or its deadline. The tool's token is always
+/// cancelled so a cancel-aware handler unwinds on its own; a pure read ([`CANCEL_AWARE_READS`]) is
+/// also aborted so its guards (comms link) drop immediately instead of at its next poll, and its
+/// admission is abandoned so blocking work it left running no longer holds the heavy lane. Anything
+/// else (rescan) is left detached to finish its write, holding its permit until it does.
+fn settle_cancelled<T>(
+    work: tokio::task::JoinHandle<T>,
+    tool_ct: &tokio_util::sync::CancellationToken,
+    abort: bool,
+    admission: &super::admission::Admission,
+) {
     tool_ct.cancel();
     if abort {
         work.abort();
+        admission.abandon();
     }
 }
 
@@ -137,7 +175,8 @@ fn joined_response(
 /// Cancellation (of the request while it is still inline, or `tasks/cancel` afterwards) abandons
 /// only the RESULT, never a write in flight: dropping the handle DETACHES the tokio task, so a
 /// mutating tool like `index_rescan` always runs both its on-disk write and its in-RAM cache
-/// refresh to completion. A pure read is aborted instead, releasing its guards at once.
+/// refresh to completion. A pure read is aborted instead, releasing its guards at once, and is also
+/// stopped once it has run for the admission deadline, however it is being delivered.
 pub(super) async fn run_slow_tool(
     server: &BasemindServer,
     request: CallToolRequestParams,
@@ -152,19 +191,27 @@ pub(super) async fn run_slow_tool(
     let tool_ct = request_ct.child_token();
     context.ct = tool_ct.clone();
     let cancel_aware = is_cancel_aware_read(&request.name, request.arguments.as_ref());
+    let deadline = server.heavy_admission.deadline();
+    let expires = tokio::time::Instant::now() + deadline;
+    let admission = Arc::new(admission);
+    let work_admission = Arc::clone(&admission);
     // `TaskManager` is a cheap Arc clone sharing the same store; taken out before `server` moves.
     let manager = server.tasks.clone();
     let slot = TaskSlot::default();
     let work_slot = Arc::clone(&slot);
     let mut work = tokio::spawn(async move {
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
-        super::admission::holding(admission, CURRENT_TASK.scope(work_slot, server.tool_router.call(tcc))).await
+        super::admission::holding(
+            work_admission,
+            CURRENT_TASK.scope(work_slot, server.tool_router.call(tcc)),
+        )
+        .await
     });
 
     tokio::select! {
         biased;
         () = request_ct.cancelled() => {
-            settle_cancelled(work, &tool_ct, cancel_aware);
+            settle_cancelled(work, &tool_ct, cancel_aware, &admission);
             return Err(request_cancelled());
         }
         joined = &mut work => return joined_response(joined),
@@ -177,8 +224,12 @@ pub(super) async fn run_slow_tool(
             let joined = tokio::select! {
                 biased;
                 () = ctx.cancelled() => {
-                    settle_cancelled(work, &tool_ct, cancel_aware);
+                    settle_cancelled(work, &tool_ct, cancel_aware, &admission);
                     return Err(TaskExit::Cancelled);
+                }
+                () = tokio::time::sleep_until(expires), if cancel_aware => {
+                    settle_cancelled(work, &tool_ct, true, &admission);
+                    return Err(TaskExit::Error(deadline_exceeded(deadline)));
                 }
                 joined = &mut work => joined,
             };
@@ -246,22 +297,18 @@ mod tests {
         use super::super::admission::{HeavyAdmission, WorkClass};
         let admission = HeavyAdmission::new(1, std::time::Duration::from_millis(50));
         let permit = admission.admit(WorkClass::Heavy).await.expect("permit");
-        let (cancel, cancelled) = tokio::sync::oneshot::channel::<()>();
-        let work = async move {
-            let _held = permit;
-            std::future::pending::<Result<(), McpError>>().await
-        };
-        let call = tokio::spawn(run_until_cancelled(
-            async {
-                let _ = cancelled.await;
-            },
-            work,
+        let ct = tokio_util::sync::CancellationToken::new();
+        let call = tokio::spawn(run_bounded_read(
+            permit,
+            ct.clone(),
+            std::time::Duration::from_secs(60),
+            std::future::pending::<Result<(), McpError>>(),
         ));
         assert!(
             admission.admit(WorkClass::Heavy).await.is_err(),
             "permit is held while the read runs"
         );
-        cancel.send(()).expect("send cancel");
+        ct.cancel();
         let started = std::time::Instant::now();
         let error = tokio::time::timeout(std::time::Duration::from_secs(2), call)
             .await
@@ -285,9 +332,13 @@ mod tests {
     }
 
     /// Task cancellation must reach a long-running cancel-aware read: its token fires and (for the
-    /// pure reads) the work is aborted, so the guard it holds (the subscriber link) is released at once.
+    /// pure reads) the work is aborted, so the guard it holds (the subscriber link) is released at
+    /// once, and its admission is abandoned, so the heavy lane admits the next call.
     #[tokio::test]
     async fn cancelling_a_task_releases_a_cancel_aware_reads_link() {
+        use super::super::admission::{HeavyAdmission, WorkClass};
+        let admission = HeavyAdmission::new(1, std::time::Duration::from_millis(50));
+        let permit = admission.admit(WorkClass::Heavy).await.expect("permit");
         let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let tool_ct = tokio_util::sync::CancellationToken::new();
         let guard = LinkGuard(released.clone());
@@ -295,8 +346,12 @@ mod tests {
             let _link = guard;
             std::future::pending::<()>().await;
         });
-        settle_cancelled(work, &tool_ct, true);
+        settle_cancelled(work, &tool_ct, true, &permit);
         assert!(tool_ct.is_cancelled());
+        admission
+            .admit(WorkClass::Heavy)
+            .await
+            .expect("the abandoned read no longer holds the lane");
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !released.load(std::sync::atomic::Ordering::SeqCst) {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -306,9 +361,13 @@ mod tests {
         .expect("link released promptly after task cancel");
     }
 
-    /// A write tool (rescan) is detached, not aborted: it keeps its guard and runs to completion.
+    /// A write tool (rescan) is detached, not aborted: it keeps its guard and its heavy permit and
+    /// runs to completion.
     #[tokio::test]
     async fn cancelling_a_task_detaches_a_mutating_tool() {
+        use super::super::admission::{HeavyAdmission, WorkClass};
+        let admission = HeavyAdmission::new(1, std::time::Duration::from_millis(50));
+        let permit = admission.admit(WorkClass::Heavy).await.expect("permit");
         let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let tool_ct = tokio_util::sync::CancellationToken::new();
         let guard = LinkGuard(released.clone());
@@ -316,16 +375,25 @@ mod tests {
             let _link = guard;
             std::future::pending::<()>().await;
         });
-        settle_cancelled(work, &tool_ct, false);
+        settle_cancelled(work, &tool_ct, false, &permit);
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(!released.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            admission.admit(WorkClass::Heavy).await.is_err(),
+            "the write still holds its lane permit"
+        );
     }
 
     #[tokio::test]
     async fn an_uncancelled_read_returns_its_result() {
-        let value = run_until_cancelled(std::future::pending::<()>(), async { Ok::<_, McpError>(7) })
-            .await
-            .expect("result");
+        let value = run_bounded_read(
+            super::super::admission::Admission::Control,
+            tokio_util::sync::CancellationToken::new(),
+            std::time::Duration::from_secs(60),
+            async { Ok::<_, McpError>(7) },
+        )
+        .await
+        .expect("result");
         assert_eq!(value, 7);
     }
 }

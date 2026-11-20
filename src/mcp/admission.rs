@@ -1,6 +1,6 @@
 //! Bounded admission for allocation-heavy MCP calls.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use rmcp::model::{CallToolResult, ContentBlock, ErrorCode, ErrorData};
@@ -9,6 +9,9 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 const DEFAULT_HEAVY_CONCURRENCY: usize = 2;
 const DEFAULT_QUEUE_WAIT: Duration = Duration::from_secs(2);
 const DEFAULT_RETRY_AFTER_MS: u64 = 500;
+/// How long a cancel-aware heavy read may run before it is stopped and its lane permit given up.
+/// Under the stdio relay's 180 s request deadline, so the daemon answers before the relay gives up.
+const DEFAULT_HEAVY_DEADLINE: Duration = Duration::from_secs(150);
 const SERVER_BUSY_CODE: i32 = -32003;
 
 /// Request class used at the MCP dispatch boundary. Control calls deliberately never acquire a
@@ -22,21 +25,58 @@ pub(crate) enum WorkClass {
 /// Admission result. Holding the heavy permit for the operation's lifetime bounds concurrency.
 pub(crate) enum Admission {
     Control,
-    Heavy { _permit: OwnedSemaphorePermit },
+    Heavy(HeavyClaim),
+}
+
+impl Admission {
+    /// Give up the heavy lane for work the caller stopped waiting on (deadline passed, request
+    /// cancelled). The work may still be running on the blocking pool, so its lane permit is
+    /// exchanged for an overflow slot: the lane admits the next call, and abandoned work stays
+    /// bounded by the overflow pool. With the pool full the lane permit is kept.
+    pub(crate) fn abandon(&self) {
+        if let Self::Heavy(claim) = self {
+            claim.abandon();
+        }
+    }
+}
+
+/// A heavy call's permit: a lane permit until [`Admission::abandon`], then an overflow slot.
+pub(crate) struct HeavyClaim {
+    state: Mutex<ClaimState>,
+}
+
+struct ClaimState {
+    permit: OwnedSemaphorePermit,
+    /// The pool to move to on abandonment; `None` once the claim holds an overflow slot.
+    overflow: Option<Arc<Semaphore>>,
+}
+
+impl HeavyClaim {
+    fn abandon(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(overflow) = state.overflow.take() else {
+            return;
+        };
+        match Arc::clone(&overflow).try_acquire_owned() {
+            Ok(slot) => drop(std::mem::replace(&mut state.permit, slot)),
+            Err(_) => state.overflow = Some(overflow),
+        }
+    }
 }
 
 tokio::task_local! {
     /// The admission of the tool call running in this task, set by [`holding`]. A call's body runs
     /// on the blocking pool ([`super::adapter`]), which a dropped or aborted handler future does not
     /// stop, so the blocking closure takes a clone and the permit is released only when both the
-    /// handler and the work it started have ended.
+    /// handler and the work it started have ended, or moved to the overflow pool when the call is
+    /// abandoned ([`Admission::abandon`]).
     static HELD: Arc<Admission>;
 }
 
 /// Run `work` as the call `admission` admitted: blocking work it starts keeps the permit alive
 /// (see [`HELD`]).
-pub(crate) async fn holding<F: std::future::Future>(admission: Admission, work: F) -> F::Output {
-    HELD.scope(Arc::new(admission), work).await
+pub(crate) async fn holding<F: std::future::Future>(admission: Arc<Admission>, work: F) -> F::Output {
+    HELD.scope(admission, work).await
 }
 
 /// The admission of the call running in this task, for blocking work that must hold its permit.
@@ -47,7 +87,10 @@ pub(crate) fn held() -> Option<Arc<Admission>> {
 /// Process-scoped controller injected into every daemon-hosted MCP server connection.
 pub(crate) struct HeavyAdmission {
     permits: Arc<Semaphore>,
+    /// Slots for abandoned heavy work still running ([`Admission::abandon`]), as many as the lane.
+    overflow: Arc<Semaphore>,
     queue_wait: Duration,
+    deadline: Duration,
 }
 
 impl Default for HeavyAdmission {
@@ -61,8 +104,21 @@ impl HeavyAdmission {
         assert!(concurrency > 0, "heavy-operation concurrency must be non-zero");
         Self {
             permits: Arc::new(Semaphore::new(concurrency)),
+            overflow: Arc::new(Semaphore::new(concurrency)),
             queue_wait,
+            deadline: DEFAULT_HEAVY_DEADLINE,
         }
+    }
+
+    /// This controller with cancel-aware heavy reads stopped after `deadline`.
+    #[cfg(test)]
+    pub(crate) fn with_deadline(self, deadline: Duration) -> Self {
+        Self { deadline, ..self }
+    }
+
+    /// How long a cancel-aware heavy read may run before it is stopped and abandoned.
+    pub(crate) fn deadline(&self) -> Duration {
+        self.deadline
     }
 
     pub(crate) async fn admit(&self, class: WorkClass) -> Result<Admission, ServerBusy> {
@@ -73,7 +129,12 @@ impl HeavyAdmission {
             .await
             .map_err(|_| ServerBusy)?
             .map_err(|_| ServerBusy)?;
-        Ok(Admission::Heavy { _permit: permit })
+        Ok(Admission::Heavy(HeavyClaim {
+            state: Mutex::new(ClaimState {
+                permit,
+                overflow: Some(Arc::clone(&self.overflow)),
+            }),
+        }))
     }
 }
 
@@ -181,6 +242,36 @@ mod tests {
 
         let next = admission.admit(WorkClass::Heavy).await.expect("permit after release");
 
-        assert!(matches!(next, Admission::Heavy { .. }));
+        assert!(matches!(next, Admission::Heavy(_)));
+    }
+
+    /// Abandoned work moves to the overflow pool, which is as large as the lane: past that, an
+    /// abandoned claim keeps its lane permit, so hung work cannot pile up without bound.
+    #[tokio::test]
+    async fn abandoning_frees_the_lane_until_the_overflow_pool_is_full() {
+        let admission = HeavyAdmission::new(1, Duration::from_millis(20));
+        let first = admission.admit(WorkClass::Heavy).await.expect("first heavy permit");
+        first.abandon();
+        first.abandon();
+        let second = admission
+            .admit(WorkClass::Heavy)
+            .await
+            .expect("the abandoned call no longer holds the lane");
+        second.abandon();
+
+        assert!(
+            admission.admit(WorkClass::Heavy).await.is_err(),
+            "the overflow pool is full, so the second call kept its lane permit"
+        );
+        drop(first);
+        assert!(
+            admission.admit(WorkClass::Heavy).await.is_err(),
+            "a freed overflow slot does not release a lane permit already kept"
+        );
+        drop(second);
+        admission
+            .admit(WorkClass::Heavy)
+            .await
+            .expect("the lane is free once the kept permit is dropped");
     }
 }
