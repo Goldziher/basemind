@@ -126,9 +126,9 @@ basemind git by-path <pattern> [--window --limit --cursor --max-tokens]
 
 ```bash
 basemind memory put <key> <value> [--tag <t>]... [--individual]
-basemind memory search <query> [--limit --tag --individual]
+basemind memory search <query> [--limit --individual] [--tag <t>]...
 basemind memory get <key> [--individual]
-basemind memory list [--prefix --tag --limit --individual --cursor]
+basemind memory list [--prefix --limit --individual --cursor] [--tag <t>]...
 basemind memory delete <key> [--individual]
 basemind memory documents <query> [--mime-type --keywords --entity --format --path --limit --cursor --max-tokens]
 ```
@@ -136,9 +136,9 @@ basemind memory documents <query> [--mime-type --keywords --entity --format --pa
 | Command | Purpose |
 |---|---|
 | `put <key> <value> [--tag --individual]` | Write a durable note (`memory_save`). `--individual` uses the per-agent tier instead of shared (group). |
-| `search <query> [--limit --tag --individual]` | Search stored notes by meaning. |
+| `search <query> [--limit --tag --individual]` | Search stored notes by meaning; `--tag` (repeatable) keeps notes carrying any of them. |
 | `get <key> [--individual]` | Read one note by key. |
-| `list [--prefix --tag --limit --individual]` | List notes, optionally by key prefix or tag. |
+| `list [--prefix --tag --limit --individual]` | List notes, optionally by key prefix or tags (any of them). |
 | `delete <key> [--individual]` | Remove a note by key. CLI only. |
 | `documents <query> [--mime-type --keywords --entity --format --path]` | Semantic search over indexed documents (`docs_search`) instead of opening them. |
 

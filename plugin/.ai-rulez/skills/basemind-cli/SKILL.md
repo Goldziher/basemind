@@ -88,7 +88,7 @@ command covers the question.
 | "Commits whose paths match a regex?" | `basemind git by-path "regex"` | CLI only. |
 | "What's indexed? What's HEAD / branch?" | `basemind status` | File count, languages, cache dir, branch, HEAD. `admin repo` prints the same. |
 | "Search markdown / config / PDFs?" | `basemind memory documents "query" [--mime-type --keywords --entity --format --path]` | Needs `documents` feature. |
-| "Recall something stored earlier?" | `basemind memory search "q"` / `get "key"` / `list [--prefix P --tag T]` | By meaning / one note / a listing. |
+| "Recall something stored earlier?" | `basemind memory search "q"` / `get "key"` / `list [--prefix P] [--tag T]...` | By meaning / one note / a listing. |
 | "Remember this for future sessions?" | `basemind memory put "key" "value" [--tag T]` | Delete with `memory delete "key"` (CLI only). |
 | "Cache size?" | `basemind cache stats` | On-disk size + orphan accounting. CLI only, like the other cache commands. |
 | "What cache space is reclaimable?" | `basemind cache gc --dry-run` | Report orphaned blobs without deleting them. |

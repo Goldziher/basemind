@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:6b27f91d6dbf07951e3db0538a8833192bbc19c896255e27d56f0453af6aca2a
-Source-Hash: blake3:8546192f56b1c9f5a0a77450453359acf2e8b4303e6769754c7aefade54faa5b
+Content-Hash: blake3:c46e134fd74b2a068d1637492d43d83f50d112793f4df0754b983dec99ee1204
+Source-Hash: blake3:153bbd7faa59d32e91f1b00e2b9e23940bc97bb3de3950655cc5c52cebe7984e
 Schema-Version: v1
 -->
 
@@ -86,7 +86,7 @@ command covers the question.
 | "Commits whose paths match a regex?" | `basemind git by-path "regex"` | CLI only. |
 | "What's indexed? What's HEAD / branch?" | `basemind status` | File count, languages, cache dir, branch, HEAD. `admin repo` prints the same. |
 | "Search markdown / config / PDFs?" | `basemind memory documents "query" [--mime-type --keywords --entity --format --path]` | Needs `documents` feature. |
-| "Recall something stored earlier?" | `basemind memory search "q"` / `get "key"` / `list [--prefix P --tag T]` | By meaning / one note / a listing. |
+| "Recall something stored earlier?" | `basemind memory search "q"` / `get "key"` / `list [--prefix P] [--tag T]...` | By meaning / one note / a listing. |
 | "Remember this for future sessions?" | `basemind memory put "key" "value" [--tag T]` | Delete with `memory delete "key"` (CLI only). |
 | "Cache size?" | `basemind cache stats` | On-disk size + orphan accounting. CLI only, like the other cache commands. |
 | "What cache space is reclaimable?" | `basemind cache gc --dry-run` | Report orphaned blobs without deleting them. |

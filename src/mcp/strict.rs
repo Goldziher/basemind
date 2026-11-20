@@ -45,7 +45,7 @@ const NEAR_MISS_MIN_KEY_LEN: usize = 4;
 ///
 /// A group holds only names whose VALUES are interchangeable: a hint to move a value into a field
 /// that takes a different vocabulary (a 0-based `row` into the 1-based `line`, a `direction` into
-/// `relation`, a list of `tags` into the single `tag`) produces a second wrong call.
+/// `relation`) produces a second wrong call.
 const SYNONYMS: &[&[&str]] = &[
     &[
         "path",
@@ -78,6 +78,7 @@ const SYNONYMS: &[&[&str]] = &[
     &["key", "id"],
     &["kind", "type"],
     &["format", "kind", "mime_group"],
+    &["tags", "tag"],
     &["language", "lang"],
     &["keywords", "keywords_contains", "keyword"],
     &["entity", "entity_category"],
@@ -529,7 +530,7 @@ mod tests {
     /// A filter renamed before 0.34 points at its new name.
     #[test]
     fn a_renamed_filter_points_at_its_new_name() {
-        use crate::mcp::types_tools::{DocsSearchParams, FindFilesToolParams};
+        use crate::mcp::types_tools::{DocsSearchParams, FindFilesToolParams, MemorySearchToolParams};
 
         let prefix = parse::<FindFilesToolParams>(json!({ "path_prefix": "src/" })).expect_err("renamed");
         assert!(
@@ -540,6 +541,11 @@ mod tests {
         assert!(
             kind.contains("`docs_search`: unknown field `kind`, did you mean `format`?"),
             "{kind}"
+        );
+        let tag = parse::<MemorySearchToolParams>(json!({ "tag": "auth" })).expect_err("renamed");
+        assert!(
+            tag.contains("`memory_search`: unknown field `tag`, did you mean `tags`?"),
+            "{tag}"
         );
     }
 

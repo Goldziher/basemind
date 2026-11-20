@@ -176,12 +176,12 @@ impl LanceStore {
     }
 
     /// KNN over the memory table for one `(scope, visibility, agent_id)` namespace, optionally
-    /// only rows carrying `tag`.
+    /// only rows carrying one of `tags`.
     ///
     /// The `visibility` + `agent_id` predicate is mandatory so an individual search never
     /// returns another agent's rows and a group search only sees group rows. A row's tags are the
-    /// note's as of the write the row was embedded from, so the `tag` filter is exact for every
-    /// row the caller's join against the notes keeps.
+    /// note's as of the write the row was embedded from, so the `tags` filter (a row carrying any
+    /// of them; empty for none) is exact for every row the caller's join against the notes keeps.
     pub fn search_memory(
         &self,
         scope: &str,
@@ -189,7 +189,7 @@ impl LanceStore {
         agent_id: &str,
         query: Vec<f32>,
         limit: usize,
-        tag: Option<&str>,
+        tags: &[String],
     ) -> Result<Vec<MemoryHit>> {
         use lancedb::query::Select;
 
@@ -201,8 +201,12 @@ impl LanceStore {
             ));
         }
         let mut predicate = memory_namespace_predicate(scope, visibility, agent_id);
-        if let Some(tag) = tag {
-            predicate.push_str(&format!(" AND array_has(tags, '{}')", escape_sql_literal(tag)));
+        if !tags.is_empty() {
+            let any: Vec<String> = tags
+                .iter()
+                .map(|tag| format!("array_has(tags, '{}')", escape_sql_literal(tag)))
+                .collect();
+            predicate.push_str(&format!(" AND ({})", any.join(" OR ")));
         }
         self.inner.rt().block_on(async {
             let table = self.memory_table().await?;

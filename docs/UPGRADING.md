@@ -94,12 +94,13 @@ needs no tool-search round trip, so call them directly. `tools/list` for them is
 | `rev_old` / `rev_new` | `from` / `to` | `git_diff` |
 | `entity_category` | `entity` | `docs_search` |
 | `keywords_contains` | `keywords` | `docs_search` |
+| `tag` | `tags` | `memory_search` (a list, like `memory_save`'s; a note carrying any of them passes) |
 | `start_row` (responses) | `line` / `end_line` | every tool that reports a position |
 
 ### Removed arguments
 
 - `mode`, on all 15 tools.
-- `format` (`"toon"`): responses are JSON.
+- `format` (`"toon"`): responses are JSON. `docs_search`'s `format` is the document format.
 - The undocumented aliases (`q`, `needle`, `token_budget` and similar). Only the names in a tool's
   schema are accepted.
 - `field` on commit search: pass `query` for messages or `author` for authors to `git_log`.
@@ -176,8 +177,8 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
 - **`limit: 0` is refused** by every tool that takes `limit`. It returned an empty page, with a
   cursor back to the same position where one was issued.
 - **A filter that selects no file is an error.** `code_grep` with a `path` or `language`, and
-  `find_files` with a `path_prefix` or `language`, that no indexed file passes return an error
-  saying what would match (the indexed languages, or that `path` is literal text and not a glob;
+  `find_files` with a `path` or `language`, that no indexed file passes return an error
+  saying what would match (the indexed languages, or the rule `path` was read by;
   `code_grep` names `docs_search` when only documents match). While the index is still being built
   the empty page is returned with its `notice` instead. `git_log {path}` refuses a path that no
   commit reachable from HEAD touches and that is not on disk, for a file and for a directory.

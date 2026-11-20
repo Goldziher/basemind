@@ -36,7 +36,7 @@ tool's body, before changing one.
 | `git_blame` | `path`, `line?` + `end_line?`, `symbol?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | per-line authorship of a file, a span, or one symbol |
 | `git_diff` | `path?`, `from?`, `to?`, `structural?` | working-tree status, a file's diff, or the symbols added and removed |
 | `memory_save` | `key`, `value`, `tags?`, `visibility?` | write a durable note |
-| `memory_search` | `query?` or `key?` or `prefix?`, `tag?`, `visibility?`, `limit?`, `cursor?` | recall notes by meaning, key, or key prefix |
+| `memory_search` | `query?` or `key?` or `prefix?`, `tags?`, `visibility?`, `limit?`, `cursor?` | recall notes by meaning, key, or key prefix |
 | `index_status` | none | index health and repository identity |
 | `index_rescan` | `paths?` | re-index files or directories, or the whole workspace |
 
