@@ -145,7 +145,7 @@ fn an_installed_dependency_is_indexed_searchable_by_path_and_cites_its_version()
     let request = basemind::lance::docs_rank::DocsRequest {
         query: "reconciled".to_string(),
         mime_type: None,
-        kind: None,
+        format: None,
         entity: None,
         keywords: None,
         path: Some("deps/npm/react@*/**".to_string()),

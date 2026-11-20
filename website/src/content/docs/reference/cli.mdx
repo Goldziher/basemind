@@ -130,7 +130,7 @@ basemind memory search <query> [--limit --tag --individual]
 basemind memory get <key> [--individual]
 basemind memory list [--prefix --tag --limit --individual --cursor]
 basemind memory delete <key> [--individual]
-basemind memory documents <query> [--mime-type --keywords --entity --scope --limit --cursor --max-tokens]
+basemind memory documents <query> [--mime-type --keywords --entity --format --path --limit --cursor --max-tokens]
 ```
 
 | Command | Purpose |
@@ -140,7 +140,7 @@ basemind memory documents <query> [--mime-type --keywords --entity --scope --lim
 | `get <key> [--individual]` | Read one note by key. |
 | `list [--prefix --tag --limit --individual]` | List notes, optionally by key prefix or tag. |
 | `delete <key> [--individual]` | Remove a note by key. CLI only. |
-| `documents <query> [--mime-type --keywords --entity --scope]` | Semantic search over indexed documents (`docs_search`) instead of opening them. |
+| `documents <query> [--mime-type --keywords --entity --format --path]` | Semantic search over indexed documents (`docs_search`) instead of opening them. |
 
 ## `admin` — administration
 

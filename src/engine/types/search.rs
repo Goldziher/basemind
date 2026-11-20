@@ -44,9 +44,9 @@ pub struct DocsSearchParams {
     /// Exact MIME filter, e.g. `application/pdf`.
     #[serde(default)]
     pub mime_type: Option<String>,
-    /// Format: pdf, office, html, markdown, email, notebook, text or other.
+    /// pdf, office, html, markdown, email, notebook, text or other.
     #[serde(default)]
-    pub kind: Option<String>,
+    pub format: Option<String>,
     /// Prefix, or a glob when it has `*`, e.g. `src/`.
     #[serde(default)]
     pub path: Option<String>,

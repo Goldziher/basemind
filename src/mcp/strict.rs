@@ -77,6 +77,7 @@ const SYNONYMS: &[&[&str]] = &[
     &["max_tokens", "token_budget", "budget"],
     &["key", "id"],
     &["kind", "type"],
+    &["format", "kind", "mime_group"],
     &["language", "lang"],
     &["keywords", "keywords_contains", "keyword"],
     &["entity", "entity_category"],
@@ -523,6 +524,23 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("Accepted fields: `pattern` (required)"), "{message}");
+    }
+
+    /// A filter renamed before 0.34 points at its new name.
+    #[test]
+    fn a_renamed_filter_points_at_its_new_name() {
+        use crate::mcp::types_tools::{DocsSearchParams, FindFilesToolParams};
+
+        let prefix = parse::<FindFilesToolParams>(json!({ "path_prefix": "src/" })).expect_err("renamed");
+        assert!(
+            prefix.contains("`find_files`: unknown field `path_prefix`, did you mean `path`?"),
+            "{prefix}"
+        );
+        let kind = parse::<DocsSearchParams>(json!({ "query": "x", "kind": "pdf" })).expect_err("renamed");
+        assert!(
+            kind.contains("`docs_search`: unknown field `kind`, did you mean `format`?"),
+            "{kind}"
+        );
     }
 
     #[test]

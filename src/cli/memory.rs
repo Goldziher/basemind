@@ -82,7 +82,7 @@ pub enum MemoryCmd {
         mime_type: Option<String>,
         /// Format family: pdf, office, html, markdown, email, notebook, text, other.
         #[arg(long)]
-        kind: Option<String>,
+        format: Option<String>,
         /// Repository-relative prefix, or a glob when it holds `*` (`docs/`, `docs/**/*.md`).
         #[arg(long)]
         path: Option<String>,
@@ -205,7 +205,7 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
         MemoryCmd::Documents {
             query,
             mime_type,
-            kind,
+            format,
             path,
             keywords,
             entity,
@@ -216,7 +216,7 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
             let p = DocsSearchParams {
                 query,
                 mime_type,
-                kind,
+                format,
                 path,
                 keywords,
                 entity,

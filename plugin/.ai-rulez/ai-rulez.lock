@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.14.0'
 scope = 'all'
-tree = 'sha256:e00b4d6af439ad52d053fd4dfa129134ae3a3b1034e4940e24e4d32a0e7a80b7'
+tree = 'sha256:2506e64caee628588d9ab15b92f550eda7f4c35c0c60578d9dd2553bc245d861'
 
 [[item]]
 kind = 'command'
@@ -52,7 +52,7 @@ digest = 'sha256:dbf3ef11b9c9b7e3d137351ab584022a1c2d7fc0d7b8ea840fe92192fa474ec
 kind = 'skill'
 id = 'basemind-cli'
 path = 'skills/basemind-cli'
-digest = 'sha256:0465e5526009738848dcd24630a1db504c1f57500342b1ffdb5439034a4044a8'
+digest = 'sha256:7a4e7863c8972f1b4a87fb3486f5b6d06a656f820db130acc2980a910447cdac'
 
 [[item]]
 kind = 'skill'
