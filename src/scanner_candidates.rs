@@ -713,7 +713,9 @@ mod tests {
         std::fs::create_dir_all(allowed.join("sub")).expect("mkdir");
         std::fs::create_dir_all(&other).expect("mkdir");
 
-        assert!(covers("1", &other), "the bare word grants every workspace");
+        for word in ["1", "true", "yes", "on", "ON"] {
+            assert!(covers(word, &other), "{word:?} grants every workspace");
+        }
         let list = std::env::join_paths([&allowed, Path::new("/nonexistent/elsewhere")])
             .expect("join")
             .into_string()
@@ -721,9 +723,10 @@ mod tests {
         assert!(covers(&list, &allowed));
         assert!(covers(&list, &allowed.join("sub")), "descendants are covered");
         assert!(!covers(&list, &other), "an unlisted workspace is not");
-        assert!(!covers("0", &allowed));
+        for word in ["0", "false", "no", "off", "OFF"] {
+            assert!(!covers(word, &allowed), "{word:?} grants no workspace");
+        }
         assert!(!covers(".", &allowed), "a relative entry never grants");
-        assert!(!covers("on", &allowed));
         assert!(is_sensitive_root(Path::new("/home/u/.ssh")));
         assert!(is_sensitive_root(Path::new("/etc/ssl")));
         assert!(!is_sensitive_root(Path::new("/home/u/code/external")));
