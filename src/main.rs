@@ -36,7 +36,8 @@ mod stdio_relay;
     name = "basemind",
     version,
     about = "File-watcher and code-map generator using tree-sitter",
-    long_about = None
+    long_about = None,
+    arg = basemind::cli::help_json::flag()
 )]
 struct Cli {
     /// Repository root. Defaults to the current directory.
@@ -335,8 +336,14 @@ fn main() -> std::process::ExitCode {
 fn run() -> Result<()> {
     basemind::alloc_tag::retag_heap_pages();
     let process_started = std::time::Instant::now();
+    // Before parsing: a command missing its required arguments still describes itself, and the
+    // answer touches no workspace. ~keep
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if let Some(help) = basemind::cli::help_json::requested(&mut Cli::command(), &args) {
+        return basemind::cli::render::render_json(&help, &mut std::io::stdout().lock());
+    }
     // ~keep Parsed by hand so `scan` can tell a flag the user typed from a default or env value.
-    let matches = Cli::command().get_matches();
+    let matches = Cli::command().get_matches_from(&args);
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
 

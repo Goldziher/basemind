@@ -37,3 +37,5 @@ disagree.
 3. Add `--json` to any query command for the response the MCP tool returns, and to `scan` or
    `rescan` for the `index_rescan` response.
 4. `basemind <command> --help` lists a command's flags; this manual explains when to use it.
+   `basemind scan --help-json` (any command) prints the same definition as JSON: positional
+   counts, each flag's names and aliases, and whether it takes a value. It runs nothing.

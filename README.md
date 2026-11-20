@@ -1184,7 +1184,8 @@ response types the MCP tools return. Human output prints source bodies, diffs an
 only table cells are cut (to 200 characters, with a note on stderr), and the timing line goes to
 stderr. List commands take
 `--limit`, `--cursor` (resume from a previous `next_cursor`) and `--max-tokens`. Line and column
-arguments are 1-based.
+arguments are 1-based. `--help-json` on any command prints its definition as JSON (positional
+counts, flag names and aliases, whether each flag takes a value) and runs nothing.
 
 <!-- markdownlint-disable MD013 -->
 
