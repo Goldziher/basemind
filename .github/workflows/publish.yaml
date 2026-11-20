@@ -254,6 +254,11 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
+      # The release body is the tagged CHANGELOG's section for this version; a version without
+      # one stops the release here, before anything is built or published.
+      - name: Extract the release notes from the CHANGELOG
+        run: python3 scripts/changelog_section.py "${{ needs.meta.outputs.version }}" > "$RUNNER_TEMP/release-notes.md"
+
       - name: Ensure the GitHub release exists
         id: ensure
         env:
@@ -294,7 +299,7 @@ jobs:
             # broke the plugin launcher's checksum-verified download).
             # `gh release create` has no --json; create, then resolve the numeric id with retries
             # (a fresh record is briefly invisible to the release API).
-            gh release create "$tag" --title "$tag" --notes "Release $tag" \
+            gh release create "$tag" --title "$tag" --notes-file "$RUNNER_TEMP/release-notes.md" \
               --verify-tag --draft $prerelease >/dev/null
             if ! release_id="$(release_id_for "$tag")"; then
               echo "::error::created release for $tag but its id never became visible"

@@ -575,6 +575,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The plugin ships `scripts/statusline.sh`; `/bm-statusline` runs the installed plugin's copy
   instead of the marketplace clone's.
 
+- A GitHub release's notes are its version's `CHANGELOG.md` section (`scripts/changelog_section.py`),
+  and a release whose version has no section, or an empty one, stops before anything is built.
+
 - A `plugins-only` publish dispatch runs only from the release tag that names the plugin version.
 
 - cargo-deny checks the `full` dependency graph the release binaries are built from.
