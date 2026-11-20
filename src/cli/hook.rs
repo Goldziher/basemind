@@ -29,7 +29,7 @@ pub enum HookCmd {
     /// in linked worktrees, and never blocks a commit.
     Install {
         /// Replace an existing pre-commit hook that basemind did not write (the old one is kept as
-        /// `pre-commit.bak`).
+        /// `pre-commit.bak`, or `pre-commit.bak.1`, `.bak.2`, ... when earlier backups exist).
         #[arg(long)]
         force: bool,
     },
@@ -90,7 +90,8 @@ pub fn is_installed(hooks_dir: &Path) -> bool {
 }
 
 /// Write the hook into `hooks_dir`, creating it if needed. A foreign hook is an error without
-/// `force`; with it, the foreign hook is preserved as `pre-commit.bak`.
+/// `force`; with it, the foreign hook is moved to the first free name of `pre-commit.bak`,
+/// `pre-commit.bak.1`, `pre-commit.bak.2`, ..., so no earlier backup is replaced.
 pub fn install_into(hooks_dir: &Path, force: bool) -> Result<(PathBuf, Installed)> {
     std::fs::create_dir_all(hooks_dir).with_context(|| format!("create {}", hooks_dir.display()))?;
     let hook_path = hooks_dir.join("pre-commit");
@@ -98,13 +99,13 @@ pub fn install_into(hooks_dir: &Path, force: bool) -> Result<(PathBuf, Installed
         Err(_) if !hook_path.exists() => Installed::Fresh,
         Ok(existing) if existing.contains(HOOK_MARKER) => Installed::Refreshed,
         _ if force => {
-            let backup = hooks_dir.join("pre-commit.bak");
+            let backup = free_backup_path(hooks_dir)?;
             std::fs::rename(&hook_path, &backup).with_context(|| format!("back up {}", hook_path.display()))?;
             Installed::ReplacedForeign { backup }
         }
         _ => anyhow::bail!(
             "{} already exists and was not written by basemind; re-run with --force to replace it \
-             (the old hook is kept as pre-commit.bak)",
+             (the old hook is kept as pre-commit.bak, or pre-commit.bak.N when that exists)",
             hook_path.display()
         ),
     };
@@ -117,6 +118,23 @@ pub fn install_into(hooks_dir: &Path, force: bool) -> Result<(PathBuf, Installed
         std::fs::set_permissions(&hook_path, perms)?;
     }
     Ok((hook_path, outcome))
+}
+
+/// The first of `pre-commit.bak`, `pre-commit.bak.1`, `pre-commit.bak.2`, ... that names nothing in
+/// `hooks_dir`, not even a dangling symlink.
+fn free_backup_path(hooks_dir: &Path) -> Result<PathBuf> {
+    for n in 0_u32.. {
+        let candidate = match n {
+            0 => hooks_dir.join("pre-commit.bak"),
+            _ => hooks_dir.join(format!("pre-commit.bak.{n}")),
+        };
+        match std::fs::symlink_metadata(&candidate) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Err(e) => return Err(e).with_context(|| format!("inspect {}", candidate.display())),
+            Ok(_) => {}
+        }
+    }
+    anyhow::bail!("no free pre-commit backup name in {}", hooks_dir.display())
 }
 
 #[cfg(test)]
@@ -156,6 +174,70 @@ mod tests {
                 .contains("mine")
         );
         assert!(is_installed(dir.path()));
+    }
+
+    #[test]
+    fn should_keep_every_backup_byte_for_byte_across_repeated_forced_installs() {
+        let dir = tempfile::tempdir().unwrap();
+        let hook = dir.path().join("pre-commit");
+        let first: &[u8] = b"#!/bin/sh\necho first \xff\n";
+        let second: &[u8] = b"#!/bin/sh\necho second\n";
+        let third: &[u8] = b"#!/bin/sh\necho third\n";
+
+        std::fs::write(&hook, first).unwrap();
+        let (_, outcome) = install_into(dir.path(), true).unwrap();
+        assert_eq!(
+            outcome,
+            Installed::ReplacedForeign {
+                backup: dir.path().join("pre-commit.bak")
+            }
+        );
+
+        std::fs::write(&hook, second).unwrap();
+        let (_, outcome) = install_into(dir.path(), true).unwrap();
+        assert_eq!(
+            outcome,
+            Installed::ReplacedForeign {
+                backup: dir.path().join("pre-commit.bak.1")
+            }
+        );
+
+        std::fs::write(&hook, third).unwrap();
+        let (_, outcome) = install_into(dir.path(), true).unwrap();
+        assert_eq!(
+            outcome,
+            Installed::ReplacedForeign {
+                backup: dir.path().join("pre-commit.bak.2")
+            }
+        );
+
+        assert_eq!(std::fs::read(dir.path().join("pre-commit.bak")).unwrap(), first);
+        assert_eq!(std::fs::read(dir.path().join("pre-commit.bak.1")).unwrap(), second);
+        assert_eq!(std::fs::read(dir.path().join("pre-commit.bak.2")).unwrap(), third);
+        assert_eq!(std::fs::read_to_string(&hook).unwrap(), HOOK_BODY);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn should_not_replace_a_dangling_symlink_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let dangling = dir.path().join("pre-commit.bak");
+        std::os::unix::fs::symlink(dir.path().join("missing"), &dangling).unwrap();
+        std::fs::write(dir.path().join("pre-commit"), "#!/bin/sh\necho mine\n").unwrap();
+
+        let (_, outcome) = install_into(dir.path(), true).unwrap();
+
+        assert_eq!(
+            outcome,
+            Installed::ReplacedForeign {
+                backup: dir.path().join("pre-commit.bak.1")
+            }
+        );
+        assert_eq!(std::fs::read_link(&dangling).unwrap(), dir.path().join("missing"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("pre-commit.bak.1")).unwrap(),
+            "#!/bin/sh\necho mine\n"
+        );
     }
 
     #[test]
