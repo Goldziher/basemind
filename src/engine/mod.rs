@@ -31,6 +31,7 @@ pub(crate) mod migration_history;
 pub(crate) mod migration_rules;
 pub(crate) mod ops;
 pub(crate) mod outline_cache;
+pub(crate) mod paged_map;
 pub(crate) mod pick;
 pub(crate) mod ranges;
 pub(crate) mod ranked;

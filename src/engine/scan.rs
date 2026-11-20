@@ -21,9 +21,9 @@ use crate::store::Store;
 /// are all that ever needed to survive a file's result — the status, the buffered index entry and
 /// the pending batches never leave the drive chunk.
 #[derive(Default)]
-struct RescanPaths {
-    updated: Vec<RelPath>,
-    removed: Vec<RelPath>,
+pub(crate) struct RescanPaths {
+    pub(crate) updated: Vec<RelPath>,
+    pub(crate) removed: Vec<RelPath>,
 }
 
 impl ScanObserver for RescanPaths {

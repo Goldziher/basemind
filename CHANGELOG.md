@@ -579,6 +579,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - cargo-deny checks the `full` dependency graph the release binaries are built from.
 
+- A watcher batch patches the in-RAM file view, term index and document paths instead of copying
+  them (#279). They are sorted maps of shared pages of about 256 entries, so the map a batch derives
+  shares every page the batch did not touch, and one saved file in a 100k-file workspace rebuilds
+  one page of each rather than allocating every entry again.
+
 ### Removed
 
 - **BREAKING: `ranges` on `code_grep`, `code_refs` and `code_read`** (#129), and the CLI's
