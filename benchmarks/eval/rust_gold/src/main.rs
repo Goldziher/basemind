@@ -391,7 +391,7 @@ impl<'ast> Visit<'ast> for Extractor<'_> {
         let self_ty = type_name(&i.self_ty);
         let span = i.impl_token.span;
         self.def(i, &self_ty, span, "impl");
-        if let Some((_, trait_path, _)) = &i.trait_
+        if let Some((trait_path, _)) = &i.trait_
             && let Some(seg) = trait_path.segments.last()
         {
             let first = without_attrs(i).first().map_or(line(span), |t| line(t.span()));
