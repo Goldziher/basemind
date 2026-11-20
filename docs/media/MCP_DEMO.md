@@ -8,16 +8,24 @@ Claude Code session can't be scripted).
 
 ## What to show (~20–25s)
 
-1. Open a fresh Claude Code session in a real repository with the basemind
-   plugin connected (`/plugin marketplace add Goldziher/basemind`, then install).
-2. Ask something that triggers a code-map tool, e.g. _"where is X defined and
-   what calls it?"_ — show `code_symbols`, `code_refs` and
-   `code_outline` returning **paths, line numbers, and signatures, not file
-   bodies**. The point is structure at a fraction of the tokens of grep + Read.
-3. Run `/bm-stats` to show the per-tool histogram and estimated tokens
-   saved.
+1. Use the release being documented. The plugin's MCP launcher downloads the
+   binary matching the plugin's version; `BASEMIND_BIN` pins another one
+   (`plugin/scripts/mcp-launch.sh`). Check it with `basemind --version`.
+2. Open a fresh Claude Code session in a **public** repository with the basemind
+   plugin installed (`/plugin marketplace add Goldziher/basemind`, then
+   `/plugin install basemind@basemind`). Run `/bm-statusline` once so the
+   statusline shows the tokens saved.
+3. Ask something that a file outline and a call-site lookup answer, e.g.
+   _"where is X defined and what calls it?"_ — show `code_outline`,
+   `code_symbols` and `code_refs` returning **paths, line numbers and
+   signatures, not file bodies**. The point is structure at a fraction of the
+   tokens of grep + Read.
+4. Run `/bm-stats` to show the per-tool histogram and estimated tokens saved.
 
-Keep it tight: one clear question → tool calls → the savings dashboard.
+Keep it tight: one clear question → tool calls → the savings dashboard. Every
+tool on screen must be one that binary serves (`VERB_TOOLS`,
+`src/mcp/types_tools.rs`); no other repository, path or account may appear in
+the frame.
 
 ## Record, convert, embed
 
@@ -36,5 +44,6 @@ Keep it tight: one clear question → tool calls → the savings dashboard.
      docs/media/mcp-demo.gif
    ```
 
-3. The top-level `README.md` already embeds `docs/media/mcp-demo.gif` in the
-   Quickstart section — just commit the regenerated GIF.
+3. The top-level `README.md` embeds `docs/media/mcp-demo.gif` under its
+   intro. Commit the regenerated GIF and drop any caption that says it was
+   recorded on an earlier release.
