@@ -46,7 +46,8 @@ pub(super) fn post(
 }
 
 /// Make room for a new thread in `repo` when it is at its cap, by staging the archiving of the
-/// active thread whose newest post is the oldest. Returns the notice that says so.
+/// active thread whose newest post is the oldest. Returns the notice that tells the poster; its
+/// members are told by their next read over all their threads.
 fn archive_for_cap(txn: &mut Txn<'_>, reader: &Reader<'_>, repo: &RepoKey) -> Result<Option<String>, CommsError> {
     let active = reader.repo_threads(repo, false)?;
     if active.len() < MAX_ACTIVE_THREADS_PER_REPO {
@@ -65,6 +66,7 @@ fn archive_for_cap(txn: &mut Txn<'_>, reader: &Reader<'_>, repo: &RepoKey) -> Re
     let Some((id, mut record)) = oldest else {
         return Ok(None);
     };
+    record.archived_by_cap = true;
     txn.archive(reader.ks, &id, &mut record)?;
     Ok(Some(cap_archive_notice(&id)))
 }
@@ -92,6 +94,7 @@ fn create(
         paths: plan.paths,
         open: plan.open,
         archived: false,
+        archived_by_cap: false,
         creator: actor.clone(),
         head: 1,
         last_activity_micros: ts_micros,

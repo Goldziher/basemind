@@ -720,6 +720,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Agent comms: a thread the per-repository cap of 256 active threads archives no longer hides its
+  unread messages from its members without a word (#300). A member's next `agent_inbox` read over
+  all its threads, a marking read or a peek, carries a notice naming the thread and how many of its
+  messages the member has not read, and says to read them with `agent_inbox {thread}`; a marking
+  read tells each actor once, and a replay of it tells again. A waiting read returns at once with
+  such a notice. A post, join or invitation into the thread is refused with the new code
+  `thread_archived_by_cap`, which says the cap archived it and to continue in a new thread by
+  posting with `subject` and `to`. A thread archived by its creator, or by its last member leaving,
+  is unchanged.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

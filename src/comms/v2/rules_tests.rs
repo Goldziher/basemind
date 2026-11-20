@@ -34,6 +34,7 @@ const MEMBER: Access = Access {
     open: false,
     same_repo: true,
     archived: false,
+    archived_by_cap: false,
     creator: false,
 };
 
@@ -123,6 +124,7 @@ fn only_a_marking_read_moves_read_seq_and_a_writing_read_never_moves_back() {
         read_seq: 2,
         notified_seq: 5,
         scan_seq: 0,
+        told_cap_archive: false,
     };
 
     assert!(!position.advance(ReadKind::Peek, 9));
@@ -145,6 +147,7 @@ fn a_new_actor_starts_at_its_principals_read_position_or_the_members_start() {
         read_seq: seq,
         notified_seq: seq,
         scan_seq: seq,
+        told_cap_archive: false,
     };
 
     assert_eq!(Position::start(None, 0), at(0), "a member from creation");
@@ -249,4 +252,43 @@ fn joins_and_invitations_stop_at_the_member_cap() {
         Err(CommsError::ThreadArchived { thread: id }),
         "the cap is the last thing a join is refused for"
     );
+}
+
+#[test]
+fn a_thread_the_cap_archived_is_refused_with_the_cap_and_how_to_continue() {
+    let id = thread(7);
+    let by_cap = Access {
+        open: true,
+        archived: true,
+        archived_by_cap: true,
+        ..MEMBER
+    };
+    let refusal = CommsError::ThreadArchivedByCap {
+        thread: id.clone(),
+        cap: MAX_ACTIVE_THREADS_PER_REPO,
+    };
+    let outsider = Access {
+        member: false,
+        ..by_cap
+    };
+
+    assert_eq!(authorize_post(&id, Some(&by_cap), None, true), Err(refusal.clone()));
+    assert_eq!(
+        authorize_update(&id, &ThreadAction::Join, &outsider, 1, |_| false),
+        Err(refusal.clone())
+    );
+    assert_eq!(
+        authorize_update(&id, &ThreadAction::Invite(vec![actor("z")]), &by_cap, 1, |_| false),
+        Err(refusal)
+    );
+}
+
+#[test]
+fn only_a_marking_read_and_the_first_page_of_a_peek_tell_of_a_cap_archive() {
+    assert!(tells_cap_archive(ReadKind::Marking, false));
+    assert!(tells_cap_archive(ReadKind::Peek, false));
+    assert!(!tells_cap_archive(ReadKind::Peek, true));
+    assert!(!tells_cap_archive(ReadKind::Announcing, false));
+    assert!(!tells_cap_archive(ReadKind::History, false));
+    assert!(!tells_cap_archive(ReadKind::ById, false));
 }
