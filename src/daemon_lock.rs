@@ -334,20 +334,33 @@ fn count_recorded_in(dir: &Path, kind: DaemonKind) -> usize {
 
 /// The registry record of the live daemon running as `pid`, whatever its generation or kind (see
 /// [`registered_daemons`]). For naming the process that holds something this daemon wants; a pid
-/// alone does not say which basemind version it is.
+/// alone does not say which basemind version it is. A process that refuses to be opened is not
+/// named ([`pid_is_live`]): it is more likely a stranger given a stale record's pid.
 pub fn registered_daemon(pid: u32) -> Option<DaemonRecord> {
     registered_daemon_in(&daemons_root(), pid)
 }
 
 /// [`registered_daemon`] over an explicit registry root.
 fn registered_daemon_in(root: &Path, pid: u32) -> Option<DaemonRecord> {
-    registered_daemons_in(root)
+    registered_daemon_judged_by(root, pid, crate::boot_identity::pid_state)
+}
+
+/// [`registered_daemon_in`] with what runs at a pid read by `state`.
+fn registered_daemon_judged_by(
+    root: &Path,
+    pid: u32,
+    state: impl Fn(u32) -> crate::boot_identity::PidState,
+) -> Option<DaemonRecord> {
+    if state(pid) != crate::boot_identity::PidState::Live {
+        return None;
+    }
+    registered_daemons_judged_by(root, state)
         .into_iter()
         .map(|daemon| daemon.record)
         .find(|record| record.pid == pid)
 }
 
-/// A live daemon's registry record and where it was found.
+/// A registered daemon's record and where it was found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisteredDaemon {
     /// The daemon's record.
@@ -357,16 +370,26 @@ pub struct RegisteredDaemon {
     pub pre_generation: bool,
 }
 
-/// Every live daemon registered under the data home `data`, of every generation and kind: the
-/// records in the registry root first, then those of each `g<N>/`. Read-only. A record that does
-/// not name the process now under its pid ([`crate::process_start::can_have_written`]) is passed
-/// over: a daemon that was killed left it, and the number now belongs to something else.
+/// Every daemon registered under the data home `data` that may be running, of every generation and
+/// kind: the records in the registry root first, then those of each `g<N>/`. Read-only. For a
+/// caller that keeps what such a daemon uses, so a process that refuses to be opened counts as
+/// running ([`crate::boot_identity::PidState::may_be_live`]). A record that does not name the
+/// process now under its pid ([`crate::process_start::can_have_written`]) is passed over: a daemon
+/// that was killed left it, and the number now belongs to something else.
 pub fn registered_daemons(data: &DataRoot) -> Vec<RegisteredDaemon> {
     registered_daemons_in(&daemons_root_of(data))
 }
 
 /// [`registered_daemons`] over an explicit registry root.
 fn registered_daemons_in(root: &Path) -> Vec<RegisteredDaemon> {
+    registered_daemons_judged_by(root, crate::boot_identity::pid_state)
+}
+
+/// [`registered_daemons_in`] with what runs at a pid read by `state`.
+fn registered_daemons_judged_by(
+    root: &Path,
+    state: impl Fn(u32) -> crate::boot_identity::PidState,
+) -> Vec<RegisteredDaemon> {
     let live_in = |dir: &Path, pre_generation: bool| -> Vec<RegisteredDaemon> {
         std::fs::read_dir(dir)
             .into_iter()
@@ -375,7 +398,7 @@ fn registered_daemons_in(root: &Path) -> Vec<RegisteredDaemon> {
             .map(|entry| entry.path())
             .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("pid"))
             .filter_map(|path| read_record(&path))
-            .filter(|record| pid_is_live(record.pid) && crate::process_start::can_have_written(record))
+            .filter(|record| state(record.pid).may_be_live() && crate::process_start::can_have_written(record))
             .map(|record| RegisteredDaemon { record, pre_generation })
             .collect()
     };

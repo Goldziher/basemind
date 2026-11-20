@@ -286,6 +286,42 @@ fn a_record_whose_process_refuses_to_be_opened_is_kept() {
     assert!(!path.exists(), "a gone process's pidfile is pruned");
 }
 
+/// A daemon whose process Windows refuses to open may be one of another account or sandbox sharing
+/// the data home: the census the blob sweep holds namespaces by lists it, in every generation, but
+/// it is not named as the holder of a pid.
+#[test]
+fn a_daemon_whose_process_refuses_to_be_opened_holds_but_is_not_named() {
+    use crate::boot_identity::{PidState, windows_state};
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const PID: u32 = 0x7FFF_FFFE;
+    let root = tempfile::tempdir().expect("tempdir");
+    let record = |version: &str| DaemonRecord {
+        pid: PID,
+        kind: DaemonKind::Comms,
+        dir: PathBuf::from("/nonexistent"),
+        version: version.to_string(),
+        blob_schema: None,
+        started_unix: now_unix(),
+        process_start: None,
+        boot: None,
+    };
+    write_record(&root.path().join("comms-old.pid"), &record("0.33.0"));
+    std::fs::create_dir_all(root.path().join("g1")).expect("mkdir generation");
+    write_record(&root.path().join("g1/comms-new.pid"), &record("0.34.0"));
+    let unopenable = |_pid: u32| windows_state(Err(Some(ERROR_ACCESS_DENIED)));
+
+    let listed: Vec<(String, bool)> = registered_daemons_judged_by(root.path(), unopenable)
+        .into_iter()
+        .map(|daemon| (daemon.record.version, daemon.pre_generation))
+        .collect();
+    assert_eq!(listed, [("0.33.0".to_string(), true), ("0.34.0".to_string(), false)]);
+    assert!(registered_daemons_judged_by(root.path(), |_pid| PidState::Gone).is_empty());
+
+    assert_eq!(registered_daemon_judged_by(root.path(), PID, unopenable), None);
+    let named = registered_daemon_judged_by(root.path(), PID, |_pid| PidState::Live).expect("a live holder");
+    assert_eq!(named.version, "0.33.0");
+}
+
 #[test]
 fn the_ceiling_counts_each_kind_separately() {
     let machine = tempfile::tempdir().expect("machine tempdir");
