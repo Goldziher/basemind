@@ -230,6 +230,20 @@ pub(crate) struct MemoryDeleteResponse {
     pub deleted: bool,
 }
 
+/// `basemind memory clear`: every note of the repository group. No arguments.
+#[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryClearParams {}
+
+#[cfg(feature = "memory")]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(crate) struct MemoryClearResponse {
+    /// Notes removed, of every tier and owner.
+    pub notes_removed: usize,
+    /// Embedding models' vector stores emptied of their rows and purged.
+    pub vector_stores_purged: usize,
+}
+
 /// Verification verdict of a memory's code references against the live index, set by the
 /// W10 audit engine. `#[serde(default)]` on the record field means pre-W10 blobs (written
 /// before this existed) decode as `Unverified` — no schema bump required.

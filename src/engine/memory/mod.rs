@@ -17,8 +17,8 @@ use super::EngineError;
 use super::cursor::Cursor;
 use super::timing::elapsed_us;
 use super::types::memory::{
-    MemoryDeleteParams, MemoryDeleteResponse, MemoryEntry, MemoryGetParams, MemoryListParams, MemoryListResponse,
-    MemoryPutParams, MemoryPutResponse, Visibility,
+    MemoryClearResponse, MemoryDeleteParams, MemoryDeleteResponse, MemoryEntry, MemoryGetParams, MemoryListParams,
+    MemoryListResponse, MemoryPutParams, MemoryPutResponse, Visibility,
 };
 use super::workspace::Workspace;
 
@@ -290,6 +290,21 @@ impl Workspace {
         )?)
     }
 
+    /// Remove every note of the repository group and, best effort, every row of every model's
+    /// vector store.
+    pub(crate) fn memory_clear_group(&self) -> Result<MemoryClearResponse, EngineError> {
+        let notes_removed = {
+            let store = self.store_read();
+            let idx = store.index_handle().ok_or_else(index_unavailable)?;
+            ops::clear_core(&idx)?
+        };
+        let vector_stores_purged = vectors::purge_every_vector_row(self);
+        Ok(MemoryClearResponse {
+            notes_removed,
+            vector_stores_purged,
+        })
+    }
+
     /// Delete one note and, best effort, its vector rows in every model's store.
     pub(crate) fn memory_delete_note(&self, params: MemoryDeleteParams) -> Result<MemoryDeleteResponse, EngineError> {
         let (vis_byte, owner) = self.memory_namespace(params.visibility);
@@ -302,6 +317,10 @@ impl Workspace {
         Ok(MemoryDeleteResponse { deleted })
     }
 }
+
+#[cfg(test)]
+#[path = "clear_tests.rs"]
+mod clear_tests;
 
 #[cfg(test)]
 mod embed_report_tests {

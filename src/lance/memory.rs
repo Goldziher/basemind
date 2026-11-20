@@ -132,10 +132,19 @@ impl LanceStore {
     /// ([`super::batch::purge_table`]): the rows are gone from its files and from every earlier
     /// version, not only hidden. Returns the number of rows deleted.
     pub fn purge_memory(&self, scope: &str, visibility: &str, agent_id: &str, key: &str) -> Result<u64> {
-        let predicate = memory_keys_predicate(scope, visibility, agent_id, &[key]);
+        self.purge_memory_where(&memory_keys_predicate(scope, visibility, agent_id, &[key]))
+    }
+
+    /// Delete every row of the table, of every scope, tier and owner, and purge it as
+    /// [`Self::purge_memory`] does. Returns the number of rows deleted.
+    pub fn purge_all_memory(&self) -> Result<u64> {
+        self.purge_memory_where("true")
+    }
+
+    fn purge_memory_where(&self, predicate: &str) -> Result<u64> {
         self.inner.rt().block_on(async {
             let table = self.memory_table().await?;
-            let result = table.delete(&predicate).await.context("delete memory rows")?;
+            let result = table.delete(predicate).await.context("delete memory rows")?;
             super::batch::purge_table(&table)
                 .await
                 .context("purge the memory table")?;

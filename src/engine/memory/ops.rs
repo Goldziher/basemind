@@ -371,6 +371,22 @@ pub(crate) fn delete_core(
     remove_record(idx, scope, vis_byte, owner, key)
 }
 
+/// Clear core for `basemind memory clear`: remove every note of the group store, of every scope,
+/// tier and owner, reporting how many there were.
+pub(crate) fn clear_core(idx: &IndexDb) -> Result<usize, MemoryOpError> {
+    let Some(notes) = notes_for_read(idx)? else {
+        return Ok(0);
+    };
+    let count = notes
+        .len()
+        .map_err(|source| MemoryOpError::Fjall { op: "count", source })?;
+    notes
+        .clear()
+        .map_err(|source| MemoryOpError::Fjall { op: "clear", source })?;
+    sync_memory(idx)?;
+    Ok(count)
+}
+
 /// Truncate a value to [`MEMORY_PREVIEW_CHARS`] characters (never bytes), appending an ellipsis when
 /// clipped. Char-boundary safe.
 pub(crate) fn preview(value: &str) -> String {

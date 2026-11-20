@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `basemind memory clear [--yes]` (CLI only) removes every memory note of the repository group, of
+  every tier and agent, and empties and purges the vector store of every embedding model. It asks
+  for confirmation on a terminal and refuses (exit 2) without `--yes` anywhere else; with the daemon
+  running it runs in the daemon, and while another process holds the index without a daemon it is
+  refused (exit 3). `basemind cache stats` names the repository group directory that holds the
+  notes and their vectors as `memory_dir` (#323).
 - `memory_search` with `query` falls back to matching words when no embedding model can embed the
   query (none downloaded, offline, the model refused the text) instead of failing: a note is a hit
   when at least half of the query's words begin a word of its key, value or tags, ranked by how

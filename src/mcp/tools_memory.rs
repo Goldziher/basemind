@@ -14,7 +14,7 @@ use super::BasemindServer;
 use super::strict::Strict;
 use super::types_tools::{DocsSearchParams, MemorySaveParams, MemorySearchToolParams};
 use crate::engine::Workspace;
-use crate::engine::types::memory::MemoryDeleteParams;
+use crate::engine::types::memory::{MemoryClearParams, MemoryDeleteParams};
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_memory")]
 impl BasemindServer {
@@ -99,5 +99,10 @@ impl BasemindServer {
     /// Delete one note. No MCP tool: `basemind memory delete`.
     pub(crate) async fn memory_delete_call(&self, p: MemoryDeleteParams) -> Result<CallToolResult, McpError> {
         self.cli_op(p, Workspace::memory_delete).await
+    }
+
+    /// Remove every note of the repository group. No MCP tool: `basemind memory clear`.
+    pub(crate) async fn memory_clear_call(&self, p: MemoryClearParams) -> Result<CallToolResult, McpError> {
+        self.cli_op(p, Workspace::memory_clear).await
     }
 }

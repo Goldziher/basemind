@@ -194,8 +194,9 @@ async fn live_serve_sessions(root: &Path) -> u64 {
 }
 
 /// The CLI-only commands, which ADR-0018 and ADR-0047 keep off the agent surface.
-const CLI_ONLY: [(&str, &str); 11] = [
+const CLI_ONLY: [(&str, &str); 12] = [
     ("memory_delete", r#"{"key":"k"}"#),
+    ("memory_clear", "{}"),
     ("git_churn", "{}"),
     ("git_by_path", r#"{"pattern":"a"}"#),
     ("code_chunk", r#"{"path":"a.rs"}"#),
