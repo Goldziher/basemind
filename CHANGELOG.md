@@ -776,6 +776,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logged every dataset load, commit and query plan, and rmcp every session's handshake, about
   1.2 MiB a minute under load and 93% of the log. Without `RUST_LOG`, `lance` and `rmcp` now log
   at `warn`; basemind's own INFO lines are unchanged.
+- A source file that is not UTF-8 (Latin-1 or cp1252 Java or Python, a stray byte in a comment) is
+  indexed (#316). It was dropped from the code map, so it had no outline, symbols, chunks or
+  `code_grep` hits, and only the scan's counters said so. Each byte of an invalid sequence now reads
+  as `_` (`Caf\xe9` is the class `Caf_`), so every line, column and byte offset is the file's own;
+  `code_grep` no longer counts such a file in `skipped_files`. The next scan indexes these files;
+  nothing else is re-extracted.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

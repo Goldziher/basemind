@@ -156,7 +156,6 @@ pub struct ScanStats {
     pub reused_extraction: usize,
     pub skipped_unchanged: usize,
     pub skipped_too_large: usize,
-    pub skipped_non_utf8: usize,
     pub skipped_no_lang: usize,
     pub skipped_binary: usize,
     pub removed: usize,
@@ -288,7 +287,6 @@ pub enum FileStatus {
     SkippedTooLarge {
         size: u64,
     },
-    SkippedNonUtf8,
     SkippedNoLang,
     /// Pre-flight NUL-byte scan flagged this as binary even though the extension claimed a
     /// supported language (e.g. a vendored PNG saved as `image.ts`). Cheap to detect and avoids

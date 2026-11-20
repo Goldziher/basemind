@@ -111,6 +111,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("scanner_vectors", Retrieval),
     ("search", Core),
     ("sessions", Root),
+    ("source_text", Core),
     ("store", Core),
     ("store_blob", Core),
     ("store_blob_codec", Core),

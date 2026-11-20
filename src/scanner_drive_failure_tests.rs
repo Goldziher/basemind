@@ -23,7 +23,6 @@ fn only_a_verdict_on_the_file_lets_the_stale_purge_drop_its_entry() {
     assert!(!keeps_prior_entry(&read_failed(ErrorKind::InvalidInput)));
     assert!(!keeps_prior_entry(&FileStatus::SkippedTooLarge { size: 1 }));
     assert!(!keeps_prior_entry(&FileStatus::SkippedBinary));
-    assert!(!keeps_prior_entry(&FileStatus::SkippedNonUtf8));
     assert!(!keeps_prior_entry(&FileStatus::SkippedNoLang));
     assert!(!keeps_prior_entry(&FileStatus::Removed));
     #[cfg(feature = "documents")]

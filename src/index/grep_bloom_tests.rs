@@ -46,6 +46,20 @@ fn unicode_literals_are_matched_on_their_utf8_bytes() {
 }
 
 #[test]
+fn a_file_that_is_not_utf8_is_bloomed_as_the_text_grep_matches() {
+    let latin1 = b"public class Caf\xe9 { String cr\xe8me; }";
+    assert_eq!(build_row(latin1), row_for("public class Caf_ { String cr_me; }"));
+    let row = build_row(latin1);
+    let passes = |pattern: &str| {
+        Needle::compile(pattern)
+            .expect("needle")
+            .passes(parse_row(&row).unwrap())
+    };
+    assert!(passes("class Caf_ "));
+    assert!(passes("cr_me"));
+}
+
+#[test]
 fn foreign_or_short_rows_do_not_parse() {
     let mut row = row_for("hello world");
     assert!(parse_row(&row).is_some());

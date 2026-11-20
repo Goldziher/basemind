@@ -195,11 +195,7 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
         warn = pair("warn", stats.updated_with_warnings, style_warn),
         unchanged = pair("unchanged", stats.skipped_unchanged, Style::new()),
         failed = pair("failed", stats.read_failed + stats.extract_failed, style_fail),
-        skipped = pair(
-            "skipped",
-            stats.skipped_too_large + stats.skipped_non_utf8 + stats.skipped_no_lang,
-            Style::new(),
-        ),
+        skipped = pair("skipped", stats.skipped_too_large + stats.skipped_no_lang, Style::new(),),
         removed = pair("removed", stats.removed, style_warn),
     );
     let _ = writeln!(w, "{line}");
@@ -505,18 +501,6 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
                     label: "skip",
                     style: Style::new().dimmed(),
                     detail: format!("({} too large)", human_bytes(*size)),
-                })
-            } else {
-                None
-            }
-        }
-        FileStatus::SkippedNonUtf8 => {
-            if v == Verbosity::Verbose {
-                Some(Row {
-                    symbol: '·',
-                    label: "skip",
-                    style: Style::new().dimmed(),
-                    detail: "(non-UTF8)".to_string(),
                 })
             } else {
                 None

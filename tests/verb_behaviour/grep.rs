@@ -50,7 +50,8 @@ async fn code_grep_regex_anchors_match_at_every_line() {
     );
 }
 
-/// A file `code_grep` could not search is counted, so "no hits" is not read as "not there".
+/// A file `code_grep` could not search is counted, so "no hits" is not read as "not there". A file
+/// that is not UTF-8 is searched, each invalid byte read as `_`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_grep_counts_the_files_it_could_not_search() {
     let (dir, client) = started().await;
@@ -66,13 +67,18 @@ async fn code_grep_counts_the_files_it_could_not_search() {
         json!({ "pattern": "file_outline|helper", "regex": true }),
     )
     .await;
-    assert_eq!(body["skipped_files"], 2, "one is not UTF-8, one is gone: {body}");
+    assert_eq!(body["skipped_files"], 1, "worker.rb is gone: {body}");
     assert_eq!(
         body["hits"]
             .as_object()
             .map(|files| files.keys().map(String::as_str).collect::<Vec<_>>()),
-        Some(vec!["src/outline.rs"]),
-        "src/outline.rs is still searched: {body}"
+        Some(vec!["src/callers.rs", "src/outline.rs"]),
+        "both files are searched: {body}"
+    );
+    assert_eq!(
+        body["hits"]["src/callers.rs"],
+        json!({ "": ["1: file_outline __ not text"] }),
+        "{body}"
     );
 }
 

@@ -46,11 +46,16 @@ pub(crate) fn capture_name(q: &Query, index: u32) -> &str {
 /// parse + L1 query walk. When `eager_l2` is `true` an L2 failure is non-fatal: the function
 /// returns `(l1, None)` rather than propagating the error, matching the scanner's existing
 /// tolerance for L2 failures. A timeout is the exception: it is returned, so the file is retried.
+///
+/// `source` need not be UTF-8: it is parsed as [`crate::source_text::as_text`], whose offsets are
+/// those of `source`.
 pub fn extract_l1_l2(
     lang: LangId,
     source: &[u8],
     eager_l2: bool,
 ) -> Result<(FileMapL1, Option<FileMapL2>), ExtractError> {
+    let text = crate::source_text::as_text(source);
+    let source = text.as_bytes();
     let outcome = with_parser(lang, |p| parse_with_default_timeout(p, source))?;
     let tree = match outcome {
         ParseOutcome::Ok(t) => t,
@@ -107,8 +112,6 @@ pub const EXTRACT_EPOCH: u16 = 6;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {
-    #[error("non-utf8 source")]
-    NonUtf8,
     #[error("tree-sitter parse failure")]
     ParseFailure,
     #[error("tree-sitter parse timed out (> {0:?}) — file likely pathological")]

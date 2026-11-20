@@ -277,7 +277,8 @@ fn searchable_text(symbol: Option<&str>, signature: Option<&str>, doc: Option<&s
 
 /// Chunk one file from its cached L1/L2 + source bytes. `hash_hex` is the source content hash
 /// used to make each `chunk_id` content-addressed. Returns chunks in byte order; each carries a
-/// stable ordinal.
+/// stable ordinal. Bytes that are not UTF-8 are read as [`crate::source_text::as_text`], the text
+/// the outline was extracted from.
 pub fn chunk_file(
     path: &str,
     hash_hex: &str,
@@ -286,9 +287,8 @@ pub fn chunk_file(
     source: &[u8],
     opts: ChunkOptions,
 ) -> Vec<CodeChunk> {
-    let Ok(source) = std::str::from_utf8(source) else {
-        return Vec::new();
-    };
+    let text = crate::source_text::as_text(source);
+    let source: &str = &text;
     let len = source.len();
     let mut docs: Vec<&DocComment> = l2.map_or_else(Vec::new, |m| m.docs.iter().collect());
     docs.sort_by_key(|d| d.end_byte);
@@ -501,6 +501,35 @@ mod tests {
         assert_eq!(symbol_chunks[0].signature.as_deref(), Some("fn alpha()"));
         assert_eq!(symbol_chunks[0].chunk_id, "deadbeef:0");
         assert!(symbol_chunks[0].text.contains("alpha"));
+    }
+
+    #[test]
+    fn a_latin1_file_is_chunked_at_its_own_offsets() {
+        let source = b"// caf\xe9\nfn cr\xe8me() {\n    1\n}\n";
+        let l1 = l1_with(
+            vec![sym("cr_me", SymbolKind::Function, 8, 28, 1, Some("fn cr_me()"))],
+            "// caf_\nfn cr_me() {\n    1\n}\n",
+        );
+        let chunks = chunk_file("l.rs", "ab", &l1, None, source, ChunkOptions::default());
+        let got: Vec<(Option<&str>, &str, u32, u32, u32)> = chunks
+            .iter()
+            .map(|c| {
+                (
+                    c.symbol.as_deref(),
+                    c.text.as_str(),
+                    c.byte_start,
+                    c.byte_end,
+                    c.line_start,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (None, "// caf_", 0, 7, 1),
+                (Some("cr_me"), "fn cr_me() {\n    1\n}", 8, 28, 2),
+            ]
+        );
     }
 
     #[test]
