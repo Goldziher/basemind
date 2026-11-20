@@ -671,6 +671,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `xberg-tesseract` or `tree-sitter-language-pack` off the version `ATTRIBUTIONS.md` was checked
   against.
 
+- Every published crate declares `rust-version = "1.100.0"`, so `cargo install basemind` on an older
+  Rust stops with that minimum instead of a dependency's compile error. CI checks the crates with
+  exactly that release, and nightly builds `full` against the newest compatible dependencies, as an
+  install without `--locked` resolves them (#275).
+
 ### Removed
 
 - **BREAKING: `ranges` on `code_grep`, `code_refs` and `code_read`** (#129), and the CLI's

@@ -42,6 +42,10 @@ run = [
   'cargo clippy --all-targets --features "documents documents-ocr documents-ner" -- -D warnings',
 ]
 
+[tasks."check:msrv"]
+description = "Check every published crate, basemind with `full`, on the Rust release its rust-version names"
+run = "cargo hack check --rust-version --workspace --locked --features full --ignore-unknown-features"
+
 [tasks.check]
 description = "Run all checks (lint + test)"
 run = [{ task = "lint" }, { task = "test" }]

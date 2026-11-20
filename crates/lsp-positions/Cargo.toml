@@ -9,6 +9,7 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
+rust-version.workspace = true
 
 [lib]
 name = "lsp_positions"

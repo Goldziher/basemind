@@ -41,6 +41,7 @@ name = "basemind"
 version = "0.33.0"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
+rust-version.workspace = true
 description = "Coding agents ask a local index of your code, git history, documents and memory over MCP or the CLI, get paths and lines instead of reading files, and coordinate in shared threads."
 readme = "README.md"
 license = "MIT"
@@ -64,6 +65,11 @@ members = [
   "crates/tree-sitter-graph",
   "crates/tree-sitter-stack-graphs",
 ]
+
+# ~keep The oldest Rust every published crate builds with: the toolchain pin in rust-toolchain.toml when
+# ~keep it was set. The `msrv` CI job checks the crates with exactly this release.
+[workspace.package]
+rust-version = "1.100.0"
 
 [workspace.dependencies]
 agent-client-protocol = "5.5.0"

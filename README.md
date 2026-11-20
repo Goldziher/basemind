@@ -165,6 +165,7 @@ code search, memory and agent messaging; the first run downloads the models they
 picks features in `Cargo.toml` (`documents`, `documents-ocr`, `documents-ner`, `code-search`,
 `memory`, `comms`, `code-intel`, or `full` for all of them); the
 [feature table](https://basemind.ai/reference/configuration/#cargo-features) says what each adds.
+The cargo installs need Rust 1.100.0 or newer, the `rust-version` every crate declares.
 
 Release binaries are published for macOS on Apple Silicon, Linux on x86_64 and arm64 (glibc 2.28 or
 newer) and Windows on x86_64. Other platforms build from source.
