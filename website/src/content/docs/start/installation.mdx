@@ -64,7 +64,7 @@ agent-comms features, and the slash commands. Pick your coding tool.
     Add to `opencode.json` (project) or `~/.config/opencode/opencode.json`
     (global):
 
-    <Code code={`{ "plugin": ["basemind-opencode@latest"] }`} lang="json" />
+    <Code code={`{ "plugins": ["basemind-opencode@latest"] }`} lang="json" />
   </TabItem>
 
   <TabItem label="Kimi Code">
@@ -103,9 +103,8 @@ agent-comms features, and the slash commands. Pick your coding tool.
     session start and after compaction. Pi runs the [CLI](#3-as-a-cli) through its shell tool;
     no MCP bridge or binary is included. Add `-l` for a project-scoped installation.
 
-    The next release adds these resources to the existing `basemind-opencode` npm package.
-    After that release, `pi install npm:basemind-opencode` provides registry installation
-    and Pi package-catalog discovery. Both installation paths include the same resources.
+    The `basemind-opencode` npm package carries the same extension and skills: use
+    `pi install npm:basemind-opencode` for registry installation and Pi package-catalog discovery.
   </TabItem>
 </Tabs>
 
