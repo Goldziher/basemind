@@ -634,7 +634,9 @@ The blob store follows the same retention. A version reads its own blob namespac
 hold: no live process of that version is registered under the data directory (a daemon in
 `daemons/`, of any generation, or a host in `hosting/<pid>`), and nothing has been written into the
 namespace for `BASEMIND_PRUNE_AFTER_DAYS` days (default 14; `0` leaves only the first test). A
-0.33 daemon still serving another repository through an upgrade therefore keeps its blobs. Each
+0.33 daemon still serving another repository through an upgrade therefore keeps its blobs. While a
+live process whose namespace cannot be told is registered (a `hosting/<pid>` that names no build, or
+a version that does not parse), no older namespace is reaped at all. Each
 file still goes only once it is older than the blob grace period (`BASEMIND_BLOB_GC_GRACE_SECS`).
 A version none of whose processes runs at the sweep keeps its blobs while it has written into them
 within the hold; once they are reaped, its next scan re-extracts.

@@ -1126,7 +1126,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     removes the un-namespaced blobs older builds wrote and the namespaces of older schemas, but
     never while a process of that version is registered under the data home (a daemon in
     `daemons/` of any generation, or a host in `hosting/<pid>`; both now record the blob schema
-    they read, and a 0.33 record is read by its version), and
+    they read, and a 0.33 record is read by its version; while a live one's namespace cannot be
+    told, as from a hosting marker that names no build, no older namespace is reaped), and
     only once nothing has been written into them for `BASEMIND_PRUNE_AFTER_DAYS` days (default 14,
     the launcher's retention of an unused version; `0` leaves only the running-process check). A
     0.33 daemon still serving another repository through the upgrade keeps answering; an older
