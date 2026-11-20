@@ -80,6 +80,44 @@ fn prose_breaks_at_a_paragraph_before_a_line() {
     assert_cited(&text, &spans);
 }
 
+/// A text whose lines are longer than the overlap still overlaps: the next chunk starts at the first
+/// word start in the last `overlap` characters, mid-word or not.
+#[test]
+fn prose_with_no_line_start_in_the_overlap_overlaps_by_whole_words() {
+    let cases: [(&str, usize, usize, usize, &[(usize, usize)], String); 2] = [
+        (
+            "abcd ",
+            1000,
+            1000,
+            200,
+            &[
+                (0, 1000),
+                (800, 1800),
+                (1600, 2600),
+                (2400, 3400),
+                (3200, 4200),
+                (4000, 5000),
+            ],
+            "abcd ".repeat(40),
+        ),
+        (
+            "abcdef ",
+            30,
+            100,
+            30,
+            &[(0, 98), (70, 168), (140, 210)],
+            "abcdef abcdef abcdef abcdef ".to_string(),
+        ),
+    ];
+    for (word, repeats, max_chars, overlap, expected, overlap_text) in cases {
+        let text = word.repeat(repeats);
+        let spans = spans(&text, Shape::Prose, max_chars, overlap);
+        assert_eq!(spans, expected, "{word:?} x {repeats}");
+        assert_eq!(text[spans[1].0..spans[0].1], overlap_text, "{word:?} x {repeats}");
+        assert!(line_ranges(&text, &spans).iter().all(|&lines| lines == (1, 1)));
+    }
+}
+
 #[test]
 fn records_do_not_overlap_and_repeat_the_header_only_for_embedding() {
     let csv: String = std::iter::once("id,name,amount\n".to_string())

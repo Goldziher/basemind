@@ -1313,6 +1313,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs.rs builds the crate (#274). 0.31.0, 0.31.1 and 0.32.0 failed there: the build script of
   tree-sitter-language-pack downloads its parser sources, and docs.rs has no network.
   `[package.metadata.docs.rs]` sets `TSLP_OFFLINE`, and CI builds the docs the same way, offline.
+- Prose chunked from a text file now overlaps when its lines are longer than `[documents] overlap`:
+  with no line start in a chunk's last `overlap` characters, the next chunk starts at the first word
+  start there (#314). Before, an unwrapped paragraph or a one-line file got no overlap at all. The
+  extraction digest is `doc/5`: the next scan extracts and embeds every document once.
 
 ## [0.33.0] - 2026-11-14
 
