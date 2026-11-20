@@ -395,3 +395,59 @@ async fn an_indexed_file_replaced_by_an_outside_link_is_neither_outlined_nor_rea
         assert!(!text.contains("linked_needle"), "{text}");
     }
 }
+
+/// A store failure reaches the agent as an `index_unavailable` result naming the repair, and the
+/// text of any failure names a data-home path `$BASEMIND_DATA_HOME/…` and a repository path relative
+/// to the repository.
+#[tokio::test]
+async fn a_failure_is_reported_without_host_paths() {
+    use rmcp::ErrorData as McpError;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(tmp.path().join("a.rs"), "pub fn alpha() {}\n").expect("a.rs");
+    let server = server(tmp.path(), true);
+    let blob = crate::data_root::DataRoot::current()
+        .path()
+        .join("cache")
+        .join("blobs")
+        .join("cdef");
+
+    let corrupt_blob = blob.clone();
+    let corrupt = server
+        .answer(super::strict::Strict(Ok(outline("a.rs"))), |_| async move {
+            Err(McpError::from(crate::engine::EngineError::Store(
+                crate::store::StoreError::CorruptBlob { path: corrupt_blob },
+            )))
+        })
+        .await
+        .expect("a tool result");
+    assert_eq!(corrupt.is_error, Some(true));
+    assert_eq!(
+        text_of(&corrupt),
+        format!("a stored blob is corrupt: {}", crate::engine::error::INDEX_REPAIR)
+    );
+    assert_eq!(
+        corrupt.structured_content,
+        Some(serde_json::json!({ "error": "index_unavailable", "retryable": true }))
+    );
+
+    let file = tmp.path().join("a.rs");
+    let named = server
+        .answer(super::strict::Strict(Ok(outline("a.rs"))), |_| async move {
+            Err(McpError::internal_error(
+                format!("read {} into {}", file.display(), blob.display()),
+                None,
+            ))
+        })
+        .await
+        .expect("a tool result");
+    let separator = std::path::MAIN_SEPARATOR;
+    assert_eq!(
+        text_of(&named),
+        format!("read a.rs into $BASEMIND_DATA_HOME/cache{separator}blobs{separator}cdef")
+    );
+    assert_eq!(
+        named.structured_content,
+        Some(serde_json::json!({ "error": "internal", "retryable": false }))
+    );
+}
