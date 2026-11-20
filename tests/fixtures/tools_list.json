@@ -2,7 +2,7 @@
   {
     "name": "code_grep",
     "title": "Search code and text files",
-    "description": "Use instead of `rg`/`grep` to find exact text (a string, identifier or comment) in indexed code and text files (markdown, config, data; not PDFs). `pattern` is literal unless `regex` is true. Rows `<line>: <text>` (`<line>:<col>,<col>: ...`: matches sharing a line; `<line>- ...`: context) sit under `# <file>` and `## <symbol>` (`##`: none) headers, after `key: value` lines: `stale` (edited since indexing), `skipped_files` (unsearchable), `total` (with `next_cursor`: hits from `cursor` on). A `path` or `language` no indexed file has is an error. Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
+    "description": "Use instead of `rg`/`grep` for exact text (a string, identifier or comment) in indexed code and text files (markdown, config, data; not PDFs). Rows `<line>: <text>` (`<line>-`: context) sit under `# <file>` and `## <symbol>` headers, after `stale` (edited since indexing), `skipped_files` (unsearchable) and `total` (with `next_cursor`: hits from `cursor` on). A `path` or `language` matching no indexed file is an error. Example: {\"pattern\":\"cache_root(\",\"path\":\"src/\"}",
     "inputSchema": {
       "properties": {
         "pattern": {
@@ -61,7 +61,7 @@
   {
     "name": "code_outline",
     "title": "Outline a file",
-    "description": "Use to see what a file contains before, or instead of, reading it: every symbol with its kind, signature and 1-based `line`/`end_line`, plus the file's imports. Feed a span to `code_read`. Code files only. `stale` means the file changed since it was indexed and is outlined as it is now. Example: {\"path\":\"src/store.rs\"}",
+    "description": "Use to see what a file contains before, or instead of, reading it: each symbol's kind, signature and 1-based `line`/`end_line`, plus its imports. Feed a span to `code_read`. Code files only. `stale`: edited since indexing; outlined as it is now. Example: {\"path\":\"src/store.rs\"}",
     "inputSchema": {
       "properties": {
         "path": {
@@ -100,7 +100,7 @@
   {
     "name": "code_read",
     "title": "Read a symbol or line span",
-    "description": "Use to read the source of one function or type, or an exact line span, instead of the whole file. Pass `symbol` (plus `line` when several share the name), or a `line`..`end_line` span. A body over 128 KiB is cut, at a line end if it can, and flagged `truncated`: read on from `end_line` + 1. `stale`: the file changed since indexing and was parsed as it is now. Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
+    "description": "Use to read one function or type, or an exact line span, instead of the whole file. A body over 128 KiB is cut (at a line end if it can) and flagged `truncated`: read on from `end_line` + 1. `stale`: edited since indexing; parsed as it is now. Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
     "inputSchema": {
       "properties": {
         "path": {
@@ -143,7 +143,7 @@
   {
     "name": "code_refs",
     "title": "Find call sites, implementations and importers",
-    "description": "Use for what calls, implements or imports X, or which definition a use binds to (`relation`). Callers are call sites, not type uses or `use` lines. `match` `exact`: the name or a path ending in it; `substring`: any name holding it. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` if edited since. `path` pins the definition there. Row `resolution` (omitted if `resolution_default`, else name_only): same_file, imported, scope_resolved (local binding), elsewhere (binds another), name_only (unchecked: `resolution_note`), external (not indexed), path_match (HTTP call to route `name` like `GET /a/{id}`, or a pinned handler's routes and calls; literal URLs; `ambiguous`: routes tie; `definition` of a call: its route). `importers`+`path`, no `name`: its importers `by_depth`. `cycles`: import cycles (`path`: its own). Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
+    "description": "Use for what calls, implements or imports X, or which definition a use binds to (`relation`). Callers are call sites, not type uses or `use` lines. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` if edited since. A row without `resolution` has the page's `resolution_default` (none: name_only). Resolutions: same_file, imported, scope_resolved (a local binding), elsewhere (not the pinned definition), name_only (unchecked; see `resolution_note`), external (not indexed), path_match (HTTP call by literal URL to route `name`, e.g. `GET /a/{id}`, or a pinned handler; `ambiguous`: routes tie). Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -153,7 +153,7 @@
           "type": "string"
         },
         "relation": {
-          "description": "What to list (default `callers`).",
+          "description": "What to list (default `callers`). `definition` takes no `limit`, `cursor` or `max_tokens`.",
           "type": "string",
           "enum": [
             "callers",
@@ -164,15 +164,15 @@
           ]
         },
         "path": {
-          "description": "`callers`: file defining `name`, pinning that definition. `definition`: file holding the\nreference (required). `importers`/`cycles`: that file (no `name`).",
+          "description": "`callers`: the file defining `name`, to pin it. `definition`: the reference's file (required).\n`importers`/`cycles`: that file (no `name`).",
           "type": "string"
         },
         "line": {
-          "description": "Needs `path`. `callers`: 1-based line inside the definition meant, when several share the\nname. `definition`: line of the reference (required).",
+          "description": "Needs `path`. `callers`: a 1-based line inside the definition meant. `definition`: the\nreference's line (required).",
           "type": "integer"
         },
         "column": {
-          "description": "`definition` only: 1-based column (default: where `name` occurs on the line).",
+          "description": "`definition` only: 1-based column (default: where `name` is on the line).",
           "type": "integer"
         },
         "depth": {
@@ -180,7 +180,7 @@
           "type": "integer"
         },
         "match": {
-          "description": "Name matching (default `exact`). Not with `importers` or `definition`.",
+          "description": "`exact` (default): the name or a path ending in it; `substring`: names holding it. Not with\n`importers`/`definition`.",
           "type": "string",
           "enum": [
             "exact",
@@ -188,15 +188,15 @@
           ]
         },
         "limit": {
-          "description": "Default 100. Not with `definition`.",
+          "description": "Default 100.",
           "type": "integer"
         },
         "cursor": {
-          "description": "A prior `next_cursor`. Not with `definition`.",
+          "description": "A prior `next_cursor`.",
           "type": "string"
         },
         "max_tokens": {
-          "description": "Default 6000. Not with `definition`.",
+          "description": "Default 6000.",
           "type": "integer"
         },
         "resolution": {
@@ -222,7 +222,7 @@
   {
     "name": "code_search",
     "title": "Search code by meaning",
-    "description": "Use when you know what the code does but not a name or string in it: searches code chunks by meaning and returns pointers (path, `line`/`end_line`, symbol), not bodies; copies of a file share one hit (`also_at`). `lanes_unavailable` names lanes that did not run. Read a hit with `code_read`. Example: {\"query\":\"retry a failed upload with backoff\"}",
+    "description": "Use when you know what the code does but not a name or string in it: searches code by meaning and returns pointers (path, `line`/`end_line`, symbol), not bodies; copies of a file share a hit (`also_at`). `lanes_unavailable`: lanes that did not run. Read a hit with `code_read`. Example: {\"query\":\"retry a failed upload with backoff\"}",
     "inputSchema": {
       "properties": {
         "query": {
@@ -270,7 +270,7 @@
   {
     "name": "code_symbols",
     "title": "Find a definition",
-    "description": "Use for \"where is X defined\" when you know (part of) the name: finds functions, types, constants and other symbols by name across the repository; a row is `\"<path>:<line>: <signature>\"`. Ranked: the exact name first, then prefix, then substring, then (with `fuzzy`) fuzzy matches; `stale`: files edited since the scan (lines current). Definitions only: for any text use `code_grep`. Example: {\"name\":\"parse_config\",\"kind\":\"function\"}",
+    "description": "Use for \"where is X defined\" when you know (part of) the name: finds functions, types, constants and other symbols; a row is `\"<path>:<line>: <signature>\"`. Ranked exact, prefix, substring, then `fuzzy`; `stale`: files edited since indexing (lines current). Definitions only; for other text, `code_grep`. Example: {\"name\":\"parse_config\",\"kind\":\"function\"}",
     "inputSchema": {
       "properties": {
         "name": {
@@ -321,7 +321,7 @@
   {
     "name": "docs_search",
     "title": "Search documents",
-    "description": "Use to find where a topic is discussed in the repository's documents (markdown, PDFs, Office, HTML, email, notebooks) instead of opening them. Ranks passages by meaning and words, filters first, and cites each hit (path, pages, section, lines). Code: `code_grep`/`code_search`. Example: {\"query\":\"how releases are versioned\"}",
+    "description": "Use to find where a topic is discussed in the repository's documents (markdown, PDFs, Office, HTML, email, notebooks) instead of opening them. Ranks passages by meaning and words after the filters, citing path, pages, section and lines. Code: `code_grep`/`code_search`. Example: {\"query\":\"how releases are versioned\"}",
     "inputSchema": {
       "properties": {
         "query": {
@@ -380,7 +380,7 @@
   {
     "name": "find_files",
     "title": "Find files",
-    "description": "Use instead of `find`/`fd`/`ls -R` to locate a file by a fuzzy fragment of its name or path, or to list files when `query` is omitted; `files` holds paths. Covers code, documents and every other file git tracks; a query with one typo still finds its file. A `path_prefix` or `language` no listed file has is an error. Example: {\"query\":\"readme\"}",
+    "description": "Use instead of `find`/`fd`/`ls -R` to locate a file by a fuzzy fragment of its name or path (one typo allowed), or to list files without `query`. Covers every file git tracks. A `path_prefix` or `language` no listed file has is an error. Example: {\"query\":\"readme\"}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -432,7 +432,7 @@
   {
     "name": "git_blame",
     "title": "Blame",
-    "description": "Use instead of `git blame` for \"who last changed this\": per-line authorship of a file, a 1-based `line`..`end_line` span, or one `symbol` (at `rev`). `hunks`: `\"<line>[-<end>] <sha>[ <old path>]\"` (the rest of the row, when moved); `commits`: each sha's author, time, summary. Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
+    "description": "Use instead of `git blame` for \"who last changed this\": per-line authorship of a file, a 1-based `line`..`end_line` span or one `symbol`, at `rev`. `hunks`: `\"<line>[-<end>] <sha>[ <old path>]\"` (old path when moved); `commits`: each sha's author, time and summary. Example: {\"path\":\"src/store.rs\",\"symbol\":\"open\"}",
     "inputSchema": {
       "properties": {
         "path": {
@@ -487,7 +487,7 @@
   {
     "name": "git_diff",
     "title": "Diff and status",
-    "description": "Use instead of `git status`/`git diff`. No arguments returns the working-tree status (staged, modified, untracked; 200 paths per list); a file `path` alone diffs its working tree against HEAD, or `from`/`to`; `structural` lists the symbols added and removed, and counts the `common` ones, instead of text hunks. A diff over 200 hunks or 128 KiB is cut (`truncated`). Example: {\"path\":\"src/store.rs\",\"from\":\"HEAD~1\",\"to\":\"HEAD\"}",
+    "description": "Use instead of `git status`/`git diff`. No arguments: the working-tree status (staged, modified, untracked; 200 paths a list). A file `path` diffs its working tree against HEAD, or `from`/`to`; `structural`: symbols added and removed and a `common` count. A diff over 200 hunks or 128 KiB is cut (`truncated`). Example: {\"path\":\"src/store.rs\",\"from\":\"HEAD~1\",\"to\":\"HEAD\"}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -505,7 +505,7 @@
           "type": "string"
         },
         "structural": {
-          "description": "Symbol-level diff of `from` against the indexed working tree, instead of text hunks.",
+          "description": "Symbol-level diff of `from` against the indexed working tree, not text hunks.",
           "type": "boolean"
         }
       }
@@ -523,7 +523,7 @@
   {
     "name": "git_log",
     "title": "Commit history",
-    "description": "Use instead of `git log`/`git show` for \"what changed recently\", \"what touched this file\", \"which commit mentions X\" or \"what changed this function\". `{}` lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. A row is `\"<sha> <summary>\"`, `[introduced]`/`[removed]` after a symbol's sha; recent and directory lists add `files`: sha to path to change. `rev` shows one commit whole, with author and time. A symbol's or directory's history pages by commit window: follow `next_cursor`, even from an empty page (`window`). Example: {\"path\":\"src/store.rs\",\"limit\":5}",
+    "description": "Use instead of `git log`/`git show` for \"what changed recently\", \"what touched this file or function\" or \"which commit mentions X\". `{}` lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. Rows: `\"<sha> <summary>\"`, `[introduced]`/`[removed]` for a symbol; recent and directory lists add `files` (sha to path to change). `rev`: one commit whole. Symbol and directory history is read in commit batches: an empty page with `next_cursor` is not the end. Example: {\"path\":\"src/store.rs\",\"limit\":5}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -541,11 +541,11 @@
           "type": "string"
         },
         "symbol": {
-          "description": "Commits that changed this symbol's body; needs `path`, combines with nothing else but `line`.",
+          "description": "Commits that changed this symbol's body; needs `path`, combines only with `line`.",
           "type": "string"
         },
         "line": {
-          "description": "With `symbol`: 1-based line inside the definition meant, when several share the name.",
+          "description": "With `symbol`: a 1-based line inside the definition meant.",
           "type": "integer"
         },
         "rev": {
@@ -585,7 +585,7 @@
       "additionalProperties": false,
       "properties": {
         "paths": {
-          "description": "Repo-relative files or directories to re-index (default: the whole workspace, skipping\nunchanged files).",
+          "description": "Repo-relative files or directories to re-index (default: the whole workspace).",
           "type": "array",
           "items": {
             "type": "string"
@@ -606,7 +606,7 @@
   {
     "name": "index_status",
     "title": "Index status",
-    "description": "Use when a result is unexpectedly empty or says \"not indexed\": reports how many files are indexed per language, whether a scan is running or the index is degraded, the cache directory, and the repository's branch and HEAD. Example: {}",
+    "description": "Use when a result is unexpectedly empty or says \"not indexed\": reports files indexed per language, whether a scan is running or the index is degraded, the cache directory, and the branch and HEAD. Example: {}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false
@@ -624,7 +624,7 @@
   {
     "name": "memory_save",
     "title": "Save a note",
-    "description": "Use to remember a decision, convention or finding for later sessions and other agents working in this repository. Saving an existing `key` replaces it. Example: {\"key\":\"decision/auth-tokens\",\"value\":\"Tokens rotate every 24h.\",\"tags\":[\"auth\"]}",
+    "description": "Use to remember a decision, convention or finding for later sessions and other agents in this repository. Saving an existing `key` replaces it. Example: {\"key\":\"decision/auth-tokens\",\"value\":\"Tokens rotate every 24h.\",\"tags\":[\"auth\"]}",
     "inputSchema": {
       "properties": {
         "key": {
@@ -643,7 +643,7 @@
           }
         },
         "visibility": {
-          "description": "Memory tier: `group` (default) is shared across agents; `individual` scopes the entry to the calling agent.",
+          "description": "`group` (default, shared across agents) or `individual` (the caller's own).",
           "type": "string",
           "enum": [
             "group",
@@ -671,13 +671,13 @@
   {
     "name": "memory_search",
     "title": "Recall notes",
-    "description": "Use to recall what was saved with `memory_save`: `query` searches notes by meaning, `key` reads one, `prefix` lists by key prefix, and no arguments lists everything. Lists show 200 characters of a value; `key` reads it whole. Example: {\"query\":\"token rotation\"}",
+    "description": "Use to recall notes saved with `memory_save`: `query` searches by meaning, `key` reads one, `prefix` lists by key prefix, no arguments lists all. Lists show 200 characters of a value; `key` reads it whole. Example: {\"query\":\"token rotation\"}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "query": {
-          "description": "Search notes by meaning. At most one of `query`, `key`, `prefix`; none lists every note.",
+          "description": "Search by meaning. At most one of `query`, `key`, `prefix`; none lists every note.",
           "type": "string"
         },
         "key": {
@@ -693,7 +693,7 @@
           "type": "string"
         },
         "visibility": {
-          "description": "Memory tier: `group` (default) is shared across agents; `individual` scopes the entry to the calling agent.",
+          "description": "`group` (default, shared across agents) or `individual` (the caller's own).",
           "type": "string",
           "enum": [
             "group",
@@ -705,7 +705,7 @@
           "type": "integer"
         },
         "cursor": {
-          "description": "`next_cursor` of the previous listing page. Not with `query` or `key`.",
+          "description": "A prior listing's `next_cursor`. Not with `query` or `key`.",
           "type": "string"
         }
       }
