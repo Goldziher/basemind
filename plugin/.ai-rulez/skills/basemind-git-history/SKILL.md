@@ -89,13 +89,13 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
   `limit: 0` is refused. A `path` that no commit reachable from HEAD touches and that is not on
   disk is an error, for a file and for a directory.
 - `git_log` with `path` + `symbol` reads one window of the commits touching the file per page.
-  When older commits remain the page returns `next_cursor`, and says `truncated_reason: "window"`
+  When older commits remain the page returns `next_cursor`, and says `truncated_reason: "span_limit"`
   when it is short or empty: follow the cursor until it is absent to reach every change back to
   the introduction. A symbol the working tree no longer defines still has its history read. A
   name no commit inspected so far defines either is named in `unmatched` (with the names the file
   does define) on each empty page, and is an error on the last page.
 - `git_log` with a directory `path` (one ending in `/`) pages the same way, 200 commits per page:
-  an empty page with `truncated_reason: "window"` and a `next_cursor` is not the end of the
+  an empty page with `truncated_reason: "span_limit"` and a `next_cursor` is not the end of the
   history, and `unmatched` says when nothing has touched the directory so far and it is not on
   disk.
 - A `git_log` cursor is refused when the git-history index came up (or stopped answering) since
@@ -138,7 +138,7 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
   each on its own field: `{"query":"review","author":"alice"}` is commits by alice that mention a
   review. A search answered before the git-history index is ready covers only the subjects and
   authors of the newest 10,000 commits and says so: `truncated` with
-  `truncated_reason: "live_walk"`; retry shortly.
+  `truncated_reason: "unindexed_scan"`; retry shortly.
 - When several definitions in the file share the name, `symbol` is an error listing each with its
   lines: add `line` (any line inside the one you mean).
 - A binary file reports `binary: true` and no hunks, a file over 4 MiB `too_large: true`. A path
