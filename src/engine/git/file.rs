@@ -628,7 +628,7 @@ pub(super) fn run_symbol_history(
     };
     let window_edge = window_exhausted && offsets.len() <= page.len();
     let truncated_reason = if window_edge {
-        Some(if span_ran_out { SPAN_LIMIT } else { "window" })
+        Some(SPAN_LIMIT)
     } else if repo.is_shallow() {
         Some("shallow_clone")
     } else {

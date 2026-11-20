@@ -507,7 +507,7 @@ fn git_churn_and_by_path_print_byte_for_byte() {
         ),
         (
             &["by-path", "^src/", "--window", "1"],
-            r#"{"window_inspected":1,"truncated":true,"truncated_reason":"window","commits":["c48e32cbf7dd add gamma"],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"}},"next_cursor":"ks-AAAAAAAAAAc7EjjLL"}"#,
+            r#"{"window_inspected":1,"truncated":true,"truncated_reason":"span_limit","commits":["c48e32cbf7dd add gamma"],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"}},"next_cursor":"ks-AAAAAAAAAAc7EjjLL"}"#,
         ),
         (
             &["by-path", "^src/", "--limit", "0"],

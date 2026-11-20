@@ -225,7 +225,7 @@ async fn git_log_of_a_directory_pages_past_its_window() {
     let windowed = call(&client, "git_log", json!({ "path": "lib/" })).await;
     assert_eq!(windowed["commits"], json!([]), "{windowed}");
     assert_eq!(windowed["truncated"], true, "{windowed}");
-    assert_eq!(windowed["truncated_reason"], "window", "{windowed}");
+    assert_eq!(windowed["truncated_reason"], "span_limit", "{windowed}");
     assert_eq!(windowed["window_inspected"], 200, "{windowed}");
     let older = call(
         &client,

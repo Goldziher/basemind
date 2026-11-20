@@ -96,7 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `skipped_files` on `code_grep`: the files it could not search (deleted, not UTF-8, grown past
   `scan.max_file_bytes`, or leading out of the repository).
 - `budgeted` and `omitted` on `git_log {rev}`: the commit's file list is held to `max_tokens`.
-- `budgeted`, `truncated_reason: "window"` and a `next_cursor` that continues past the window on
+- `budgeted`, `truncated_reason: "span_limit"` and a `next_cursor` that continues past the window on
   `git_log {path, symbol}` and on `git_log` with a directory `path`. An empty page of either carries
   `unmatched` while nothing inspected so far defines the symbol or touches the directory.
 - `resolution_note: "no resolution facts for this definition"` on `code_refs` with `path`.
@@ -431,7 +431,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `git_log` matches `query` against the commit message and `author` against the author, each on its
     own field. A directory `path` inspects 200 commits per page and returns a `next_cursor` to the
     next window while history continues. A search answered before the git-history index is ready
-    sets `truncated` with `truncated_reason: "live_walk"` (subjects and authors of the newest 10,000
+    sets `truncated` with `truncated_reason: "unindexed_scan"` (subjects and authors of the newest 10,000
     commits only) in place of `partial`.
   - `memory_save` reports `embedded`. When the note cannot be embedded the save still succeeds, with a
     `notice`, instead of answering with an error after the write.
@@ -458,7 +458,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     left out where the count is known. `code_grep`'s `truncation_reason` is renamed `truncated_reason`
     and is only ever `byte_budget`; `code_symbols` and `code_grep` no longer set `truncated` on a
     `limit` cut and `find_files` has no `truncated`; `total_is_partial` (`code_symbols`, `code_refs`)
-    and `git_log {query}`'s `partial` are `truncated` with a reason (`scan_cap`, `live_walk`);
+    and `git_log {query}`'s `partial` are `truncated` with a reason (`scan_cap`, `unindexed_scan`);
     `git_diff`'s `total_hunks` is replaced by `truncated_reason` (`hunk_cap`, `byte_cap`) and `omitted`;
     `code_outline`'s `imports_truncated` is replaced by `truncated`, `truncated_reason: "imports"` and
     `omitted`; `code_read` counts the bytes it left out in `omitted_bytes`. Four fields keep their own

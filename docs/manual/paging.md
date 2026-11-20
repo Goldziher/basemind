@@ -13,7 +13,7 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
   `budgeted` means the token budget trimmed it. `truncated` with `truncated_reason` marks a cut you
   did not ask for, with `omitted` counting what was left out where it is known: `scan_cap` (the
   scan stopped early, `total` is a lower bound, `next_cursor` resumes it), `byte_budget`,
-  `hunk_cap`, `byte_cap`, `path_cap`, `window`, `live_walk` or `shallow_clone`.
+  `hunk_cap`, `byte_cap`, `path_cap`, `span_limit`, `unindexed_scan` or `shallow_clone`.
 - **Cursors are bound to their query.** A cursor continues only the call that returned it. Passed
   to another query, or used after a rescan or a HEAD move, the call is an error: repeat it without
   `cursor`. No tool answers a stale cursor with an empty page.

@@ -72,7 +72,7 @@ async fn git_log_matches_author_terms_against_the_author_only() {
     match first.get("truncated") {
         Some(truncated) => {
             assert_eq!(truncated, true, "{first}");
-            assert_eq!(first["truncated_reason"], "live_walk", "{first}");
+            assert_eq!(first["truncated_reason"], "unindexed_scan", "{first}");
         }
         None => assert!(
             first.get("truncated_reason").is_none(),
@@ -181,7 +181,7 @@ async fn git_log_of_a_symbol_does_not_call_the_edge_of_its_window_an_introductio
         "`stable` did not change in the 8 commits inspected: {windowed}"
     );
     assert_eq!(windowed["truncated"], true, "{windowed}");
-    assert_eq!(windowed["truncated_reason"], "window", "{windowed}");
+    assert_eq!(windowed["truncated_reason"], "span_limit", "{windowed}");
 
     let whole = call(
         &client,
@@ -229,7 +229,7 @@ async fn whole_symbol_history(client: &Client, arguments: Value) -> (Vec<(String
         match page.get("next_cursor") {
             Some(cursor) => {
                 assert!(
-                    !page["history"].as_array().unwrap().is_empty() || page["truncated_reason"] == "window",
+                    !page["history"].as_array().unwrap().is_empty() || page["truncated_reason"] == "span_limit",
                     "an empty page that goes on says why: {page}"
                 );
                 arguments["cursor"] = cursor.clone();

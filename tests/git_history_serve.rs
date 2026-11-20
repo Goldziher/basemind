@@ -110,7 +110,7 @@ async fn spawn_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleCl
 /// live-walk fallback. Whoever legitimately owns the index in this build (serve itself standalone,
 /// the daemon on a `comms` build) must build it, and serve must then use it.
 ///
-/// Observable: `git_log {query}` sets `truncated` (reason `live_walk`) and searches only
+/// Observable: `git_log {query}` sets `truncated` (reason `unindexed_scan`) and searches only
 /// summaries/authors over a bounded window when it falls back to the live walk. A hit on
 /// [`BODY_ONLY_TOKEN`] — which exists only in a commit BODY — with `truncated` unset therefore
 /// proves the answer came from the index.

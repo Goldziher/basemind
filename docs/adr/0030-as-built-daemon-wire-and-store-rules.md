@@ -129,13 +129,13 @@ changed, checked against `main` at `3d627ba5`. A clause not named here stands.
     `omitted` where known; flags are absent when false (the `memory_search` listing is the exception
     named under Consequences). Reasons: `scan_cap`, `byte_budget`,
     `imports`, `size_cap`, `depth`, `rerank_top_k`, `filter_depth`, `path_cap`, `hunk_cap`,
-    `byte_cap`, `window`, `shallow_clone`, `live_walk`. Distinct concepts keep their names:
+    `byte_cap`, `span_limit`, `shallow_clone`, `unindexed_scan`. Distinct concepts keep their names:
     `skipped_files`, `limit_clamped`, `body_truncated`, `too_large`, `index_status.partial`.
 16. **ADR-0018's paging convention adds:** a cursor is bound to its tool and every argument but
     `limit`, `max_tokens` and `cursor`. A foreign cursor, or one that outlived its index generation,
     HEAD or history source, is an error, never an empty page. `limit: 0` is refused.
 17. **ADR-0022 Contract 5's empty page extends to `git_log`:** a path or symbol history inspects one
-    window of commits per page and may return none with a `next_cursor` (`window`). A name no
+    window of commits per page and may return none with a `next_cursor` (`span_limit`). A name no
     inspected commit matches is listed in `unmatched` and is an error on the last page, unless the
     clone is shallow. A path no commit reachable from HEAD touches and that is not on disk is an
     error, a directory only on the last page, again unless the clone is shallow. A query before the
