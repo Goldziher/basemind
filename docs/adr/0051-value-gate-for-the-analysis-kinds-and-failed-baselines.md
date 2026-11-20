@@ -71,8 +71,8 @@ ADR-0031 stands except where this record adds to it.
 
 8. **Baselines that answered wrongly.** A baseline that printed something but scored recall 0 is
    not a failure: it stays in the ratio and the verdict. The report gives each kind's median ratio
-   both ways, with those tasks and without them, so a wrong shell answer that happens to be short
-   cannot pass for the shell's win unseen.
+   both ways, with those tasks and without them, so what a wrong shell answer does to the verdict
+   is in the report.
 
 ## Consequences
 
