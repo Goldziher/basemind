@@ -382,9 +382,12 @@ MIT is compatible with basemind's MIT license.
 ## Model weights downloaded at runtime
 
 basemind ships no model weights. A build with the `documents`, `documents-ner`, `documents-ocr` or
-`tokenizer` feature downloads them on first use through xberg 1.4.0, which fetches each file from a
-Hugging Face mirror at the pinned revision below and checks it against a SHA-256 manifest in the
-xberg source. Every model below, default or opt-in, is licensed MIT or Apache-2.0, so commercial use
+`tokenizer` feature downloads them on first use through xberg 1.4.0. The embedding, reranker and NER
+models come from the Hugging Face mirrors at the pinned revisions below, and xberg checks each file
+against a SHA-256 manifest in its source. Two files have no such check: the o200k tokenizer's
+`tokenizer.json` comes from `Xenova/gpt-4o` at a pinned revision but with no expected hash, and
+Tesseract's `eng.traineddata` comes from the unpinned `main` branch of `tesseract-ocr/tessdata_fast`
+on GitHub, with no hash either. Every model below, default or opt-in, is licensed MIT or Apache-2.0, so commercial use
 is permitted. The licence of each is the one in its upstream model card.
 
 ### Defaults
