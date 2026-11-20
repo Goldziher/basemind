@@ -97,6 +97,9 @@ These read the index (the daemon answers them when one runs) and have no MCP too
 - `basemind code cycles` lists import cycles, smallest first, each with an import chain that closes
   it; `--path` narrows to a file or directory and `--max-size` drops larger cycles.
   `basemind code cycles --check <from> <to>` says whether `from` importing `to` would close a cycle.
+  `--fail-on-cycle` exits 1 for CI when the list holds a cycle. A cycle among Rust modules of one
+  crate, which the compiler accepts, fails it only with `--strict`; a report from an index that is
+  not ready exits 1 instead of passing.
   Both commands take `--include-type-imports` and `--include-module-decls` to follow type-only
   imports and Rust `mod` declarations too.
 - `basemind code explain <target>` briefs one symbol, file or `path:line` (the innermost definition

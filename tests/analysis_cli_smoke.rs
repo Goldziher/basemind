@@ -1,5 +1,6 @@
 //! `basemind code impact` and `basemind code cycles` end to end: the built binary over a scanned Rust
-//! crate, in text and `--json`, and a malformed request's usage exit.
+//! crate, in text and `--json`, the `--fail-on-cycle` exit codes, and a malformed request's usage
+//! exit.
 #![cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 
 use std::path::Path;
@@ -22,13 +23,28 @@ fn write(root: &Path, rel: &str, body: &str) {
     std::fs::write(file, body).expect("write");
 }
 
-/// `a` and `b` use each other, `c` uses `a`, `d` uses `c`; committed, then scanned.
-fn crate_with_a_cycle() -> tempfile::TempDir {
+/// An empty git repository.
+fn repo() -> tempfile::TempDir {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q"]);
     git(root, &["config", "commit.gpgsign", "false"]);
+    dir
+}
+
+/// Commit everything and scan.
+fn commit_and_scan(root: &Path) {
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "init"]);
+    let scan = basemind(root, &["scan", "--quiet"]);
+    assert!(scan.status.success(), "{}", String::from_utf8_lossy(&scan.stderr));
+}
+
+/// `a` and `b` use each other, `c` uses `a`, `d` uses `c`; committed, then scanned.
+fn crate_with_a_cycle() -> tempfile::TempDir {
+    let dir = repo();
+    let root = dir.path();
     write(
         root,
         "Cargo.toml",
@@ -43,10 +59,7 @@ fn crate_with_a_cycle() -> tempfile::TempDir {
     );
     write(root, "src/c.rs", "use crate::a::ay;\npub fn sea() { ay(); }\n");
     write(root, "src/d.rs", "use crate::c::sea;\npub fn dee() { sea(); }\n");
-    git(root, &["add", "-A"]);
-    git(root, &["commit", "-qm", "init"]);
-    let scan = basemind(root, &["scan", "--quiet"]);
-    assert!(scan.status.success(), "{}", String::from_utf8_lossy(&scan.stderr));
+    commit_and_scan(root);
     dir
 }
 
@@ -103,6 +116,79 @@ fn cycles_lists_the_cycle_and_checks_a_proposed_import() {
     );
     let open = json(root, &["code", "cycles", "--check", "src/d.rs", "src/a.rs"]);
     assert_eq!(open["would_close_cycle"], false, "{open}");
+}
+
+/// The exit code of `basemind code cycles` with `args`, and its stderr.
+fn exit_of(root: &Path, args: &[&str]) -> (Option<i32>, String) {
+    let mut full = vec!["code", "cycles"];
+    full.extend_from_slice(args);
+    let output = basemind(root, &full);
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn fail_on_cycle_passes_a_rust_module_cycle_unless_strict() {
+    let dir = crate_with_a_cycle();
+    let root = dir.path();
+
+    let (code, stderr) = exit_of(root, &["--fail-on-cycle"]);
+    assert_eq!(
+        code,
+        Some(0),
+        "a cycle among Rust modules of one crate is legal: {stderr}"
+    );
+    let (code, stderr) = exit_of(root, &["--fail-on-cycle", "--strict"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("cycles: 1 import cycle(s) listed"), "{stderr}");
+    let (code, stderr) = exit_of(root, &["--fail-on-cycle", "--strict", "--path", "src/d.rs"]);
+    assert_eq!(code, Some(0), "no cycle holds `src/d.rs`: {stderr}");
+    let (code, stderr) = exit_of(root, &["--fail-on-cycle", "--strict", "--max-size", "1"]);
+    assert_eq!(code, Some(0), "the 2-file cycle is over `--max-size`: {stderr}");
+
+    let (code, _) = exit_of(root, &["--fail-on-cycle", "--check", "src/a.rs", "src/d.rs"]);
+    assert_eq!(code, Some(2), "`--fail-on-cycle` gates a list, not a check");
+    let (code, _) = exit_of(root, &["--strict"]);
+    assert_eq!(code, Some(2), "`--strict` needs `--fail-on-cycle`");
+}
+
+/// `a.ts` imports `b.ts`, which holds `b_src`, and `c.ts` imports `a.ts`; committed, then scanned.
+#[cfg(feature = "code-intel-js")]
+fn typescript_repo(b_src: &str) -> tempfile::TempDir {
+    let dir = repo();
+    let root = dir.path();
+    write(
+        root,
+        "a.ts",
+        "import { bee } from './b';\nexport function ay() {\n  return bee();\n}\n",
+    );
+    write(root, "b.ts", b_src);
+    write(
+        root,
+        "c.ts",
+        "import { ay } from './a';\nexport const sea = () => ay();\n",
+    );
+    commit_and_scan(root);
+    dir
+}
+
+#[cfg(feature = "code-intel-js")]
+#[test]
+fn fail_on_cycle_fails_a_typescript_cycle_and_passes_an_acyclic_graph() {
+    let cyclic = typescript_repo(
+        "import { ay } from './a';\nexport function bee() {\n  return 1;\n}\nexport const x = () => ay();\n",
+    );
+    let (code, stderr) = exit_of(cyclic.path(), &["--fail-on-cycle"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("cycles: 1 import cycle(s) listed"), "{stderr}");
+    let (code, stderr) = exit_of(cyclic.path(), &["--fail-on-cycle", "--path", "c.ts"]);
+    assert_eq!(code, Some(0), "no cycle holds `c.ts`: {stderr}");
+
+    let acyclic = typescript_repo("export function bee() {\n  return 1;\n}\n");
+    let (code, stderr) = exit_of(acyclic.path(), &["--fail-on-cycle"]);
+    assert_eq!(code, Some(0), "{stderr}");
 }
 
 #[test]

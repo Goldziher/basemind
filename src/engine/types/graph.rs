@@ -115,6 +115,11 @@ pub struct CyclesParams {
     pub include_module_decls: bool,
 }
 
+/// The [`CycleRow::note`] of a cycle whose files are all Rust: modules of one crate, which the
+/// compiler accepts. `--fail-on-cycle` fails on such a cycle only with `--strict`.
+pub(crate) const RUST_CYCLE_NOTE: &str =
+    "rust: modules of one crate may use each other; the compiler accepts this cycle (information)";
+
 /// One import cycle: a strongly connected component of the import graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CycleRow {

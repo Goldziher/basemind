@@ -4,14 +4,12 @@
 use crate::engine::error::EngineError;
 use crate::engine::import_graph::{ImportGraph, NodeId, Tiers, import_graph};
 use crate::engine::timing::elapsed_us;
-use crate::engine::types::graph::{CycleCheck, CycleRow, CyclesList, CyclesParams, CyclesResponse};
+use crate::engine::types::graph::{CycleCheck, CycleRow, CyclesList, CyclesParams, CyclesResponse, RUST_CYCLE_NOTE};
 use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
 
 use super::graph_report::{ImportLines, coverage, notes, shortest_chain, tiers};
 
-/// A cycle whose files are all Rust.
-const RUST_NOTE: &str = "rust: modules of one crate may use each other; the compiler accepts this cycle (information)";
 /// A cycle with a Go file.
 const GO_NOTE: &str = "go: an import cycle does not compile, so the index is stale or the build is broken";
 
@@ -148,7 +146,7 @@ fn note<'a>(languages: impl Iterator<Item = Option<&'a str>>) -> Option<&'static
         }
         all_rust &= language == Some("rust");
     }
-    all_rust.then_some(RUST_NOTE)
+    all_rust.then_some(RUST_CYCLE_NOTE)
 }
 
 fn check(
