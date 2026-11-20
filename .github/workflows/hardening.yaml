@@ -11,7 +11,7 @@ on:
       soak_minutes:
         description: Soak load phase in minutes (warm-up included)
         type: number
-        default: 20
+        default: 45
       features:
         description: Cargo features of the binary under test
         type: string
@@ -50,7 +50,7 @@ env:
   PYTHONUTF8: "1"
   PYTHONUNBUFFERED: "1"
   FEATURES: ${{ inputs.features || 'full' }}
-  SOAK_MINUTES: ${{ inputs.soak_minutes || ((github.event_name == 'pull_request' || github.event_name == 'push') && 5 || 20) }}
+  SOAK_MINUTES: ${{ inputs.soak_minutes || ((github.event_name == 'pull_request' || github.event_name == 'push') && 10 || 45) }}
   INJECT_ORPHAN: ${{ inputs.inject_orphan && '1' || '' }}
   SOAK_SELF: ${{ inputs.soak_self && '1' || '' }}
 
