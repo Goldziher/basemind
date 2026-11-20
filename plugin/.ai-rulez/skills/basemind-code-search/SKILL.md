@@ -72,16 +72,19 @@ no tool covers the question.
 
 ```text
 code_symbols {"name":"MapCache"}
-→ src/mcp/mod.rs:79 MapCache (struct)
-  src/mcp/mod.rs:88 MapCache (impl)
+→ {"results":["src/engine/map_cache.rs:10: pub(crate) struct MapCache",
+              "src/engine/map_cache.rs:39: impl MapCache"], …}
 
 code_refs {"name":"process_file"}
-→ src/scanner.rs:142 process_file
-  src/scanner.rs:201 process_file
+→ {"total":1,"hits":{"src/scanner_file.rs":[{"line":113}]}, …}
 
-code_outline {"path":"src/mcp/tools.rs"}
-→ 31 code_outline (function)
-  52 code_symbols (function)
+code_outline {"path":"src/wire.rs"}
+→ path: src/wire.rs
+  language: rust
+  …
+  symbols[…]{name,kind,line,end_line,signature}:
+    encode,function,31,…
+    toon,function,42,…
 ```
 
 ## Notes

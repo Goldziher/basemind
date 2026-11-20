@@ -58,15 +58,15 @@ The CLI also keeps shorthands: `git recent`, `git touching <path>`, `git search 
 
 ```text
 git_log {"limit":5}
-→ 612df7e chore(release): v0.15.0
-  1779b99 fix(git-history,serve): address code-review findings
-  ...
+→ {"commits":["612df7e3a1c4 chore(release): v0.15.0",
+              "1779b9902d5e fix(git-history,serve): address code-review findings", …],
+   "files":{"612df7e3a1c4":{"Cargo.toml":"modified",…},…}, …}
 
 git_blame {"path":"src/scanner.rs","symbol":"process_file"}
 → per-line authorship of that function's span
 
 git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
-→ + search_history (function)  - old_helper (function)
+→ the symbols in `added` and `removed`, and the count of `common` ones
 ```
 
 ## Notes

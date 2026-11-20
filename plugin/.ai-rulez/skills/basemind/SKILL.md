@@ -150,28 +150,38 @@ save. A tool that reports an empty index says so in its result: run `index_resca
 
 ```text
 code_symbols {"name":"MapCache"}
-→ src/mcp/mod.rs:79 MapCache (struct)
-  src/mcp/mod.rs:88 MapCache (impl)
+→ {"results":["src/engine/map_cache.rs:10: pub(crate) struct MapCache",
+              "src/engine/map_cache.rs:39: impl MapCache"], …}
 ```
+
+A row is `"<path>:<line>: <signature>"`, as `git grep -n` prints it.
 
 ### Following call sites
 
 ```text
 code_refs {"name":"process_file"}
-→ src/scanner.rs:142 process_file
-  src/scanner.rs:201 process_file
+→ {"total":1,"hits":{"src/scanner_file.rs":[{"line":113}]}, …}
 ```
+
+`hits` maps each file to its call sites; a row adds `callee` when the name called differs, and
+`resolution` when its grade is not the page's `resolution_default`.
 
 ### Outline a file, then read one body
 
 ```text
-code_outline {"path":"src/mcp/tools.rs"}
-→ 31 code_outline (function)
-  52 code_symbols (function)
-  ...
+code_outline {"path":"src/wire.rs"}
+→ path: src/wire.rs
+  language: rust
+  …
+  symbols[…]{name,kind,line,end_line,signature}:
+    encode,function,31,…
+    toon,function,42,…
+    …
 
-code_read {"path":"src/mcp/tools.rs","symbol":"code_outline"}
+code_read {"path":"src/wire.rs","symbol":"toon"}
 ```
+
+The outline is a TOON table, one row per symbol.
 
 A 1000-line file becomes a 30-line table of contents.
 
@@ -186,13 +196,15 @@ A 1000-line file becomes a 30-line table of contents.
   Defaults: `code_symbols` / `code_grep` / `code_refs` 100, `find_files` 200, `code_outline` 500
   symbols, `code_search` / `docs_search` 10, `git_log` 20.
 - `code_symbols` ranks the exact name first, then prefix, then substring; `"fuzzy":true` adds fuzzy
-  subsequence matches last. Compare a row's `name` with the query to tell which; `total` counts the
-  whole corpus.
+  subsequence matches last. A signature without the name is written `<kind> <name>; <signature>`.
+  `total` appears only beside `next_cursor`.
 - `code_refs {"name":"bar"}` matches the identifier exactly, with no scope resolution: `Foo::bar()`
   and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it. Add `path` to
-  pin one definition: the response names that `definition`, and a hit then has `resolved: true`
-  (proven to bind to it), `resolved: false` (checked, not proven) or no `resolved` (not checked);
-  `resolution` says why when no hit could be checked (`unsupported for <language>`,
+  pin one definition: the response names that `definition`, and `resolved_total` counts the hits
+  proven to bind to it. Each row is graded by `resolution` (`same_file`, `imported`,
+  `scope_resolved`, `elsewhere`, `name_only`, `external`, `path_match`); a row leaves it out when it
+  is the page's `resolution_default`, and a page leaves that out when it is `name_only`.
+  `resolution_note` says why no hit could be checked (`unsupported for <language>`,
   `no resolution facts for this file`, `no resolution facts for this definition`). A missing file
   or symbol is an error, and so is a name that several definitions in the file share, until you
   add `line` (any line inside the one you mean). A pinned file edited since it was indexed is an
@@ -217,8 +229,5 @@ A 1000-line file becomes a 30-line table of contents.
 - Memory is scoped by the normalised `origin` remote URL (`git@github.com:Foo/bar.git` and
   `https://github.com/Foo/bar/` collapse to the same scope key): clones of the same repo share
   memory; unrelated repos do not see each other's entries.
-- `docs_search` searches this repo's scope by default. Pages an older version ingested from the web
-  stay under scope `web:<host>` and are no longer refreshed; pass `"scope":"web:<host>"` to search
-  one host's pages.
 - MCP resources are available for hosts that attach them: `basemind://status`,
   `basemind://outline/{path}` and `basemind://memory/{key}`.

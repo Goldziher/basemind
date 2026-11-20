@@ -87,7 +87,7 @@ command covers the question.
 | "Where's the churn?" | `basemind git churn [--window N --top-k K]` | CLI only. |
 | "Commits whose paths match a regex?" | `basemind git by-path "regex"` | CLI only. |
 | "What's indexed? What's HEAD / branch?" | `basemind status` | File count, languages, cache dir, branch, HEAD. `admin repo` prints the same. |
-| "Search documents by meaning (PDFs, Office, HTML, email)?" | `basemind memory documents "query" [--mime-type --keywords --entity --scope]` | Needs `documents` feature. |
+| "Search documents by meaning (PDFs, Office, HTML, email)?" | `basemind memory documents "query" [--kind K --path GLOB --mime-type M --keywords K --entity E]` | Needs `documents` feature. |
 | "Recall something stored earlier?" | `basemind memory search "q"` / `get "key"` / `list [--prefix P --tag T]` | By meaning / one note / a listing. |
 | "Remember this for future sessions?" | `basemind memory put "key" "value" [--tag T]` | Delete with `memory delete "key"` (CLI only). |
 | "Cache size?" | `basemind cache stats` | On-disk size + orphan accounting. CLI only, like the other cache commands. |
@@ -139,8 +139,9 @@ basemind code symbols "MapCache"
 Output:
 
 ```text
-src/mcp/mod.rs:79:1 MapCache (struct)
-src/mcp/mod.rs:88:1 MapCache (impl)
+results:
+  src/engine/map_cache.rs:10: pub(crate) struct MapCache
+  src/engine/map_cache.rs:39: impl MapCache
 ```
 
 ### Show a file's outline before opening it
@@ -212,14 +213,14 @@ the caller can fix is a tool result with `isError` whose text names the fix.
   git log 20, max 100; search and documents 10).
 - Every line number is 1-based. `symbols` ranks the exact name, then prefix, then substring, then
   (with `--fuzzy`) fuzzy matches; `refs` matches the identifier exactly (`bar` matches `Foo::bar()`
-  and `bar()`, not `bar_baz()`) unless `--match substring`; `callers` pins one definition and marks
-  the hits it proves `resolved`, or reports why it cannot (no resolution for the language, or no
-  resolution facts for the file). `callers`, `read --symbol`, `git blame --symbol` and
+  and `bar()`, not `bar_baz()`) unless `--match substring`; `callers` pins one definition, counts
+  the hits it proves bind to it (`resolved_total`) and grades each one (`resolution`), or says why
+  it cannot (`resolution_note`: no resolution for the language, or no resolution facts for the
+  file). `callers`, `read --symbol`, `git blame --symbol` and
   `git log --symbol` take `--line` to pick one of several same-named definitions.
 - `outline` on a markdown/config/data file reports that it is a document: find exact text in it
   with `code grep`, a topic with `memory documents`.
-- An unknown flag is a usage error (exit 2). `--format toon`, `--l2`, `--path-contains`,
-  `--no-context` and `--line-start` / `--line-end` no longer exist.
+- An unknown flag is a usage error (exit 2); `basemind <command> --help` lists a command's flags.
 - Git commands require basemind to be running inside a git repository.
 - `code search` needs the `code-search` Cargo feature and the `memory` commands need `documents` /
   `memory` (all in `--features full` and in the release binary).
