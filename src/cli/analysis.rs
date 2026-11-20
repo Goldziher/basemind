@@ -60,6 +60,11 @@ pub(super) fn gate(cmd: &AnalysisCmd) -> Option<Gate> {
         } else {
             deadcode::fail_on_high
         }),
+        AnalysisCmd::Cycles(args) if args.fail_on_cycle => Some(if args.strict {
+            cycles::fail_on_any_cycle
+        } else {
+            cycles::fail_on_cycle
+        }),
         AnalysisCmd::Impact(_) | AnalysisCmd::Cycles(_) | AnalysisCmd::Deadcode(_) | AnalysisCmd::Explain(_) => None,
     }
 }

@@ -142,6 +142,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are not counted.
 - A `code_read` line span of more than 2,000 lines carries a `notice` naming `code_outline` (#127):
   read the file's outline first, then the narrower span needed.
+- `basemind code cycles --fail-on-cycle` (#135) exits 1 for CI when the list (after `--path` and
+  `--max-size`) holds a cycle. A cycle among Rust modules of one crate, which the compiler accepts,
+  fails it only with `--strict`; a report from an index that is not ready exits 1 instead of passing.
 
 ### Changed
 
