@@ -29,10 +29,11 @@ sys.exit(f"stand-in gh: no response for {path}")
 """
 
 
-def run(id_: int, event: str, conclusion: str = "success") -> dict:
+def run(id_: int, event: str, conclusion: str = "success", branch: str = "main") -> dict:
     return {
         "id": id_,
         "event": event,
+        "head_branch": branch,
         "status": "completed",
         "conclusion": conclusion,
         "created_at": f"2026-11-18T0{id_}:00:00Z",
@@ -96,6 +97,14 @@ class RequireGreenCiTests(unittest.TestCase):
         responses = green()
         responses[r"workflows/ci\.yaml/runs"] = {"workflow_runs": [run(1, "push")]}
         self.refused(responses, "no scheduled or dispatched ci.yaml run")
+
+    def test_a_newer_green_branch_push_does_not_mask_a_red_main_run(self) -> None:
+        responses = green()
+        responses[r"workflows/ci\.yaml/runs"] = {
+            "workflow_runs": [run(2, "workflow_dispatch"), run(4, "push", "failure"), run(5, "push", branch="feature")]
+        }
+        responses[r"runs/5/jobs"] = jobs(("test / ubuntu-latest / ", "success"))
+        self.refused(responses, "ci run 4 on")
 
     def test_a_skipped_harden_harness_is_refused(self) -> None:
         responses = green()

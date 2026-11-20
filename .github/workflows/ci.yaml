@@ -1,8 +1,11 @@
 name: ci
 
+# ~keep Every branch push gets a run, so a branch merged locally is tested before main sees it. A
+# ~keep push to a branch other than main runs the fast legs only (`fmt`, the default Linux test leg,
+# ~keep `deny`, `features` and the script checks); main, pull requests and the nightly run them all.
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
     branches: [main]
   schedule:
@@ -13,7 +16,9 @@ on:
 concurrency:
   # ~keep A push to main gets a group of its own (its sha): runs on main are never cancelled, and one
   # ~keep that is still on its two-hour `full` legs must not hold every later push in the queue.
-  group: ci-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || (github.ref == 'refs/heads/main' && github.sha || github.ref) }}
+  # ~keep Elsewhere the event is part of the group: a push to a release branch must not cancel the
+  # ~keep dispatched run that gates its release.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || (github.ref == 'refs/heads/main' && github.sha || format('{0}-{1}', github.event_name, github.ref)) }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'schedule' }}
 
 permissions:
@@ -29,7 +34,7 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "1"
   CARGO_PROFILE_TEST_DEBUG: "1"
   # ~keep The Linux `full` leg is the tightest of the five and still hit ENOSPC at level 1 even after
-  # ~keep the purge below, so `matrix.debug` overrides it to 0 there. Panic locations
+  # ~keep the purge below, so the test job turns it off there. Panic locations
   # ~keep (`file.rs:line:col`) come from `core::panic::Location` and survive; what is lost is line
   # ~keep numbers inside RUST_BACKTRACE frames.
 
@@ -69,52 +74,39 @@ jobs:
   test:
     name: test / ${{ matrix.os }} / ${{ matrix.features }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.timeout_minutes }}
+    # ~keep 60 was sized when the Linux `full` leg died early on ENOSPC; once it ran the whole suite
+    # ~keep it was cut off mid `cargo build --release` at exactly 60m. 90 then proved too tight on a
+    # ~keep COLD cache: a dependency refresh changes `Cargo.lock`, misses the rust-cache key, and
+    # ~keep rebuilds debug + release from scratch, which roughly doubles both `full` legs (Linux 38m
+    # ~keep -> 79m, macOS 55m -> past 90m). The ceiling has to cover the cold run, because a leg that
+    # ~keep times out never saves a cache and so stays cold on every retry.
+    timeout-minutes: 180
+    # ~keep Debug info off on the legs that build `documents`, as the workflow env explains. On macOS
+    # ~keep `full`, building the test binaries grew `target` from 15 to 65 GB and left 27 of 97 GiB
+    # ~keep free (run 43863171731), the pressure behind the earlier Fjall EIO on store open.
     env:
-      CARGO_PROFILE_DEV_DEBUG: ${{ matrix.debug }}
-      CARGO_PROFILE_TEST_DEBUG: ${{ matrix.debug }}
+      CARGO_PROFILE_DEV_DEBUG: ${{ (matrix.features == '' || matrix.features == 'comms') && '1' || '0' }}
+      CARGO_PROFILE_TEST_DEBUG: ${{ (matrix.features == '' || matrix.features == 'comms') && '1' || '0' }}
+    # ~keep The legs are os x features minus the excluded pairs: an `include` entry cannot be
+    # ~keep excluded, and a branch push (see `on`) drops every leg but the default Linux one.
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            features: ""
-            timeout_minutes: 180
-            debug: "1"
-          - os: ubuntu-latest
-            features: "full"
-            # ~keep 60 was sized when this leg died early on ENOSPC; now that it runs the whole
-            # ~keep suite it needs the same budget as the other `full` leg — it passed `cargo test`
-            # ~keep and was cut off mid `cargo build --release` at exactly 60m. 90 then proved too
-            # ~keep tight on a COLD cache: a dependency refresh changes `Cargo.lock`, misses the
-            # ~keep rust-cache key, and rebuilds debug + release from scratch, which roughly doubles
-            # ~keep both `full` legs (Linux 38m -> 79m, macOS 55m -> past 90m). The ceiling has to
-            # ~keep cover the cold run, because a leg that times out never saves a cache and so stays
-            # ~keep cold on every retry.
-            timeout_minutes: 180
-            debug: "0"
-          # ~keep `documents` without `documents-ocr` / `documents-ner`: the only leg that compiles and
-          # ~keep runs the tests gated on a missing tier.
-          - os: ubuntu-latest
-            features: "comms documents"
-            timeout_minutes: 180
-            debug: "0"
-          - os: macos-26
-            features: ""
-            timeout_minutes: 180
-            debug: "1"
-          - os: macos-26
-            features: "full"
-            # ~keep Keep the cold-cache test budget independent of the full release build.
-            timeout_minutes: 180
-            # ~keep Debug info off, as on the Linux `full` leg: building the test binaries grew
-            # ~keep `target` from 15 to 65 GB and left 27 of 97 GiB free (run 43863171731), the
-            # ~keep pressure behind the earlier Fjall EIO on store open.
-            debug: "0"
-          - os: windows-latest
-            features: "comms"
-            timeout_minutes: 180
-            debug: "1"
+        os: [ubuntu-latest, macos-26, windows-latest]
+        # ~keep `comms documents` is `documents` without `documents-ocr` / `documents-ner`: the only
+        # ~keep leg that compiles and runs the tests gated on a missing tier.
+        features: ["", "full", "comms documents", "comms"]
+        exclude:
+          - { os: ubuntu-latest, features: "comms" }
+          - { os: macos-26, features: "comms documents" }
+          - { os: macos-26, features: "comms" }
+          - { os: windows-latest, features: "" }
+          - { os: windows-latest, features: "full" }
+          - { os: windows-latest, features: "comms documents" }
+          - os: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'macos-26' || 'none' }}
+          - os: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'windows-latest' || 'none' }}
+          - features: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'full' || 'none' }}
+          - features: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'comms documents' || 'none' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -405,6 +397,7 @@ jobs:
 
   memory-ceiling:
     name: scan under a 1 GiB cgroup (Linux)
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     # ~keep On the ubuntu-26.04 image a MemoryMax scope never kills `tail /dev/zero`; the harness probe hangs.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -521,7 +514,7 @@ jobs:
   # ~keep against the last release, which must now be of an older minor.
   upgrade-next-minor:
     name: upgrade test across the next minor
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && (github.event_name != 'push' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:

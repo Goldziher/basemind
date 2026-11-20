@@ -38,10 +38,11 @@ deadline=$(($(date +%s) + WAIT_MINUTES * 60))
 
 # Newest run of workflow $1 on SHA among the events matching the regex $2, as
 # "<id> <status> <conclusion>", or nothing. Push, dispatch and schedule runs all test the same tree;
-# pull_request runs test a merge commit, never SHA itself.
+# pull_request runs test a merge commit, never SHA itself. A push run counts only on main: a push to
+# any other branch runs the fast legs alone, so it vouches for less than a run on main.
 newest_run() {
   gh api "repos/$REPO/actions/workflows/$1/runs?head_sha=$SHA&per_page=100" \
-    -q '[.workflow_runs[] | select(.event | test("^('"$2"')$"))]
+    -q '[.workflow_runs[] | select((.event | test("^('"$2"')$")) and (.event != "push" or .head_branch == "main"))]
         | sort_by(.created_at) | last | select(. != null)
         | "\(.id) \(.status) \(.conclusion // "none")"'
 }
