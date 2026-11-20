@@ -114,7 +114,7 @@ The launcher runs the release that matches the plugin manifest. `BASEMIND_BIN=/p
 runs your own build instead, whatever version it reports; `BASEMIND_FORCE_VERSION=<x.y.z>` pins one
 published release.
 
-In Claude Code, `/bm-statusline` turns on the status line once: index freshness, calls,
+In Claude Code, `/bm-statusline` turns on the status line once: index freshness, the last 24 hours' calls,
 tokens saved and unread messages. `BASEMIND_STATUSLINE=full|compact|minimal` picks the layout and
 `BASEMIND_STATUSLINE_CONTEXT=0` hides the top line.
 
