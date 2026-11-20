@@ -152,6 +152,7 @@ class OtherVersionsTests(unittest.TestCase):
         if path_prefix is not None:
             env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
         env.pop("BASEMIND_BIN", None)
+        env.pop("BASEMIND_BINARY", None)
         env.pop("BASEMIND_FORCE_VERSION", None)
         env.pop("BASEMIND_PRUNE_AFTER_DAYS", None)
         if prune_after_days is not None:
@@ -525,6 +526,51 @@ class HostDetectionTests(unittest.TestCase):
 
     def test_an_explicit_host_wins(self) -> None:
         self.assertEqual(self.host(BASEMIND_HOST="mine", CLAUDECODE="1", CURSOR_PLUGIN_ROOT="/p"), "mine")
+
+
+@unittest.skipIf(sys.platform == "win32", "the launcher runs under bash")
+class BinaryOverrideTests(unittest.TestCase):
+    """BASEMIND_BIN, or BASEMIND_BINARY when it is unset, names the binary the launcher runs."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        plugin = self.root / "plugin"
+        (plugin / ".claude-plugin").mkdir(parents=True)
+        (plugin / ".claude-plugin/plugin.json").write_text(json.dumps({"version": CURRENT}))
+        (plugin / "scripts").mkdir()
+        shutil.copyfile(LAUNCHER, plugin / "scripts/mcp-launch.sh")
+        self.launcher = plugin / "scripts/mcp-launch.sh"
+
+    def binary(self, name: str) -> str:
+        """A binary of the pinned version that prints `name` when run."""
+        path = self.root / name
+        path.write_text(f'#!/bin/sh\n[ "$1" = --version ] && echo "basemind {CURRENT}" && exit 0\nprintf {name}\n')
+        path.chmod(0o755)
+        return str(path)
+
+    def launched(self, **pins: str) -> str:
+        """What the launcher's `serve` prints with only `pins` naming a binary."""
+        env = {key: value for key, value in os.environ.items() if key not in ("BASEMIND_BIN", "BASEMIND_BINARY")}
+        env.update(HOME=str(self.root), XDG_CACHE_HOME=str(self.root / "cache"), BASEMIND_HOST="claude", **pins)
+        return subprocess.run(
+            ["/bin/bash", str(self.launcher), "serve"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        ).stdout
+
+    def test_basemind_bin_runs_its_binary(self) -> None:
+        self.assertEqual(self.launched(BASEMIND_BIN=self.binary("new")), "new")
+
+    def test_basemind_binary_runs_its_binary_when_basemind_bin_is_unset(self) -> None:
+        self.assertEqual(self.launched(BASEMIND_BINARY=self.binary("old")), "old")
+
+    def test_basemind_bin_wins_over_basemind_binary(self) -> None:
+        self.assertEqual(self.launched(BASEMIND_BIN=self.binary("new"), BASEMIND_BINARY=self.binary("old")), "new")
 
 
 @unittest.skipIf(sys.platform == "win32" or shutil.which("node") is None, "needs node and a Unix shell")

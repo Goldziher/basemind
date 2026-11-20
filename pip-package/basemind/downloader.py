@@ -368,7 +368,7 @@ def ensure_binary() -> str:
     """
     from . import __version__
 
-    override = os.getenv("BASEMIND_BINARY")
+    override = os.getenv("BASEMIND_BIN") or os.getenv("BASEMIND_BINARY")
     if override:
         return override
 

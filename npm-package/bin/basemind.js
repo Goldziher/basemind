@@ -5,7 +5,9 @@ const os = require("node:os");
 const fs = require("node:fs");
 
 const binaryName = os.type() === "Windows_NT" ? "basemind.exe" : "basemind";
-const binaryPath = path.join(__dirname, binaryName);
+// BASEMIND_BIN runs another binary, such as a local build; BASEMIND_BINARY is its older name.
+const override = process.env.BASEMIND_BIN || process.env.BASEMIND_BINARY;
+const binaryPath = override || path.join(__dirname, binaryName);
 const packageJsonPath = path.join(__dirname, "..", "package.json");
 
 function ensureBinaryExists() {
@@ -33,7 +35,7 @@ function ensureBinaryExists() {
   return false;
 }
 
-if (!ensureBinaryExists()) {
+if (!override && !ensureBinaryExists()) {
   console.error(
     `basemind: native binary not found at ${binaryPath}.\n` +
       `The postinstall step that downloads the binary from GitHub releases may have failed.\n` +

@@ -1,10 +1,11 @@
 //! The offline manual (`docs/manual/*.md`, issue #133) against the surface it describes: every
 //! `basemind …` command it names is a real command with real flags, every tool it names is
-//! advertised and takes the arguments shown, every `BASEMIND_*` variable is read somewhere in
-//! `src/`, and every tool and top-level command is covered by some page.
+//! advertised and takes the arguments shown, every `BASEMIND_*` variable it names is read by the
+//! shipped code and every one that code reads is in the environment table, and every tool and
+//! top-level command is covered by some page.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use basemind::cli::manual::{INDEX, PAGES};
@@ -205,29 +206,50 @@ fn every_top_level_command_has_a_manual_mention() {
     );
 }
 
-fn source_texts(dir: &Path, out: &mut String) {
-    for entry in std::fs::read_dir(dir).expect("read src") {
+/// Shipped Rust sources, where a variable is read through a string literal naming it whole.
+const RUST_SOURCES: &[&str] = &["src", "crates/basemind-agents/src"];
+/// The plugin's script and hook sources and the npm and pip wrappers, where any mention counts.
+const SCRIPT_SOURCES: &[&str] = &[
+    "plugin/.ai-rulez/scripts",
+    "plugin/.ai-rulez/hooks",
+    "npm-package/bin",
+    "npm-package/index.js",
+    "npm-package/install.js",
+    "pip-package/basemind",
+];
+/// Variables only tests set, left out of the table along with every `BASEMIND_TEST_*`.
+const TEST_ONLY: &[&str] = &["BASEMIND_ALLOC_TAG_TEST_CHILD", "BASEMIND_AGENTS_SIGNAL_MASK_CHILD"];
+
+/// Every file under `path`, or `path` itself when it is a file.
+fn files(path: &Path, out: &mut Vec<PathBuf>) {
+    if path.is_file() {
+        out.push(path.to_path_buf());
+        return;
+    }
+    for entry in std::fs::read_dir(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display())) {
         let path = entry.expect("entry").path();
-        if path.is_dir() {
-            source_texts(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            out.push_str(&std::fs::read_to_string(&path).expect("read source"));
+        let skipped = path
+            .file_name()
+            .is_some_and(|name| name == "node_modules" || name == "__pycache__");
+        if !skipped {
+            files(&path, out);
         }
     }
 }
 
-/// The `BASEMIND_*` variable names `text` mentions. A name ending in `_` is a family written as a
-/// wildcard (`BASEMIND_DOCUMENTS_*`), not a variable, and is skipped.
-fn variable_names(text: &str) -> BTreeSet<String> {
+/// Every `BASEMIND_*` name in `text`; with `quoted`, only one that is a whole string literal. A name
+/// ending in `_` is a prefix, not a variable.
+fn variable_names(text: &str, quoted: bool) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     let mut rest = text;
     while let Some(at) = rest.find("BASEMIND_") {
+        let opens = rest[..at].ends_with('"');
         let tail = &rest[at..];
         let end = tail
             .find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
             .unwrap_or(tail.len());
         let name = &tail[..end];
-        if name.len() > "BASEMIND_".len() && !name.ends_with('_') {
+        if !name.ends_with('_') && (!quoted || (opens && tail[end..].starts_with('"'))) {
             names.insert(name.to_string());
         }
         rest = &tail[end..];
@@ -235,10 +257,41 @@ fn variable_names(text: &str) -> BTreeSet<String> {
     names
 }
 
+/// The variables the shipped code reads, outside `*_tests.rs` files.
+fn read_variables() -> BTreeSet<String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut names = BTreeSet::new();
+    for (sources, quoted) in [(RUST_SOURCES, true), (SCRIPT_SOURCES, false)] {
+        let mut paths = Vec::new();
+        for source in sources {
+            files(&root.join(source), &mut paths);
+        }
+        for path in paths {
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+            if quoted && (!name.ends_with(".rs") || name.ends_with("_tests.rs")) {
+                continue;
+            }
+            let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            names.extend(variable_names(&String::from_utf8_lossy(&bytes), quoted));
+        }
+    }
+    names
+}
+
+#[test]
+fn a_variable_is_a_whole_name_and_in_rust_a_whole_literal() {
+    let text = r#"let a = "BASEMIND_ONE"; "BASEMIND_TWO is set"; "BASEMIND_DOCUMENTS_"; BASEMIND_THREE"#;
+    let names = |quoted| variable_names(text, quoted).into_iter().collect::<Vec<_>>();
+    assert_eq!(names(true), ["BASEMIND_ONE"]);
+    assert_eq!(names(false), ["BASEMIND_ONE", "BASEMIND_THREE", "BASEMIND_TWO"]);
+}
+
 #[test]
 fn variable_names_skips_a_wildcard_family() {
-    let names =
-        variable_names("Set `BASEMIND_DATA_HOME`, any `BASEMIND_DOCUMENTS_*` switch, `BASEMIND_` or BASEMIND_LLM_2.");
+    let names = variable_names(
+        "Set `BASEMIND_DATA_HOME`, any `BASEMIND_DOCUMENTS_*` switch, `BASEMIND_` or BASEMIND_LLM_2.",
+        false,
+    );
     assert_eq!(
         names.into_iter().collect::<Vec<_>>(),
         ["BASEMIND_DATA_HOME", "BASEMIND_LLM_2"]
@@ -247,21 +300,43 @@ fn variable_names_skips_a_wildcard_family() {
 
 #[test]
 fn every_environment_variable_the_manual_names_is_read_by_the_source() {
-    let mut source = String::new();
-    source_texts(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut source);
-    let names: BTreeSet<String> = pages().into_iter().flat_map(|(_, text)| variable_names(text)).collect();
-    let unknown: Vec<&String> = names
-        .iter()
-        .filter(|name| !source.contains(&format!("\"{name}\"")))
+    let read = read_variables();
+    let names: BTreeSet<String> = pages()
+        .into_iter()
+        .flat_map(|(_, text)| variable_names(text, false))
         .collect();
+    let unknown: Vec<&String> = names.difference(&read).collect();
     assert!(
-        names.len() >= 15,
+        names.len() >= 80,
         "only {} variables found; the extraction broke",
         names.len()
     );
     assert!(
         unknown.is_empty(),
         "the manual names variables no source reads: {unknown:?}"
+    );
+}
+
+#[test]
+fn every_variable_the_source_reads_is_in_the_environment_table() {
+    let read = read_variables();
+    let page = PAGES
+        .iter()
+        .find(|page| page.topic == "environment")
+        .expect("environment page");
+    let table = variable_names(page.text, false);
+    let missing: Vec<&String> = read
+        .difference(&table)
+        .filter(|name| !name.starts_with("BASEMIND_TEST_") && !TEST_ONLY.contains(&name.as_str()))
+        .collect();
+    assert!(
+        read.len() >= 80,
+        "only {} variables read; the extraction broke",
+        read.len()
+    );
+    assert!(
+        missing.is_empty(),
+        "docs/manual/environment.md lacks variables the source reads: {missing:?}"
     );
 }
 

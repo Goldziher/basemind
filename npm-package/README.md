@@ -19,7 +19,8 @@ pnpm add -g basemind
 
 The installer downloads the appropriate pre-compiled Rust binary for your platform (macOS on
 Apple Silicon, Linux on x86_64 and arm64, Windows on x86_64) from
-[GitHub Releases](https://github.com/Goldziher/basemind/releases) on first install.
+[GitHub Releases](https://github.com/Goldziher/basemind/releases) on first install. Run another binary
+instead with `BASEMIND_BIN=/path/to/basemind`; `BASEMIND_BINARY` is read when it is unset.
 
 ### Behind a proxy
 

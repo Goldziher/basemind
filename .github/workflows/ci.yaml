@@ -484,7 +484,7 @@ jobs:
           mise run plugin:pytest
       - name: node (npm wrapper installer, OpenCode binary check)
         run: >-
-          node --test tests/npm_install_https.test.cjs tests/npm_install_staging.test.cjs
+          node --test tests/npm_binary_override.test.cjs tests/npm_install_https.test.cjs tests/npm_install_staging.test.cjs
           tests/npm_install_proxy.test.cjs tests/opencode_binary_check.test.mjs
           tests/opencode_plugin_setup.test.mjs
 

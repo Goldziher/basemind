@@ -615,9 +615,6 @@ pub fn init_isolated_cache() {
             for (key, value) in [
                 ("BASEMIND_COMMS_IDLE_REAP_SECS", "20"),
                 ("BASEMIND_COMMS_IDLE_CHECK_SECS", "3"),
-                ("BASEMIND_AGENT_BOOTSTRAP_SECS", "20"),
-                ("BASEMIND_AGENT_IDLE_REAP_SECS", "20"),
-                ("BASEMIND_AGENT_IDLE_CHECK_SECS", "3"),
             ] {
                 if std::env::var_os(key).is_none() {
                     std::env::set_var(key, value);
@@ -689,14 +686,8 @@ mod daemon_isolation_tests {
             comms_dir.display()
         );
 
-        // agent-ipc has no socket env var of its own: it derives `<data home>/agent/<key>.sock` and
-        // `<data home>/agent/sessions/`, so the data-home assertion above is its path isolation.
-        // Only its lifetime can still escape, hence the pinned reap windows. ~keep
-        for key in [
-            "BASEMIND_AGENT_BOOTSTRAP_SECS",
-            "BASEMIND_AGENT_IDLE_REAP_SECS",
-            "BASEMIND_AGENT_IDLE_CHECK_SECS",
-        ] {
+        // A daemon's lifetime can still escape the paths above, hence the pinned reap windows. ~keep
+        for key in ["BASEMIND_COMMS_IDLE_REAP_SECS", "BASEMIND_COMMS_IDLE_CHECK_SECS"] {
             let raw = std::env::var(key).unwrap_or_else(|_| panic!("{key} is set"));
             let seconds: u64 = raw.parse().unwrap_or_else(|_| panic!("{key} is numeric, got {raw:?}"));
             assert!(
