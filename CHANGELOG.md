@@ -638,6 +638,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each one, when a library outside the per-platform allowlist in `scripts/check-bundled-libs.sh`
   would be bundled.
 
+- `basemind init` says, when it writes the rules to `AGENTS.local.md`, that no agent host loads that
+  file by itself and that OpenCode reads it once `~/.config/opencode/opencode.json` lists it under
+  `instructions` (#329).
+
 ### Removed
 
 - **BREAKING: `ranges` on `code_grep`, `code_refs` and `code_read`** (#129), and the CLI's

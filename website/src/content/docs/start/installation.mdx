@@ -264,6 +264,11 @@ to call again later:
   file. By default it never touches a committed file: with `.ai-rulez/config.toml` present
   it writes the gitignored `.ai-rulez/local/rules/basemind-usage.md`, otherwise the personal,
   gitignored `CLAUDE.local.md` (or `AGENTS.local.md` in a repo that has only `AGENTS.md`).
+  No agent host loads `AGENTS.local.md` by itself: Codex, Cursor, Pi, Hermes and Claude Code
+  never read it, and OpenCode reads it once `"instructions": ["AGENTS.local.md"]` is in
+  `~/.config/opencode/opencode.json`; `init` prints this when it writes the file. A
+  `CLAUDE.local.md` or `AGENTS.override.md` would hide the repo's `AGENTS.md` from a host
+  (Claude Code; Codex, Pi and Hermes), so `init` writes neither there.
   The block is delimited (`<!-- BEGIN basemind ... -->` / `<!-- END basemind -->`) so
   re-running replaces it in place instead of duplicating it.
 - Offers to add the `.local` file to `.gitignore` when no existing rule covers it.
