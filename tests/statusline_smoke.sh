@@ -77,6 +77,27 @@ assert_contains 'basemind' 'name present'
 assert_contains 'no index' 'empty delegate output falls back to the no-index hint'
 assert_contains 'basemind scan' 'the hint names the command to run'
 
+for name in BASEMIND_STATUSLINE_VERSION BASEMIND_STATUSLINE_CONTEXT; do
+  bad_output="$(printf '%s' "$payload" | env "PATH=$stub_bin:$PATH" "$name=maybe" "$STATUSLINE")"
+  expected="$name=\"maybe\" is not a boolean: use 1, true, yes, on or 0, false, no, off"
+  if [[ "$bad_output" == *"$expected"* ]]; then
+    printf '  ok  %s=maybe is reported as an error naming it\n' "$name"
+  else
+    printf '  FAIL %s=maybe should be reported; got: %q\n' "$name" "$bad_output" >&2
+    fail=1
+  fi
+done
+
+for word in 0 false No OFF 1 TRUE yes on ' '; do
+  ok_output="$(printf '%s' "$payload" | env "PATH=$stub_bin:$PATH" "BASEMIND_STATUSLINE_VERSION=$word" "$STATUSLINE")"
+  if [[ "$ok_output" != *'is not a boolean'* ]]; then
+    printf '  ok  BASEMIND_STATUSLINE_VERSION=%q is a boolean spelling\n' "$word"
+  else
+    printf '  FAIL BASEMIND_STATUSLINE_VERSION=%q refused: %q\n' "$word" "$ok_output" >&2
+    fail=1
+  fi
+done
+
 resolver_dir="$(mktemp -d)"
 mkdir -p \
   "$resolver_dir/0.9.0/.claude-plugin" \
