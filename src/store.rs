@@ -19,7 +19,9 @@ pub(crate) use durability::open_index_for_writer;
 #[path = "store_group.rs"]
 mod group;
 use file_map::migrate_legacy_index_into_views;
-pub(crate) use file_map::{check_schema, read_index, wipe_view, written_by_newer};
+pub(crate) use file_map::{
+    ViewOnOpen, check_schema, read_index, sets_aside, view_on_open, wipe_view, written_by_newer,
+};
 
 /// Cache layout: where the global cache root is, how a worktree root maps to a workspace cache
 /// dir, and the `workspace.json` marker recording that mapping. Lives in its own module (like
@@ -385,33 +387,27 @@ impl Store {
         ensure_dir(&view_dir)?;
         ensure_workspace_marker(&basemind_dir, root);
         let mut reset_stale_schema = false;
-        let mut index = match read_index(&view_dir) {
-            Ok(Some(idx)) => idx,
-            Ok(None) => Index::empty(),
-            Err(StoreError::SchemaMismatch { found, expected }) => {
+        let mut index = match file_map::view_on_open(&view_dir) {
+            ViewOnOpen::Keep(idx) => *idx,
+            ViewOnOpen::Absent => Index::empty(),
+            ViewOnOpen::OlderSchema { found } => {
                 reset_stale_schema = true;
                 tracing::info!(
                     found,
-                    expected,
+                    expected = SCHEMA_VER,
                     view,
                     "cache schema bumped; refreshing view in place (re-extract + GC reclaims orphans)"
                 );
                 wipe_view(&view_dir)?;
                 Index::empty()
             }
-            // A map that does not decode is rebuildable cache; refusing it left the workspace unopenable
-            // until someone cleared the cache. Its index goes too: no map lists the files of its rows. ~keep
-            Err(
-                error @ (StoreError::StaleBlobLayout { .. }
-                | StoreError::Decode(_)
-                | StoreError::UnreadableFileMap { .. }),
-            ) => {
+            ViewOnOpen::Discard(error) => {
                 reset_stale_schema = true;
                 tracing::info!(view, %error, "refreshing view in place (every file is extracted again)");
                 durability::discard_view_of_a_stale_layout(&view_dir, &error)?;
                 Index::empty()
             }
-            Err(e) => return Err(e),
+            ViewOnOpen::Refuse(e) => return Err(e),
         };
         let (index_db, index_rebuild_needed) = open_index_for_writer(root, view, &view_dir, &mut index, holder)?;
         let pending_vectors = crate::store_pending::PendingVectors::load(&view_dir);

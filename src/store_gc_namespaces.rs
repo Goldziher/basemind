@@ -190,6 +190,18 @@ fn files_in(dir: &Path) -> Result<Vec<PathBuf>, GcError> {
     Ok(files)
 }
 
+/// Whether the entry `name` of the blobs root is what [`sweep_superseded_namespaces`] reaps once it
+/// is aged, given the `current` blob schema: the namespace directory of an older schema, or an
+/// un-namespaced blob file. Shared with `basemind upgrade --plan` ([`crate::upgrade_plan`]), so the
+/// plan names exactly what the sweep takes.
+pub(crate) fn superseded(name: &str, is_dir: bool, current: u16) -> bool {
+    if is_dir {
+        namespace_schema(name).is_some_and(|schema| schema < current)
+    } else {
+        is_blob_file(name)
+    }
+}
+
 /// Remove `path` when it is at least `grace` old. Returns whether the file is gone.
 fn reap_if_aged(path: &Path, now: SystemTime, grace: Duration, report: &mut GcReport) -> Result<bool, GcError> {
     let io = |source| GcError::Io {
@@ -258,18 +270,20 @@ pub(crate) fn sweep_superseded_namespaces(
             source,
         })?;
         let path = entry.path();
-        if path.is_dir() {
-            let older = entry
-                .file_name()
-                .to_str()
-                .and_then(namespace_schema)
-                .filter(|schema| *schema < current);
-            if let Some(schema) = older
+        let is_dir = path.is_dir();
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !superseded(&name, is_dir, current) {
+            continue;
+        }
+        if is_dir {
+            if let Some(schema) = namespace_schema(&name)
                 && releasable(BlobNamespace::Schema(schema), &files_in(&path)?)
             {
                 reap_namespace(&path, now, grace, &mut report)?;
             }
-        } else if entry.file_name().to_str().is_some_and(is_blob_file) {
+        } else {
             unnamespaced.push(path);
         }
     }

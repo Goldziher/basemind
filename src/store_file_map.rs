@@ -167,6 +167,46 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
     Ok(Some(index))
 }
 
+/// What a writer open ([`super::Store::open_with_holder`]) does with a view's file map. The one
+/// decision both that open and `basemind upgrade --plan` ([`crate::upgrade_plan`]) act on, so the
+/// plan cannot name a different set of views than the open then rebuilds.
+#[derive(Debug)]
+pub(crate) enum ViewOnOpen {
+    /// No file map: the view starts empty.
+    Absent,
+    /// A map of this binary's schema and blob layout: kept. Boxed, being far larger than the rest.
+    Keep(Box<Index>),
+    /// A map of an older schema (a release-minor bump): removed, and every file extracted again.
+    OlderSchema { found: u16 },
+    /// A map of an earlier blob layout, or one of this version that does not decode, or one whose
+    /// version cannot be read: discarded ([`sets_aside`] says whether it is removed or renamed), and
+    /// every file extracted again.
+    Discard(StoreError),
+    /// The open fails: the map is a newer basemind's, or could not be read at all. Nothing is touched.
+    Refuse(StoreError),
+}
+
+/// Decide what a writer open does with the file map of `view_dir`. Reads only.
+pub(crate) fn view_on_open(view_dir: &Path) -> ViewOnOpen {
+    match read_index(view_dir) {
+        Ok(Some(index)) => ViewOnOpen::Keep(Box::new(index)),
+        Ok(None) => ViewOnOpen::Absent,
+        Err(StoreError::SchemaMismatch { found, .. }) => ViewOnOpen::OlderSchema { found },
+        // A map that does not decode is rebuildable cache; refusing it left the workspace unopenable
+        // until someone cleared the cache. Its index goes too: no map lists the files of its rows. ~keep
+        Err(
+            error @ (StoreError::StaleBlobLayout { .. } | StoreError::Decode(_) | StoreError::UnreadableFileMap { .. }),
+        ) => ViewOnOpen::Discard(error),
+        Err(error) => ViewOnOpen::Refuse(error),
+    }
+}
+
+/// Whether a discarded file map ([`ViewOnOpen::Discard`]) is renamed aside rather than removed: its
+/// version cannot be read, so it may be a newer basemind's, which is never deleted.
+pub(crate) fn sets_aside(why: &StoreError) -> bool {
+    matches!(why, StoreError::UnreadableFileMap { .. })
+}
+
 /// Guard every blob / index read against a foreign on-disk schema: an older one is a rebuildable
 /// [`StoreError::SchemaMismatch`], a newer one a [`StoreError::NewerSchema`] no caller may wipe.
 /// `pub(crate)` because the blob accessors that call it live in [`crate::store_blob`].

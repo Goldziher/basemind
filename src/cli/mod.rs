@@ -43,6 +43,7 @@ pub mod registry;
 pub mod render;
 pub mod rescan;
 pub mod sessions;
+pub mod upgrade;
 
 use std::io::Write;
 use std::path::Path;

@@ -252,6 +252,7 @@ pub fn table() -> Vec<Row> {
         cli_only("cache stats", CACHE_ADMIN),
         cli_only("cache gc", CACHE_ADMIN),
         cli_only("cache clear", CACHE_ADMIN),
+        cli_only("upgrade", CACHE_ADMIN),
         cli_only(
             "admin telemetry",
             "usage summary for a human dashboard; kept off the agent surface (ADR-0018)",

@@ -351,7 +351,7 @@ pub(crate) fn fake_free_bytes(free: Option<u64>) {
 }
 
 /// Free bytes on the volume holding `path`, or `None` when the platform cannot say.
-fn available_bytes(path: &Path) -> Option<u64> {
+pub fn available_bytes(path: &Path) -> Option<u64> {
     #[cfg(test)]
     if let Some(free) = FAKE_FREE_BYTES.get() {
         return Some(free);

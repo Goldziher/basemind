@@ -54,7 +54,7 @@ struct Cli {
     no_color: bool,
 
     /// Emit machine-readable JSON instead of the human-readable rendering. Applies to the tool
-    /// subcommands (code / git / memory / admin / status / cache), the
+    /// subcommands (code / git / memory / admin / status / cache / upgrade), the
     /// coordination groups (agent / workspace / comms / daemon), doctor and sessions. It is ignored, with a
     /// warning, on init / scan / rescan / watch / hook / lang / completions / man / manual /
     /// statusline / serve.
@@ -144,6 +144,9 @@ enum Cmd {
     /// Manage the machine-global caches (gc / stats / clear). Offline path.
     #[command(subcommand)]
     Cache(basemind::cli::admin::CacheCmd),
+    /// Before a release-minor rebuild: `--plan` prints, per repository group and workspace, what
+    /// the next scan rebuilds, the bytes freed and needed, and a scan estimate. Offline, read-only.
+    Upgrade(basemind::cli::upgrade::UpgradeArgs),
     /// Manage the user-global agent-comms broker daemon (needs `--features comms`).
     #[cfg(all(feature = "comms", any(unix, windows)))]
     Comms {
@@ -442,6 +445,7 @@ fn run() -> Result<()> {
         },
         Cmd::Serve { lead } => cmd_serve(&root, &view, lead),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
+        Cmd::Upgrade(args) => basemind::cli::upgrade::run(&args, json, &mut std::io::stdout().lock()),
         Cmd::Sessions(args) => basemind::cli::sessions::run(&root, json, &args),
         // An explicit `--root` selects the per-repo line for that (resolved) workspace; bare
         // `basemind statusline` keeps the daemon hot-workspace summary.
@@ -469,6 +473,7 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
             | Cmd::Memory(_)
             | Cmd::Admin(_)
             | Cmd::Cache(_)
+            | Cmd::Upgrade(_)
             | Cmd::Status
             | Cmd::Overview(_)
             | Cmd::Doctor

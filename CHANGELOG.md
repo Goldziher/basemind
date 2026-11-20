@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   daemon an MCP host spawns included. A set `BASEMIND_CACHE_BUDGET_MB` wins over it; `0` disables
   enforcement in either. `basemind cache stats` reports `budget_warning` when a set budget is larger
   than the cache plus the free space on its volume, which the disk fills before eviction starts.
+
+- `basemind upgrade --plan` (#210, CLI only, `--json` too): a dry run of a release-minor rebuild.
+  Per repository group and workspace it prints what the next writer open rebuilds (each view kept,
+  rebuilt with its reason, set aside or refused, and whether the group index is replaced), the bytes
+  that frees, the free space the rebuild needs by the scan's own estimate (1.5x the group index plus
+  the `BASEMIND_MIN_FREE_MB` headroom), a code-map scan estimate, and the `basemind scan --root`
+  command that rebuilds one worktree at a time; then the blob namespaces the sweep reaps and the
+  space the new namespace takes. The verdicts are the writer open's and the blob sweep's own
+  decisions, and the plan writes nothing. See docs/UPGRADING.md, "Planning a release-minor rebuild".
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
   lists the files importing that file `by_depth`, up to `depth` hops (default 1, max 5), names those
   in an import cycle with it and says when the walk was cut; `relation: "cycles"` lists the import

@@ -102,6 +102,7 @@ pub mod store_pending;
 pub mod sysres;
 pub mod textmatch;
 mod thread_pool;
+pub mod upgrade_plan;
 pub mod version;
 pub mod watch_health;
 pub mod watcher;
