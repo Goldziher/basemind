@@ -41,10 +41,22 @@ HTTPS_PROXY=http://proxy.internal:3128 NO_PROXY=localhost,.internal pnpm add -g 
 ```bash
 cd /path/to/your/repo
 basemind scan        # index the working tree
-basemind serve       # run the MCP stdio server
 ```
 
-Wire `basemind serve` into Claude Code or any MCP client.
+Then register basemind with your MCP client, which starts `basemind serve` itself (run in a
+terminal, `basemind serve` only waits on stdio):
+
+```json
+{
+  "mcpServers": {
+    "basemind": { "command": "basemind", "args": ["serve"] }
+  }
+}
+```
+
+The [MCP server guide](https://github.com/Goldziher/basemind#2-as-an-mcp-server) has the command or
+file for each client, and [Get started](https://github.com/Goldziher/basemind#get-started) covers
+`basemind init`.
 
 ## Full documentation
 
