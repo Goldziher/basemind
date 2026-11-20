@@ -580,7 +580,9 @@ jobs:
         run: cargo test --features "comms documents memory" --test upgrade_from_release -- --test-threads=1
 
   # ~keep `#[ignore]`d tests no other job runs: the daemon stress and takeover watchdog, the NER
-  # ~keep scan and the git parity checks against this checkout.
+  # ~keep scan and the git parity checks against this checkout. The two git-history benches are
+  # ~keep skipped by name: they need a scanned repository and a release build, and without them
+  # ~keep return early and read as passed having measured nothing.
   ignored-tests:
     name: ignored tests (nightly)
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
@@ -613,6 +615,7 @@ jobs:
           cargo test --features full --no-fail-fast
           --test daemon_integration --test scan_smoke --test mcp_smoke --test git_parity --test git_history_smoke
           -- --ignored --test-threads=1
+          --skip bench_warm_query_latency --skip bench_rebuild_peak_rss
 
   # ~keep The regression test for the long-lived daemon's embed leak reads phys_footprint through
   # ~keep `vmmap`, so it is macOS-only and runs nowhere else.

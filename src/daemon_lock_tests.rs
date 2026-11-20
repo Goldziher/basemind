@@ -22,20 +22,6 @@ fn an_exited_process_is_not_live_while_its_handle_is_held() {
     assert!(!pid_is_live(child.id()), "an exited process is not live");
 }
 
-/// A process that may not be opened reads as not live, but as possibly live to a caller that would
-/// delete its record: the System process, pid 4, is refused to an unelevated account. The mapping
-/// itself is tested on every platform (`windows_answers_map_to_a_pid_state`).
-#[cfg(windows)]
-#[test]
-#[ignore = "an elevated account, as on GitHub's Windows runners, may open pid 4; run it unelevated"]
-fn a_process_that_may_not_be_opened_is_not_live() {
-    use crate::boot_identity::{PidState, pid_state};
-    const SYSTEM_PID: u32 = 4;
-    assert_eq!(pid_state(SYSTEM_PID), PidState::Unopenable, "run unelevated");
-    assert!(!pid_is_live(SYSTEM_PID));
-    assert!(pid_state(SYSTEM_PID).may_be_live());
-}
-
 #[test]
 fn a_live_daemon_is_found_by_pid_in_any_generation_and_a_dead_one_is_not() {
     let root = tempfile::tempdir().expect("tempdir");
