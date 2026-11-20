@@ -6,7 +6,8 @@
 //! again in the file, so no chunk could cite a line. Here the file itself is chunked, in one pass,
 //! and every chunk's line range follows from its byte range.
 //!
-//! - Prose and logs break at a blank line, else at a line end, and overlap by whole lines.
+//! - Prose and logs break at a blank line, else at a line end, and overlap by whole lines, else, when
+//!   the overlap holds no line start, by whole words.
 //! - Records (CSV, TSV, NDJSON) break at a line end with no overlap (in CSV, one outside a quoted
 //!   field); a CSV or TSV chunk after the first is embedded with the header line in front of it.
 //! - Trees (JSON, YAML, TOML) break before the least indented line in the back half of the window
@@ -175,7 +176,7 @@ fn tree_rank(bytes: &[u8], at: usize) -> Option<usize> {
 }
 
 /// The start of the chunk after `[start, end)`: the first line start in its last `overlap`
-/// characters, or `end` when that tail holds none.
+/// characters, else the first word start there, or `end` when that tail holds neither.
 fn overlap_start(text: &str, start: usize, end: usize, overlap: usize) -> usize {
     let tail = text[start..end]
         .char_indices()
@@ -191,7 +192,19 @@ fn overlap_start(text: &str, start: usize, end: usize, overlap: usize) -> usize 
     memchr::memchr(b'\n', &text.as_bytes()[tail..end])
         .map(|i| tail + i + 1)
         .filter(|&next| next < end)
+        .or_else(|| word_start(text, tail, end))
         .unwrap_or(end)
+}
+
+/// The first position in `[from, end)` where a word starts: a non-whitespace character right after
+/// whitespace.
+fn word_start(text: &str, from: usize, end: usize) -> Option<usize> {
+    let mut after_space = text[..from].chars().next_back().is_some_and(char::is_whitespace);
+    text[from..end].char_indices().find_map(|(i, c)| {
+        let found = after_space && !c.is_whitespace();
+        after_space = c.is_whitespace();
+        found.then_some(from + i)
+    })
 }
 
 /// The 1-based first and last line of each span of `text`.

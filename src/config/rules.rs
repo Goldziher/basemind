@@ -140,11 +140,12 @@ pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig) -> String 
     // `doc/2`: Markdown output, repeated table headers, chunk metadata and snapped chunk starts
     // (ADR-0029 rule 10) change every document's chunks. `doc/3`: text and data files chunked from
     // the file, so every chunk of them cites its lines. `doc/4`: Markdown lines found across
-    // paragraphs xberg reflowed.
+    // paragraphs xberg reflowed. `doc/5`: prose chunked from the file overlaps by whole words where
+    // its overlap holds no line start.
     let mut tag = if cutovers == (defaults.markdown_chunk_max_bytes, defaults.plain_text_chunk_max_bytes) {
-        "doc/4".to_string()
+        "doc/5".to_string()
     } else {
-        format!("doc/4/cutover={},{}", cutovers.0, cutovers.1)
+        format!("doc/5/cutover={},{}", cutovers.0, cutovers.1)
     };
     // `extract::doc_tiers` is compiled only with `documents`, and this function is not.
     tag.push_str(missing_tier_suffix(
