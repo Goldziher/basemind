@@ -57,7 +57,8 @@ The plugin nudges agents toward the cheap path by default:
 - **Search for a definition instead of grepping for it** — `code_symbols` vs `grep`.
 - **Look up who calls a function instead of grepping for call sites** — `code_refs` vs
   `grep`.
-- **Refresh the index after edits** — `index_rescan` instead of restarting the server.
+- **Let the index follow your edits** — `index_rescan` the files a result calls stale, never a
+  server restart.
 - **Don't re-read a file basemind already mapped** — use the outline instead.
 
 ## Guard: redirect wasteful searches

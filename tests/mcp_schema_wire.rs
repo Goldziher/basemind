@@ -201,6 +201,20 @@ async fn instructions_stay_under_the_client_ceiling() {
         instructions.contains("markdown, config and data"),
         "instructions must say code_grep covers markdown, config and data files: {instructions}"
     );
+    // The daemon watches the workspace, and a whole-workspace rescan takes one of its heavy permits
+    // that every search shares: after an edit the agent re-indexes only the paths it touched.
+    assert!(
+        instructions.contains("index_rescan {\"paths\":[\"src/store.rs\"]} for the files you touched"),
+        "instructions must steer a rescan to the edited paths: {instructions}"
+    );
+    assert!(
+        instructions.contains("index_rescan {} only when index_status reports an empty or degraded index"),
+        "instructions must keep the whole-workspace rescan for an empty or degraded index: {instructions}"
+    );
+    assert!(
+        !instructions.contains("index_rescan {} after"),
+        "instructions must not recommend a whole-workspace rescan after edits: {instructions}"
+    );
 }
 
 /// Every advertised tool carries a human-readable `title`, so clients can show a label that is not

@@ -45,7 +45,7 @@ Route the question to the tool that answers it directly:
 | "Search PDFs/docs in the repo by meaning?" | `docs_search {"query":"how releases are versioned"}` |
 | "Recall something remembered earlier?" | `memory_search {"query":"token rotation"}`, or `{"key":"…"}` / `{"prefix":"…"}` |
 | "Remember this for later sessions?" | `memory_save {"key":"decision/x","value":"…"}` (delete: `basemind memory delete <key>`) |
-| "Refresh the index after editing code?" | `index_rescan {"paths":["src/scanner.rs"]}` |
+| "A result says stale, or a new file is missing?" | `index_rescan {"paths":["src/scanner.rs"]}` |
 
 ## Notes
 

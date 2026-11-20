@@ -167,6 +167,16 @@ esac""",
             self.assertIsInstance(json.loads(arguments), dict)
         self.assertIsNone(REMOVED_SPELLING.search(result), result)
 
+    def test_routing_steers_a_rescan_to_the_edited_paths(self) -> None:
+        result = self.invoke('{"file_count":631,"schema_version":33}')
+        self.assertIn(
+            'if a result says stale or a new file is missing, run index_rescan {"paths":["src/store.rs"]} '
+            "for the files you touched; run index_rescan {} only when index_status {} reports an empty or "
+            "degraded index.",
+            result,
+        )
+        self.assertNotIn("index_rescan {} after", result)
+
     def test_timeout_is_reported_as_such(self) -> None:
         self.executable(self.bin / "timeout", "exit 124")
         self.assertIn("timed out", self.invoke(""))
