@@ -177,8 +177,8 @@ fn fingerprint_ok(index: &GitHistoryIndex, repo: &Repo, head: &str) -> bool {
 
 /// Whether the oldest indexed commit now has a parent: the index was built in a shallow clone that
 /// has since been deepened or unshallowed (`git fetch --unshallow` moves no ref), so it lacks the
-/// history past its old boundary.
-fn root_deepened(index: &GitHistoryIndex, repo: &Repo) -> bool {
+/// history past its old boundary even while it indexes HEAD.
+pub fn root_deepened(index: &GitHistoryIndex, repo: &Repo) -> bool {
     index
         .root_sha()
         .is_some_and(|root_raw| repo.has_readable_parent(&keys::sha_raw_to_hex(&root_raw)))
