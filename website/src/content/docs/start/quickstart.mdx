@@ -53,9 +53,11 @@ hits (3 items):
   src/scanner.rs:201
   src/extract.rs:57`} lang="text" />
 
-   Every place it's called, by file and line. A column is added when two calls share a line, and
-   where the index holds resolution facts for a call, a `resolution` field says how it was bound
-   ([MCP tools](/reference/mcp-tools/)).
+   Every place it's called, by file and line. For the full hits, with the column of calls that
+   share a line and how each call was bound (`resolution`, per hit or once as the page's
+   `resolution_default`), ask for JSON ([MCP tools](/reference/mcp-tools/)):
+
+   <Code code={`basemind code refs "process_file" --json`} lang="bash" />
 
 4. **Find who last touched a line**
 
