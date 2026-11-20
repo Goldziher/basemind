@@ -598,6 +598,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   library ships its licence text as `licenses/<library>.txt` (the Linux archives: libstdc++'s GPL-3.0
   with the GCC Runtime Library Exception) and has an `ATTRIBUTIONS.md` entry; the allowlist check
   fails for an entry without both, and the archive smoke test fails when a notice is missing.
+
 - Every release archive also carries the licence texts of the native code linked into the binary,
   which cargo metadata does not see: ONNX Runtime 1.31.0 (`licenses/onnxruntime.txt` and its
   `ThirdPartyNotices.txt`), Tesseract 5.5.4 and Leptonica 1.87.0. `ATTRIBUTIONS.md` covers each,
