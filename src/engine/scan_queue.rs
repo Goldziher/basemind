@@ -12,6 +12,7 @@ use std::sync::{Mutex, PoisonError};
 use crate::engine::types::index::QueuedScan;
 
 /// One pass's worth of queued work.
+#[cfg(any(test, all(feature = "comms", any(unix, windows))))]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum QueuedPass {
     /// Scan these paths, sorted and distinct.
@@ -27,6 +28,7 @@ struct Queued {
     batches: usize,
     /// Whether a drain owns the queue: set by the submit that found none, cleared by the take that
     /// finds the queue empty, so exactly one drain runs while work is queued.
+    #[cfg(any(test, all(feature = "comms", any(unix, windows))))]
     draining: bool,
 }
 
@@ -37,6 +39,7 @@ pub(crate) struct ScanQueue(Mutex<Queued>);
 impl ScanQueue {
     /// Queue one batch; `None` asks for a whole-tree pass. Returns `true` when no drain owns the
     /// queue, so the caller must start one.
+    #[cfg(any(test, all(feature = "comms", any(unix, windows))))]
     pub(crate) fn submit(&self, batch: Option<Vec<PathBuf>>) -> bool {
         let mut queued = self.lock();
         queued.batches += 1;
@@ -49,6 +52,7 @@ impl ScanQueue {
 
     /// Everything queued since the last take, as one pass. `None` when nothing is queued, which
     /// ends the drain: the next submit starts another.
+    #[cfg(any(test, all(feature = "comms", any(unix, windows))))]
     pub(crate) fn take(&self) -> Option<QueuedPass> {
         let mut queued = self.lock();
         if queued.batches == 0 {
