@@ -87,7 +87,8 @@ def healthy(rng: random.Random, load: float = LOAD) -> list[dict[str, Any]]:
                 "data_journals": {"cache/groups/g/index.fjall": 2 * MIB},
                 "data_telemetry_bytes": MIB,
                 "data_parts": {"cache/groups/g/index.fjall": 3 * MIB},
-                "comms_bytes": 0,
+                "comms_bytes": 70 * MIB,
+                "comms_journals": {"g1/agents.fjall": 64 * MIB},
             }
         )
         recs.append(
@@ -255,6 +256,16 @@ def store_climb(rng: random.Random) -> list[dict[str, Any]]:
     return recs
 
 
+def comms_climb(rng: random.Random) -> list[dict[str, Any]]:
+    """The daemon's log in the comms dir grows 2 MiB/min between its trims: unbounded in practice
+    (a hardening run grew it 9 -> 87 MiB over 18 minutes, 93% of it dependency INFO lines)."""
+    recs = healthy(rng)
+    for r in recs:
+        if r.get("kind") == "dir":
+            r["comms_bytes"] += int(2.0 * MIB * r["t"] / 60)
+    return recs
+
+
 def idle_busy(rng: random.Random) -> list[dict[str, Any]]:
     """A thread spins at 15% of a core while nothing is asked of the daemon."""
     recs = healthy(rng)
@@ -322,6 +333,7 @@ CASES: list[tuple[str, Callable[[random.Random], list[dict[str, Any]]], int, set
     ("journal-fill", journal_fill, 0, set()),
     ("journal-overflow", journal_overflow, 1, {"R8"}),
     ("store-climb", store_climb, 1, {"R8"}),
+    ("comms-climb", comms_climb, 1, {"R8"}),
     ("idle-busy", idle_busy, 1, {"R6"}),
     ("fd-leak", fd_leak, 1, {"R3"}),
     ("win-pool-step", win_pool_step, 0, set()),
