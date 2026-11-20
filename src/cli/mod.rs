@@ -12,6 +12,7 @@
 //! - `render.rs` — JSON extraction + generic human renderer.
 //! - `code.rs` / `git.rs` / `memory.rs` / `docs.rs` / `admin.rs` — subcommand groups.
 //! - `spelling.rs` — a tool's usage refusal rewritten in the spelling of the command that was typed.
+//! - `help_json.rs` — `--help-json`, a command's arguments as JSON from its clap definition.
 
 pub mod admin;
 pub mod agent;
@@ -28,6 +29,7 @@ pub mod exit;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod forward;
 pub mod git;
+pub mod help_json;
 pub mod hook;
 pub mod init;
 pub mod init_capability_prompt;
