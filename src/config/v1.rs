@@ -470,12 +470,12 @@ impl Default for MemoryConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryScopeStrategy {
-    /// Use normalized `origin` remote URL when available, else fall back to the
-    /// workdir realpath. This is the recommended default — clones of the same
-    /// repo share memory across machines.
+    /// Reserved. Notes are stored under the main worktree's path whichever strategy is set, so
+    /// clones of the same repository keep separate notes; the `origin` URL only prefixes the scope
+    /// inside that store.
     #[default]
     GitRemoteWithFallback,
-    /// Always use the workdir realpath. Separates clones of the same repo.
+    /// Reserved. Behaves as [`Self::GitRemoteWithFallback`] today.
     WorkdirOnly,
 }
 
