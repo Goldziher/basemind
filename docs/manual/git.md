@@ -31,9 +31,12 @@ repository.
   exists only uncommitted is not found. `line` / `end_line` are 1-based and inclusive.
 - `git_diff` with `path` diffs against HEAD by default (`from`) and the working tree (`to`). A diff
   stops at 200 hunks or 128 KiB and sets `truncated`; it has no cursor, so narrow `from` / `to`. A
-  structural diff compares `from` with the indexed working tree and takes no `to`.
+  structural diff compares `from` with the indexed working tree and takes no `to`. Both kinds
+  compare the working tree in the form git stores, as `git diff` does: line endings per `core.autocrlf` and
+  `.gitattributes`, clean filters such as Git LFS run. A filter that fails is an error.
 - A shallow clone sets `truncated` with `truncated_reason: "shallow_clone"`: an absent commit is
-  then inconclusive.
+  then inconclusive. Answers taken while the clone is shallow are not cached, so the call after a
+  `git fetch --unshallow` answers from the full history.
 
 ## CLI shorthands and CLI-only commands
 

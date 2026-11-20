@@ -69,7 +69,8 @@ pub(super) fn require_git_repo(ws: &Workspace) -> Result<&Arc<crate::git::Repo>,
 /// The git-history index, but only when it is present AND indexes exactly the current `head`.
 /// History tools use it as a pure accelerator: a stale or absent index returns `None`, and the
 /// caller falls back to the live walk, so a result is never served from a HEAD the index hasn't
-/// caught up to (or from a rewritten history). A stale index asks for a sync
+/// caught up to (or from a rewritten history). An index built in a shallow clone since deepened is
+/// stale too, though it indexes `head`: it ends at the old boundary. A stale index asks for a sync
 /// ([`Workspace::request_history_sync`]), so a commit made while the server runs is indexed for the
 /// calls after it.
 pub(super) fn git_history_if_fresh<'a>(
@@ -77,7 +78,12 @@ pub(super) fn git_history_if_fresh<'a>(
     head: &str,
 ) -> Option<&'a crate::git_history::GitHistoryIndex> {
     let index = ws.git_history.as_deref()?;
-    if index.last_indexed_head_hex().as_deref() == Some(head) {
+    let deepened = || {
+        ws.repo
+            .as_deref()
+            .is_some_and(|repo| crate::git_history::builder::root_deepened(index, repo))
+    };
+    if index.last_indexed_head_hex().as_deref() == Some(head) && !deepened() {
         return Some(index);
     }
     ws.request_history_sync();

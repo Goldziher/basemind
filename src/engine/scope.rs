@@ -12,8 +12,8 @@
 //! - A working-tree scope holds what `git diff --name-only <rev>` lists plus every untracked file,
 //!   listed one by one however `status.showUntrackedFiles` collapses them. A file changed since
 //!   `<rev>` and then restored on disk to its content at `<rev>` is left out; one the comparison
-//!   cannot read as a regular file (a symlink, a submodule) is kept, so a scope never misses a
-//!   change it could not check.
+//!   cannot read as a regular file (a symlink, a submodule) or whose clean filter fails is kept, so
+//!   a scope never misses a change it could not check.
 //! - Paths are repository-relative, as the index keys them. Deleted files and both sides of a
 //!   rename are in the scope, so the caller filters to what the index holds.
 //! - [`ChangeScope::len`] is the `scope_files` count. An empty scope is an answer, not an error:
@@ -183,13 +183,21 @@ fn working_tree(repo: &Repo, rev: Option<&str>) -> Result<AHashSet<RelPath>, Eng
 }
 
 /// Whether the working tree holds `path` exactly as commit `commit` does: both absent, or both a
-/// regular file with the same bytes. Anything it cannot compare is not the same.
+/// regular file with the same bytes once the working-tree file is in the form git stores for it
+/// (line endings, clean filters). Anything it cannot compare is not the same; a filter that fails is
+/// logged, since the scope then holds a file that may not have changed.
 fn on_disk_as_at(repo: &Repo, commit: &str, path: &RelPath) -> Result<bool, EngineError> {
     let Ok(file) = crate::path::lexical_file(repo.workdir(), path) else {
         return Ok(false);
     };
     let on_disk = match std::fs::symlink_metadata(&file) {
-        Ok(meta) if meta.is_file() => Some(std::fs::read(&file)?),
+        Ok(meta) if meta.is_file() => match repo.to_git_form(path.as_ref(), &std::fs::read(&file)?) {
+            Ok(converted) => Some(converted),
+            Err(error) => {
+                tracing::warn!(%path, %error, "kept in the change scope: its filter failed, so it was not compared");
+                return Ok(false);
+            }
+        },
         Ok(_) => return Ok(false),
         Err(error)
             if matches!(

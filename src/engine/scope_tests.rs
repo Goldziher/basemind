@@ -109,6 +109,66 @@ fn a_file_restored_on_disk_to_the_revision_is_out_of_its_scope_only() {
 }
 
 #[test]
+fn a_file_restored_with_crlf_endings_under_autocrlf_is_out_of_the_scope() {
+    let (dir, _) = fixture();
+    let root = dir.path();
+    git(root, &["config", "core.autocrlf", "true"]);
+    write(root, "edit.rs", "one\r\n");
+    let repo = Repo::discover(root).expect("repo");
+    let since_first = scope_of(&repo, "HEAD~2").expect("scope");
+    assert_eq!(sorted(&since_first), ["added.rs", "gone.rs", "new.rs", "old.rs"]);
+}
+
+/// A log sink a test subscriber writes to, read back once the call under test returns.
+#[derive(Clone, Default)]
+struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("log buffer").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_restored_file_whose_filter_fails_stays_in_the_scope_and_is_logged() {
+    let (dir, _) = fixture();
+    let root = dir.path();
+    write(root, ".gitattributes", "keep.rs filter=broken\n");
+    write(root, "keep.rs", "kept, then restored\n");
+    commit(root, "fourth");
+    git(
+        root,
+        &["config", "filter.broken.clean", "false --basemind-broken-filter"],
+    );
+    git(root, &["config", "filter.broken.required", "true"]);
+    write(root, "keep.rs", "keep\n");
+    let repo = Repo::discover(root).expect("repo");
+
+    let captured = Captured::default();
+    let sink = captured.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || sink.clone())
+        .with_ansi(false)
+        .finish();
+    let scope = tracing::subscriber::with_default(subscriber, || scope_of(&repo, "HEAD~1")).expect("scope");
+
+    assert_eq!(sorted(&scope), [".gitattributes", "keep.rs"]);
+    let logged = String::from_utf8(captured.0.lock().expect("log buffer").clone()).expect("utf-8 log");
+    assert!(
+        logged
+            .lines()
+            .any(|line| line.contains("WARN") && line.contains("path=keep.rs")),
+        "no warning naming keep.rs in {logged:?}"
+    );
+    assert!(logged.contains("--basemind-broken-filter"), "{logged:?}");
+}
+
+#[test]
 fn a_range_scope_names_deletions_and_both_sides_of_a_move() {
     let (_dir, repo) = fixture();
     let scope = scope_of(&repo, "HEAD~2..HEAD").expect("scope");
