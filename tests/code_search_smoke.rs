@@ -589,6 +589,106 @@ fn keyword_lane_on_a_reader_session_errors_instead_of_reporting_no_matches() {
     );
 }
 
+fn git(root: &std::path::Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@e.x")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@e.x")
+        .status()
+        .expect("git in PATH");
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// `code search --changed` over a branch that diverged from `trunk`: a bare revision is the branch
+/// since its merge base, so a config function `trunk` gained after the branch left it is out of the
+/// scope, while `trunk..HEAD`, tree to tree, counts it. The keyword lane needs no embedder.
+#[test]
+fn search_code_changed_keeps_the_hits_of_the_branch_since_its_merge_base() {
+    basemind::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
+    std::fs::write(
+        root.join("basemind.toml"),
+        "\"$schema\" = \"v1\"\n\n[code_search]\nembed = false\n",
+    )
+    .expect("write config");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "base"]);
+    git(root, &["branch", "trunk"]);
+    git(root, &["checkout", "-q", "-b", "feature"]);
+    std::fs::write(
+        root.join("mine.rs"),
+        "/// Merge a config override into the base config.\npub fn merge_config(base: u32) -> u32 {\n    base\n}\n",
+    )
+    .expect("write mine.rs");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "feature"]);
+    git(root, &["checkout", "-q", "trunk"]);
+    std::fs::write(
+        root.join("upstream.rs"),
+        "/// Validate a config before use.\npub fn validate_config(n: u32) -> bool {\n    n > 0\n}\n",
+    )
+    .expect("write upstream.rs");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "upstream"]);
+    git(root, &["checkout", "-q", "feature"]);
+
+    let scan = Command::new(bin())
+        .current_dir(root)
+        .arg("scan")
+        .output()
+        .expect("spawn scan");
+    assert!(
+        scan.status.success(),
+        "basemind scan failed: {}",
+        String::from_utf8_lossy(&scan.stderr)
+    );
+
+    let search = |changed: &str| -> serde_json::Value {
+        let out = Command::new(bin())
+            .current_dir(root)
+            .args([
+                "--json",
+                "code",
+                "search",
+                "--lane",
+                "keyword",
+                "config",
+                "--changed",
+                changed,
+            ])
+            .output()
+            .expect("spawn code search");
+        assert!(
+            out.status.success(),
+            "code search --changed {changed} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("code search emits JSON")
+    };
+    for (changed, scope_files) in [("trunk", 1), ("trunk...HEAD", 1), ("trunk..HEAD", 2)] {
+        let value = search(changed);
+        let paths: Vec<&str> = value["hits"]
+            .as_array()
+            .expect("a hits array")
+            .iter()
+            .map(|hit| hit["path"].as_str().expect("a path"))
+            .collect();
+        assert!(
+            !paths.is_empty(),
+            "{changed}: the branch's own config chunk is found: {value}"
+        );
+        assert!(paths.iter().all(|path| *path == "mine.rs"), "{changed}: {value}");
+        assert_eq!(value["scope_files"], scope_files, "{changed}: {value}");
+    }
+}
+
 /// Find the `.chunk.msgpack` sidecar for `stem` in the machine-global blob store. The blob store
 /// is content-addressed and shared across workspaces now, so we look up THIS test's own stem rather
 /// than "the first sidecar anywhere" (which could belong to a sibling test's identical content).

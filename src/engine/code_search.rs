@@ -11,8 +11,10 @@
 
 use ahash::AHashSet;
 
+use super::scope::ChangeScope;
 use super::types::search::{CodeSearchHit, CodeSearchRanking, LaneUnavailable};
 use super::{EngineError, Workspace};
+use crate::path::RelPath;
 use crate::search::bm25::bm25_search;
 use crate::search::exact::exact_lane_chunk_ids;
 use crate::search::hydrate::ChunkHydrator;
@@ -23,27 +25,38 @@ use crate::search::rrf::{
 };
 use crate::store::Store;
 
+/// How many more chunks the lanes rank when a `changed` scope will drop the ones outside it.
+const SCOPED_OVERFETCH: usize = 8;
+
 /// The ranking of `query` over `lane` (default `hybrid`), at most `limit` hits after hydration.
+/// With a `scope`, the lanes rank [`SCOPED_OVERFETCH`] times as deep and only the hits in its files
+/// are kept, so a change's chunks ranked below that depth are not found.
 pub(super) fn retrieve(
     ws: &Workspace,
     query: String,
     lane: Option<&str>,
     limit: usize,
+    scope: Option<&ChangeScope>,
 ) -> Result<CodeSearchRanking, EngineError> {
     let rr = &ws.config.code_search.reranker;
     let (rerank_enabled, rerank_top_k) = (rr.enabled, rr.top_k);
     let fetch_n = if rerank_enabled { limit.max(rerank_top_k) } else { limit };
+    let rank_n = if scope.is_some() {
+        fetch_n.saturating_mul(SCOPED_OVERFETCH)
+    } else {
+        fetch_n
+    };
 
     let mode = lane.map(str::trim).unwrap_or("hybrid");
     let (seeds, report): (Vec<CodeSearchHit>, LaneReport) = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
-        hybrid_hits(ws, &query, fetch_n)?
+        hybrid_hits(ws, &query, rank_n)?
     } else if mode.eq_ignore_ascii_case("semantic") {
         (
-            semantic_hits(ws, &query, fetch_n, SEMANTIC_MEANWHILE)?,
+            semantic_hits(ws, &query, rank_n, SEMANTIC_MEANWHILE)?,
             LaneReport::ran_only("vector"),
         )
     } else if mode.eq_ignore_ascii_case("keyword") {
-        (keyword_hits(ws, &query, fetch_n)?, LaneReport::ran_only("keyword"))
+        (keyword_hits(ws, &query, rank_n)?, LaneReport::ran_only("keyword"))
     } else {
         return Err(EngineError::unavailable(format!(
             "`code_search`: unknown lane {mode:?}; expected \"hybrid\", \"semantic\", or \"keyword\""
@@ -55,7 +68,7 @@ pub(super) fn retrieve(
     } else {
         0
     };
-    let hydrated = hydrate_hits(&ws.store_read(), seeds, fetch_n, keep_text);
+    let hydrated = hydrate_hits(&ws.store_read(), seeds, fetch_n, keep_text, scope);
 
     // The reranker reorders the head of the ranking and drops nothing; a reranker that cannot run
     // leaves the fused order and says why, as a lane that did not run.
@@ -352,10 +365,17 @@ struct Hydrated {
 }
 
 /// Resolve ranked seeds into hits, in rank order: the chunk's metadata comes from its sidecar
-/// (decoded once per content hash), `path` and `also_at` from the view's file map now. A chunk no
-/// indexed file holds is dropped and counted; an id ranked twice (one vector row per copy of a
-/// file) keeps its first rank.
-fn hydrate_hits(store: &Store, seeds: Vec<CodeSearchHit>, limit: usize, keep_text: usize) -> Hydrated {
+/// (decoded once per content hash), `path` and `also_at` from the view's file map now, cut to the
+/// files of `scope` when there is one. A chunk no indexed file holds is dropped and counted; one
+/// only files outside `scope` hold is dropped silently; an id ranked twice (one vector row per copy
+/// of a file) keeps its first rank.
+fn hydrate_hits(
+    store: &Store,
+    seeds: Vec<CodeSearchHit>,
+    limit: usize,
+    keep_text: usize,
+    scope: Option<&ChangeScope>,
+) -> Hydrated {
     let mut hydrator = ChunkHydrator::new(store);
     hydrator.resolve_paths(seeds.iter().map(|s| s.chunk_id.as_str()));
     let mut seen: AHashSet<String> = AHashSet::with_capacity(seeds.len());
@@ -371,17 +391,25 @@ fn hydrate_hits(store: &Store, seeds: Vec<CodeSearchHit>, limit: usize, keep_tex
         if seen.contains(hit.chunk_id.as_str()) {
             continue;
         }
-        let Some((path, also_at)) = hydrator.paths(&hit.chunk_id).split_first() else {
+        let held_by = hydrator.paths(&hit.chunk_id);
+        if held_by.is_empty() {
             out.omitted += 1;
             continue;
-        };
-        let (path, also_at) = (path.clone(), also_at.to_vec());
+        }
+        let mut paths: Vec<String> = held_by
+            .iter()
+            .filter(|path| super::changed::admits(scope, &RelPath::from(path.as_str())))
+            .cloned()
+            .collect();
+        if paths.is_empty() {
+            continue;
+        }
         let Some(chunk) = hydrator.chunk(&hit.chunk_id) else {
             out.omitted += 1;
             continue;
         };
-        hit.path = path;
-        hit.also_at = also_at;
+        hit.path = paths.remove(0);
+        hit.also_at = paths;
         hit.symbol = chunk.symbol.clone().unwrap_or_default();
         hit.kind = chunk.kind.clone().unwrap_or_default();
         hit.lang.clone_from(&chunk.lang);

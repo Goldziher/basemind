@@ -144,6 +144,10 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
 
 ### Behaviour changes
 
+- **`changed` with a bare revision starts at its merge base.** `"changed": "main"` is the branch's
+  own changes since it left `main`, committed or not, and no longer includes what `main` gained
+  since. Pass `main..HEAD` for the tree-to-tree difference; `main...HEAD` is the branch's commits
+  without the uncommitted changes.
 - **`code_grep` is literal by default.** The pattern is plain text unless `regex: true` (`--regex`).
   A script that passed a regex must add the flag, or it searches for the regex source text.
 - **Lines are 1-based everywhere**, in arguments and in responses (`line`, `end_line`, `column`).

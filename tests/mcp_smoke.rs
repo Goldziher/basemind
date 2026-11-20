@@ -3367,9 +3367,10 @@ fn grep_files(body: &Value) -> Vec<String> {
 }
 
 /// #122: `changed` scopes `code_grep`, `code_symbols` and `find_files` to the files a change touched
-/// (a revision against the working tree, or `A..B`), and says how many files the scope holds, so a
-/// change that touched nothing (`scope_files: 0`) is told apart from one without a hit. An unknown
-/// revision is refused naming it.
+/// (a revision's merge base with `HEAD` against the working tree, `A..B` or `A...B`), and says how
+/// many files the scope holds, so a change that touched nothing (`scope_files: 0`) is told apart from
+/// one without a hit. An unknown revision is refused naming it. Every tool taking `changed` documents
+/// both range forms and an example.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn changed_scopes_queries_to_the_files_a_change_touched() {
     let dir = build_repo();
@@ -3469,16 +3470,39 @@ async fn changed_scopes_queries_to_the_files_a_change_touched() {
         message.starts_with("`code_grep`: `changed`: `no-such-rev` does not name a revision"),
         "an unknown revision must be refused naming it: {message}"
     );
-    let message = refused(
-        &service,
-        "code_symbols",
-        json!({ "name": "zed", "changed": "HEAD...HEAD~1" }),
-    )
-    .await;
-    assert!(
-        message.contains("three-dot form"),
-        "the three-dot form must be refused: {message}"
+    let body = call("code_grep", json!({ "pattern": "alpha", "changed": "HEAD~1...HEAD" })).await;
+    assert_eq!(grep_files(&body), ["a.rs"], "{body}");
+    assert_eq!(body["scope_files"], 1, "{body}");
+    let body = call("code_grep", json!({ "pattern": "alpha", "changed": "HEAD...HEAD~1" })).await;
+    assert_eq!(
+        (body["hits"].clone(), body["scope_files"].clone()),
+        (json!({}), json!(0)),
+        "`HEAD~1` is the merge base, so its side changed nothing: {body}"
     );
+    let message = refused(&service, "code_symbols", json!({ "name": "zed", "changed": "..." })).await;
+    assert!(
+        message.contains("names no revision") && message.contains("`A...B`"),
+        "a bare `...` must be refused with the accepted forms: {message}"
+    );
+
+    let tools = service.list_all_tools().await.expect("list tools");
+    for name in ["code_grep", "code_symbols", "code_refs", "find_files", "code_search"] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name.as_ref() == name)
+            .unwrap_or_else(|| panic!("{name} is advertised"));
+        let doc = tool
+            .input_schema
+            .get("properties")
+            .and_then(|properties| properties.get("changed"))
+            .and_then(|changed| changed.get("description"))
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{name} advertises `changed`: {:?}", tool.input_schema));
+        assert!(
+            doc.contains("A..B or A...B") && doc.contains("main...HEAD+importers") && !doc.contains('\n'),
+            "{name}: `changed` names both range forms and the example on one line: {doc:?}"
+        );
+    }
     service.cancel().await.expect("shut down");
 }
 

@@ -49,7 +49,7 @@ pub struct CodeRefsParams {
     /// `callers` only: keep rows of these resolutions, comma-separated.
     #[serde(default)]
     pub resolution: Option<String>,
-    /// `callers` only: files changed since rev (empty: HEAD) or in A..B; +importers adds importers.
+    /// `callers` only: files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.
     #[serde(default)]
     pub changed: Option<String>,
 }

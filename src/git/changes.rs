@@ -1,5 +1,6 @@
 //! The files two revisions differ in: the tree-to-tree diff a change scope between two revisions
-//! reads (`engine::scope`). Kept beside `commit.rs` so the gix boundary stays inside `git`.
+//! reads (`engine::scope`), and the merge base a three-dot or bare-revision scope starts from. Kept
+//! beside `commit.rs` so the gix boundary stays inside `git`.
 
 use super::commit::{classify_tree_change, decode_path};
 use super::{GitError, Repo};
@@ -43,6 +44,31 @@ impl Repo {
         out.dedup();
         Ok(out)
     }
+
+    /// The best common ancestor of `one` and `two` (40-hex), as `git merge-base one two` prints it,
+    /// or `None` when their histories share no commit. Each side is any revision git can parse and
+    /// is peeled to its commit, so an annotated tag names its commit.
+    pub fn merge_base(&self, one: &str, two: &str) -> Result<Option<String>, GitError> {
+        let local = self.local();
+        let first = peeled_commit(&local, one)?;
+        let second = peeled_commit(&local, two)?;
+        let base = local.merge_base(first, second).map_err(|e| GitError::Read {
+            what: format!("merge base of {one} and {two}"),
+            msg: e.to_string(),
+        })?;
+        Ok(base.map(|id| id.to_string()))
+    }
+}
+
+/// The commit `rev` names, through any tag on the way.
+fn peeled_commit(local: &gix::Repository, rev: &str) -> Result<gix::ObjectId, GitError> {
+    local
+        .rev_parse_single(format!("{rev}^{{commit}}").as_str())
+        .map(|id| id.detach())
+        .map_err(|e| GitError::RevParse {
+            rev: rev.to_string(),
+            msg: e.to_string(),
+        })
 }
 
 /// The tree `rev` names, through any tag or commit on the way.

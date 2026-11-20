@@ -43,7 +43,7 @@ fn a_renamed_file_is_cited_at_its_new_path() {
     std::fs::rename(dir.path().join("old.rs"), dir.path().join("new.rs")).unwrap();
     let store = scanned(dir.path());
 
-    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0);
+    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0, None);
 
     assert!(!hydrated.hits.is_empty(), "the keyword lane finds the chunk");
     for hit in &hydrated.hits {
@@ -65,7 +65,7 @@ fn identical_files_are_one_hit_listing_every_path() {
     let distinct = seeds.len();
     // A vector lane holds one row per path, so the same id can be ranked more than once.
     let doubled: Vec<CodeSearchHit> = seeds.iter().flat_map(|s| [s.clone(), s.clone()]).collect();
-    let hydrated = hydrate_hits(&store, doubled, 10, 10);
+    let hydrated = hydrate_hits(&store, doubled, 10, 10, None);
 
     assert_eq!(hydrated.hits.len(), distinct, "one hit per chunk, not per copy");
     let top = &hydrated.hits[0];
@@ -79,6 +79,33 @@ fn identical_files_are_one_hit_listing_every_path() {
 }
 
 #[test]
+fn a_change_scope_keeps_only_the_hits_and_copies_in_its_files() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for name in ["b.rs", "a.rs", "vendor_copy.rs"] {
+        std::fs::write(dir.path().join(name), BODY).unwrap();
+    }
+    let store = scanned(dir.path());
+    let mut scope = ChangeScope::default();
+    scope.extend([RelPath::from("vendor_copy.rs"), RelPath::from("b.rs")]);
+
+    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0, Some(&scope));
+
+    assert!(!hydrated.hits.is_empty(), "the copies in the scope are found");
+    for hit in &hydrated.hits {
+        assert_eq!(
+            (hit.path.as_str(), hit.also_at.as_slice()),
+            ("b.rs", ["vendor_copy.rs".to_string()].as_slice())
+        );
+    }
+
+    let mut elsewhere = ChangeScope::default();
+    elsewhere.extend([RelPath::from("other.rs")]);
+    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0, Some(&elsewhere));
+    assert!(hydrated.hits.is_empty(), "{:?}", hydrated.hits);
+    assert_eq!(hydrated.omitted, 0, "a hit outside the scope is not a stale chunk");
+}
+
+#[test]
 fn a_chunk_no_file_holds_is_dropped_and_counted() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("a.rs"), BODY).unwrap();
@@ -86,7 +113,7 @@ fn a_chunk_no_file_holds_is_dropped_and_counted() {
     let mut seeds = vec![seed("00ff:0".to_string())];
     seeds.extend(keyword_seeds(&store, "retry upload"));
 
-    let hydrated = hydrate_hits(&store, seeds, 10, 0);
+    let hydrated = hydrate_hits(&store, seeds, 10, 0, None);
 
     assert_eq!(hydrated.omitted, 1);
     assert!(hydrated.hits.iter().all(|h| h.path == "a.rs"));
@@ -122,7 +149,7 @@ fn a_prose_query_reaches_camel_case_identifiers() {
     .unwrap();
     let store = scanned(dir.path());
 
-    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "find references"), 10, 0);
+    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "find references"), 10, 0, None);
 
     assert!(
         hydrated

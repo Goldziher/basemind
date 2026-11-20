@@ -117,10 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   posting is one lookup per key and a retired or rebuilt view's postings are retired by key, a bounded batch
   at a time, instead of by a sweep of the whole posting list. Postings are packed into one row per term and
   content. The group index is rebuilt once on first open (layout 5).
-- `changed` on `code_grep`, `code_symbols` and `find_files` (`--changed` on the CLI, #122) scopes the query
-  to the files a change touched: a revision against the working tree (empty: `HEAD`) or `A..B`, with a
-  `+importers` suffix adding the files that import a changed file directly. The answer carries
-  `scope_files`, so a change that touched nothing reads apart from one without a hit.
+- `changed` on `code_grep`, `code_symbols`, `find_files` and `code_search` (`--changed` on the CLI, #122,
+  #254) scopes the query to the files a change touched: a revision's merge base with `HEAD` against the
+  working tree (empty: `HEAD`), as `git diff <rev>...` names a branch's own changes plus the uncommitted
+  ones; `A..B` tree to tree; or `A...B`, what `B` changed since it diverged from `A` (`main...HEAD`). A
+  `+importers` suffix adds the files that import a changed file directly. The answer carries
+  `scope_files`, so a change that touched nothing reads apart from one without a hit. `code_search`
+  ranks eight times as deep under a scope and keeps the hits in its files.
 - `code_refs` call sites take `changed` (#122) as `code_grep` does; it is refused for relations
   other than `callers`. `code_refs` links HTTP
   calls to routes (#126, ADR-0048): a `METHOD /path` name in any parameter syntax, or `path`
