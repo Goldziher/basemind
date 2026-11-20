@@ -100,7 +100,7 @@ fn error_carries_its_code_fields_and_rendered_message() {
 #[test]
 fn every_variant_round_trips_through_json_and_msgpack() {
     let variants = every_known_variant();
-    assert_eq!(variants.len(), 27, "a new variant belongs in this list");
+    assert_eq!(variants.len(), 28, "a new variant belongs in this list");
     for error in variants {
         let json = serde_json::to_value(&error).expect("json");
         assert_eq!(json["message"], error.to_string(), "{error:?}");
