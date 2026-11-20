@@ -738,6 +738,10 @@ pub(crate) struct DiffFileResponse {
     /// True when a side is over the diff size ceiling: the file was not compared and has no hunks.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub too_large: bool,
+    /// True when a hunk line is not valid UTF-8 (a file in a legacy encoding): the line is in its
+    /// hunk's `text` with each invalid byte sequence read as U+FFFD.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub lossy_text: bool,
     /// True when `hunks` was cut at the hunk or byte cap, or the one hunk returned had its text
     /// clipped to the byte cap. A diff has no cursor: narrow it with a closer `from` / `to`.
     #[serde(skip_serializing_if = "std::ops::Not::not")]

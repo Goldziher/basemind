@@ -1285,6 +1285,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Closing stdin during the `basemind init` capability prompt (#328) accepts the default for that
   capability and every later one. It advertised the capability being asked about and dropped the
   rest.
+- `git_diff` keeps a hunk line that is not valid UTF-8 (a file in Latin-1 or another legacy
+  encoding), each invalid byte sequence read as U+FFFD, and sets `lossy_text: true` (#296). Such
+  lines were dropped from the hunk text while its line counts still included them.
 
 ## [0.33.0] - 2026-11-14
 

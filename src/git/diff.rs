@@ -17,6 +17,9 @@ pub struct FileDiff {
     pub binary: bool,
     /// Either side is over [`DIFF_SIDE_MAX_BYTES`], so the two were not compared. No hunks.
     pub too_large: bool,
+    /// A hunk line was not valid UTF-8: its text holds the line with each invalid byte sequence
+    /// decoded as U+FFFD.
+    pub lossy_text: bool,
 }
 
 /// How far into a blob the binary check looks, as git does.
@@ -43,6 +46,7 @@ impl FileDiff {
             new_exists,
             binary: false,
             too_large: true,
+            lossy_text: false,
         }
     }
 
@@ -59,13 +63,18 @@ impl FileDiff {
             return Some(Self::too_large(old_exists, new_exists));
         }
         let binary = looks_binary(&old) || looks_binary(&new);
-        let hunks = if binary { Vec::new() } else { compute_hunks(&old, &new) };
+        let (hunks, lossy_text) = if binary {
+            (Vec::new(), false)
+        } else {
+            compute_hunks(&old, &new)
+        };
         Some(Self {
             hunks,
             old_exists,
             new_exists,
             binary,
             too_large: false,
+            lossy_text,
         })
     }
 
@@ -199,6 +208,7 @@ impl Repo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::HunkKind;
 
     #[test]
     fn a_file_absent_on_both_sides_has_no_diff() {
@@ -208,7 +218,7 @@ mod tests {
     #[test]
     fn a_text_change_yields_hunks_and_is_not_binary() {
         let diff = FileDiff::between(Some(b"a\nb\n".to_vec()), Some(b"a\nc\n".to_vec())).expect("diff");
-        assert!(!diff.binary);
+        assert!(!diff.binary && !diff.lossy_text);
         assert_eq!(diff.hunks.len(), 1);
         assert!(diff.old_exists && diff.new_exists);
     }
@@ -348,5 +358,70 @@ mod tests {
             .expect("present");
         assert!(!small.too_large);
         assert_eq!(small.hunks.len(), 1);
+    }
+
+    /// Each hunk as its kind, line numbers and text.
+    fn hunk_rows(diff: &FileDiff) -> Vec<(HunkKind, u32, u32, u32, u32, &str)> {
+        diff.hunks
+            .iter()
+            .map(|hunk| {
+                (
+                    hunk.kind,
+                    hunk.old_line_start,
+                    hunk.old_line_count,
+                    hunk.new_line_start,
+                    hunk.new_line_count,
+                    hunk.text.as_str(),
+                )
+            })
+            .collect()
+    }
+
+    /// A Latin-1 file: `\xef` (ï), `\xe9` (é) and `\xe7` (ç) are not UTF-8 on their own.
+    #[test]
+    fn a_line_that_is_not_utf8_is_kept_in_its_hunk_and_marks_the_diff_lossy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        git(root, &["init", "-q"]);
+        std::fs::write(root.join("latin1.txt"), b"first\nna\xefve\nlast\n").expect("write");
+        git(root, &["add", "latin1.txt"]);
+        git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "latin-1"]);
+        std::fs::write(root.join("latin1.txt"), b"first\nna\xefve caf\xe9\nlast\n").expect("write");
+        git(root, &["add", "latin1.txt"]);
+        git(root, &["-c", "commit.gpgsign=false", "commit", "-qm", "changed"]);
+
+        let repo = Repo::discover(root).expect("repo");
+        let changed = repo
+            .diff_file("HEAD~1", "HEAD", "latin1.txt")
+            .expect("diff")
+            .expect("present");
+        assert!(changed.lossy_text && !changed.binary);
+        assert_eq!(
+            hunk_rows(&changed),
+            [(
+                HunkKind::Modified,
+                2,
+                1,
+                2,
+                1,
+                "-na\u{FFFD}ve\n+na\u{FFFD}ve caf\u{FFFD}\n"
+            )]
+        );
+
+        std::fs::write(root.join("latin1.txt"), b"first\nna\xefve caf\xe9\nlast\nfa\xe7ade\n").expect("write");
+        let appended = repo
+            .diff_file_worktree("HEAD", "latin1.txt")
+            .expect("diff")
+            .expect("present");
+        assert!(appended.lossy_text);
+        assert_eq!(hunk_rows(&appended), [(HunkKind::Added, 4, 0, 4, 1, "fa\u{FFFD}ade\n")]);
+
+        std::fs::write(root.join("latin1.txt"), b"first\nna\xefve caf\xe9\nlast\nfacade\n").expect("write");
+        let utf8_only = repo
+            .diff_file_worktree("HEAD", "latin1.txt")
+            .expect("diff")
+            .expect("present");
+        assert!(!utf8_only.lossy_text, "the only hunk line is UTF-8");
+        assert_eq!(hunk_rows(&utf8_only), [(HunkKind::Added, 4, 0, 4, 1, "facade\n")]);
     }
 }

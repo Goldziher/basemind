@@ -768,6 +768,16 @@ async fn git_diff_without_revisions_describes_the_working_tree() {
         since["hunks"], diff["hunks"],
         "`from` alone still compares against the working tree"
     );
+    assert!(diff.get("lossy_text").is_none(), "every hunk line is UTF-8: {diff}");
+
+    std::fs::write(root.join("latin1.txt"), b"caf\xe9\n").unwrap();
+    let latin1 = call(&client, "git_diff", json!({ "path": "latin1.txt" })).await;
+    assert_eq!(latin1["lossy_text"], true, "{latin1}");
+    assert_eq!(
+        latin1["hunks"],
+        json!([{ "old_line_start": 1, "old_line_count": 0, "new_line_start": 1, "new_line_count": 1, "text": "caf\u{FFFD}\n" }]),
+        "the line that is not UTF-8 is kept, not dropped"
+    );
 }
 
 /// `cache_dir` reported the tree-sitter grammar directory, which is not where basemind keeps
