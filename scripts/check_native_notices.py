@@ -28,11 +28,19 @@ ROOT = Path(__file__).resolve().parent.parent
 # Crates whose ATTRIBUTIONS.md entry describes code or data cargo-about does not see.
 PINNED = ("ort-sys", "xberg-tesseract", "tree-sitter-language-pack")
 SHELL_LIST = re.compile(r"^LINKED_NOTICES=\(\n(?P<body>.*?)\n\)$", re.MULTILINE | re.DOTALL)
+# A version token: it ends in a letter or digit, so a sentence's closing period is not part of it.
+VERSION_TOKEN = r"(\d[0-9A-Za-z.+-]*[0-9A-Za-z])"
 
 
 def locked_versions(lock: str, crate: str) -> list[str]:
     """Every version of ``crate`` in the Cargo.lock text ``lock``, in lock order."""
     return [package["version"] for package in tomllib.loads(lock)["package"] if package["name"] == crate]
+
+
+def attributed_versions(attributions: str, crate: str) -> set[str]:
+    """Every whole version the ATTRIBUTIONS.md text ``attributions`` names ``crate`` at, as
+    "`<crate>` <version>"."""
+    return set(re.findall(rf"`{re.escape(crate)}` {VERSION_TOKEN}", attributions))
 
 
 def shell_notices(script: str) -> tuple[str, ...]:
@@ -63,10 +71,11 @@ def problems(root: Path) -> list[str]:
         versions = locked_versions(lock, crate)
         if not versions:
             found.append(f"{crate} is not in Cargo.lock; drop it from PINNED and ATTRIBUTIONS.md")
+        named = attributed_versions(attributions, crate)
         found.extend(
             f"Cargo.lock has {crate} {version}, ATTRIBUTIONS.md does not name `{crate}` {version}"
             for version in versions
-            if f"`{crate}` {version}" not in attributions
+            if version not in named
         )
     shipped = shell_notices((root / "scripts" / "package-release.sh").read_text(encoding="utf-8"))
     checked = smoke_notices(root)
