@@ -68,6 +68,24 @@ fn build_python_repo() -> TempDir {
     dir
 }
 
+/// Build a throwaway git repo holding `files` (path, contents), all committed but what a
+/// `.gitignore` among them ignores.
+fn build_repo_with(files: &[(&str, &str)]) -> TempDir {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    for (path, contents) in files {
+        let abs = root.join(path);
+        std::fs::create_dir_all(abs.parent().expect("a parent")).expect("create the parent");
+        std::fs::write(abs, contents).unwrap_or_else(|e| panic!("write {path}: {e}"));
+    }
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "init"]);
+    dir
+}
+
 /// Build a throwaway git repo containing the two Java fixtures (`App.java` + `Foo.java`) from
 /// `tests/fixtures/precise_resolution_java/`, copied verbatim.
 fn build_java_repo() -> TempDir {
@@ -496,6 +514,45 @@ async fn python_import_forms_are_import_graph_edges() {
     }
 
     service.cancel().await.expect("shutdown");
+}
+
+/// `from pkg import sub` names `pkg/sub.py` only when nothing in `pkg` binds `sub`: a package that
+/// binds it to another module (`import other.thing as sub`), or a plain module `pkg.py` the index
+/// leaves out, which has no submodules, makes no edge to `pkg/sub.py`. `direct.py`, which imports
+/// `pkg.sub` itself, is the one importer each time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn python_from_import_of_a_bound_or_plain_module_names_no_submodule() {
+    const SUB: (&str, &str) = ("pkg/sub.py", "def f():\n    return 1\n");
+    const DIRECT: (&str, &str) = ("direct.py", "from pkg.sub import f\n");
+    const IMPORTER: (&str, &str) = ("app.py", "from pkg import sub\n");
+    let cases: [(&str, Vec<(&str, &str)>); 2] = [
+        (
+            "a package binding the name to another module",
+            vec![
+                ("pkg/__init__.py", "import other.thing as sub\n"),
+                ("other/__init__.py", "\n"),
+                ("other/thing.py", "def g():\n    return 2\n"),
+                SUB,
+                DIRECT,
+                IMPORTER,
+            ],
+        ),
+        (
+            "a plain module the index leaves out",
+            vec![(".gitignore", "pkg.py\n"), ("pkg.py", "x = 1\n"), SUB, DIRECT, IMPORTER],
+        ),
+    ];
+    for (case, files) in cases {
+        let dir = build_repo_with(&files);
+        let root = dir.path();
+        run_scan(root);
+        let service = spawn_serve(root).await;
+
+        let body = importers(&service, "pkg/sub.py").await;
+        assert_eq!(body["by_depth"], json!({ "1": ["direct.py"] }), "{case}: {body}");
+
+        service.cancel().await.expect("shutdown");
+    }
 }
 
 /// Field vs. local: a local `value` inside `fieldVsLocal` shadows the class field of the same
