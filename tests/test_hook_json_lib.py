@@ -61,6 +61,11 @@ class HookJsonLibraryTests(unittest.TestCase):
             with self.subTest(path=path, kind=kind):
                 self.assertEqual(self.get(document, path, kind), expected)
 
+    def test_a_dot_inside_a_key_is_not_a_path_separator(self) -> None:
+        document = '{"statusLine.command":"echo ready","statusLine":{"command":"basemind statusline"}}'
+        self.assertEqual(self.get(document, "statusLine.command"), "basemind statusline")
+        self.assertEqual(self.shell("json_fields", document).splitlines()[1], "statusLine\\.command\tstring\techo ready")
+
     def test_a_pretty_document_reads_like_a_compact_one(self) -> None:
         document = {"messages": [{"id": "t-1"}, {"id": "t-2"}], "more": False}
         for text in (json.dumps(document), json.dumps(document, indent=2)):
@@ -80,7 +85,9 @@ class HookJsonLibraryTests(unittest.TestCase):
                 self.assertEqual(self.length(text, "messages"), expected)
 
     def test_a_document_that_does_not_parse_lists_nothing(self) -> None:
-        for text in ("", "not JSON", '{"a":1', '{"a":1} trailing', '{"a":"raw\nnewline"}', '{"a":"\\x"}', "[1,]"):
+        raw_controls = tuple(f'{{"a":"raw{chr(code)}byte"}}' for code in range(1, 32))
+        malformed = ("", "not JSON", '{"a":1', '{"a":1} trailing', '{"a":"\\x"}', "[1,]")
+        for text in malformed + raw_controls:
             with self.subTest(text=text):
                 self.assertEqual(self.shell("json_fields", text), "")
 

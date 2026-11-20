@@ -127,9 +127,10 @@ class PreToolGuardTests(unittest.TestCase):
                 self.assert_names_only_verb_tools(decision["permissionDecisionReason"])
 
     def test_grep_tool_pattern_is_carried_into_the_suggested_call(self) -> None:
-        for pattern in ('fn \\w+_call\\("x"', "caf\u00e9 \U0001f600\ttab", "bell \u0007 / slash"):
+        patterns = ('fn \\w+_call\\("x"', "caf\u00e9 \U0001f600\ttab", "bell \u0007 / slash", "end\n\n", "\n")
+        for index, pattern in enumerate(patterns):
             with self.subTest(pattern=pattern):
-                out = self.run_guard("Grep", {"pattern": pattern}, agent_id=pattern)
+                out = self.run_guard("Grep", {"pattern": pattern}, agent_id=f"pattern-{index}")
                 context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
                 expected = "code_grep " + json.dumps(
                     {"pattern": pattern, "regex": True}, separators=(",", ":"), ensure_ascii=False
