@@ -1,11 +1,16 @@
 """Keep supported legacy package resources derived from the curated plugin."""
 
 import argparse
+import json
+import re
 import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TREES = (".codex-plugin", ".cursor-plugin", "opencode-plugin")
+HOOK_MANIFESTS = ("hooks/hooks.json", "*/hooks/hooks.json", "plugin/*/hooks/hooks.json")
+# A default that is not another variable (`${CURSOR_PLUGIN_ROOT:-.}`) runs the session's own script.
+LITERAL_ROOT_FALLBACK = re.compile(r"\$\{\w+:-(?!\$\{)")
 
 
 def reject_redirects(root: Path, destination: Path) -> None:
@@ -66,6 +71,19 @@ def expected_files(root: Path) -> dict[str, Path]:
     return files
 
 
+def session_relative_hooks(root: Path) -> list[str]:
+    """Name every shipped hook command that falls back to a literal path when the host sets no root."""
+    manifests = sorted({path for pattern in HOOK_MANIFESTS for path in root.glob(pattern)})
+    found = []
+    for manifest in manifests:
+        for entries in json.loads(manifest.read_text())["hooks"].values():
+            for entry in entries:
+                for hook in entry["hooks"]:
+                    if LITERAL_ROOT_FALLBACK.search(hook.get("command", "")):
+                        found.append(f"{manifest.relative_to(root).as_posix()}: {hook['command']}")
+    return found
+
+
 def main() -> int:
     """Check or refresh owned compatibility resources and a retired skill identity."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -83,6 +101,9 @@ def main() -> int:
                 old.unlink()
                 if not any(old.parent.iterdir()):
                     old.parent.rmdir()
+    for hook in session_relative_hooks(ROOT):
+        print(f"Hook resolves its script against the session directory: {hook}")
+        fresh = False
     print(f"Checked {len(expected_files(ROOT))} compatibility resources")
     return 0 if fresh else 1
 
