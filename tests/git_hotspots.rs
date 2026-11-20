@@ -183,3 +183,106 @@ fn hotspots_rank_the_files_where_change_and_size_coincide() {
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(stderr.contains("`90d`, `12w` or `1y`"), "{stderr}");
 }
+
+/// Run `git args` in `root` with `stdin` piped in; its trimmed stdout.
+fn git_out(root: &Path, args: &[&str], stdin: &[u8]) -> String {
+    use std::io::Write;
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("git in PATH");
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "git {args:?} failed");
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+/// Commit the staged tree as `author` (raw bytes, `Name <email>`) at `days_before_head`, with an
+/// `encoding` header when one is named; the new commit's sha.
+fn raw_commit(
+    root: &Path,
+    parent: Option<&str>,
+    author: &[u8],
+    encoding: Option<&str>,
+    days_before_head: i64,
+) -> String {
+    let tree = git_out(root, &["write-tree"], b"");
+    let time = HEAD_TIME - days_before_head * DAY;
+    let mut object = format!("tree {tree}\n").into_bytes();
+    if let Some(parent) = parent {
+        object.extend_from_slice(format!("parent {parent}\n").as_bytes());
+    }
+    object.extend_from_slice(b"author ");
+    object.extend_from_slice(author);
+    object.extend_from_slice(format!(" {time} +0000\ncommitter t <t@e.x> {time} +0000\n").as_bytes());
+    if let Some(encoding) = encoding {
+        object.extend_from_slice(format!("encoding {encoding}\n").as_bytes());
+    }
+    object.extend_from_slice(format!("\nchange {days_before_head}\n").as_bytes());
+    let sha = git_out(root, &["hash-object", "-t", "commit", "-w", "--stdin"], &object);
+    git_out(root, &["update-ref", "HEAD", &sha], b"");
+    sha
+}
+
+/// Two authors whose names and emails are Latin-1 and differ only in a byte that is not UTF-8:
+/// `Jos\xe9` (é) without an `encoding` header, then `Jos\xe8` (è) with `encoding ISO-8859-1`. Both
+/// read as `?` before, with an empty email, so hotspots counted one author.
+#[test]
+fn authors_whose_names_are_not_utf8_stay_distinct() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git(root, &["init", "-q"], "a@x", 2);
+    std::fs::write(root.join("hot.rs"), function("one", 5)).unwrap();
+    git(root, &["add", "-A"], "a@x", 2);
+    let first = raw_commit(root, None, b"Jos\xe9 Ruiz <jos\xe9@x>", None, 2);
+    std::fs::write(
+        root.join("hot.rs"),
+        format!("{}{}", function("one", 5), function("two", 3)),
+    )
+    .unwrap();
+    git(root, &["add", "-A"], "a@x", 0);
+    raw_commit(root, Some(&first), b"Jos\xe8 Ruiz <jos\xe8@x>", Some("ISO-8859-1"), 0);
+    let status = Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .args(["--root", root.to_str().unwrap(), "scan", "--quiet"])
+        .status()
+        .expect("run basemind scan");
+    assert!(status.success(), "basemind scan failed");
+
+    let response = json(&hotspots(root, &["--since", "30d"]));
+    assert_eq!(response["window_end"], HEAD_TIME, "{response}");
+    assert_eq!(response["files_considered"], 1, "{response}");
+    assert_eq!(response["commits"], 2, "{response}");
+    assert_eq!(paths(&response), ["hot.rs"], "{response}");
+    let hot = &response["files"][0];
+    assert_eq!(hot["commits"], 2, "{response}");
+    assert_eq!(hot["authors"], 2, "{response}");
+    assert_eq!(hot["lines"], 5 + 3, "{response}");
+    assert_eq!(hot["symbols"], 2, "{response}");
+    assert_eq!(hot["longest_function"], 5, "{response}");
+    assert_eq!(hot["longest_function_at"], "one:1", "{response}");
+
+    let log = Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .args([
+            "--root",
+            root.to_str().unwrap(),
+            "--json",
+            "git",
+            "log",
+            "--author",
+            "ruiz",
+        ])
+        .output()
+        .expect("run basemind git log");
+    let log = json(&log);
+    let rows: Vec<&str> = log["commits"]
+        .as_array()
+        .unwrap_or_else(|| panic!("commits: {log}"))
+        .iter()
+        .map(|row| row.as_str().unwrap().split_once(' ').unwrap().1)
+        .collect();
+    assert_eq!(rows, ["Josè Ruiz: change 0", "José Ruiz: change 2"], "{log}");
+}

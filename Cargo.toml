@@ -171,6 +171,9 @@ clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 clap_mangen = "0.3"
 directories = "6"
+# Decodes an author name or email that is not UTF-8 by the commit's `encoding` header. Already in ~keep
+# the graph through gix-filter, so this adds no build cost. ~keep
+encoding_rs = "0.8.44"
 fjall = "3.1.13"
 form_urlencoded = { version = "1", optional = true }
 fs2 = "0.4"
