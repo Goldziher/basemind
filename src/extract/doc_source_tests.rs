@@ -80,11 +80,14 @@ fn prose_breaks_at_a_paragraph_before_a_line() {
     assert_cited(&text, &spans);
 }
 
+/// `(text, max_chars, max_tokens, overlap, expected spans, label)` of one overlap case.
+type OverlapCase<'a> = (&'a str, usize, usize, usize, &'a [(usize, usize)], String);
+
 /// A text whose lines are longer than the overlap still overlaps: the next chunk starts at the first
 /// word start in the last `overlap` characters, mid-word or not.
 #[test]
 fn prose_with_no_line_start_in_the_overlap_overlaps_by_whole_words() {
-    let cases: [(&str, usize, usize, usize, &[(usize, usize)], String); 2] = [
+    let cases: [OverlapCase; 2] = [
         (
             "abcd ",
             1000,
