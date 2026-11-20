@@ -38,6 +38,10 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TYPE_CHECKING, TypeVar
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -69,6 +73,8 @@ SCALE_FILES = (60, 600)
 # The language pack's cache base (src/cli/env_config.rs); every run of one check shares it.
 GRAMMAR_CACHE_ENV = "TREE_SITTER_LANGUAGE_PACK_CACHE_DIR"
 GRAMMAR_INSTALL_TIMEOUT = 600
+
+T = TypeVar("T")
 
 VALGRIND_FLAGS = (
     "--leak-check=full",
@@ -333,6 +339,20 @@ def warm_grammars(binary: Path, iso: Isolation, extra_env: dict[str, str], cache
         log(f"grammars: lang install did not finish (exit {code}); every run downloads its own\n{stdout}{stderr}")
 
 
+def run_per_target(
+    targets: list[T], argvs: list[list[str]], check: Callable[[T, list[str]], dict], jobs: int
+) -> list[dict]:
+    """Run every argv on every target, up to `jobs` targets at a time. A target's runs go in order,
+    so its scan has finished before a command that reads what the scan indexed. Results come target
+    by target, each target's in argv order."""
+
+    def target_runs(target: T) -> list[dict]:
+        return [check(target, argv) for argv in argvs]
+
+    with ThreadPoolExecutor(max_workers=max(1, min(jobs, len(targets)))) as pool:
+        return [result for runs in pool.map(target_runs, targets) for result in runs]
+
+
 def main() -> int:  # noqa: C901, PLR0915
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--binary", type=Path, required=True)
@@ -348,7 +368,10 @@ def main() -> int:  # noqa: C901, PLR0915
     )
     ap.add_argument("--threads", type=int, default=4, help="RAYON_NUM_THREADS for every run (default 4)")
     ap.add_argument(
-        "--jobs", type=int, default=os.cpu_count() or 1, help="runs at the same time (default: one per core)"
+        "--jobs",
+        type=int,
+        default=os.cpu_count() or 1,
+        help="targets checked at the same time, each running its scan then its --cmd runs (default: one per core)",
     )
     ap.add_argument(
         "--run-timeout",
@@ -407,23 +430,18 @@ def main() -> int:  # noqa: C901, PLR0915
         grammars = extra[GRAMMAR_CACHE_ENV] = str(iso_g.root / "grammars")
     warm_grammars(binary, iso_g, extra, grammars)
 
-    runs = [
-        (label, target, t_iso, argv)
-        for label, target, t_iso in targets
-        for argv in [["scan"], *[shlex.split(c) for c in args.cmd]]
-    ]
-    jobs = max(1, min(args.jobs, len(runs)))
+    argvs = [["scan"], *[shlex.split(c) for c in args.cmd]]
+    jobs = max(1, min(args.jobs, len(targets)))
 
-    def check(run: tuple[str, Path, Isolation, list[str]]) -> dict:
-        label, target, t_iso, argv = run
+    def check(run_target: tuple[str, Path, Isolation], argv: list[str]) -> dict:
+        label, target, t_iso = run_target
         log(f"{args.tool}: basemind {' '.join(argv)} in {label}")
         result = run_one(binary, target, argv, t_iso, out, f"{label}-{'-'.join(argv)}", extra, args.run_timeout)
         result["reasons"] = judge(result) if args.tool == "leaks" else judge_valgrind(result)
         log(f"{args.tool}: {label} {' '.join(argv)} done in {result['secs']} s")
         return result
 
-    with ThreadPoolExecutor(max_workers=jobs) as pool:
-        results = list(pool.map(check, runs))
+    results = run_per_target(targets, argvs, check, jobs)
 
     ok = all(not r["reasons"] for r in results)
     lines = [
@@ -432,7 +450,7 @@ def main() -> int:  # noqa: C901, PLR0915
         f"- binary: `{binary}`",
         f"- checker: `{args.tool}`",
         f"- env: {extra}",
-        f"- runs: {len(runs)}, {jobs} at a time, each killed after {args.run_timeout} s",
+        f"- runs: {len(results)}, {jobs} targets at a time, each run killed after {args.run_timeout} s",
         "- pass: no leaked block",
         "",
         "| run | inspected | leaks | bytes | verdict | secs | log |",
