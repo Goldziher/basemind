@@ -132,7 +132,6 @@ Performance is stable across project size:
 - **Scan time** scales roughly linearly with file count (tree-sitter parsing dominates).
 - **Git query latency** stays flat in history depth: the newest-first posting lists decode only the commits a query returns.
 - **Git-history index** costs **6–22 % of `.git`** on disk (the one index size that is measured).
-
 - **Watches** on Linux are one inotify watch per directory per workspace, capped per user by
   `fs.inotify.max_user_watches`. Many worktrees of a large repository can exhaust it; `index_status`
   then reports `watches.unwatched`, the current `watches.limit` and a note, and the daemon log warns.
