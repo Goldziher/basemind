@@ -316,6 +316,27 @@ fn planning_and_rendering_write_nothing() {
     assert_eq!(after, before);
 }
 
+/// How long a reopen waits for the dropped store's index database to release its lock.
+const RELEASE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The writer open of `root`, retried while the index database of the store just dropped still
+/// holds its lock, failing the test once [`RELEASE_DEADLINE`] passes.
+fn reopen_after_release(root: &Path, case: &str) -> Store {
+    let deadline = std::time::Instant::now() + RELEASE_DEADLINE;
+    loop {
+        match Store::open(root, VIEW_WORKING) {
+            Err(error) if error.is_lock_contention() => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{case}: the dropped store still held the lock after {RELEASE_DEADLINE:?}: {error}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            opened => return opened.expect("reopen"),
+        }
+    }
+}
+
 /// The plan's verdict for a view is what the writer open then does: it discards exactly the file
 /// maps the plan says it rebuilds, and keeps the one it says it keeps.
 #[test]
@@ -352,12 +373,7 @@ fn the_plan_names_the_views_the_writer_open_rebuilds() {
             .expect("working view planned");
         assert_eq!(working.action, action, "{case}");
 
-        let reopened = loop {
-            match Store::open(dir.path(), VIEW_WORKING) {
-                Err(error) if error.is_lock_contention() => std::thread::sleep(std::time::Duration::from_millis(25)),
-                opened => break opened.expect("reopen"),
-            }
-        };
+        let reopened = reopen_after_release(dir.path(), case);
         assert_eq!(reopened.reset_stale_schema, reset, "{case}");
         assert_eq!(
             std::fs::read(view_dir.join(INDEX_FILE)).ok().as_deref() == Some(map.as_slice()),
