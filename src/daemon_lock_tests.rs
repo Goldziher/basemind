@@ -72,6 +72,43 @@ fn a_live_daemon_is_found_by_pid_in_any_generation_and_a_dead_one_is_not() {
     assert_eq!(found.version, "0.33.0", "the pre-generation layout is read too");
 }
 
+/// Every live daemon is listed with where it recorded itself, so the blob sweep can tell a release up
+/// to 0.33 (registry root) from a later one (a generation directory). Dead ones and records outside
+/// a generation directory are not.
+#[test]
+fn every_live_daemon_is_listed_with_whether_it_predates_the_generations() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let record = |pid: u32, version: &str| {
+        serde_json::json!({
+            "pid": pid, "kind": "comms", "dir": "/tmp/comms", "version": version, "started_unix": now_unix(),
+        })
+        .to_string()
+    };
+    let me = std::process::id();
+    let write = |rel: &str, body: String| {
+        let path = root.path().join(rel);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(path, body).expect("write");
+    };
+    write("comms-old.pid", record(me, "0.33.0"));
+    write("comms-dead.pid", record(0x7FFF_FFFE, "0.32.0"));
+    write("g1/comms-new.pid", record(me, "0.34.0"));
+    write("g1/comms-dead.pid", record(0x7FFF_FFFE, "0.34.0"));
+    write("scratch/comms-stray.pid", record(me, "0.99.0"));
+
+    let mut listed: Vec<(String, bool)> = registered_daemons_in(root.path())
+        .into_iter()
+        .map(|daemon| (daemon.record.version, daemon.pre_generation))
+        .collect();
+    listed.sort();
+
+    assert_eq!(listed, [("0.33.0".to_string(), true), ("0.34.0".to_string(), false)]);
+    assert!(
+        root.path().join("comms-dead.pid").exists() && root.path().join("g1/comms-dead.pid").exists(),
+        "listing is read-only"
+    );
+}
+
 /// A 0.33 daemon was killed and left its record; its pid now belongs to a newer daemon. The
 /// stale record is older than that process, so it does not name it.
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]

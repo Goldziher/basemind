@@ -29,6 +29,10 @@ struct HostRecord {
     /// boot named above is the host itself.
     #[serde(default)]
     started: Option<u64>,
+    /// The host's build version, which names the blob namespace it reads
+    /// ([`crate::store_gc_namespaces::namespace_read_by`]).
+    #[serde(default)]
+    version: Option<String>,
 }
 
 /// The boot this process runs in, as the judge of markers sees it.
@@ -88,6 +92,56 @@ fn marker_of_this_boot(path: &Path, record: &HostRecord, this_boot: ThisBoot<'_>
     })
 }
 
+/// Every marker under `hosting_dir`, with what it holds and what became of its host.
+#[cfg(any(unix, windows))]
+fn judged_markers(hosting_dir: &Path, this_boot: ThisBoot<'_>) -> Vec<(PathBuf, HostRecord, HostFate)> {
+    let mut judged = Vec::new();
+    for entry in std::fs::read_dir(hosting_dir).into_iter().flatten().flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
+            continue;
+        };
+        let path = entry.path();
+        let record: HostRecord = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let same_process =
+            crate::boot_identity::is_recorded_process(pid, record.started, record.boot.as_deref(), this_boot.id);
+        let fate = host_fate(
+            crate::boot_identity::pid_state(pid),
+            same_process,
+            marker_of_this_boot(&path, &record, this_boot),
+        );
+        judged.push((path, record, fate));
+    }
+    judged
+}
+
+/// The versions of the live hosts whose markers are under the data home. Read-only; a marker that
+/// records no version is passed over.
+#[cfg(any(unix, windows))]
+pub(crate) fn live_host_versions() -> Vec<String> {
+    let data = DataRoot::current();
+    let id = crate::boot_identity::current();
+    live_host_versions_in(
+        &data.path().join(HOSTING_DIR),
+        ThisBoot {
+            id: id.as_deref(),
+            began: crate::boot_identity::boot_time(),
+        },
+    )
+}
+
+/// [`live_host_versions`] over an explicit hosting directory.
+#[cfg(any(unix, windows))]
+fn live_host_versions_in(hosting_dir: &Path, this_boot: ThisBoot<'_>) -> Vec<String> {
+    judged_markers(hosting_dir, this_boot)
+        .into_iter()
+        .filter(|(_, _, fate)| *fate == HostFate::Live)
+        .filter_map(|(_, record, _)| record.version)
+        .collect()
+}
+
 /// Remove the markers of hosts that are gone. When the machine went down under one, ask every
 /// workspace under `workspaces_dir` to verify its blobs: the marker does not say which workspaces
 /// its host served, and the request must not depend on which process happens to open one next.
@@ -113,22 +167,7 @@ fn settle_dead_hosts_with(
 ) -> bool {
     let mut dead = Vec::new();
     let mut machine_went_down = false;
-    for entry in std::fs::read_dir(hosting_dir).into_iter().flatten().flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
-            continue;
-        };
-        let path = entry.path();
-        let record: HostRecord = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
-        let same_process =
-            crate::boot_identity::is_recorded_process(pid, record.started, record.boot.as_deref(), this_boot.id);
-        let fate = host_fate(
-            crate::boot_identity::pid_state(pid),
-            same_process,
-            marker_of_this_boot(&path, &record, this_boot),
-        );
+    for (path, _, fate) in judged_markers(hosting_dir, this_boot) {
         if fate == HostFate::Live {
             continue;
         }
@@ -241,6 +280,7 @@ fn write_marker(dir: &Path, boot: Option<&str>) -> Option<PathBuf> {
     let record = HostRecord {
         boot: boot.map(str::to_string),
         started: crate::boot_identity::process_start(std::process::id()),
+        version: Some(env!("CARGO_PKG_VERSION").to_string()),
     };
     let bytes = serde_json::to_vec(&record).ok()?;
     let path = dir.join(std::process::id().to_string());

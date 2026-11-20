@@ -947,19 +947,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [`docs/UPGRADING.md`](docs/UPGRADING.md)).
   - The blob store is namespaced by blob schema (`cache/blobs/v<schema>/`): two installed versions
     no longer overwrite each other's blobs. This ships with the 0.34 release-minor bump: the sweep
-    removes the un-namespaced blobs older builds wrote, so an older basemind left installed
-    re-extracts on its next scan. A file map records the blob layout it was written for, and one
-    from before the namespaces is discarded with its index at the first open, without relying on
-    that bump. A file whose blob is missing or damaged says so instead of "not
-    indexed", and the `index_rescan` it names rebuilds the blob: a rescan of named paths
+    removes the un-namespaced blobs older builds wrote and the namespaces of older schemas, but
+    never while a process of that version is registered under the data home (a daemon in
+    `daemons/` of any generation, or a host in `hosting/<pid>`, which now records its version), and
+    only once nothing has been written into them for `BASEMIND_PRUNE_AFTER_DAYS` days (default 14,
+    the launcher's retention of an unused version; `0` leaves only the running-process check). A
+    0.33 daemon still serving another repository through the upgrade keeps answering; an older
+    basemind whose blobs were reaped re-extracts on its next scan. A file map records the blob
+    layout it was written for, and one from before the namespaces is discarded with its index at
+    the first open, without relying on that bump. A file whose blob is missing or damaged says so
+    instead of "not indexed", and the `index_rescan` it names rebuilds the blob: a rescan of named paths
     (`index_rescan paths`, `basemind rescan <paths>`) validates the blob of a named file it would
     otherwise skip as unchanged. A watcher batch does not pay that read.
   - An older basemind sharing the cache with a newer one leaves the newer one's data alone: a blob
     namespace of a newer schema is not counted towards the cache budget and is never swept, a
     workspace whose view a newer version wrote is never evicted (reason `newer_version`) and does
     not stop the sweep, and a newer file map this version cannot decode is read as newer, not as
-    damaged. Namespaces older than the current one are reaped even when the current one cannot
-    be swept.
+    damaged. Namespaces older than the current one that are past their hold are reaped even when
+    the current one cannot be swept.
   - `cache stats` measures the whole blob store (every namespace, and un-namespaced blobs), reports
     the current namespace beside it (`blobs_current_bytes`), reports the memory vector stores
     (`memory_vectors_bytes`) and finds the last sweep again (`last_gc`). `cache clear blobs` clears

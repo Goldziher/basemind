@@ -130,6 +130,8 @@ pub struct GcPolicy {
     pub grace: Duration,
     /// An unreferenced blob this young is kept (`BASEMIND_BLOB_GC_GRACE_SECS`).
     pub blob_grace: Duration,
+    /// An older basemind's blob namespace written this recently is kept (`BASEMIND_PRUNE_AFTER_DAYS`).
+    pub superseded_hold: Duration,
 }
 
 impl Default for GcPolicy {
@@ -138,6 +140,7 @@ impl Default for GcPolicy {
             budget_bytes: crate::store_gc_budget::cache_budget_from(None),
             grace: crate::store_gc_protect::cache_grace_from(None),
             blob_grace: crate::store_gc::grace_from(None),
+            superseded_hold: crate::store_gc_namespaces::prune_hold_from(None),
         }
     }
 }

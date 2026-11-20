@@ -4,6 +4,12 @@ use crate::store_cache_admin::{BlobStorePaths, TELEMETRY_FILENAME, cache_stats_i
 use std::fs;
 use std::path::PathBuf;
 
+/// No live process and no hold: the superseded namespaces go by the blob grace alone.
+const NO_HOLDS: Holds = Holds {
+    live: Vec::new(),
+    hold: Duration::ZERO,
+};
+
 /// A referenced + an orphan blob, with a hand-written `views/working/index.msgpack`
 /// pointing only at the referenced stem.
 ///
@@ -740,7 +746,7 @@ fn the_blob_store_sweep_reaps_the_current_namespace_and_the_superseded_ones() {
     let newer = plant_blob(&paths.root.join("v65000"), 'e');
     assert!(orphan.exists());
 
-    let report = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO).expect("sweep");
+    let report = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO, &NO_HOLDS).expect("sweep");
 
     assert!(
         !orphan.exists(),
@@ -751,18 +757,19 @@ fn the_blob_store_sweep_reaps_the_current_namespace_and_the_superseded_ones() {
     assert!(report.removed >= 3, "{report:?}");
 }
 
-/// The sweep the daemon and the CLI run over the machine-global store is the whole-store sweep:
-/// an aged blob of an older namespace and an aged un-namespaced one go, a newer namespace stays.
+/// The sweep the daemon and the CLI run over the machine-global store is the whole-store sweep: a
+/// blob of an older namespace and an un-namespaced one, both unwritten for longer than the default
+/// 14-day hold and read by no live process, go; a newer namespace stays.
 #[test]
 fn the_machine_global_sweep_reaps_what_older_builds_left() {
     crate::store::init_isolated_cache();
     let root = crate::store_layout::global_blobs_root();
     let aged = |path: &PathBuf| {
-        let week = Duration::from_secs(7 * 24 * 60 * 60);
+        let past_the_hold = Duration::from_secs(15 * 24 * 60 * 60);
         fs::File::options()
             .write(true)
             .open(path)
-            .and_then(|file| file.set_modified(std::time::SystemTime::now() - week))
+            .and_then(|file| file.set_modified(std::time::SystemTime::now() - past_the_hold))
             .expect("age the blob");
     };
     let older = plant_blob(&root.join("v1"), 'f');
@@ -800,7 +807,7 @@ fn superseded_namespaces_are_reaped_although_the_live_set_cannot_be_read() {
     let flat = plant_blob(&paths.root, 'c');
     let orphan = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.orphan_stem));
 
-    let swept = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO);
+    let swept = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO, &NO_HOLDS);
 
     assert!(
         swept.is_err(),
@@ -832,7 +839,7 @@ fn a_view_of_a_newer_basemind_neither_stops_the_sweep_nor_is_touched_by_it() {
     fs::write(&newer_map, &bytes).expect("write");
     let orphan = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.orphan_stem));
 
-    let report = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO).expect("sweep");
+    let report = gc_blob_store_in(&workspaces, &paths.root, paths.schema, Duration::ZERO, &NO_HOLDS).expect("sweep");
 
     assert!(report.removed >= 1, "{report:?}");
     assert!(

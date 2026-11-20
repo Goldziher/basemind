@@ -28,6 +28,7 @@ use crate::data_root::DataRoot;
 use crate::store::{INDEX_FILE, StoreError, VIEWS_DIR, WORKSPACES_DIR, global_blobs_dir, read_index};
 pub use crate::store_gc_live::LiveBlobs;
 use crate::store_gc_live::{SweepLock, is_rebuildable_view_error};
+use crate::store_gc_namespaces::Holds;
 
 /// The blob filename suffixes the scanner emits today, all keyed by one content hash.
 /// Used to strip the suffix off a blob filename to recover its hex stem. The four suffixes are
@@ -422,21 +423,23 @@ pub fn gc_global_blobs(data: &DataRoot) -> Result<GcReport, GcError> {
         &data.global_blobs_root(),
         crate::extract::SCHEMA_VER,
         blob_gc_grace(),
+        &Holds::current(),
     )
 }
 
 /// Sweep a whole blob store: the unreferenced blobs of the `schema` namespace under `blobs_root`,
-/// and everything older builds left there (see [`crate::store_gc_namespaces`]). The second sweep
-/// needs no live set, so it runs whatever became of the first: a workspace whose references cannot
-/// be read must not also keep the superseded namespaces on disk.
+/// and everything older builds left there that `holds` lets go (see [`crate::store_gc_namespaces`]).
+/// The second sweep needs no live set, so it runs whatever became of the first: a workspace whose
+/// references cannot be read must not also keep the superseded namespaces on disk.
 pub(crate) fn gc_blob_store_in(
     workspaces_dir: &Path,
     blobs_root: &Path,
     schema: u16,
     grace: Duration,
+    holds: &Holds,
 ) -> Result<GcReport, GcError> {
     let current = gc_global_blobs_in(workspaces_dir, &blobs_root.join(format!("v{schema}")), grace);
-    let superseded = crate::store_gc_namespaces::sweep_superseded_namespaces(blobs_root, schema, grace);
+    let superseded = crate::store_gc_namespaces::sweep_superseded_namespaces(blobs_root, schema, grace, holds);
     if let (Err(_), Ok(superseded)) = (&current, &superseded)
         && superseded.removed > 0
     {
