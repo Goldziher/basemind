@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:d0fd7a6a94322c715ea9bc828643dec54501d1c22b987e9f32bf51a0c390f173
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:ad3447b99bec2c1d7a8ef67099302c0c4ada87b439fc7b1a5f3228c1b8f322ac
+Source-Hash: blake3:45980c12c5a823721b78978b74a1cadcfb1b3886dad5190238b3cd88e52cbae4
 Schema-Version: v1
 -->
 
@@ -18,8 +18,8 @@ Schema-Version: v1
 
 basemind extracts PDFs, Office files, spreadsheets, email, HTML and notebooks (and, in a build with
 OCR, raster images and scanned PDFs) into a LanceDB vector
-store and answers meaning-based queries with cross-encoder reranking. For exact matches in text
-files such as Jupyter notebooks, use a literal or regex file search. Semantic results cannot
+store and answers meaning-based queries with cross-encoder reranking. For exact text in markdown,
+config and data files use `code_grep` (see `basemind-code-search`): semantic results cannot
 establish that a string is absent.
 
 Prefer `docs_search` over opening PDFs/Office/HTML by hand. The tools are always loaded: call them

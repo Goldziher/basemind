@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:b0de18f0091cabff22c1b5899b4b4131c12da5d287d4b7982eac905c11abc00b
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:4daab012f8e70e0958c7ac2aec2d491e72076fcceddf978aaf93553f2e36bf39
+Source-Hash: blake3:45980c12c5a823721b78978b74a1cadcfb1b3886dad5190238b3cd88e52cbae4
 Schema-Version: v1
 -->
 
@@ -41,7 +41,8 @@ basemind status
   it: `basemind scan` (see the `basemind-scan` skill / `/bm-scan`).
 - Healthy `file_count` → the index is fine; the problem is the server connection (step 4).
 - `code_outline` says a README, JSON, YAML or TOML file "is a document, not code" → expected, not a
-  fault. Use `docs_search {"query":"…"}` (or Read the file).
+  fault. Find exact text in it with `code_grep {"pattern":"…"}`, a topic with
+  `docs_search {"query":"…"}`.
 - A tool result with `isError` names its own fix: follow it (`index_rescan`, `find_files`, the
   missing Cargo feature) before diagnosing further.
 - A `notice` of `warming_up` / `building_index` means the index is still loading: wait and retry

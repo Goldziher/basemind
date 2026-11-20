@@ -43,7 +43,8 @@ basemind status
   it: `basemind scan` (see the `basemind-scan` skill / `/bm-scan`).
 - Healthy `file_count` → the index is fine; the problem is the server connection (step 4).
 - `code_outline` says a README, JSON, YAML or TOML file "is a document, not code" → expected, not a
-  fault. Use `docs_search {"query":"…"}` (or Read the file).
+  fault. Find exact text in it with `code_grep {"pattern":"…"}`, a topic with
+  `docs_search {"query":"…"}`.
 - A tool result with `isError` names its own fix: follow it (`index_rescan`, `find_files`, the
   missing Cargo feature) before diagnosing further.
 - A `notice` of `warming_up` / `building_index` means the index is still loading: wait and retry

@@ -295,9 +295,10 @@ Key invariants:
   runs inside `scanner_lanes::run_optional_lane` (`catch_unwind`-wrapped), so a
   panic or hang in one lane degrades only that lane (e.g. "no resolved refs")
   and never costs the code map itself. Source: `src/scanner_lanes.rs`.
-- **Code-only code map** — `code_symbols`, `code_outline`, `code_grep` and `code_refs` see code only.
-  Markdown, rst, asciidoc, vimdoc, csv, json, yaml, toml, ini, xml, properties, dotenv, diff,
-  gitignore/gitattributes and fluent files are chunked and searched as documents (gated by
+- **Code-only code map** — `code_symbols`, `code_outline` and `code_refs` see code only; `code_grep`
+  also searches the text documents below as text. Markdown, rst, asciidoc, vimdoc, csv, json, yaml,
+  toml, ini, xml, properties, dotenv, diff, gitignore/gitattributes and fluent files are chunked and
+  searched as documents (gated by
   `[documents] include` / `exclude` and the MIME allowlist). A path that changes tier is moved on the
   next full or incremental scan: the stale code-map rows are purged, and the stale blobs are reclaimed
   by the tier-aware sweep (see [Blob store and GC](#blob-store-and-gc)). A build without the

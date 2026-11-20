@@ -36,9 +36,9 @@ different version there shares the same cache. Examples below write `basemind` f
 ## Capabilities
 
 - **Code map across 300+ languages** — tree-sitter outlines, symbol search, call sites, callers,
-  implementations, importers. Code only: markdown, JSON, YAML, TOML, XML, CSV and
-  similar files are documents (`basemind memory documents`), not in the code map.
-- **Text, symbol and meaning search** — literal or regex search over code content, symbol lookup by name, search by meaning.
+  implementations, importers. The code map covers code only.
+- **Text, symbol and meaning search** — literal or regex search (`code grep`) over code and
+  markdown, config and data files, symbol lookup by name, search by meaning.
 - **Git history** — log, blame, and structural diffs at symbol resolution, plus churn.
 - **Document RAG** — PDFs, Office, HTML, email, images (OCR, when the build has `documents-ocr`), markdown and config/data files → semantic search.
 - **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
@@ -87,7 +87,7 @@ command covers the question.
 | "Where's the churn?" | `basemind git churn [--window N --top-k K]` | CLI only. |
 | "Commits whose paths match a regex?" | `basemind git by-path "regex"` | CLI only. |
 | "What's indexed? What's HEAD / branch?" | `basemind status` | File count, languages, cache dir, branch, HEAD. `admin repo` prints the same. |
-| "Search markdown / config / PDFs?" | `basemind memory documents "query" [--mime-type --keywords --entity --scope]` | Needs `documents` feature. |
+| "Search documents by meaning (PDFs, Office, HTML, email)?" | `basemind memory documents "query" [--mime-type --keywords --entity --scope]` | Needs `documents` feature. |
 | "Recall something stored earlier?" | `basemind memory search "q"` / `get "key"` / `list [--prefix P --tag T]` | By meaning / one note / a listing. |
 | "Remember this for future sessions?" | `basemind memory put "key" "value" [--tag T]` | Delete with `memory delete "key"` (CLI only). |
 | "Cache size?" | `basemind cache stats` | On-disk size + orphan accounting. CLI only, like the other cache commands. |
@@ -216,7 +216,8 @@ the caller can fix is a tool result with `isError` whose text names the fix.
   the hits it proves `resolved`, or reports why it cannot (no resolution for the language, or no
   resolution facts for the file). `callers`, `read --symbol`, `git blame --symbol` and
   `git log --symbol` take `--line` to pick one of several same-named definitions.
-- `outline` on a markdown/config/data file reports that it is a document; use `memory documents`.
+- `outline` on a markdown/config/data file reports that it is a document: find exact text in it
+  with `code grep`, a topic with `memory documents`.
 - An unknown flag is a usage error (exit 2). `--format toon`, `--l2`, `--path-contains`,
   `--no-context` and `--line-start` / `--line-end` no longer exist.
 - Git commands require basemind to be running inside a git repository.

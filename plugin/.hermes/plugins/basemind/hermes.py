@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:1f79aead172fbb99d893b76628fe63d9a854e84d46604e8ee2415eef542f838c
-# Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+# Content-Hash: blake3:0d6e6f2b8b9c25025d269a3e99b9df5566505b4e691946a5b9786a3af595c143
+# Source-Hash: blake3:45980c12c5a823721b78978b74a1cadcfb1b3886dad5190238b3cd88e52cbae4
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -49,11 +49,12 @@ _DISCIPLINE = (
     'then code_read {"path":"src/store.rs","symbol":"open"} for only the body you need; '
     'code_symbols {"name":"open_store"} instead of grep for a definition; '
     'code_refs {"name":"open_store"} instead of grepping call sites; '
-    'code_grep {"pattern":"cache_root("} instead of shelling out to ripgrep; '
+    'code_grep {"pattern":"cache_root("} instead of shelling out to ripgrep, also for exact text in '
+    "markdown, config and data files; "
     'find_files {"query":"readme"} to locate a file; git_log {}, git_blame {"path":"src/store.rs"} '
     "and git_diff {} instead of git log, blame, status and diff; "
-    'docs_search {"query":"how releases are versioned"} for markdown, config, data and PDF files '
-    "(the code tools cover code only); index_rescan {} after edits instead of reconnecting. "
+    'docs_search {"query":"how releases are versioned"} to search documents by meaning, and PDFs, '
+    "Office files, HTML and email; index_rescan {} after edits instead of reconnecting. "
     "Do not re-read a file basemind already mapped."
 )
 

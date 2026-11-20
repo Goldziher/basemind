@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:963975b86c644b84228ad38dab363b6fdb52d3326d3bab8ba9905d0556674e52
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:6b87421f73e7caea9b7718cfd979ce9e152c4def372f05d994b40a3c561a350d
+Source-Hash: blake3:45980c12c5a823721b78978b74a1cadcfb1b3886dad5190238b3cd88e52cbae4
 Schema-Version: v1
 -->
 
@@ -27,12 +27,13 @@ tool search needed. Agent messaging is the exception: `agent_post`, `agent_inbox
 ## Capabilities
 
 - **Code map across 300+ languages**: tree-sitter outlines, symbol search, call sites, callers,
-  implementations, importers. It holds **code only**: markdown, JSON, YAML, TOML, XML, CSV, INI and
-  similar files are documents, searched with `docs_search`.
-- **Text and meaning search over code**: `code_grep` (literal or regex) and `code_search`.
+  implementations, importers. The code map (outline, symbols, refs) covers code only.
+- **Exact text search**: `code_grep` (literal or regex) over code and markdown, config and data
+  files.
+- **Search by meaning**: `code_search` over code; `docs_search` over documents, the one tool for
+  PDFs, Office files, HTML and email (images too, when the build has `documents-ocr`), with
+  cross-encoder reranking.
 - **Git history**: log, blame, and diffs at symbol resolution.
-- **Document search**: PDFs, Office, HTML, email, images (OCR, when the build has `documents-ocr`),
-  markdown and config/data files, with cross-encoder reranking (`docs_search`).
 - **Shared memory**: per-repo notes that persist across sessions (`memory_save`, `memory_search`).
 
 ## Dedicated per-capability skills
@@ -107,7 +108,8 @@ Drop to raw shell, grep, or git only when no basemind tool covers the question.
 | "What's dirty in the working tree?" | `git_diff {}` |
 | "What did I change in file F?" | `git_diff {"path":"src/store.rs"}` |
 | "Diff file F between revisions" | `git_diff {"path":"src/store.rs","from":"HEAD~1","to":"HEAD"}` |
-| "Search PDFs / markdown / config / data files" | `docs_search {"query":"how releases are versioned"}` |
+| "Where is this key in a config, markdown or data file?" | `code_grep {"pattern":"timeout:"}` |
+| "Where is a topic discussed? Search PDFs / Office / HTML / email" | `docs_search {"query":"how releases are versioned"}` |
 | "Remember this for future sessions" | `memory_save {"key":"decision/auth-tokens","value":"Tokens rotate every 24h.","tags":["auth"]}` |
 | "Recall something stored earlier" | `memory_search {"query":"token rotation"}` |
 | "What's indexed? What's HEAD / branch?" | `index_status {}` |
@@ -200,9 +202,10 @@ A 1000-line file becomes a 30-line table of contents.
   repeat it without `cursor`.
 - A scalar sent as a string (`"limit":"10"`, `"regex":"true"`) is accepted; any other type error
   names the field.
-- `code_outline`, `code_symbols` and `code_grep` cover code only. A markdown or config/data file is
-  a document: `find_files` lists it, `docs_search` searches its contents, `code_read` with a line
-  span reads it.
+- The code map (`code_outline`, `code_symbols`, `code_refs`) covers code only. `code_grep` also
+  finds exact text in markdown, config and data files; `docs_search` is for searching by meaning,
+  and for PDFs, Office files, HTML and email. `find_files` lists every file, and `code_read` with a
+  line span reads any text file.
 - A `notice` field means the result is incomplete and says why (empty index, scan in progress).
 - The git tools require `basemind serve` to be running inside a git repository.
 - `code_search` needs the `code-search` Cargo feature, `docs_search` needs `documents`, and the

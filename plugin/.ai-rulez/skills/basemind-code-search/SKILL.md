@@ -19,10 +19,11 @@ x-ai-rulez:
 
 # basemind-code-search — navigate code without reading it
 
-basemind pre-indexes the repo into a tree-sitter code map across 300+ languages. The map holds
-**code only**. Jupyter notebooks (`.ipynb`), Markdown, JSON, YAML, TOML, XML, CSV, INI and `.env`
-files are documents: `find_files` lists them, `docs_search` searches them by meaning (see
-`basemind-documents`), and a literal or regex file search finds exact matches outside the code map.
+basemind pre-indexes the repo into a tree-sitter code map across 300+ languages. The code map
+(outline, symbols, refs) covers **code only**. `code_grep` also finds exact text in markdown,
+config and data files (Markdown, JSON, YAML, TOML, XML, CSV, INI). `docs_search` is for searching
+by meaning, and for PDFs, Office files, HTML and email (see `basemind-documents`). `find_files`
+lists every file.
 
 Structural questions (where a symbol lives, what calls it, what shape a file has) resolve from the
 index in milliseconds and return **paths, 1-based line numbers, and signatures, not file bodies**.
@@ -37,8 +38,9 @@ no tool covers the question.
 - **`code_symbols` instead of `grep` for a definition.** It matches indexed symbol names and skips
   the comment, string and test-name noise.
 - **`code_refs` instead of grepping call sites.** Indexed call edges, not text matches.
-- **`code_grep` instead of shelling out to ripgrep.** It sweeps every indexed code file (a trigram
-  filter skips files that cannot match) and returns each hit's line and enclosing symbol.
+- **`code_grep` instead of shelling out to ripgrep.** It sweeps every indexed code file and every
+  markdown, config and data file (a trigram filter skips code files that cannot match) and returns
+  each hit's line and enclosing symbol.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 - **`index_rescan` after you edit code**, not a server reconnect. Pass `paths` to limit it.
 
@@ -97,7 +99,8 @@ code_outline {"path":"src/mcp/tools.rs"}
 - `code_outline` omits `imports` when the file has none.
 - `code_grep`: `pattern` is literal text unless `"regex":true`, and a regex anchors `^` / `$` at
   every line. `path` is a substring of the repo-relative path, never a glob; a `path` or `language`
-  that no indexed code file has is an error (it names `docs_search` when only documents match).
+  that no indexed code or text file has is an error (it names `docs_search` when only PDFs, Office
+  files or other binary documents match).
   `skipped_files` counts files that could not be searched. The answer is `key: value` lines, then
   each file as `# <path>` and each innermost enclosing symbol as `## <symbol>` over its rows
   `<line>: <text>` (rows before any symbol header, or under a bare `##`, are outside every
