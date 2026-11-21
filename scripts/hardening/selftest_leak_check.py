@@ -17,7 +17,6 @@ from __future__ import annotations
 import os
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -50,6 +49,7 @@ SUMMARY = f"""{PID} LEAK SUMMARY:
 {PID}    indirectly lost: 28,439 bytes in 203 blocks
 """
 CLEAN = f"{PID} All heap blocks were freed -- no leaks are possible\n"
+OVERLAP_WAIT_SECS = 10
 
 
 def check_sites() -> list[str]:
@@ -89,18 +89,25 @@ def check_timeout() -> list[str]:
 
 
 def check_target_order() -> list[str]:
+    targets = ["fixture", "scale60", "scale600"]
     events: list[tuple[str, str, str]] = []
     lock = threading.Lock()
+    scans_together = threading.Barrier(len(targets), timeout=OVERLAP_WAIT_SECS)
+    lonely_scans: list[str] = []
 
     def record(target: str, argv: list[str]) -> dict:
         with lock:
             events.append(("start", target, argv[0]))
-        time.sleep(0.2 if argv == ["scan"] else 0)
+        if argv == ["scan"]:
+            try:
+                scans_together.wait()
+            except threading.BrokenBarrierError:
+                with lock:
+                    lonely_scans.append(target)
         with lock:
             events.append(("end", target, argv[0]))
         return {"label": f"{target}-{argv[0]}"}
 
-    targets = ["fixture", "scale60", "scale600"]
     results = run_per_target(targets, [["scan"], ["status"]], record, jobs=6)
     problems = []
     for target in targets:
@@ -109,9 +116,8 @@ def check_target_order() -> list[str]:
     want = [f"{target}-{argv}" for target in targets for argv in ("scan", "status")]
     if [r["label"] for r in results] != want:
         problems.append(f"results {[r['label'] for r in results]}, want {want}")
-    scans_started = [e for e in events[: len(targets)] if e[0] == "start" and e[2] == "scan"]
-    if len(scans_started) != len(targets):
-        problems.append(f"first events {events[: len(targets)]}, want every target's scan started together")
+    if lonely_scans:
+        problems.append(f"scans of {sorted(lonely_scans)} never ran alongside every other target's scan")
     return problems
 
 
