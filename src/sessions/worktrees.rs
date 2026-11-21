@@ -165,7 +165,7 @@ mod tests {
             "a deleted checkout admits nothing"
         );
         write_gitfile(&wts.join("live"), &common.join("worktrees/live"));
-        assert_eq!(admitted(&["deleted", "live"]), [wts.clone()]);
+        assert_eq!(admitted(&["deleted", "live"]), std::slice::from_ref(&wts));
     }
 
     #[test]
