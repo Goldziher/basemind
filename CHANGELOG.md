@@ -202,7 +202,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `in_use` and `queued` under `admission`.
 - `ATTRIBUTIONS.md` lists every model basemind downloads (#294): the default and opt-in embedding,
   reranker and NER presets, the Tesseract `eng` data and the o200k tokenizer, each with its upstream
-  model card, pinned mirror revision and licence. All are MIT or Apache-2.0, so no default changes.
+  model card, mirror revision where one is pinned (the Tesseract `eng` data follows an unpinned
+  branch) and licence. All are MIT or Apache-2.0, so no default changes.
 
 ### Changed
 
