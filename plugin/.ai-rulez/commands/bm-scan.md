@@ -19,7 +19,8 @@ Run `basemind scan` via the CLI so the code map exists and is current.
 
 basemind (or its statusline) reports "no index" / "no indexed files", or `index_status` reports
 `degraded` or `rescan_needed`. A healthy index that misses a file you just created needs only
-`basemind rescan <path>` for that file, not a whole-tree scan.
+`basemind rescan <path>` for that file, not a whole-tree scan. Files under `scan.extra_roots` are the
+exception: `rescan <path>` skips them, so a new or changed one needs a full scan.
 
 ## How to use
 
@@ -43,7 +44,8 @@ basemind rescan "$ARGUMENTS"   # a path argument
 - Report files scanned / updated / skipped and elapsed time. Non-extractable files are
   **skipped**, not failures.
 - If a daemon is running, `scan` is forwarded to it and reports `scan via daemon`. Another
-  process holding the store lock (`basemind watch`, another scan) makes `scan` exit 3 and name it.
+  process holding the store lock (`basemind watch`, another scan) makes `scan` and `rescan` exit 3 and
+  name it: stop the watcher, run the command, then restart `basemind watch`.
 
 ## See also
 

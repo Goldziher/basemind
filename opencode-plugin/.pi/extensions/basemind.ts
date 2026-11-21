@@ -93,7 +93,10 @@ index and the same capabilities:
 - Find callers: \`basemind code callers <path> <name>\`
 - Regex over content: \`basemind code grep <pattern>\`
 - Git history / blame: \`basemind git recent\`, \`basemind git blame <path>\`
-- Re-index after edits: \`basemind rescan [path]\`
+- No watcher or server running: \`basemind rescan <path>…\` for each file you edited, before
+  querying it (an added symbol is otherwise simply missing). With one running, only for a
+  stale result or a new file; no path rescans the whole tree: only for an empty, degraded
+  or rescan_needed index, or changed scan.extra_roots files
 
 Run \`basemind scan\` once if the index is missing. Prefer these over re-reading or
 grepping files. If a pi MCP extension is installed, basemind can also be registered

@@ -181,8 +181,8 @@ fn render_usage_rules(out: &mut String, caps: &[Capability]) {
     out.push_str(
         "\nWhen a result is unexpectedly empty call `index_status {}`. The index follows your edits: if a \
          result says `stale` or a new file is missing, call `index_rescan {\"paths\":[\"src/store.rs\"]}` \
-         for the files you touched, and `index_rescan {}` only when `index_status` reports an empty \
-         index, `degraded` or `rescan_needed`.\n\n",
+         for that file (the one the result names, even if you did not edit it, and any you touched), and \
+         `index_rescan {}` only when `index_status` reports an empty index, `degraded` or `rescan_needed`.\n\n",
     );
 
     out.push_str(
@@ -341,7 +341,7 @@ mod tests {
         assert!(
             body.contains(
                 "if a result says `stale` or a new file is missing, call \
-                 `index_rescan {\"paths\":[\"src/store.rs\"]}` for the files you touched"
+                 `index_rescan {\"paths\":[\"src/store.rs\"]}` for that file"
             ),
             "{body}"
         );

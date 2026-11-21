@@ -41,8 +41,8 @@ impl BasemindServer {
     #[tool(
         title = "Re-index",
         description = "Use when a result says stale or a new file is missing (the index follows edits): \
-        re-indexes `paths`; with none, the whole workspace (only for an empty, degraded or \
-        rescan_needed index). Writes only the cache. \
+        re-indexes `paths`; with none, the whole workspace (an empty, degraded or rescan_needed \
+        index, or changed `scan.extra_roots` files, which `paths` skips). Writes only the cache. \
         Example: {\"paths\":[\"src/store.rs\"]}",
         annotations(
             read_only_hint = false,

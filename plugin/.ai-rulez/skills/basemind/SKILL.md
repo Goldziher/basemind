@@ -80,8 +80,8 @@ structural answer costs a fraction of the tokens of reading source.
   says `stale` or a new file is missing, run `index_rescan {"paths":["src/store.rs"]}` for the files
   you touched; run `index_rescan {}` only when `index_status` reports an empty index, `degraded` or
   `rescan_needed`. Files under `scan.extra_roots` are the exception: the watcher does not track them
-  and a path-scoped rescan refreshes only one already indexed, so a new or changed file there needs
-  a full `basemind scan`.
+  and a path-scoped rescan skips them, so a new, changed or deleted file there needs a full pass:
+  `index_rescan {}` while a server holds the lock, else `basemind scan`.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 
 Drop to raw shell, grep, or git only when no basemind tool covers the question.
