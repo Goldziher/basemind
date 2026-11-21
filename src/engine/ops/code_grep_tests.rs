@@ -736,3 +736,70 @@ fn a_cancelled_sweep_reads_no_file() {
     assert!(cancelled.iter().all(|&count| count == 0), "{cancelled:?}");
     assert_eq!(skipped, 0);
 }
+
+/// Write `files` files under `dir`, the first holding `early` matches of `needle` and every other
+/// none, and return their paths in sweep order.
+fn corpus_with_an_early_match(dir: &Path, files: usize, early: usize) -> Vec<RelPath> {
+    (0..files)
+        .map(|at| {
+            let name = format!("f{at:04}.txt");
+            let body = if at == 0 {
+                "needle\n".repeat(early)
+            } else {
+                "hay\n".to_string()
+            };
+            std::fs::write(dir.join(&name), body).expect("write corpus file");
+            RelPath::from(name.as_str())
+        })
+        .collect()
+}
+
+#[test]
+fn a_grep_whose_page_fills_early_reads_fewer_files_than_the_corpus_holds() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let files = COUNT_STEP_FILES * 3 + 10;
+    let paths = corpus_with_an_early_match(dir.path(), files, 30);
+    let refs: Vec<&RelPath> = paths.iter().collect();
+    let re = LineRegex::new(Regex::new("needle").expect("regex"));
+    let sweep = Sweep::new(IndexedFiles::contained(dir.path()));
+    let step = |range: std::ops::Range<usize>, skip_hits: u32| {
+        count_all(&sweep, &refs[range], None, &re, None, skip_hits, &|| false)
+    };
+
+    let counted = count_until_page_full(files, &step, 0, 20, &|| false);
+    assert_eq!(counted.counts.len(), COUNT_STEP_FILES, "one step of {files} files");
+    assert!(counted.stopped_early);
+    assert_eq!(counted.counts[0], 30);
+    let (selected, resume) = select_hits(&counted.counts, 20, 0, 0);
+    assert_eq!(selected[0].take, 20);
+    assert_eq!(unpack_cursor(resume.expect("the page has a next one")), (0, 20));
+
+    let whole = count_until_page_full(files, &step, 0, 100, &|| false);
+    assert_eq!(whole.counts.len(), files, "a page the corpus cannot fill reads it all");
+    assert!(!whole.stopped_early);
+}
+
+#[test]
+fn the_sweep_stops_only_once_more_matches_than_the_limit_are_known() {
+    let steps = std::cell::RefCell::new(Vec::new());
+    let files = COUNT_STEP_FILES * 4;
+    let step = |range: std::ops::Range<usize>, skip_hits: u32| {
+        steps.borrow_mut().push((range.clone(), skip_hits));
+        let counts: Vec<u32> = range.map(|at| u32::from(at % COUNT_STEP_FILES == 0) * 10).collect();
+        (counts, 0)
+    };
+
+    let counted = count_until_page_full(files, &step, 3, 10, &|| false);
+    assert_eq!(
+        *steps.borrow(),
+        [(0..COUNT_STEP_FILES, 3), (COUNT_STEP_FILES..COUNT_STEP_FILES * 2, 0)],
+        "exactly `limit` matches after the first step: one more step finds the next match"
+    );
+    assert!(counted.stopped_early);
+    assert_eq!(counted.counts.len(), COUNT_STEP_FILES * 2);
+
+    steps.borrow_mut().clear();
+    let cancelled = count_until_page_full(files, &step, 0, 10, &|| true);
+    assert!(steps.borrow().is_empty(), "a cancelled sweep counts no step");
+    assert!(cancelled.counts.is_empty() && !cancelled.stopped_early);
+}

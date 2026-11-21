@@ -138,6 +138,32 @@ pub(crate) struct StatusResponse {
     pub head_short_sha: Option<String>,
     #[serde(default)]
     pub elapsed_us: u64,
+    /// The MCP server's bounded work classes when this report was made: each class's slots, how
+    /// many run and how many wait. Absent when no server answered (an in-process engine call).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission: Option<AdmissionStatus>,
+}
+
+/// How the MCP server admits its expensive calls: `heavy` (`index_rescan`, `code_search`,
+/// `docs_search`) and `medium` (whole-corpus reads: `code_grep`, the import-graph relations of
+/// `code_refs`, the CLI's import-graph analyses) each have their own slots. A call that finds every
+/// slot of its class taken waits up to `queue_wait_ms` and is then answered `server_busy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub(crate) struct AdmissionStatus {
+    pub heavy: LaneStatus,
+    pub medium: LaneStatus,
+    pub queue_wait_ms: u64,
+}
+
+/// One work class's slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub(crate) struct LaneStatus {
+    /// Calls of the class that may run at once.
+    pub limit: usize,
+    /// Calls of the class running now.
+    pub in_use: usize,
+    /// Calls of the class waiting for a slot.
+    pub queued: usize,
 }
 
 /// The `watches` block of `index_status`.

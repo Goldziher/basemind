@@ -324,12 +324,19 @@ pub trait IndexView: Send + Sync {
     /// `(importer, edges)` in importer order: the input of the import graph. Complete only when
     /// [`Self::import_probes_complete`]; a file in a language with no resolver has no row. One walk
     /// of `import_targets`, whose other rows (one per resolved binding, one manifest per importer)
-    /// are skipped.
+    /// are skipped. Each row is decoded as it is reached, so a caller that folds them never holds
+    /// them all.
+    fn file_edge_rows<'a>(&'a self) -> Box<dyn Iterator<Item = (RelPath, keys::FileEdges)> + 'a> {
+        Box::new(
+            self.iter(Part::ImportTargets)
+                .filter_map(|row| row.ok())
+                .filter_map(|(k, v)| keys::parse_file_edges(&k, &v)),
+        )
+    }
+
+    /// [`Self::file_edge_rows`], collected.
     fn file_edges(&self) -> Vec<(RelPath, keys::FileEdges)> {
-        self.iter(Part::ImportTargets)
-            .filter_map(|row| row.ok())
-            .filter_map(|(k, v)| keys::parse_file_edges(&k, &v))
-            .collect()
+        self.file_edge_rows().collect()
     }
 
     /// Every importer whose resolution consulted `path` (repo-relative, forward-slashed) or one of its

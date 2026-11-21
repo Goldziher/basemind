@@ -1,5 +1,6 @@
 //! The file-level import graph (ADR-0047 decision 5), built at query time from the live view's
-//! file-edge rows ([`IndexView::file_edges`]) and cached per workspace per `cache_generation`.
+//! file-edge rows ([`IndexView::file_edge_rows`]) and cached per workspace per `cache_generation`;
+//! concurrent callers of one generation share one build.
 //!
 //! A node is a file that imports or is imported through a resolved edge; a file the resolvers
 //! reached no edge for is not a node. Node ids follow path order, so every answer built from them
@@ -16,15 +17,15 @@
 //! resolver read and how many imports it could not place, so a caller states what the graph knows:
 //! a repository with no resolvable language has no edges, which is not the same as no cycles.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, OnceLock};
 
 use ahash::AHashMap;
 use parking_lot::Mutex;
 
 use crate::engine::error::EngineError;
 use crate::engine::workspace::Workspace;
-use crate::index::keys::{EdgeKinds, FileEdges};
+use crate::index::keys::{EdgeKinds, FileEdge, FileEdges};
 use crate::index::view::IndexView;
 use crate::path::RelPath;
 
@@ -225,13 +226,13 @@ pub(crate) struct ImportGraph {
 }
 
 impl ImportGraph {
-    /// Build the graph from the file-edge rows of a view.
+    /// Build the graph from the file-edge rows of a view, read once as they stream in.
     ///
     /// `files` is every indexed file with its language, for [`Coverage`]; `has_resolver` says
     /// whether a language has a compiled-in resolver; `probes_complete` is the view's
     /// `import_probes_complete()`, without which the rows may describe only part of the index.
     pub(crate) fn build<'a>(
-        rows: Vec<(RelPath, FileEdges)>,
+        rows: impl IntoIterator<Item = (RelPath, FileEdges)>,
         files: impl IntoIterator<Item = (&'a RelPath, &'a str)>,
         has_resolver: impl Fn(&str) -> bool,
         probes_complete: bool,
@@ -249,31 +250,34 @@ impl ImportGraph {
                 })
                 .files += 1;
         }
-        for (importer, edges) in &rows {
-            let Some(coverage) = language_of
-                .get(importer)
+        // Each row is counted into its language's coverage and only its edges are kept: the rest of
+        // it (the unresolved specifiers above all) is dropped as soon as it is read.
+        let mut lists: Vec<(RelPath, Vec<FileEdge>)> = Vec::new();
+        for (importer, edges) in rows {
+            if let Some(coverage) = language_of
+                .get(&importer)
                 .and_then(|language| by_language.get_mut(language))
-            else {
-                continue;
-            };
-            let only = |kind: EdgeKinds| {
-                let count = edges.edges.iter().filter(|edge| edge.kinds == kind).count();
-                u32::try_from(count).unwrap_or(u32::MAX)
-            };
-            coverage.importers += 1;
-            coverage.edges += u32::try_from(edges.edges.len()).unwrap_or(u32::MAX);
-            coverage.type_only_edges += only(EdgeKinds::TYPE_ONLY);
-            coverage.module_decl_edges += only(EdgeKinds::MODULE_DECL);
-            coverage.external += edges.external;
-            coverage.unresolved += edges.unresolved;
+            {
+                let only = |kind: EdgeKinds| {
+                    let count = edges.edges.iter().filter(|edge| edge.kinds == kind).count();
+                    u32::try_from(count).unwrap_or(u32::MAX)
+                };
+                coverage.importers += 1;
+                coverage.edges += u32::try_from(edges.edges.len()).unwrap_or(u32::MAX);
+                coverage.type_only_edges += only(EdgeKinds::TYPE_ONLY);
+                coverage.module_decl_edges += only(EdgeKinds::MODULE_DECL);
+                coverage.external += edges.external;
+                coverage.unresolved += edges.unresolved;
+            }
+            lists.push((importer, edges.edges));
         }
         let mut languages: Vec<LanguageCoverage> = by_language.into_values().collect();
         languages.sort_unstable_by(|a, b| a.language.cmp(&b.language));
         drop(language_of);
 
-        let mut paths: Vec<RelPath> = rows
+        let mut paths: Vec<RelPath> = lists
             .iter()
-            .flat_map(|(importer, edges)| std::iter::once(importer).chain(edges.edges.iter().map(|edge| &edge.target)))
+            .flat_map(|(importer, edges)| std::iter::once(importer).chain(edges.iter().map(|edge| &edge.target)))
             .cloned()
             .collect();
         paths.sort_unstable();
@@ -284,11 +288,10 @@ impl ImportGraph {
             NodeId::try_from(at).unwrap_or(NodeId::MAX)
         };
 
-        let mut forward_lists: Vec<(NodeId, Vec<Edge>)> = rows
+        let mut forward_lists: Vec<(NodeId, Vec<Edge>)> = lists
             .iter()
             .map(|(importer, edges)| {
                 let mut out: Vec<Edge> = edges
-                    .edges
                     .iter()
                     .map(|edge| Edge {
                         node: id(&edge.target),
@@ -307,7 +310,7 @@ impl ImportGraph {
                 (id(importer), out)
             })
             .collect();
-        drop(rows);
+        drop(lists);
         forward_lists.sort_unstable_by_key(|(importer, _)| *importer);
 
         let nodes = paths.len();
@@ -622,24 +625,102 @@ fn reverse_of(forward: &Csr, nodes: usize) -> Csr {
     Csr { offsets, edges }
 }
 
-/// The workspace's graph, kept for one `cache_generation`.
+/// A build in flight: every caller of its generation waits on the one cell, so concurrent callers
+/// share one build instead of each scanning the keyspace. A failed build leaves `None` there; each
+/// waiter then builds on its own and reports its own error.
+type Flight = Arc<OnceLock<Option<Arc<ImportGraph>>>>;
+
+/// The workspace's graph, kept for one `cache_generation`, and the builds in flight.
 #[derive(Default)]
 pub(crate) struct GraphCache {
     slot: Mutex<Option<(u32, Arc<ImportGraph>)>>,
+    flights: Mutex<AHashMap<u32, Flight>>,
+    #[cfg(test)]
+    builds: std::sync::atomic::AtomicUsize,
 }
 
 impl GraphCache {
-    /// The graph of `generation`: the kept one, or `build`'s, which is kept when it fits
-    /// [`CACHE_BYTES_MAX`] and no newer generation's graph is kept already. The lock is not held
-    /// while `build` runs, so a build never waits on another caller's.
+    /// The graph of `generation`: the kept one, the one a concurrent caller of the same generation
+    /// is building, or `build`'s. A graph is kept when it fits [`CACHE_BYTES_MAX`] and no newer
+    /// generation's graph is kept already.
+    ///
+    /// The caller must not hold a lock `build` takes: it may wait for another caller's `build`.
     pub(crate) fn get_or_build<E>(
         &self,
         generation: u32,
         build: impl FnOnce() -> Result<ImportGraph, E>,
     ) -> Result<Arc<ImportGraph>, E> {
-        if let Some((_, graph)) = self.slot.lock().as_ref().filter(|(kept, _)| *kept == generation) {
-            return Ok(Arc::clone(graph));
+        // The kept graph is looked up under the flights lock: a finished build keeps its graph
+        // before it retires its flight, so a caller arriving in between finds one or the other.
+        let flight = {
+            let mut flights = self.flights.lock();
+            if let Some(graph) = self.kept(generation) {
+                return Ok(graph);
+            }
+            Arc::clone(flights.entry(generation).or_default())
+        };
+        let mut build = Some(build);
+        let mut failure = None;
+        let shared = flight.get_or_init(|| {
+            let build = build.take()?;
+            match self.build_and_keep(generation, build) {
+                Ok(graph) => Some(graph),
+                Err(error) => {
+                    failure = Some(error);
+                    None
+                }
+            }
+        });
+        let shared = shared.clone();
+        {
+            let mut flights = self.flights.lock();
+            if flights
+                .get(&generation)
+                .is_some_and(|current| Arc::ptr_eq(current, &flight))
+            {
+                flights.remove(&generation);
+            }
         }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        match (shared, build) {
+            (Some(graph), _) => Ok(graph),
+            (None, Some(build)) => self.build_and_keep(generation, build),
+            (None, None) => unreachable!("a build that ran either failed or produced a graph"),
+        }
+    }
+
+    /// [`Self::get_or_build`] that never waits for another caller's build, for a caller holding a
+    /// lock that build takes (`index_status` holds the store read lock): it builds itself instead.
+    pub(crate) fn get_or_build_alone<E>(
+        &self,
+        generation: u32,
+        build: impl FnOnce() -> Result<ImportGraph, E>,
+    ) -> Result<Arc<ImportGraph>, E> {
+        match self.kept(generation) {
+            Some(graph) => Ok(graph),
+            None => self.build_and_keep(generation, build),
+        }
+    }
+
+    fn kept(&self, generation: u32) -> Option<Arc<ImportGraph>> {
+        self.slot
+            .lock()
+            .as_ref()
+            .filter(|(kept, _)| *kept == generation)
+            .map(|(_, graph)| Arc::clone(graph))
+    }
+
+    /// Run `build` and keep its graph when it fits and is not older than the kept one. No lock is
+    /// held while `build` runs.
+    fn build_and_keep<E>(
+        &self,
+        generation: u32,
+        build: impl FnOnce() -> Result<ImportGraph, E>,
+    ) -> Result<Arc<ImportGraph>, E> {
+        #[cfg(test)]
+        self.builds.fetch_add(1, Ordering::Relaxed);
         let graph = Arc::new(build()?);
         if graph.approx_bytes() <= CACHE_BYTES_MAX {
             let mut slot = self.slot.lock();
@@ -648,6 +729,12 @@ impl GraphCache {
             }
         }
         Ok(graph)
+    }
+
+    /// Builds started, for the single-flight tests.
+    #[cfg(test)]
+    pub(crate) fn builds(&self) -> usize {
+        self.builds.load(Ordering::Relaxed)
     }
 }
 
@@ -661,10 +748,11 @@ pub(crate) fn import_graph(ws: &Workspace) -> Result<Arc<ImportGraph>, EngineErr
 }
 
 /// [`import_graph`] for a caller that already holds the store read lock (`index_status`), which
-/// must not take it a second time.
+/// must not take it a second time, nor wait for a build that takes it: a writer queued for the lock
+/// would hold that build back until this caller lets go.
 pub(crate) fn import_graph_held(ws: &Workspace, store: &crate::store::Store) -> Result<Arc<ImportGraph>, EngineError> {
     let generation = ws.cache_generation.load(Ordering::Acquire);
-    ws.import_graph.get_or_build(generation, || build_from(store))
+    ws.import_graph.get_or_build_alone(generation, || build_from(store))
 }
 
 fn build_from(store: &crate::store::Store) -> Result<ImportGraph, EngineError> {
@@ -675,7 +763,7 @@ fn build_from(store: &crate::store::Store) -> Result<ImportGraph, EngineError> {
         .iter()
         .map(|(path, entry)| (path, entry.language.as_str()));
     Ok(ImportGraph::build(
-        view.file_edges(),
+        view.file_edge_rows(),
         files,
         has_resolver,
         view.import_probes_complete(),

@@ -210,7 +210,7 @@ pub struct BasemindServer {
     /// SEP-2663 Tasks extension executor. Slow tools (see [`tasks::SLOW_CALLS`]) offload their work
     /// here for task-capable clients; cheaply cloneable and shared across every clone of the server.
     tasks: TaskManager,
-    /// Bounds allocation-heavy calls while allowing control/comms traffic to bypass the queue.
+    /// Bounds heavy and whole-corpus calls while allowing control/comms traffic to bypass the queue.
     heavy_admission: Arc<admission::HeavyAdmission>,
     /// A `basemind` CLI command's relay session ([`for_cli`](Self::for_cli)).
     cli: bool,

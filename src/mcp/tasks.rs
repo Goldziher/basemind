@@ -309,7 +309,7 @@ mod tests {
     #[tokio::test]
     async fn cancelling_a_read_returns_promptly_and_releases_the_permit() {
         use super::super::admission::{HeavyAdmission, WorkClass};
-        let admission = HeavyAdmission::new(1, std::time::Duration::from_millis(50));
+        let admission = HeavyAdmission::new(1, 1, std::time::Duration::from_millis(50));
         let permit = admission.admit(WorkClass::Heavy).await.expect("permit");
         let ct = tokio_util::sync::CancellationToken::new();
         let call = tokio::spawn(run_bounded_read(
@@ -351,7 +351,7 @@ mod tests {
     #[tokio::test]
     async fn cancelling_a_task_releases_a_cancel_aware_reads_link() {
         use super::super::admission::{HeavyAdmission, WorkClass};
-        let admission = HeavyAdmission::new(1, std::time::Duration::from_millis(50));
+        let admission = HeavyAdmission::new(1, 1, std::time::Duration::from_millis(50));
         let permit = admission.admit(WorkClass::Heavy).await.expect("permit");
         let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let tool_ct = tokio_util::sync::CancellationToken::new();
@@ -380,7 +380,7 @@ mod tests {
     #[tokio::test]
     async fn cancelling_a_task_detaches_a_mutating_tool() {
         use super::super::admission::{HeavyAdmission, WorkClass};
-        let admission = HeavyAdmission::new(1, std::time::Duration::from_millis(50));
+        let admission = HeavyAdmission::new(1, 1, std::time::Duration::from_millis(50));
         let permit = admission.admit(WorkClass::Heavy).await.expect("permit");
         let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let tool_ct = tokio_util::sync::CancellationToken::new();

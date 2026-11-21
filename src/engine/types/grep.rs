@@ -53,9 +53,9 @@ pub struct WorkspaceGrepParams {
     /// ([`PathFilter`](crate::path_filter::PathFilter)). Same convention as `find_files`.
     #[serde(default)]
     pub path: Option<String>,
-    /// Max number of HITS returned. Default 100, max 1000. It does not bound the files scanned:
-    /// grep always sweeps the whole indexed corpus (after the `language` / `path` filters), so a
-    /// rare token is found wherever it lives.
+    /// Max number of HITS returned. Default 100, max 1000. It bounds the files read only once more
+    /// than this many matches are found: until then grep sweeps the indexed corpus (after the
+    /// `language` / `path` filters), so a rare token is found wherever it lives.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Optional token budget bounding the returned `hits` list (not the whole envelope).
@@ -302,14 +302,19 @@ pub(crate) enum GrepTruncation {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct WorkspaceGrepResponse {
-    /// Exact hit count from the cursor position on (the whole scanned corpus on a first page), not
-    /// just the returned page. Written only beside a `next_cursor`: a page without one lists every
-    /// hit.
+    /// Hit count from the cursor position on, not just the returned page: exact over the scanned
+    /// corpus, or the count over the files read so far when `total_is_partial`. Written only beside
+    /// a `next_cursor`: a page without one lists every hit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<u32>,
-    /// True when files were left unread, so `total` does not cover them. Never true because
-    /// `limit` cut the page or because the corpus is large: grep scans every candidate file it may
-    /// read. Absent when false.
+    /// True when the sweep stopped reading once the files read held more than `limit` hits, so
+    /// `total` is a lower bound. `next_cursor` continues, and each later page counts on from where
+    /// this one stopped. Absent when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub total_is_partial: bool,
+    /// True when the byte budget left files unread, so `total` does not cover them. Never true
+    /// because `limit` cut the page or because the sweep stopped once the page was full. Absent when
+    /// false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// `byte_budget` whenever `truncated` is true. There is no `omitted`: the matches in the

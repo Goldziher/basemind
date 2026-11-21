@@ -153,6 +153,7 @@ impl Workspace {
                 head_sha: identity.head_sha,
                 head_short_sha: identity.head_short_sha,
                 elapsed_us: elapsed_us(body),
+                admission: None,
             });
         };
         let mut by_lang_ref: BTreeMap<&str, usize> = BTreeMap::new();
@@ -205,6 +206,7 @@ impl Workspace {
             head_sha: identity.head_sha,
             head_short_sha: identity.head_short_sha,
             elapsed_us: elapsed_us(body),
+            admission: None,
         })
     }
 

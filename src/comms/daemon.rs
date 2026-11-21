@@ -155,7 +155,8 @@ pub(super) struct Registry {
 pub struct Broker {
     /// The agent store and everything the daemon keeps beside it (ADR-0021).
     pub(super) agents: Arc<AgentHub>,
-    /// Process-wide heavy-work gate shared by every relay and HTTP MCP connection.
+    /// Process-wide admission of heavy and whole-corpus calls, shared by every relay and HTTP MCP
+    /// connection.
     pub(crate) heavy_admission: Arc<crate::mcp::admission::HeavyAdmission>,
     /// Hot read-write workspace indexes. The daemon is the machine's sole fjall writer; front-ends
     /// forward their scans/rescans here so concurrent read-only sessions never contend for the lock.

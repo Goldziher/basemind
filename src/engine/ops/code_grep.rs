@@ -83,11 +83,12 @@ impl Workspace {
 
 /// Body of `code_grep`.
 ///
-/// Scans every indexed file that passes the `path` / `language` filters — the full corpus,
-/// in parallel — reads each as text (a byte that is not UTF-8 reads as `_`, see
-/// [`crate::source_text`]; unreadable files are skipped and counted in `skipped_files`), and
-/// applies the compiled regex. `limit` caps returned HITS, never files
-/// scanned, so `total` is exact for the scanned window. Supports
+/// Scans the indexed files that pass the `path` / `language` filters in order, in
+/// parallel steps, reads each as text (a byte that is not UTF-8 reads as `_`, see
+/// [`crate::source_text`]; unreadable files are skipped and counted in `skipped_files`), and applies
+/// the compiled regex. It stops once the files read hold more matches than `limit`, so a common
+/// pattern reads only the files its page needs and `total` is then a lower bound
+/// (`total_is_partial`); a rare one is still searched for across the whole window. Supports
 /// in-memory pagination via `cursor` / `next_cursor` on the same
 /// `encode_in_memory(offset, generation)` scheme as `list_files`.
 fn workspace_grep(
@@ -105,6 +106,7 @@ fn workspace_grep(
             if snapshot_id != generation {
                 return Ok(WorkspaceGrepResponse {
                     total: None,
+                    total_is_partial: false,
                     truncated: false,
                     truncated_reason: None,
                     budgeted: false,
@@ -181,41 +183,49 @@ fn workspace_grep(
     let paths: Vec<&RelPath> = scanned.iter().map(|(path, _)| *path).collect();
     // Documents have no bloom row: they sit after the code files and are always read.
     let code_files = scanned.partition_point(|(_, meta)| !meta.hash_hex.is_empty());
-    let entries: Vec<GrepEntry> = scanned[..code_files]
-        .iter()
-        .map(|(path, meta)| GrepEntry {
-            rel: (*path).clone(),
-            hash_hex: meta.hash_hex.to_string(),
-            size_bytes: meta.size_bytes,
-            mtime_ns: meta.mtime_ns,
-        })
-        .collect();
+    let index = bloom_prefilter_enabled()
+        .then(|| ws.store_read().read_index_view())
+        .flatten();
     // Files the per-file trigram blooms prove cannot match are never opened. They keep their slot in
     // `paths` (counted as zero), so window order, `file_idx` and every cursor are those of the full sweep.
-    let skip = if bloom_prefilter_enabled() {
-        let idx = ws.store_read().read_index_view();
-        grep_skip(idx, root, &source, &entries).map(|mut skip| {
-            skip.resize(scanned.len(), false);
-            skip
-        })
-    } else {
-        None
+    let skip_of = |range: std::ops::Range<usize>| -> Option<Vec<bool>> {
+        let index = index.as_ref()?;
+        let code = range.start.min(code_files)..range.end.min(code_files);
+        let entries: Vec<GrepEntry> = scanned[code]
+            .iter()
+            .map(|(path, meta)| GrepEntry {
+                rel: (*path).clone(),
+                hash_hex: meta.hash_hex.to_string(),
+                size_bytes: meta.size_bytes,
+                mtime_ns: meta.mtime_ns,
+            })
+            .collect();
+        let mut skip = grep_skip(Some(std::sync::Arc::clone(index)), root, &source, &entries)?;
+        skip.resize(range.len(), false);
+        Some(skip)
     };
-    let (counts, skipped_files) = {
-        let sweep = Sweep::new(files);
+    let sweep = Sweep::new(files);
+    let count_step = |range: std::ops::Range<usize>, first_skip: u32| {
+        let skip = skip_of(range.clone());
         count_all(
             &sweep,
-            &paths,
+            &paths[range],
             skip.as_deref(),
             &re,
             literal.as_ref(),
-            skip_hits,
+            first_skip,
             cancelled,
         )
     };
+    let counted = count_until_page_full(paths.len(), &count_step, skip_hits, limit, cancelled);
     if cancelled() {
         return Err(EngineError::Cancelled);
     }
+    let Counted {
+        counts,
+        skipped: skipped_files,
+        stopped_early,
+    } = counted;
 
     let total = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
 
@@ -255,6 +265,7 @@ fn workspace_grep(
 
     Ok(WorkspaceGrepResponse {
         total: next_cursor.is_some().then_some(total),
+        total_is_partial: stopped_early,
         truncated: byte_budget_hit,
         truncated_reason: byte_budget_hit.then_some(GrepTruncation::ByteBudget),
         budgeted,
@@ -303,6 +314,55 @@ fn apply_byte_budget<'a, 'b>(
         }
     }
     (&window[..end], end < window.len())
+}
+
+/// Files counted together before the sweep checks whether the page is full. Fixed, so where a sweep
+/// stops, and the partial `total` it then reports, is the same on every machine.
+const COUNT_STEP_FILES: usize = 256;
+
+/// What the counting pass read.
+struct Counted {
+    /// The match counts of the leading files of the window it reached, in window order.
+    counts: Vec<u32>,
+    /// Files among them that could not be searched.
+    skipped: usize,
+    /// It stopped before the end of the window because the page was full.
+    stopped_early: bool,
+}
+
+/// Count the window's `files` [`COUNT_STEP_FILES`] at a time with `count_step(range, skip_hits)`
+/// ([`count_all`] over those files), stopping once the files counted hold more than `limit`
+/// matches: the page and the cursor resuming after it are then fixed, and the files after them are
+/// counted by the page that reads them. More than `limit`, not as many: a page of exactly `limit`
+/// hits gets a cursor only when a further match is known. `skip_hits` applies to the first step.
+fn count_until_page_full(
+    files: usize,
+    count_step: &dyn Fn(std::ops::Range<usize>, u32) -> (Vec<u32>, usize),
+    skip_hits: u32,
+    limit: usize,
+    cancelled: &dyn Fn() -> bool,
+) -> Counted {
+    let mut counted = Counted {
+        counts: Vec::with_capacity(files.min(COUNT_STEP_FILES)),
+        skipped: 0,
+        stopped_early: false,
+    };
+    let mut matches: u64 = 0;
+    for start in (0..files).step_by(COUNT_STEP_FILES) {
+        if cancelled() {
+            break;
+        }
+        if matches > limit as u64 {
+            counted.stopped_early = true;
+            break;
+        }
+        let end = (start + COUNT_STEP_FILES).min(files);
+        let (step, skipped) = count_step(start..end, if start == 0 { skip_hits } else { 0 });
+        matches += step.iter().map(|&count| u64::from(count)).sum::<u64>();
+        counted.counts.extend(step);
+        counted.skipped += skipped;
+    }
+    counted
 }
 
 /// Count the matches in every scanned file, in parallel. Order-preserving: rayon's `map`/`collect`
