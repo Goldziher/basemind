@@ -595,8 +595,10 @@ request must then present the bearer token published as the second line of `<com
 first line of that file is the bound address: the default port is `51786`, but a daemon that finds it
 in use binds another. A daemon serving HTTP is not stopped for idleness, because no HTTP client can
 start one and a daemon started implicitly never serves HTTP: start it with `basemind comms start`
-(or the systemd unit) and stop it with `basemind comms stop`. Plugin manifests and the CLI use the
-stdio transport and need none of this.
+(or the systemd unit) and stop it with `basemind comms stop`. A non-loopback `BASEMIND_HTTP_ADDR`
+is refused unless `BASEMIND_ALLOW_HTTP_REMOTE` is truthy too: the transport is plain HTTP, so the
+token would cross the network in cleartext. Reach a loopback listener through an SSH tunnel or a TLS
+reverse proxy instead. Plugin manifests and the CLI use the stdio transport and need none of this.
 
 </details>
 

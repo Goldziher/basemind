@@ -21,6 +21,7 @@ repository. A truthy value is `1`, `true` or `yes`.
 | `BASEMIND_ALLOW_FOLLOW_SYMLINKS` | Honour `[scan] follow_symlinks = true`. |
 | `BASEMIND_ALLOW_REPO_CREDENTIALS` | Let `[scan] floor_allow` index credential files (`.env`, `*.pem`, keys). |
 | `BASEMIND_ALLOW_HTTP` | Bind the daemon's streamable-HTTP MCP front-end on loopback. |
+| `BASEMIND_ALLOW_HTTP_REMOTE` | With `BASEMIND_ALLOW_HTTP`, let a non-loopback `BASEMIND_HTTP_ADDR` bind. The transport is plain HTTP, so the bearer token crosses the network in cleartext; prefer a loopback address reached through an SSH tunnel or a TLS reverse proxy. Without it such an address is refused. |
 
 ## Daemon and agents
 

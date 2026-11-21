@@ -47,6 +47,12 @@ use anyhow::{Context, Result};
 /// the daemon's environment starts the listener; unset or anything else means no socket is bound.
 pub const ALLOW_HTTP_ENV: &str = "BASEMIND_ALLOW_HTTP";
 
+/// Second operator grant, for a non-loopback `BASEMIND_HTTP_ADDR`. Truthy (`1`, `true`, `yes`) in
+/// the daemon's environment lets the listener bind off-host; without it such an address is refused.
+/// A separate grant because the transport is plain HTTP: off loopback the bearer token crosses the
+/// network in cleartext, which enabling the front-end alone must not accept.
+pub const ALLOW_HTTP_REMOTE_ENV: &str = "BASEMIND_ALLOW_HTTP_REMOTE";
+
 /// Portfile name under `comms_dir`. Line 1 is the bound `host:port`, line 2 the bearer token, so
 /// tooling reads the address instead of assuming the default port and the credential instead of
 /// guessing it.
@@ -87,6 +93,18 @@ pub fn http_enabled() -> bool {
 /// listener. Absent is not a grant, and neither is anything but an explicit truthy word — a
 /// mistyped value must fail closed.
 fn grants_http(value: Option<&str>) -> bool {
+    value.is_some_and(is_truthy)
+}
+
+/// Whether the operator has granted a non-loopback bind of the HTTP front-end for this daemon
+/// process. The decision is [`grants_remote_bind`], for the reason [`http_enabled`] gives.
+pub fn remote_bind_granted() -> bool {
+    grants_remote_bind(std::env::var(ALLOW_HTTP_REMOTE_ENV).ok().as_deref())
+}
+
+/// Whether a raw [`ALLOW_HTTP_REMOTE_ENV`] value grants a non-loopback bind. Fails closed like
+/// [`grants_http`].
+fn grants_remote_bind(value: Option<&str>) -> bool {
     value.is_some_and(is_truthy)
 }
 
@@ -343,6 +361,20 @@ mod tests {
             "truthy",
         ] {
             assert!(!grants_http(Some(falsy)), "{falsy:?} does not grant the listener");
+        }
+    }
+
+    #[test]
+    fn only_an_explicit_truthy_grant_allows_a_remote_bind() {
+        assert!(!grants_remote_bind(None), "an unset variable is not a grant");
+        for truthy in ["1", "true", "TRUE", " yes "] {
+            assert!(grants_remote_bind(Some(truthy)), "{truthy:?} grants a remote bind");
+        }
+        for falsy in ["0", "false", "no", "", "on", "remote"] {
+            assert!(
+                !grants_remote_bind(Some(falsy)),
+                "{falsy:?} does not grant a remote bind"
+            );
         }
     }
 }

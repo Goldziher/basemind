@@ -143,6 +143,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** the HTTP front-end refuses a non-loopback `BASEMIND_HTTP_ADDR` unless
+  `BASEMIND_ALLOW_HTTP_REMOTE` is also truthy in the daemon's environment (#241). The transport is
+  plain HTTP, so off loopback the bearer token crosses the network in cleartext; `BASEMIND_ALLOW_HTTP`
+  alone used to bind such an address with only a warning. The refused front-end logs the reason and
+  the rest of the daemon keeps running. The warning on a granted remote bind now says what the
+  bind does: no TLS, basemind's own Host-header check off, rmcp's loopback `Host` allowlist still on;
+  it no longer points to an `allowed_hosts`/`origins` setting basemind does not have.
+
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
   `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`

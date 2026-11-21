@@ -29,6 +29,10 @@ is cleaned up.
    prefix and `mcp__basemind__`. `memory_save`, `index_rescan` and the agent tools keep asking.
 6. Update scripts and prompts for the tool renames ("Tool mapping" below) and the `basemind agent`
    CLI ("Upgrading to agent comms v2").
+7. If the daemon's HTTP front-end binds a non-loopback `BASEMIND_HTTP_ADDR`, it is now refused (the
+   daemon log says why) unless `BASEMIND_ALLOW_HTTP_REMOTE=1` is set in the daemon's environment as
+   well. The transport is plain HTTP, so the bearer token crosses the network in cleartext; prefer a
+   loopback address reached through an SSH tunnel or a TLS reverse proxy.
 
 ## Upgrading to the verb tools (ADR-0018)
 
