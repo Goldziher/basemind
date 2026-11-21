@@ -3,7 +3,8 @@
 //! This is the one place the library reads them: the binary installs the result before any command
 //! runs, and core, retrieval and engine code read the installed [`EngineConfig`] (ADR-0050). Each
 //! variable keeps the meaning, defaults and parsing it had when the code that uses it read it
-//! directly.
+//! directly, except the booleans: every one goes through [`crate::config::engine::parse_bool`], and
+//! a value that is not one of its spellings is an error.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -11,7 +12,7 @@ use std::time::Duration;
 
 use crate::config::daemon::DaemonCaps;
 use crate::config::engine::DependencyHomes;
-use crate::config::engine::{ExtraRootsGrant, is_truthy};
+use crate::config::engine::{ExtraRootsGrant, bool_env};
 use crate::config::root_guard::ALLOW_ANY_ROOT_ENV;
 use crate::config::trust::{ALLOW_DEPENDENCY_ROOTS_ENV, ALLOW_FOLLOW_SYMLINKS_ENV};
 use crate::daemon_lock::{MAX_LIVE_DAEMONS_ENV, max_live_daemons_from};
@@ -49,25 +50,29 @@ fn text(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Option<String
     lookup(name).and_then(|value| value.into_string().ok())
 }
 
-fn grant(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> bool {
-    text(lookup, name).is_some_and(|value| is_truthy(&value))
+/// The boolean variable `name`, `None` when it is unset or blank. A value that is not Unicode is
+/// read lossily, so it is refused like any other non-boolean instead of counting as unset.
+fn flag(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Result<Option<bool>, EngineError> {
+    let value = lookup(name).map(|value| value.to_string_lossy().into_owned());
+    bool_env(name, value.as_deref()).map_err(EngineError::invalid_argument)
 }
 
-/// The engine configuration the process environment describes.
-pub fn engine_config_from_env() -> EngineConfig {
+/// The engine configuration the process environment describes, or the error naming a boolean
+/// variable set to a value that is not one.
+pub fn engine_config_from_env() -> Result<EngineConfig, EngineError> {
     crate::config::trust::warn_removed_variables(|name| std::env::var_os(name).is_some());
     engine_config_from(|name| std::env::var_os(name))
 }
 
 /// The engine configuration `lookup` describes, `lookup` standing in for `std::env::var_os`.
-pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineConfig {
+pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> Result<EngineConfig, EngineError> {
     let mut config = EngineConfig::default();
     if let Some(home) = lookup(DATA_HOME_ENV) {
         config.data_root = data_root_from(home);
     }
-    config.trust.allow_repo_credentials = grant(&lookup, ALLOW_REPO_CREDENTIALS_ENV);
-    config.trust.allow_any_root = grant(&lookup, ALLOW_ANY_ROOT_ENV);
-    config.trust.allow_follow_symlinks = grant(&lookup, ALLOW_FOLLOW_SYMLINKS_ENV);
+    config.trust.allow_repo_credentials = flag(&lookup, ALLOW_REPO_CREDENTIALS_ENV)?.unwrap_or(false);
+    config.trust.allow_any_root = flag(&lookup, ALLOW_ANY_ROOT_ENV)?.unwrap_or(false);
+    config.trust.allow_follow_symlinks = flag(&lookup, ALLOW_FOLLOW_SYMLINKS_ENV)?.unwrap_or(false);
     if let Some(value) = text(&lookup, ALLOW_EXTRA_ROOTS_ENV) {
         config.trust.extra_roots = ExtraRootsGrant::parse(&value, ALLOW_EXTRA_ROOTS_ENV);
     }
@@ -78,7 +83,7 @@ pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineCo
     if let Some(millis) = text(&lookup, PARSE_TIMEOUT_MS_ENV).and_then(|raw| raw.parse::<u64>().ok()) {
         config.parse_timeout = Duration::from_millis(millis);
     }
-    config.grammars.offline = text(&lookup, GRAMMAR_OFFLINE_ENV).is_some_and(|v| v != "0" && !v.is_empty());
+    config.grammars.offline = flag(&lookup, GRAMMAR_OFFLINE_ENV)?.unwrap_or(false);
     // Blank counts as unset, as the language pack reads it. ~keep
     config.grammars.cache_dir = lookup(GRAMMAR_CACHE_DIR_ENV)
         .filter(|value| value.to_str().is_none_or(|value| !value.trim().is_empty()))
@@ -88,14 +93,33 @@ pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineCo
     config.gc.blob_grace = grace_from(text(&lookup, BLOB_GC_GRACE_ENV).as_deref());
     config.min_free_bytes = headroom_bytes(text(&lookup, MIN_FREE_ENV).as_deref());
     config.max_live_daemons = max_live_daemons_from(text(&lookup, MAX_LIVE_DAEMONS_ENV).as_deref());
-    git(&lookup, &mut config);
+    git(&lookup, &mut config)?;
     config.index_cache_bytes = text(&lookup, INDEX_CACHE_BYTES_ENV).and_then(|raw| raw.parse::<u64>().ok());
-    config.grep_bloom = lookup(GREP_BLOOM_ENV).is_none_or(|value| value != "0");
+    config.grep_bloom = flag(&lookup, GREP_BLOOM_ENV)?.unwrap_or(true);
     config.daemon_caps = DaemonCaps::from_vars(|name| text(&lookup, name));
-    config
+    check_runtime_flags(&lookup)?;
+    Ok(config)
 }
 
-fn git(lookup: &impl Fn(&str) -> Option<OsString>, config: &mut EngineConfig) {
+/// Refuse a non-boolean value of the booleans the comms layer reads when it acts rather than at
+/// install, so a mistyped one stops this process before any command runs.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn check_runtime_flags(lookup: &impl Fn(&str) -> Option<OsString>) -> Result<(), EngineError> {
+    for name in [
+        crate::comms::http_auth::ALLOW_HTTP_ENV,
+        crate::comms::singleton::NO_AUTOSPAWN_ENV,
+    ] {
+        flag(lookup, name)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(all(feature = "comms", any(unix, windows))))]
+fn check_runtime_flags(_lookup: &impl Fn(&str) -> Option<OsString>) -> Result<(), EngineError> {
+    Ok(())
+}
+
+fn git(lookup: &impl Fn(&str) -> Option<OsString>, config: &mut EngineConfig) -> Result<(), EngineError> {
     let git = &mut config.git;
     if let Some(bytes) = text(lookup, GIT_DELTA_CACHE_BYTES_ENV).and_then(|raw| raw.trim().parse::<usize>().ok()) {
         git.delta_cache_bytes = bytes;
@@ -109,8 +133,9 @@ fn git(lookup: &impl Fn(&str) -> Option<OsString>, config: &mut EngineConfig) {
     if let Some(bytes) = text(lookup, GIT_CACHE_MAX_BYTES_ENV).and_then(|raw| raw.parse::<u64>().ok()) {
         git.cache_max_bytes = bytes;
     }
-    git.discover_parents = lookup(DISCOVER_PARENTS_ENV).is_some_and(|value| value != "0");
-    git.history_index = text(lookup, HISTORY_INDEX_ENV).is_none_or(|value| value != "0");
+    git.discover_parents = flag(lookup, DISCOVER_PARENTS_ENV)?.unwrap_or(false);
+    git.history_index = flag(lookup, HISTORY_INDEX_ENV)?.unwrap_or(true);
+    Ok(())
 }
 
 /// The package caches `[documents.dependencies]` may read, each from its tool's own variable and
@@ -154,10 +179,11 @@ fn absolute(value: OsString) -> PathBuf {
     }
 }
 
-/// Build this process's engine from its environment. A variable with a value it cannot use, or
-/// one of a removed setting, is warned about once per process.
+/// Build this process's engine from its environment. A boolean variable set to a value that is not
+/// one is an error; another variable with a value it cannot use, or one of a removed setting, is
+/// warned about once per process.
 pub fn install_from_env() -> Result<Engine, EngineError> {
-    Engine::new(engine_config_from_env())
+    Engine::new(engine_config_from_env()?)
 }
 
 /// [`install_from_env`] without its warnings, for a command that runs on every prompt or tool
@@ -199,12 +225,56 @@ mod tests {
     use super::*;
     use crate::daemon_lock::MAX_LIVE_DAEMONS;
 
-    fn config_of(vars: &[(&str, &str)]) -> EngineConfig {
+    fn try_config_of(vars: &[(&str, &str)]) -> Result<EngineConfig, EngineError> {
         let vars: HashMap<String, OsString> = vars
             .iter()
             .map(|(name, value)| ((*name).to_string(), OsString::from(value)))
             .collect();
         engine_config_from(|name| vars.get(name).cloned())
+    }
+
+    fn config_of(vars: &[(&str, &str)]) -> EngineConfig {
+        try_config_of(vars).expect("a valid environment")
+    }
+
+    /// Every boolean variable the environment configures, comms ones included.
+    fn boolean_variables() -> Vec<&'static str> {
+        let engine = [
+            ALLOW_REPO_CREDENTIALS_ENV,
+            ALLOW_ANY_ROOT_ENV,
+            ALLOW_FOLLOW_SYMLINKS_ENV,
+            GRAMMAR_OFFLINE_ENV,
+            GREP_BLOOM_ENV,
+            DISCOVER_PARENTS_ENV,
+            HISTORY_INDEX_ENV,
+        ];
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        let comms = [
+            crate::comms::http_auth::ALLOW_HTTP_ENV,
+            crate::comms::singleton::NO_AUTOSPAWN_ENV,
+        ];
+        #[cfg(not(all(feature = "comms", any(unix, windows))))]
+        let comms: [&'static str; 0] = [];
+        engine.into_iter().chain(comms).collect()
+    }
+
+    #[test]
+    fn a_boolean_variable_set_to_a_non_boolean_is_an_error_naming_it() {
+        for name in boolean_variables() {
+            for value in ["maybe", "2", "enabled", "y"] {
+                let refused = try_config_of(&[(name, value)]);
+                assert_eq!(
+                    refused.map_err(|error| error.to_string()),
+                    Err(format!(
+                        "{name}={value:?} is not a boolean: use 1, true, yes, on or 0, false, no, off"
+                    )),
+                    "{name}={value:?}"
+                );
+            }
+            for value in ["1", "true", "YES", "on", "0", "false", "No", "OFF", "", " "] {
+                assert!(try_config_of(&[(name, value)]).is_ok(), "{name}={value:?} is accepted");
+            }
+        }
     }
 
     #[test]
@@ -256,10 +326,10 @@ mod tests {
                 ALLOW_ANY_ROOT_ENV => config.trust.allow_any_root,
                 _ => config.trust.allow_follow_symlinks,
             };
-            for word in ["1", "true", " TRUE ", "yes"] {
+            for word in ["1", "true", " TRUE ", "yes", "on", "On"] {
                 assert!(read(&config_of(&[(name, word)])), "{name}={word:?} grants");
             }
-            for word in ["0", "false", "no", "on", ""] {
+            for word in ["0", "false", "no", "off", "OFF", ""] {
                 assert!(!read(&config_of(&[(name, word)])), "{name}={word:?} does not grant");
             }
             assert!(!read(&config_of(&[])), "{name} unset does not grant");
@@ -282,13 +352,16 @@ mod tests {
     }
 
     #[test]
-    fn the_grammar_offline_variable_is_on_unless_empty_or_zero() {
+    fn the_grammar_offline_variable_is_a_boolean_off_by_default() {
         let offline = |vars: &[(&str, &str)]| config_of(vars).grammars.offline;
         assert!(!offline(&[]));
         assert!(!offline(&[(GRAMMAR_OFFLINE_ENV, "")]));
-        assert!(!offline(&[(GRAMMAR_OFFLINE_ENV, "0")]));
-        assert!(offline(&[(GRAMMAR_OFFLINE_ENV, "1")]));
-        assert!(offline(&[(GRAMMAR_OFFLINE_ENV, "false")]));
+        for word in ["0", "false", "FALSE", "no", "off"] {
+            assert!(!offline(&[(GRAMMAR_OFFLINE_ENV, word)]), "{word:?} is not offline");
+        }
+        for word in ["1", "true", "yes", "on"] {
+            assert!(offline(&[(GRAMMAR_OFFLINE_ENV, word)]), "{word:?} is offline");
+        }
     }
 
     #[test]
@@ -353,7 +426,7 @@ mod tests {
             (GREP_BLOOM_ENV, "1"),
         ]);
         assert!(!defaults.git.discover_parents);
-        assert!(defaults.git.history_index, "only `0` turns the history index off");
+        assert!(defaults.git.history_index, "a blank value counts as unset");
         assert!(defaults.grep_bloom);
         assert_eq!(
             config_of(&[(BLAME_MAX_BYTES_ENV, " 4096")]).git.blame_max_bytes,
@@ -387,9 +460,9 @@ mod tests {
             ExtraRootsGrant::Every
         );
         assert_eq!(
-            config_of(&[(ALLOW_DEPENDENCY_ROOTS_ENV, "0")]).trust.dependency_roots,
-            ExtraRootsGrant::Workspaces(Vec::new()),
-            "a word that is not a grant covers no workspace"
+            config_of(&[(ALLOW_DEPENDENCY_ROOTS_ENV, "off")]).trust.dependency_roots,
+            ExtraRootsGrant::Denied,
+            "a false word grants no workspace"
         );
         // An absolute path is spelled differently on Windows. ~keep
         #[cfg(unix)]

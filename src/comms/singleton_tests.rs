@@ -3,6 +3,34 @@
 use super::*;
 
 #[test]
+fn the_autospawn_opt_out_reads_a_boolean_and_honours_a_mistyped_one() {
+    let cases: &[(Option<&str>, bool)] = &[
+        (None, false),
+        (Some(""), false),
+        (Some("0"), false),
+        (Some("false"), false),
+        (Some("no"), false),
+        (Some("OFF"), false),
+        (Some("1"), true),
+        (Some("true"), true),
+        (Some("Yes"), true),
+        (Some("on"), true),
+        (Some("maybe"), true),
+    ];
+    for (value, forbids) in cases {
+        assert_eq!(forbids_autospawn(value.map(OsStr::new)), *forbids, "{value:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_autospawn_opt_out_forbids_spawning() {
+    use std::os::unix::ffi::OsStrExt;
+
+    assert!(forbids_autospawn(Some(OsStr::from_bytes(b"\xff"))));
+}
+
+#[test]
 fn version_is_older_orders_releases() {
     assert!(version_is_older("0.6.3", "0.10.0"));
     assert!(version_is_older("0.9.0", "0.10.0"));

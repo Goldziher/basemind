@@ -15,7 +15,7 @@
 //! second user, a container, a browser extension, an npm postinstall script — can open a socket.
 //!
 //! The listener therefore no longer exists unless an operator asks for it: [`ALLOW_HTTP_ENV`], set
-//! truthy in the *daemon's* environment. An environment variable rather than a config key because
+//! true in the *daemon's* environment. An environment variable rather than a config key because
 //! the daemon's environment is fixed at spawn and belongs to whoever started it, whereas
 //! `<repo>/basemind.toml` is authored by whoever wrote the repository — the same distinction that
 //! put `scan.extra_roots` behind `BASEMIND_ALLOW_EXTRA_ROOTS` instead of a config flag. The name
@@ -43,8 +43,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// Operator opt-in for the daemon's streamable-HTTP MCP front-end. Truthy (`1`, `true`, `yes`) in
-/// the daemon's environment starts the listener; unset or anything else means no socket is bound.
+/// Operator opt-in for the daemon's streamable-HTTP MCP front-end. True
+/// ([`parse_bool`](crate::config::engine::parse_bool)) in the daemon's environment starts the
+/// listener; unset or false means no socket is bound, and any other value is refused at startup.
 pub const ALLOW_HTTP_ENV: &str = "BASEMIND_ALLOW_HTTP";
 
 /// Portfile name under `comms_dir`. Line 1 is the bound `host:port`, line 2 the bearer token, so
@@ -66,13 +67,6 @@ pub fn portfile_path(comms_dir: &Path) -> PathBuf {
     comms_dir.join(PORTFILE_NAME)
 }
 
-/// `1` / `true` / `yes`, case- and whitespace-insensitive. Matches the private equivalents in
-/// `config::root_guard` and `scanner_candidates`; duplicated for the same reason they are.
-fn is_truthy(value: &str) -> bool {
-    let value = value.trim();
-    value.eq_ignore_ascii_case("1") || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
-}
-
 /// Whether the operator has granted the HTTP front-end for this daemon process.
 ///
 /// The decision itself is [`grants_http`], which takes the value rather than reading it: this is a
@@ -84,10 +78,14 @@ pub fn http_enabled() -> bool {
 }
 
 /// Whether a raw [`ALLOW_HTTP_ENV`] value (absent, or as the environment reports it) grants the
-/// listener. Absent is not a grant, and neither is anything but an explicit truthy word — a
-/// mistyped value must fail closed.
+/// listener. Absent is not a grant, and neither is anything but a true word. The binary refuses a
+/// non-boolean value when it installs its engine; one that reaches here anyway (a library caller
+/// that never installed it) is warned about and fails closed.
 fn grants_http(value: Option<&str>) -> bool {
-    value.is_some_and(is_truthy)
+    crate::config::engine::bool_env(ALLOW_HTTP_ENV, value).unwrap_or_else(|message| {
+        crate::config::trust::warn_once(message);
+        None
+    }) == Some(true)
 }
 
 /// One daemon process's bearer token.
@@ -323,20 +321,20 @@ mod tests {
     }
 
     #[test]
-    fn only_an_explicit_truthy_grant_starts_the_listener() {
+    fn only_a_true_word_starts_the_listener() {
         assert!(!grants_http(None), "an unset variable is not a grant");
-        for truthy in ["1", "true", "TRUE", " yes "] {
+        for truthy in ["1", "true", "TRUE", " yes ", "on", "ON"] {
             assert!(grants_http(Some(truthy)), "{truthy:?} grants the listener");
         }
         // Everything else fails closed, including the near-misses an operator is most likely to
-        // type. `on` and `enabled` read as grants to a human and must not be to us. ~keep
+        // type. ~keep
         for falsy in [
             "0",
             "false",
             "no",
+            "off",
             "",
             "  ",
-            "on",
             "enabled",
             "2",
             "yes please",

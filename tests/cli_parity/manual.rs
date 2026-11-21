@@ -212,24 +212,40 @@ fn source_texts(dir: &Path, out: &mut String) {
     }
 }
 
+/// The `BASEMIND_*` variable names `text` mentions. A name ending in `_` is a family written as a
+/// wildcard (`BASEMIND_DOCUMENTS_*`), not a variable, and is skipped.
+fn variable_names(text: &str) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("BASEMIND_") {
+        let tail = &rest[at..];
+        let end = tail
+            .find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+            .unwrap_or(tail.len());
+        let name = &tail[..end];
+        if name.len() > "BASEMIND_".len() && !name.ends_with('_') {
+            names.insert(name.to_string());
+        }
+        rest = &tail[end..];
+    }
+    names
+}
+
+#[test]
+fn variable_names_skips_a_wildcard_family() {
+    let names =
+        variable_names("Set `BASEMIND_DATA_HOME`, any `BASEMIND_DOCUMENTS_*` switch, `BASEMIND_` or BASEMIND_LLM_2.");
+    assert_eq!(
+        names.into_iter().collect::<Vec<_>>(),
+        ["BASEMIND_DATA_HOME", "BASEMIND_LLM_2"]
+    );
+}
+
 #[test]
 fn every_environment_variable_the_manual_names_is_read_by_the_source() {
     let mut source = String::new();
     source_texts(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut source);
-    let mut names = BTreeSet::new();
-    for (_, text) in pages() {
-        let mut rest = text;
-        while let Some(at) = rest.find("BASEMIND_") {
-            let tail = &rest[at..];
-            let end = tail
-                .find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
-                .unwrap_or(tail.len());
-            if end > "BASEMIND_".len() {
-                names.insert(tail[..end].to_string());
-            }
-            rest = &tail[end..];
-        }
-    }
+    let names: BTreeSet<String> = pages().into_iter().flat_map(|(_, text)| variable_names(text)).collect();
     let unknown: Vec<&String> = names
         .iter()
         .filter(|name| !source.contains(&format!("\"{name}\"")))
