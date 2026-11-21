@@ -19,6 +19,10 @@ die_unreachable() {
   die "$1 — could not reach GitHub to download basemind v${VERSION} (offline, or a proxy or firewall blocks github.com). Connect and start the session again; the binary is cached after its first download"
 }
 
+die_mirror_missing() {
+  die "$1 — the mirror BASEMIND_RELEASE_BASE_URL=${MIRROR} does not serve basemind v${VERSION}: it needs v${VERSION}/${ASSET} and v${VERSION}/basemind_${VERSION}_checksums.txt under that base, as GitHub lays out a release"
+}
+
 die_incomplete_release() {
   die "$1 — the basemind v${VERSION} release looks incomplete (a missing platform asset or checksums file). Update the basemind plugin to a complete release (Claude Code: run \`/plugin update\`); if it persists, report it at https://github.com/Goldziher/basemind/issues"
 }
@@ -361,10 +365,42 @@ case "$TRIPLE" in
 *) EXT="tar.gz" ;;
 esac
 
-BASE_URL="https://github.com/Goldziher/basemind/releases/download/v${VERSION}"
+# BASEMIND_RELEASE_BASE_URL serves the release archives from a mirror instead of GitHub. The mirror ~keep
+# keeps GitHub's layout under its base: <base>/v<version>/basemind-<triple>.<ext> beside ~keep
+# <base>/v<version>/basemind_<version>_checksums.txt. Its checksums file is checked like GitHub's. ~keep
+GITHUB_RELEASE_BASE="https://github.com/Goldziher/basemind/releases/download"
+MIRROR="${BASEMIND_RELEASE_BASE_URL:-}"
+MIRROR="${MIRROR%/}"
+if [ -n "$MIRROR" ]; then
+  case "$MIRROR" in
+  https://?* | http://?* | file:///*) ;;
+  *) die "BASEMIND_RELEASE_BASE_URL=\"${BASEMIND_RELEASE_BASE_URL}\" is not an https://, http:// or file:/// URL" ;;
+  esac
+fi
+RELEASE_BASE="${MIRROR:-$GITHUB_RELEASE_BASE}"
+BASE_URL="${RELEASE_BASE}/v${VERSION}"
 ASSET="basemind-${TRIPLE}.${EXT}"
 ASSET_URL="${BASE_URL}/${ASSET}"
 SUMS_URL="${BASE_URL}/basemind_${VERSION}_checksums.txt"
+
+# BASEMIND_OFFLINE turns every download off, this one included, with basemind's boolean spellings. ~keep
+# Offline, a cached binary of the pinned minor still serves; past that the session gets no server. ~keep
+offline_value="$(printf '%s' "${BASEMIND_OFFLINE:-}" | tr '[:upper:]' '[:lower:]')"
+offline_value="${offline_value#"${offline_value%%[![:space:]]*}"}"
+offline_value="${offline_value%"${offline_value##*[![:space:]]}"}"
+case "$offline_value" in
+'' | 0 | false | no | off) ;;
+1 | true | yes | on)
+  fb="$(newest_compatible_cached)"
+  if [ -n "$fb" ]; then
+    log "BASEMIND_OFFLINE is set and v${VERSION} is not installed; using the cached basemind $(binary_version "$fb") at $fb"
+    mark_used "$(dirname "$fb")"
+    exec "$fb" "$@"
+  fi
+  die "BASEMIND_OFFLINE is set and basemind v${VERSION} is not installed, so $ASSET was not downloaded. Put the v${VERSION} binary at $MANAGED_BIN, set BASEMIND_BIN to a vendored binary, or unset BASEMIND_OFFLINE"
+  ;;
+*) die "BASEMIND_OFFLINE=\"${BASEMIND_OFFLINE}\" is not a boolean: use 1, true, yes, on or 0, false, no, off" ;;
+esac
 
 if have curl; then
   fetch() { curl -fsSL --retry 3 -o "$2" "$1"; }
@@ -443,7 +479,7 @@ published_versions() {
 release_is_installable() {
   local ver="$1" tmp rc=1
   tmp="$(mktemp)"
-  if fetch "https://github.com/Goldziher/basemind/releases/download/v${ver}/basemind_${ver}_checksums.txt" "$tmp" 2>/dev/null &&
+  if fetch "${RELEASE_BASE}/v${ver}/basemind_${ver}_checksums.txt" "$tmp" 2>/dev/null &&
     awk -v f="$ASSET" '{name=$NF; sub(/^[*]/, "", name); if (name == f) found=1} END{exit !found}' "$tmp"; then
     rc=0
   fi
@@ -461,11 +497,13 @@ release_is_installable() {
 #   2. Offline last resort: newest cached binary of the same schema minor. ~keep
 #   3. Give up with the incomplete-release message. ~keep
 #
+# A mirror lists no releases, so step 1 asks GitHub only when no mirror is set. ~keep
+#
 # Steps 1 and 2 both refuse anything below MIN_SAFE_VERSION. A fallback exists to preserve a ~keep
 # session's tooling, and no amount of tooling is worth OOM-ing the machine. ~keep
 fallback_or_die() {
   local reason="$1" cand fb tried="" attempts=0 latest="" published="" reached=1
-  if [ -z "$FORCED_VERSION" ]; then
+  if [ -z "$FORCED_VERSION" ] && [ -z "$MIRROR" ]; then
     latest="$(resolve_latest_tag | sed 's/^v//')"
     published="$(published_versions)"
     [ -n "$latest" ] || [ -n "$published" ] || reached=""
@@ -500,6 +538,7 @@ fallback_or_die() {
     cleanup_stale_state
     exec "$fb" "${ARGS[@]}"
   fi
+  [ -z "$MIRROR" ] || die_mirror_missing "$reason"
   [ -n "$reached" ] || die_unreachable "$reason"
   die_incomplete_release "$reason"
 }

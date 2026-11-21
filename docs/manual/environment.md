@@ -32,12 +32,22 @@ repository. A truthy value is `1`, `true` or `yes`.
 | `BASEMIND_RELAY_REQUEST_TIMEOUT_SECS` | Deadline for one request through the stdio relay (default 180, `0` disables). |
 | `BASEMIND_COMMS_REQUEST_TIMEOUT_SECS` | Deadline for one daemon request (default 10). |
 
+## Network
+
+| Variable | Effect |
+|---|---|
+| `BASEMIND_OFFLINE` | Never download a grammar or a model, for this process and the daemon it starts; a missing one is an error naming it. Sets `HF_HUB_OFFLINE` for the models. `1`, `true`, `yes` or `on` turns it on and `0`, `false`, `no` or `off` leaves it off, in any case; blank is unset, and any other value stops basemind with an error naming the variable, as the plugin launcher reads it too. |
+| `HF_ENDPOINT` | The Hugging Face server the models are downloaded from (default `https://huggingface.co`), for a mirror. |
+| `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL` | Where the grammar manifest is fetched from, for a mirror (`https://` or `file://`). |
+
+Every outbound host, and what triggers each download, is listed in `docs/network.md`.
+
 ## Indexing and cache
 
 | Variable | Effect |
 |---|---|
 | `BASEMIND_GH_INDEX` | `0` turns the git-history index off; history queries then walk git. |
-| `BASEMIND_GRAMMAR_OFFLINE` | Never download a grammar; a missing one is reported instead. |
+| `BASEMIND_GRAMMAR_OFFLINE` | Never download a grammar; a missing one is reported instead. Takes the values `BASEMIND_OFFLINE` takes. |
 | `BASEMIND_PARSE_TIMEOUT_MS` | Time after which parsing one file is abandoned. |
 | `BASEMIND_MIN_FREE_MB` | Headroom, on top of 1.5 times the index size, a scan needs free on disk or it refuses. |
 | `BASEMIND_CACHE_BUDGET_MB` | Byte budget for the cache, enforced by eviction (`0`: unlimited). |

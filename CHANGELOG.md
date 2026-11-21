@@ -140,6 +140,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- The plugin launcher downloads releases from a mirror when `BASEMIND_RELEASE_BASE_URL` is set
+  (#207): `<base>/v<version>/` holds the platform archives and `basemind_<version>_checksums.txt`, as
+  a GitHub release does, and the archive is verified against that checksums file before it is
+  installed. With a mirror set the launcher asks GitHub for nothing, and a mirror missing the pinned
+  release is named in the error with the files it needs.
+- `BASEMIND_OFFLINE=1` turns every download off (#208): grammars, the Hugging Face embedding,
+  reranker and tokenizer models (basemind sets `HF_HUB_OFFLINE` for itself and the daemon it starts),
+  and the plugin launcher's binary download. A missing grammar names the grammars and the cache to
+  copy them into, a missing model names its file and repository, and the launcher names the release
+  archive, runs a cached binary of the pinned minor when it has one, and points at `BASEMIND_BIN`.
+  `docs/network.md` lists every host basemind downloads from, what triggers each download, and the
+  variables that redirect it (`BASEMIND_RELEASE_BASE_URL`, `HF_ENDPOINT`,
+  `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL`).
 
 ### Changed
 
@@ -726,6 +739,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current limit (`limit`) and a `note` naming the sysctl to raise. The daemon log warns once per
   pass that leaves more directories unwatched instead of once per directory. A refused directory is
   retried whenever its subtree is armed again.
+- `BASEMIND_GRAMMAR_OFFLINE=false` turned offline mode on: any value but `0` and the empty string
+  did. It and `BASEMIND_OFFLINE` now read `1`, `true`, `yes` and `on` as on and `0`, `false`, `no` and
+  `off` as off, in any case, with blank as unset; any other value stops basemind with an error naming
+  the variable, the rule the plugin launcher applies to `BASEMIND_OFFLINE` (#208).
+- Offline mode did not stop the grammar download a file in a language not yet cached triggers on
+  first use; only the scan's bootstrap and `basemind lang install` honoured it. The file's grammar is
+  now refused with the same error (#208).
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
