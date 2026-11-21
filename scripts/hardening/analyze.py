@@ -119,8 +119,10 @@ def tables_rule(v: Verdict, role: str, pid: int, series: list[dict[str, Any]], a
     """R3 on Linux and macOS. A daemon sample that counts its live Fjall table descriptors is judged
     net of them: each is a table on disk, opened by the database's descriptor cache and closed when
     a compaction deletes it, so their number follows the tables the stores hold (their growth is
-    R8's), not a leak. A descriptor kept on a deleted table is not live, so it is still judged."""
-    if not series or series[0].get("fds_lsm_tables") is None:
+    R8's), not a leak. A descriptor kept on a deleted table is not live, so it is still judged. A
+    series with any sample lacking the count (a process that reused the daemon's pid) is judged on
+    its total fds."""
+    if not series or any(r.get("fds_lsm_tables") is None for r in series):
         growth_rule(v, f"R3 {role} {pid} open fds", [(r["t"], r["fds"]) for r in series], args.fd_tol, "fds")
         return
     growth_rule(
@@ -148,6 +150,10 @@ def _name_delta(before: dict[str, int] | None, after: dict[str, int] | None) -> 
     keys = sorted(set(before) | set(after))
     moved = [f"{k or '<unnamed>'} {before.get(k, 0)}->{after.get(k, 0)}" for k in keys if before.get(k) != after.get(k)]
     return ", ".join(moved) or "same names and counts"
+
+
+def _prefixed(sizes: dict[str, int], prefix: str) -> list[tuple[str, int]]:
+    return [(f"{prefix}{k}", n) for k, n in sizes.items()]
 
 
 def _dir_growth(dirs: list[dict[str, Any]]) -> str:
@@ -418,7 +424,8 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
         "MiB",
         MIB,
     )
-    # The comms dir holds the daemon's log and its stores; only their Fjall journals are size-bounded.
+    # The comms dir holds the daemon's log and its stores; their Fjall journals are size-bounded and
+    # judged with the data dir's by R8b.
     growth_rule(
         v,
         "R8c comms dir size (apparent, journals excluded)",
@@ -430,7 +437,14 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
     if dirs and "data_journals" not in dirs[0]:
         v.add("R8b size-bounded stores", False, "no journal / telemetry split recorded: soak.py predates it")
     elif dirs:
-        journal = max(((n, db) for r in dirs for db, n in r["data_journals"].items()), default=(0, "-"))
+        journal = max(
+            (
+                (n, db)
+                for r in dirs
+                for db, n in [*r["data_journals"].items(), *_prefixed(r.get("comms_journals", {}), "comms/")]
+            ),
+            default=(0, "-"),
+        )
         telemetry = max(r["data_telemetry_bytes"] for r in dirs)
         v.add(
             "R8b size-bounded stores",

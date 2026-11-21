@@ -266,6 +266,18 @@ def comms_climb(rng: random.Random) -> list[dict[str, Any]]:
     return recs
 
 
+def comms_journal_overflow(rng: random.Random) -> list[dict[str, Any]]:
+    """The agents store's Fjall journal climbs 30 MiB/min past the journal bound: R8b judges the
+    comms journals with the data dir's, while R8c leaves them out of the comms dir's slope."""
+    recs = healthy(rng)
+    for r in recs:
+        if r.get("kind") == "dir":
+            extra = int(30.0 * MIB * r["t"] / 60)
+            r["comms_bytes"] += extra
+            r["comms_journals"]["g1/agents.fjall"] += extra
+    return recs
+
+
 def idle_busy(rng: random.Random) -> list[dict[str, Any]]:
     """A thread spins at 15% of a core while nothing is asked of the daemon."""
     recs = healthy(rng)
@@ -303,6 +315,16 @@ def table_growth(rng: random.Random) -> list[dict[str, Any]]:
 def table_fd_leak(rng: random.Random) -> list[dict[str, Any]]:
     """The live tables stay put while a descriptor per 20-second cycle leaks beside them."""
     return _with_tables(fd_leak(rng), 0.0)
+
+
+def table_count_gap(rng: random.Random) -> list[dict[str, Any]]:
+    """The daemon's pid is reused by a process whose samples carry no table count halfway through
+    load: the series is judged on its flat total fds, so it passes."""
+    recs = _with_tables(healthy(rng), 0.0)
+    for r in recs:
+        if r.get("kind") == "proc" and r["pid"] == DAEMON and r["t"] > (WARMUP + QUIESCE + LOAD) / 2:
+            r["fds_lsm_tables"] = None
+    return recs
 
 
 def _on_windows(recs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -355,10 +377,12 @@ CASES: list[tuple[str, Callable[[random.Random], list[dict[str, Any]]], int, set
     ("journal-overflow", journal_overflow, 1, {"R8"}),
     ("store-climb", store_climb, 1, {"R8"}),
     ("comms-climb", comms_climb, 1, {"R8"}),
+    ("comms-journal-overflow", comms_journal_overflow, 1, {"R8"}),
     ("idle-busy", idle_busy, 1, {"R6"}),
     ("fd-leak", fd_leak, 1, {"R3"}),
     ("table-growth", table_growth, 0, set()),
     ("table-fd-leak", table_fd_leak, 1, {"R3"}),
+    ("table-count-gap", table_count_gap, 0, set()),
     ("win-pool-step", win_pool_step, 0, set()),
     ("win-handle-leak", win_handle_leak, 1, {"R3"}),
     ("leaked-child", leaked_child, 1, {"R7"}),
