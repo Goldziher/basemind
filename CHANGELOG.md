@@ -144,6 +144,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- `ATTRIBUTIONS.md` lists every model basemind downloads (#294): the default and opt-in embedding,
+  reranker and NER presets, the Tesseract `eng` data and the o200k tokenizer, each with its upstream
+  model card, mirror revision where one is pinned (the Tesseract `eng` data follows an unpinned
+  branch) and licence. All are MIT or Apache-2.0, so no default changes.
 
 ### Changed
 
@@ -765,7 +769,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git hotspots` counted every such author as one, and `git log`, blame and `code explain` named
   them `?`. `GIT_HISTORY_SCHEMA` and `GIT_CACHE_SCHEMA` are bumped: the git-history index rebuilds
   once on the next scan and cached git answers are recomputed (#305).
-
 - `basemind init` writes the rules file, `.claude/settings*.json`, `basemind.toml` and `.gitignore`
   atomically (#327): each goes to a temporary file beside it that is renamed over it, keeping the
   file's permissions, so a crash or a failed write leaves the original intact instead of truncated.
