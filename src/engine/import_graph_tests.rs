@@ -437,6 +437,64 @@ fn the_cache_keeps_one_generation_and_never_goes_back() {
     assert!(newer.approx_bytes() > 0);
 }
 
+#[test]
+fn concurrent_callers_of_one_generation_share_one_build() {
+    let cache = GraphCache::default();
+    let callers = 8;
+    let barrier = std::sync::Barrier::new(callers);
+    let graphs: Vec<Arc<ImportGraph>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..callers)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    cache
+                        .get_or_build(4, || {
+                            std::thread::sleep(std::time::Duration::from_millis(50));
+                            Ok::<_, EngineError>(graph(&[("a", "b")]))
+                        })
+                        .expect("graph")
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("caller"))
+            .collect()
+    });
+    assert_eq!(cache.builds(), 1, "one build for every caller of the generation");
+    assert!(graphs.iter().all(|graph| Arc::ptr_eq(graph, &graphs[0])));
+    assert!(cache.flights.lock().is_empty(), "a finished flight is retired");
+}
+
+#[test]
+fn a_failed_shared_build_is_its_callers_error_and_the_next_caller_builds_again() {
+    let cache = GraphCache::default();
+    let failed = cache.get_or_build(5, || Err(EngineError::internal("boom")));
+    assert!(failed.is_err());
+    let built = cache
+        .get_or_build(5, || Ok::<_, EngineError>(graph(&[("a", "b")])))
+        .expect("graph");
+    assert!(built.node("b").is_some());
+    assert_eq!(cache.builds(), 2);
+}
+
+#[test]
+fn a_caller_holding_the_store_lock_builds_alone_and_still_reads_the_kept_graph() {
+    let cache = GraphCache::default();
+    let kept = cache
+        .get_or_build(6, || Ok::<_, EngineError>(graph(&[("a", "b")])))
+        .expect("graph");
+    let alone = cache
+        .get_or_build_alone(6, || Ok::<_, EngineError>(graph(&[("x", "y")])))
+        .expect("graph");
+    assert!(Arc::ptr_eq(&kept, &alone), "the kept graph needs no build");
+    let newer = cache
+        .get_or_build_alone(7, || Ok::<_, EngineError>(graph(&[("x", "y")])))
+        .expect("graph");
+    assert!(newer.node("y").is_some());
+    assert_eq!(cache.builds(), 2);
+}
+
 /// A workspace over `root`, scanned in place, as the in-process serve opens one.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 fn scanned_workspace(root: &std::path::Path) -> Workspace {
@@ -547,6 +605,65 @@ fn a_scanned_fixture_builds_the_graph_and_a_rescan_rebuilds_it() {
         "the new module is an edge after the rescan"
     );
     assert!(first.node("src/c.rs").is_none());
+}
+
+/// Eight concurrent `code impact` calls after one edit build the new generation's graph once.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[test]
+fn concurrent_impact_calls_after_an_edit_build_the_graph_once() {
+    crate::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("basemind.toml"), "").unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/lib.rs"), "mod a;\nmod b;\n").unwrap();
+    std::fs::write(root.join("src/a.rs"), "use crate::b::thing;\npub fn f() { thing(); }\n").unwrap();
+    std::fs::write(root.join("src/b.rs"), "pub fn thing() {}\n").unwrap();
+    let ws = scanned_workspace(root);
+    import_graph(&ws).expect("graph of the first generation");
+
+    std::fs::write(
+        root.join("src/a.rs"),
+        "use crate::b::thing;\npub fn f() { thing(); thing(); }\n",
+    )
+    .unwrap();
+    ws.rescan(None, crate::scanner::EmbedMode::Deferred, false)
+        .expect("rescan");
+    let before = ws.import_graph.builds();
+    let callers = 8;
+    let barrier = std::sync::Barrier::new(callers);
+    let answers: Vec<Vec<String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..callers)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    let impact = ws
+                        .code_impact(crate::engine::types::graph::ImpactParams {
+                            path: Some(RelPath::from("src/b.rs")),
+                            symbol: None,
+                            diff: None,
+                            depth: None,
+                            include_type_imports: false,
+                            include_module_decls: false,
+                        })
+                        .expect("impact");
+                    impact.affected.iter().map(|hit| hit.path.to_string()).collect()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("caller"))
+            .collect()
+    });
+    assert_eq!(ws.import_graph.builds() - before, 1, "one build after the edit");
+    assert!(answers.iter().all(|answer| *answer == answers[0]), "{answers:?}");
+    assert!(answers[0].contains(&"src/a.rs".to_string()), "{answers:?}");
 }
 
 /// Through a real scan: a parent declaring its children, which `use crate::…` back, forms no cycle;

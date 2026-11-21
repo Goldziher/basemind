@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::config::daemon::DaemonCaps;
+use crate::config::daemon::{AdmissionLimits, DaemonCaps};
 use crate::config::engine::DependencyHomes;
 use crate::config::engine::{ExtraRootsGrant, is_truthy};
 use crate::config::root_guard::ALLOW_ANY_ROOT_ENV;
@@ -92,6 +92,7 @@ pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineCo
     config.index_cache_bytes = text(&lookup, INDEX_CACHE_BYTES_ENV).and_then(|raw| raw.parse::<u64>().ok());
     config.grep_bloom = lookup(GREP_BLOOM_ENV).is_none_or(|value| value != "0");
     config.daemon_caps = DaemonCaps::from_vars(|name| text(&lookup, name));
+    config.admission = AdmissionLimits::from_vars(|name| text(&lookup, name));
     config
 }
 
@@ -375,6 +376,21 @@ mod tests {
         assert_eq!(caps.footprint_mb, defaults.footprint_mb, "zero keeps the default");
         assert_eq!(caps.min_debounce_ms, 500);
         assert_eq!(caps.embed_threads, defaults.embed_threads);
+    }
+
+    #[test]
+    fn the_admission_variables_reach_the_admission_limits() {
+        use crate::config::daemon::{HEAVY_CONCURRENCY_ENV, MEDIUM_CONCURRENCY_ENV, QUEUE_WAIT_MS_ENV};
+        let limits = config_of(&[
+            (HEAVY_CONCURRENCY_ENV, "5"),
+            (MEDIUM_CONCURRENCY_ENV, "9"),
+            (QUEUE_WAIT_MS_ENV, "750"),
+        ])
+        .admission;
+        assert_eq!(limits.heavy_concurrency, 5);
+        assert_eq!(limits.medium_concurrency, 9);
+        assert_eq!(limits.queue_wait, Duration::from_millis(750));
+        assert_eq!(config_of(&[]).admission, AdmissionLimits::default());
     }
 
     #[test]

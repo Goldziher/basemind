@@ -203,7 +203,7 @@ mod tests {
     async fn a_dropped_call_keeps_its_heavy_permit_until_its_blocking_body_ends() {
         use super::super::admission::{HeavyAdmission, WorkClass, holding};
 
-        let admission = HeavyAdmission::new(1, std::time::Duration::from_millis(50));
+        let admission = HeavyAdmission::new(1, 1, std::time::Duration::from_millis(50));
         let permit = admission.admit(WorkClass::Heavy).await.expect("the one permit");
         let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();

@@ -40,7 +40,9 @@ symbol or span you need. Paths are repository-relative with forward slashes.
   its `# <path>` and its enclosing `## <symbol>` header, as `rg --heading` groups them.
   `context: N` (0-10) adds the N lines before and after each hit as rows `<line>- <text>`,
   overlapping windows written once, as `rg -C N` prints them. In JSON (`structuredContent`,
-  `--json`) the rows are `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`.
+  `--json`) the rows are `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`. The sweep stops
+  reading once the files read hold more matches than `limit`; `total` then counts only those
+  files and `total_is_partial` says so, and each `next_cursor` page counts on from there.
 - `code_search` returns pointers (path, `line` / `end_line`, symbol), not bodies. It reports the
   lanes that ran and `lanes_unavailable` for the ones that did not. It needs a build with the
   `code-search` feature; without it the call is an error naming the feature.

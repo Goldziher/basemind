@@ -10,9 +10,14 @@
 //!
 //! Every daemon-side load (the scan pool and the hosted read stack) goes through [`load_daemon`] so a
 //! workspace never has two different configs in one process.
+//!
+//! How many expensive calls the server runs at once is the operator's too, and has no file value at
+//! all: one admission controller serves every workspace of the daemon, so no repository's file may
+//! size it. The CLI reads the `BASEMIND_DAEMON_*_CONCURRENCY` and `BASEMIND_DAEMON_QUEUE_WAIT_MS`
+//! variables into [`AdmissionLimits`] ([`AdmissionLimits::from_vars`]).
 
 use std::path::Path;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use super::{Config, ConfigError, MaxFootprint, ResourcesConfig};
 
@@ -30,6 +35,10 @@ pub const MAX_DOC_PAGES_ENV: &str = "BASEMIND_DAEMON_MAX_DOCUMENT_PAGES";
 pub const MAX_EXTRACTION_SECS_ENV: &str = "BASEMIND_DAEMON_MAX_EXTRACTION_SECS";
 pub const MAX_CHUNKS_PER_DOC_ENV: &str = "BASEMIND_DAEMON_MAX_CHUNKS_PER_DOCUMENT";
 pub const MIN_DEBOUNCE_MS_ENV: &str = "BASEMIND_DAEMON_MIN_DEBOUNCE_MS";
+
+pub const HEAVY_CONCURRENCY_ENV: &str = "BASEMIND_DAEMON_HEAVY_CONCURRENCY";
+pub const MEDIUM_CONCURRENCY_ENV: &str = "BASEMIND_DAEMON_MEDIUM_CONCURRENCY";
+pub const QUEUE_WAIT_MS_ENV: &str = "BASEMIND_DAEMON_QUEUE_WAIT_MS";
 
 const DEFAULT_MAX_SCAN_THREADS: usize = 4;
 const DEFAULT_MAX_EMBED_THREADS: usize = 4;
@@ -53,6 +62,78 @@ const DAEMON_MAX_ABANDONED_EXTRACTIONS: usize = 16;
 const DEFAULT_MAX_CHUNKS_PER_DOC: usize = 20_000;
 /// A `0` debounce makes every filesystem event trigger its own rescan.
 const DEFAULT_MIN_DEBOUNCE_MS: u64 = 50;
+
+/// Fewest heavy or medium calls the core-count default allows at once.
+const DEFAULT_CONCURRENCY_MIN: usize = 2;
+/// Most heavy calls the core-count default allows at once: one heavy call (a rescan, an embedding
+/// search) can occupy the daemon's whole rayon pool, so more of them only queue inside it.
+const DEFAULT_HEAVY_CONCURRENCY_MAX: usize = 4;
+/// Most medium calls the core-count default allows at once. With the heavy maximum this stays under
+/// the daemon's blocking-thread ceiling, so admitted calls never wait for a thread.
+const DEFAULT_MEDIUM_CONCURRENCY_MAX: usize = 8;
+/// Cores per heavy slot and per medium slot of the core-count default.
+const CORES_PER_HEAVY_SLOT: usize = 4;
+const CORES_PER_MEDIUM_SLOT: usize = 2;
+const DEFAULT_QUEUE_WAIT_MS: u64 = 2_000;
+
+/// How many expensive calls one MCP server runs at once, per work class, and how long a call waits
+/// for a slot before it is answered `server_busy`. Heavy calls are the allocation-heavy ones
+/// (`index_rescan`, `code_search`, `docs_search`); medium calls read the whole corpus or the whole
+/// import graph (`code_grep`, the import-graph relations of `code_refs`, and the CLI's impact,
+/// cycles, deadcode and overview). Each class has its own slots, so a rescan never holds back a grep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AdmissionLimits {
+    /// Heavy calls run at once (`BASEMIND_DAEMON_HEAVY_CONCURRENCY`).
+    pub heavy_concurrency: usize,
+    /// Medium calls run at once (`BASEMIND_DAEMON_MEDIUM_CONCURRENCY`).
+    pub medium_concurrency: usize,
+    /// Longest a heavy or medium call waits for a slot (`BASEMIND_DAEMON_QUEUE_WAIT_MS`).
+    pub queue_wait: Duration,
+}
+
+impl Default for AdmissionLimits {
+    fn default() -> Self {
+        Self::from_vars(|_| None)
+    }
+}
+
+impl AdmissionLimits {
+    /// The limits `var` names, `var` returning a variable's value. Each is a positive integer; an
+    /// unset, zero or unparseable one keeps its default, which for the two concurrencies is derived
+    /// from this machine's core count.
+    pub fn from_vars(var: impl Fn(&str) -> Option<String>) -> Self {
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        Self::from_vars_on(var, cores)
+    }
+
+    fn from_vars_on(var: impl Fn(&str) -> Option<String>, cores: usize) -> Self {
+        let positive = |name: &str| {
+            var(name)
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+                .filter(|n| *n > 0)
+        };
+        let slots = |name: &str, per_slot: usize, max: usize| {
+            positive(name).map_or_else(
+                || (cores / per_slot).clamp(DEFAULT_CONCURRENCY_MIN, max),
+                |n| usize::try_from(n).unwrap_or(usize::MAX),
+            )
+        };
+        Self {
+            heavy_concurrency: slots(
+                HEAVY_CONCURRENCY_ENV,
+                CORES_PER_HEAVY_SLOT,
+                DEFAULT_HEAVY_CONCURRENCY_MAX,
+            ),
+            medium_concurrency: slots(
+                MEDIUM_CONCURRENCY_ENV,
+                CORES_PER_MEDIUM_SLOT,
+                DEFAULT_MEDIUM_CONCURRENCY_MAX,
+            ),
+            queue_wait: Duration::from_millis(positive(QUEUE_WAIT_MS_ENV).unwrap_or(DEFAULT_QUEUE_WAIT_MS)),
+        }
+    }
+}
 
 /// The operator's ceilings on a daemon-loaded workspace config, each a `BASEMIND_DAEMON_MAX_*`
 /// variable (or `BASEMIND_DAEMON_MIN_DEBOUNCE_MS`, a floor).
@@ -324,6 +405,50 @@ mod tests {
         let cfg = load_daemon_with(dir.path(), &caps).expect("load");
         assert_eq!(cfg.resources.scan_threads, 10);
         assert_eq!(cfg.resources.max_footprint_mb, MaxFootprint::Mebibytes(8192));
+    }
+
+    #[test]
+    fn admission_defaults_follow_the_core_count_within_their_bounds() {
+        for (cores, heavy, medium) in [(1, 2, 2), (8, 2, 4), (12, 3, 6), (16, 4, 8), (64, 4, 8)] {
+            let limits = AdmissionLimits::from_vars_on(|_| None, cores);
+            assert_eq!(limits.heavy_concurrency, heavy, "{cores} cores");
+            assert_eq!(limits.medium_concurrency, medium, "{cores} cores");
+            assert_eq!(limits.queue_wait, Duration::from_millis(DEFAULT_QUEUE_WAIT_MS));
+        }
+    }
+
+    #[test]
+    fn operator_env_sets_the_admission_limits() {
+        let limits = AdmissionLimits::from_vars_on(
+            |name| match name {
+                HEAVY_CONCURRENCY_ENV => Some(" 6 ".to_string()),
+                MEDIUM_CONCURRENCY_ENV => Some("1".to_string()),
+                QUEUE_WAIT_MS_ENV => Some("250".to_string()),
+                _ => None,
+            },
+            8,
+        );
+        assert_eq!(limits.heavy_concurrency, 6);
+        assert_eq!(
+            limits.medium_concurrency, 1,
+            "below the default floor when the operator says so"
+        );
+        assert_eq!(limits.queue_wait, Duration::from_millis(250));
+
+        let kept = AdmissionLimits::from_vars_on(
+            |name| match name {
+                HEAVY_CONCURRENCY_ENV => Some("0".to_string()),
+                MEDIUM_CONCURRENCY_ENV => Some("many".to_string()),
+                QUEUE_WAIT_MS_ENV => Some("-5".to_string()),
+                _ => None,
+            },
+            8,
+        );
+        assert_eq!(
+            kept,
+            AdmissionLimits::from_vars_on(|_| None, 8),
+            "zero or unparseable keeps the default"
+        );
     }
 
     #[test]

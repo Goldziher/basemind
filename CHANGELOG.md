@@ -140,9 +140,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- Configurable admission of expensive calls (#255): `BASEMIND_DAEMON_HEAVY_CONCURRENCY` (default a
+  quarter of the cores, 2 to 4; previously a fixed 2) and `BASEMIND_DAEMON_QUEUE_WAIT_MS` (default
+  2000) set how many heavy calls the daemon runs at once and how long a call waits before it is
+  answered `server_busy`. Whole-corpus reads (`code_grep`, `code_refs` importers and cycles, and the
+  CLI's impact, cycles, deadcode and overview) are a new medium class with their own slots,
+  `BASEMIND_DAEMON_MEDIUM_CONCURRENCY` (default half the cores, 2 to 8), so a rescan no longer
+  holds them back and they no longer run unbounded. `index_status` reports each class's `limit`,
+  `in_use` and `queued` under `admission`.
 
 ### Changed
 
+- Whole-corpus reads cost less (#280). `code_grep` stops reading files once those read hold more
+  matches than `limit`: a common pattern reads only the files its page needs, `total` then counts
+  those files and `total_is_partial` marks it a lower bound; `next_cursor` pages on as before. The
+  import graph behind `code_refs` importers and cycles and the CLI's impact, cycles, deadcode and
+  overview is built once per index generation however many calls ask for it at the same time, and
+  from its rows as they are read instead of from a copy of all of them.
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
   `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`
