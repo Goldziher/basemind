@@ -98,8 +98,9 @@ tokenizer = ["dep:xberg", "xberg/chunking-tokenizers"]
 
 # Document RAG on local files: PDF text layers, Office, spreadsheets, email, HTML, XML (SVG text
 # included), Markdown/MDX and notebooks (`xberg/office` carries `notebook`). xberg's `formats` and
-# `analysis` umbrellas are deliberately not used: they also pull in archives, sqlite, heic, svg
-# rasterisation, wordperfect, hwp, iwork and diff, none of which basemind reaches.
+# `analysis` umbrellas are deliberately not used: they also pull in archives, sqlite, svg
+# rasterisation, wordperfect, hwp, iwork and diff, none of which basemind reaches. HEIC is the
+# `documents-heic` tier.
 documents = [
   "intelligence",
   "tokenizer",
@@ -126,6 +127,10 @@ documents-ocr = ["documents", "xberg/ocr"]
 
 # PaddleOCR as an extra OCR stage. Opt-in for source builds, never part of `full`.
 documents-ocr-paddle = ["documents-ocr", "xberg/paddle-ocr"]
+
+# HEIC/HEIF photos, decoded through libheif (with libde265) and then OCR'd like any raster image.
+# Its own tier because it links the system libheif dynamically.
+documents-heic = ["documents-ocr", "xberg/heic"]
 
 # ONNX named-entity recognition: `[documents.ner]` and the `entity` filter of `docs_search`.
 documents-ner = ["documents", "xberg/ner-onnx"]
@@ -159,7 +164,7 @@ code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitte
 
 code-intel = ["code-intel-js", "code-intel-stack"]
 
-full = ["documents", "documents-ocr", "documents-ner", "memory", "comms", "code-intel", "code-search"]
+full = ["documents", "documents-ocr", "documents-heic", "documents-ner", "memory", "comms", "code-intel", "code-search"]
 
 test-support = []
 
