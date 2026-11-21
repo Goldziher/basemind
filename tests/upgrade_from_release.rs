@@ -66,6 +66,7 @@ const NO_MARGIN: [(&str, &str); 2] = [("BASEMIND_BLOB_GC_GRACE_SECS", "0"), ("BA
 
 /// Last release minor that keeps its blobs directly in the blobs root; later ones keep them in a
 /// namespace of their own, `v<minor>/`.
+#[cfg(feature = "comms")]
 const LAST_UNNAMESPACED_MINOR: u32 = 33;
 
 /// Set by the CI job that bumps the tree to the next minor before building: every release upgraded
@@ -253,6 +254,7 @@ impl Env {
     }
 
     /// The symbol names an old release's outline of `path` lists, read from the file's blob.
+    #[cfg(feature = "comms")]
     fn old_outline_names(&self, old: &Path, path: &str) -> Vec<String> {
         self.json(old, &["code", "outline", path])["symbols"]
             .as_array()
@@ -267,6 +269,7 @@ impl Env {
 
     /// Whether the blob store holds blobs where a release of `minor` keeps them: directly in the
     /// blobs root up to [`LAST_UNNAMESPACED_MINOR`], in `v<minor>/` after it.
+    #[cfg(feature = "comms")]
     fn holds_blobs_of(&self, minor: u32) -> bool {
         let root = self.data.join("cache").join("blobs");
         let dir = if minor <= LAST_UNNAMESPACED_MINOR {
