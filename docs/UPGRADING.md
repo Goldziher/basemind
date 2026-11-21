@@ -692,14 +692,19 @@ basemind"), the git history and the LanceDB stores ("… written by a newer base
 basemind"). The memory notes are refused for memory operations the same way. So:
 
 - 0.34 to 0.33 resets and re-extracts: 0.33 predates the check and wipes a view on any schema
-  mismatch, as for any schema change.
+  mismatch, as for any schema change. A `basemind.toml` that sets `[analysis] entry_points` or
+  `[documents.dependencies]` stops 0.33 from loading at all, so the reset never runs: remove those
+  keys first.
 - A later minor back to 0.34 is refused until you upgrade again. To stay on the older binary, give it
   a data directory of its own (`BASEMIND_DATA_HOME=<empty dir>`) and run `basemind scan`, which
   builds every store from scratch there; notes saved in the original data directory are not visible
   from it. `basemind cache clear --component views|lance` clears only the workspace's file maps and
   vector stores, not the group index (`cache/groups/<group>/index.fjall`) or the git history.
 
-Going back and forth costs re-extraction, never correctness; the next sweep reclaims what is left.
+Going back and forth costs re-extraction, never correctness, with one exception: notes saved while
+`BASEMIND_DATA_HOME` points at the separate directory stay in it and are not visible after you
+switch back, and re-extraction does not restore them. Keep that directory until its notes are
+accounted for. The next sweep reclaims what is left.
 
 ## Per-version binaries
 
