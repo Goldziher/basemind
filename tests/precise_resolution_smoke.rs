@@ -36,7 +36,19 @@ fn git(repo: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed in {}", repo.display());
 }
 
-/// Build a throwaway git repo containing the two Python fixtures (`app.py` + `mod.py`) from
+/// The Python fixtures under `tests/fixtures/precise_resolution_py/`: `app.py` + `mod.py` for the
+/// scope and `from mod import f` cases, `forms.py` + the `pkg` package for the other import forms.
+const PYTHON_FIXTURES: &[&str] = &[
+    "app.py",
+    "mod.py",
+    "forms.py",
+    "pkg/__init__.py",
+    "pkg/impl.py",
+    "pkg/mod.py",
+    "pkg/views.py",
+];
+
+/// Build a throwaway git repo containing the [`PYTHON_FIXTURES`] from
 /// `tests/fixtures/precise_resolution_py/`, copied verbatim.
 fn build_python_repo() -> TempDir {
     basemind::store::init_isolated_cache();
@@ -46,10 +58,30 @@ fn build_python_repo() -> TempDir {
     git(root, &["config", "commit.gpgsign", "false"]);
 
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/precise_resolution_py");
-    std::fs::copy(fixtures.join("app.py"), root.join("app.py")).expect("copy app.py");
-    std::fs::copy(fixtures.join("mod.py"), root.join("mod.py")).expect("copy mod.py");
+    std::fs::create_dir_all(root.join("pkg")).expect("create pkg/");
+    for fixture in PYTHON_FIXTURES {
+        std::fs::copy(fixtures.join(fixture), root.join(fixture)).unwrap_or_else(|e| panic!("copy {fixture}: {e}"));
+    }
 
-    git(root, &["add", "app.py", "mod.py"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "init"]);
+    dir
+}
+
+/// Build a throwaway git repo holding `files` (path, contents), all committed but what a
+/// `.gitignore` among them ignores.
+fn build_repo_with(files: &[(&str, &str)]) -> TempDir {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    for (path, contents) in files {
+        let abs = root.join(path);
+        std::fs::create_dir_all(abs.parent().expect("a parent")).expect("create the parent");
+        std::fs::write(abs, contents).unwrap_or_else(|e| panic!("write {path}: {e}"));
+    }
+    git(root, &["add", "."]);
     git(root, &["commit", "-qm", "init"]);
     dir
 }
@@ -404,6 +436,123 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
     );
 
     service.cancel().await.expect("shutdown");
+}
+
+/// `code_refs` `importers` of `path`: its direct importers (`by_depth`).
+async fn importers(service: &rmcp::service::RunningService<rmcp::RoleClient, ()>, path: &str) -> Value {
+    let result = service
+        .call_tool(call_params(
+            "code_refs",
+            json!({ "relation": "importers", "path": path }),
+        ))
+        .await
+        .unwrap_or_else(|e| panic!("code_refs importers({path}) failed: {e}"));
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "code_refs importers({path}) failed: {result:?}"
+    );
+    decode_text(&result)
+}
+
+/// A renamed import (`from pkg.mod import fn as renamed`) binds the alias: the `renamed()` call in
+/// `forms.py` resolves cross-file to the `fn` identifier in `pkg/mod.py`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn python_renamed_import_resolves_to_the_defining_file() {
+    let dir = build_python_repo();
+    let root = dir.path();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+
+    let body = goto_definition(&service, "forms.py", 18, 11, "renamed").await;
+    assert_eq!(def_field(&body, "path").as_str(), Some("pkg/mod.py"), "{body}");
+    assert_eq!(def_field(&body, "line").as_u64(), Some(1), "{body}");
+    assert_eq!(def_field(&body, "column").as_u64(), Some(5), "{body}");
+    assert_eq!(def_field(&body, "name").as_str(), Some("fn"), "{body}");
+
+    service.cancel().await.expect("shutdown");
+}
+
+/// A name imported through a package whose `__init__.py` re-exports it with an alias written
+/// `from .impl import helper as helper`: the `helper()` call in `forms.py` follows the re-export to
+/// `pkg/impl.py`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn python_aliased_reexport_resolves_to_the_defining_file() {
+    let dir = build_python_repo();
+    let root = dir.path();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+
+    let body = goto_definition(&service, "forms.py", 22, 11, "helper").await;
+    assert_eq!(def_field(&body, "path").as_str(), Some("pkg/impl.py"), "{body}");
+    assert_eq!(def_field(&body, "line").as_u64(), Some(1), "{body}");
+    assert_eq!(def_field(&body, "column").as_u64(), Some(5), "{body}");
+    assert_eq!(def_field(&body, "name").as_str(), Some("helper"), "{body}");
+
+    service.cancel().await.expect("shutdown");
+}
+
+/// Each import form is a file edge of the import graph: `import pkg.mod`, `import pkg.mod as
+/// alias_mod` and `from pkg.mod import fn as renamed` make `forms.py` an importer of `pkg/mod.py`;
+/// the aliased re-export makes `pkg/__init__.py` an importer of `pkg/impl.py`; and `views`, a
+/// submodule rather than a binding of the package (`from pkg import views`,
+/// `from . import views`), makes both an importer of `pkg/views.py`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn python_import_forms_are_import_graph_edges() {
+    let dir = build_python_repo();
+    let root = dir.path();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+
+    for (path, expected) in [
+        ("pkg/mod.py", json!({ "1": ["forms.py"] })),
+        ("pkg/impl.py", json!({ "1": ["pkg/__init__.py"] })),
+        ("pkg/views.py", json!({ "1": ["forms.py", "pkg/__init__.py"] })),
+    ] {
+        let body = importers(&service, path).await;
+        assert_eq!(body["by_depth"], expected, "importers of {path}: {body}");
+    }
+
+    service.cancel().await.expect("shutdown");
+}
+
+/// `from pkg import sub` names `pkg/sub.py` only when nothing in `pkg` binds `sub`: a package that
+/// binds it to another module (`import other.thing as sub`), or a plain module `pkg.py` the index
+/// leaves out, which has no submodules, makes no edge to `pkg/sub.py`. `direct.py`, which imports
+/// `pkg.sub` itself, is the one importer each time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn python_from_import_of_a_bound_or_plain_module_names_no_submodule() {
+    const SUB: (&str, &str) = ("pkg/sub.py", "def f():\n    return 1\n");
+    const DIRECT: (&str, &str) = ("direct.py", "from pkg.sub import f\n");
+    const IMPORTER: (&str, &str) = ("app.py", "from pkg import sub\n");
+    let cases: [(&str, Vec<(&str, &str)>); 2] = [
+        (
+            "a package binding the name to another module",
+            vec![
+                ("pkg/__init__.py", "import other.thing as sub\n"),
+                ("other/__init__.py", "\n"),
+                ("other/thing.py", "def g():\n    return 2\n"),
+                SUB,
+                DIRECT,
+                IMPORTER,
+            ],
+        ),
+        (
+            "a plain module the index leaves out",
+            vec![(".gitignore", "pkg.py\n"), ("pkg.py", "x = 1\n"), SUB, DIRECT, IMPORTER],
+        ),
+    ];
+    for (case, files) in cases {
+        let dir = build_repo_with(&files);
+        let root = dir.path();
+        run_scan(root);
+        let service = spawn_serve(root).await;
+
+        let body = importers(&service, "pkg/sub.py").await;
+        assert_eq!(body["by_depth"], json!({ "1": ["direct.py"] }), "{case}: {body}");
+
+        service.cancel().await.expect("shutdown");
+    }
 }
 
 /// Field vs. local: a local `value` inside `fieldVsLocal` shadows the class field of the same

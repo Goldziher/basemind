@@ -25,7 +25,9 @@
 //! resolves to at the first hop, whether or not the name binds an export there (a barrel forwards
 //! it), plus the imports that resolved to none. Each edge carries the [`EdgeKinds`] of the imports
 //! behind it: a type-only import, or a JS side-effect import, namespace import or `export … from`
-//! re-export (a `module_only` import, which joins no export), is flagged as such.
+//! re-export (a `module_only` import, which joins no export), is flagged as such. A Python `from`
+//! import whose name binds no export of the package it names (`from . import views`) names a
+//! submodule instead, and that submodule's file is an edge too.
 //!
 //! Best-effort: any resolver miss or unindexed target is logged at debug and skipped; a commit
 //! failure warns but never aborts the scan. Idempotency across re-scans is documented on
@@ -155,8 +157,7 @@ impl<'a> FactsCatalog<'a> {
 /// following re-export chains: a file that does not directly export `wanted` but IMPORTS it (a
 /// package `__init__.py` re-export, a TS barrel) forwards to that import's target, and so on.
 /// Returns `(defining_file, name_start)` — the file that actually defines the export and the byte
-/// the join keys on — or `None` when the name is neither a direct export nor a followable re-export
-/// within [`MAX_REEXPORT_HOPS`]. Cycle-guarded on `(file, name)`.
+/// the join keys on — or why there is none ([`Unbound`]). Cycle-guarded on `(file, name)`.
 ///
 /// Re-exports stay within one language (a Python import resolves to a Python file), so the importer's
 /// `resolver` is valid for every hop; each hop resolves relative to the current file in the chain.
@@ -170,29 +171,68 @@ fn resolve_export_transitively(
     target_rel: crate::path::RelPath,
     wanted: &str,
     probes: &mut ProbeSet,
-) -> Option<(crate::path::RelPath, u32)> {
+) -> Result<(crate::path::RelPath, u32), Unbound> {
     let mut current_rel = target_rel;
     let mut wanted = wanted.to_string();
     let mut visited: ahash::AHashSet<(String, String)> = ahash::AHashSet::new();
     for _ in 0..MAX_REEXPORT_HOPS {
-        let current_key = current_rel.as_str()?.to_string();
+        let current_key = current_rel.as_str().ok_or(Unbound::Absent)?.to_string();
         if !visited.insert((current_key.clone(), wanted.clone())) {
-            return None;
+            return Err(Unbound::Absent);
         }
         if let Some(name_start) = catalog.export_start(&current_key, &wanted) {
-            return Some((current_rel, name_start));
+            return Ok((current_rel, name_start));
         }
-        let facts = catalog.facts(&current_key)?;
+        let facts = catalog.facts(&current_key).ok_or(Unbound::Absent)?;
         let reexport = facts
             .imports
             .iter()
-            .find(|import| !import.is_type && !import.module_only && import.local == wanted)?;
-        let next_rel = resolver.resolve(root, &current_key, reexport, probes)?;
-        store.lookup(&next_rel)?;
+            .find(|import| !import.is_type && !import.module_only && import.local == wanted)
+            .ok_or(Unbound::Absent)?;
+        if reexport.imported.is_none() && resolver.default_export_name().is_none() {
+            return Err(Unbound::Module);
+        }
+        let next_rel = resolver
+            .resolve(root, &current_key, reexport, probes)
+            .ok_or(Unbound::Absent)?;
+        store.lookup(&next_rel).ok_or(Unbound::Absent)?;
         wanted = reexport.imported.clone().unwrap_or(wanted);
         current_rel = next_rel;
     }
-    None
+    Err(Unbound::Absent)
+}
+
+/// Why [`resolve_export_transitively`] found no definition for a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unbound {
+    /// No file on the chain binds the name to something followable: it is neither exported nor
+    /// imported there, its import leads to no indexed file, or the chain came back to a `(file,
+    /// name)` it had followed, as `from . import sub` in a package does for its own submodule. The
+    /// name may still be a submodule of the package.
+    Absent,
+    /// A file on the chain binds the name to a module (`import other.thing as sub`): it names that
+    /// module, never a submodule of the package of the same name.
+    Module,
+}
+
+/// The indexed file `import`'s name names when it is read as a submodule of the module the import
+/// names, for a name that binds no export there (see [`SpecifierResolver::resolve_submodule`]).
+/// `package` is the indexed file the module resolved to, if any.
+fn indexed_submodule(
+    root: &Path,
+    store: &Store,
+    resolver: &SpecifierResolver,
+    importer_key: &str,
+    package: Option<&crate::path::RelPath>,
+    import: &ImportEdge,
+    probes: &mut ProbeSet,
+) -> Option<crate::path::RelPath> {
+    if import.is_type || import.module_only {
+        return None;
+    }
+    resolver
+        .resolve_submodule(root, importer_key, package, import, probes)
+        .filter(|submodule| store.lookup(submodule).is_some())
 }
 
 /// Stitch cross-file resolved edges for every importer in `importers` into the index, and record
@@ -246,19 +286,24 @@ pub fn stitch_cross_file_edges(
         let mut file_edges = FileEdgesBuilder::default();
 
         for import in &importer_facts.imports {
-            let Some(target_rel) = resolver.resolve(root, importer_key, import, &mut probes) else {
-                tracing::debug!(
-                    importer = %importer_rel,
-                    specifier = %import.specifier,
-                    "cross-file stitch: specifier did not resolve — skipping"
-                );
-                file_edges.miss(import);
+            let resolved = resolver.resolve(root, importer_key, import, &mut probes);
+            let target_rel = resolved.clone().filter(|target| store.lookup(target).is_some());
+            let Some(target_rel) = target_rel else {
+                // The module's file decides whether it has submodules, indexed or not. ~keep
+                let package = resolved.as_ref();
+                match indexed_submodule(root, store, resolver, importer_key, package, import, &mut probes) {
+                    Some(submodule) => file_edges.hit(submodule, import),
+                    None => {
+                        tracing::debug!(
+                            importer = %importer_rel,
+                            specifier = %import.specifier,
+                            "cross-file stitch: specifier did not resolve to an indexed file — skipping"
+                        );
+                        file_edges.miss(import);
+                    }
+                }
                 continue;
             };
-            if store.lookup(&target_rel).is_none() {
-                file_edges.miss(import);
-                continue;
-            }
             file_edges.hit(target_rel.clone(), import);
             if import.is_type || import.module_only {
                 continue;
@@ -267,10 +312,20 @@ pub fn stitch_cross_file_edges(
             let Some(wanted) = import.imported.as_deref().or_else(|| resolver.default_export_name()) else {
                 continue;
             };
-            let Some((def_rel, name_start)) =
-                resolve_export_transitively(root, store, &catalog, resolver, target_rel, wanted, &mut probes)
-            else {
-                continue;
+            let bound =
+                resolve_export_transitively(root, store, &catalog, resolver, target_rel.clone(), wanted, &mut probes);
+            let (def_rel, name_start) = match bound {
+                Ok(bound) => bound,
+                Err(Unbound::Module) => continue,
+                Err(Unbound::Absent) => {
+                    let package = Some(&target_rel);
+                    if let Some(submodule) =
+                        indexed_submodule(root, store, resolver, importer_key, package, import, &mut probes)
+                    {
+                        file_edges.hit(submodule, import);
+                    }
+                    continue;
+                }
             };
             targets.push((import.local_start, def_rel.clone(), name_start));
             let mut use_starts: Vec<u32> = vec![import.local_start];

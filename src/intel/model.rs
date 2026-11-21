@@ -28,7 +28,9 @@ pub use crate::extract::SCHEMA_VER;
 /// History:
 /// - 1: JS/TS side-effect imports, namespace imports and re-exports are recorded as
 ///   [`ImportEdge::module_only`] imports.
-pub const RESOLVE_EPOCH: u16 = 1;
+/// - 2: Python `import a.b` records one import of the whole dotted module bound to `a`, and aliased
+///   imports (`import a.b as n`, `from m import x as y`) record theirs bound to the alias.
+pub const RESOLVE_EPOCH: u16 = 2;
 
 /// A resolved intra-file reference edge: a use identifier binds to a definition in the SAME file.
 /// Both endpoints are byte spans into the file. Cross-file edges are never stored here (see the

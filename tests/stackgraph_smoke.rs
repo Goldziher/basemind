@@ -93,6 +93,33 @@ fn python_resolves_cross_file_through_package_reexport() {
     );
 }
 
+/// A package `__init__.py` that binds a name with a module import (`import other.thing` binds
+/// `other`) does not re-export a symbol: `from pkg import other` names the module, so a function
+/// `other` defined in `other/thing.py` gets no cross-file reference from the importer.
+#[test]
+fn python_module_import_in_init_is_not_a_symbol_reexport() {
+    let thing = "def other():\n    return 1\n";
+    let init = "import other.thing\n";
+    let app = "from pkg import other\n\n\ndef use():\n    return other()\n";
+    let (_d, store) = scan_repo(&[
+        ("other/__init__.py", ""),
+        ("other/thing.py", thing),
+        ("pkg/__init__.py", init),
+        ("app.py", app),
+    ]);
+    if store.lookup("other/thing.py").is_none() {
+        basemind::testing::unavailable("BASEMIND_TEST_ALLOW_NO_GRAMMAR", "the python grammar is unavailable");
+        return;
+    }
+    let thing_rel = RelPath::from("other/thing.py");
+    let other_def = (thing.find("def other").unwrap() + "def ".len()) as u32;
+    let uses = basemind::query::resolved_references(&store, &thing_rel, other_def);
+    assert!(
+        !uses.iter().any(|(p, _)| p.as_str() == Some("app.py")),
+        "a module import is not a symbol re-export; got {uses:?}"
+    );
+}
+
 /// A Java class imported across packages (`import app.Lib;`) resolves cross-file to the importer's
 /// references. (Method-level resolution — a qualified `Lib.greet()` call — is NOT yet covered by the
 /// stack-graph engine: methods are not exported, so `find_callers` on a method falls back to the

@@ -161,6 +161,32 @@ impl SpecifierResolver {
         }
     }
 
+    /// Resolve `import`'s imported name as a submodule of the module it names, for a name that binds
+    /// no export there: a Python `from . import views` imports `views.py`. `package` is the file the
+    /// module itself resolved to, if any. Only Python has submodules a `from` import can name; the
+    /// other languages return `None`. Every path consulted is added to `probes`.
+    #[cfg_attr(
+        not(feature = "code-intel-stack"),
+        allow(unused_variables, reason = "only the Python resolver reads them")
+    )]
+    pub(crate) fn resolve_submodule(
+        &self,
+        root: &Path,
+        importer_rel: &str,
+        package: Option<&RelPath>,
+        import: &ImportEdge,
+        probes: &mut ProbeSet,
+    ) -> Option<RelPath> {
+        match self {
+            #[cfg(feature = "code-intel-js")]
+            Self::Js(_) => None,
+            #[cfg(feature = "code-intel-stack")]
+            Self::Python(resolver) => resolver.resolve_submodule(root, importer_rel, package, import, probes),
+            #[cfg(feature = "code-intel-stack")]
+            Self::Java(_) => None,
+        }
+    }
+
     /// The export name an import with no specific `imported` symbol binds to. JS/TS default imports
     /// (`import x from 'm'`) bind the target's `default` export, so `Js` returns `Some("default")`.
     /// A Python `import m` or Java `import a.b.C` with `imported == None` names no single export — a
@@ -422,6 +448,10 @@ pub(crate) mod js {
 #[cfg(feature = "code-intel-stack")]
 #[path = "resolver_python.rs"]
 pub(crate) mod python;
+
+#[cfg(all(test, feature = "code-intel-stack"))]
+#[path = "resolver_python_tests.rs"]
+mod python_tests;
 
 #[cfg(feature = "code-intel-stack")]
 pub(crate) mod java {
