@@ -1216,12 +1216,12 @@
     "MemoryScopeStrategy": {
       "oneOf": [
         {
-          "description": "Use normalized `origin` remote URL when available, else fall back to the\nworkdir realpath. This is the recommended default — clones of the same\nrepo share memory across machines.",
+          "description": "Reserved. Notes are stored under the main worktree's path whichever strategy is set, so\nclones of the same repository keep separate notes; the `origin` URL only prefixes the scope\ninside that store.",
           "type": "string",
           "const": "git_remote_with_fallback"
         },
         {
-          "description": "Always use the workdir realpath. Separates clones of the same repo.",
+          "description": "Reserved. Behaves as [`Self::GitRemoteWithFallback`] today.",
           "type": "string",
           "const": "workdir_only"
         }

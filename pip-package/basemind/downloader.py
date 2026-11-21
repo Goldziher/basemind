@@ -248,9 +248,15 @@ LAST_USED = ".last-used"
 
 
 def _cache_root() -> Path:
-    """``$XDG_CACHE_HOME/basemind``, else ``~/.cache/basemind``: the plugin launcher's rule."""
+    """``$XDG_CACHE_HOME/basemind``, else ``~/.cache/basemind``: the plugin launcher's rule.
+
+    The XDG specification has a relative ``XDG_CACHE_HOME`` ignored: it would resolve against the
+    directory the process starts in, and install a binary there that a later run executes.
+    """
     xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
-    return Path(xdg_cache_home) / "basemind" if xdg_cache_home else Path.home() / ".cache" / "basemind"
+    if xdg_cache_home and Path(xdg_cache_home).is_absolute():
+        return Path(xdg_cache_home) / "basemind"
+    return Path.home() / ".cache" / "basemind"
 
 
 def _cache_dir(version: str) -> Path:

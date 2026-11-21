@@ -302,5 +302,6 @@ the caller can fix is a tool result with `isError` whose text names the fix.
 - `code search` needs the `code-search` Cargo feature and the `memory` commands need `documents` /
   `memory` (all in `--features full` and in the release binary).
 - Memory is one store per repository, keyed by the path of its main worktree: its worktrees
-  share notes (per worktree when it has no `origin`); another clone, a moved repository or a
-  changed `origin` does not see them.
+  share notes (per worktree when it has no `origin`); another clone, a moved repository or an
+  `origin` that normalises differently does not see them, and a re-clone at the same path with
+  the same `origin` does.

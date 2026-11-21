@@ -77,6 +77,13 @@ def test_the_cache_follows_xdg_cache_home_like_the_plugin_launcher(monkeypatch, 
     assert downloader._cache_dir("0.34.0") == tmp_path.joinpath(*expected)
 
 
+def test_a_relative_xdg_cache_home_is_ignored(monkeypatch, tmp_path):
+    monkeypatch.setattr(downloader.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    monkeypatch.setenv("XDG_CACHE_HOME", "relative/cache")
+
+    assert downloader._cache_dir("0.34.0") == tmp_path / "home" / ".cache" / "basemind" / "0.34.0"
+
+
 def _age(path, days):
     import os
     import time

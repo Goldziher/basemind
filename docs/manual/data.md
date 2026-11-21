@@ -47,14 +47,16 @@ Everything else lives in the directories below. Removing them and the install re
 - The `mcp__basemind__` and `mcp__plugin_basemind_basemind__` entries of `permissions.allow` in
   `.claude/settings.local.json` or `.claude/settings.json`.
 - The `.gitignore` lines covering those `.local` files.
-- The git `pre-commit` hook `basemind hook install` wrote, and `pre-commit.bak`, the hook it
-  replaced.
+- The git `pre-commit` hook `basemind hook install` wrote. If `pre-commit.bak` exists it holds the
+  hook that was replaced: move it back over `pre-commit`. Otherwise delete only `pre-commit`.
 
 ## Removing basemind
 
 1. Stop the daemon with `basemind comms stop`. `basemind comms doctor` lists daemons of other
    versions still running; they exit once idle.
+
 2. Remove the per-repository files above from each repository you initialised.
+
 3. Remove the install:
 
    | Channel | Command |

@@ -22,8 +22,8 @@ impl Repo {
 /// worktrees of a repository without `origin` get distinct keys). For memory it is only a key
 /// prefix inside the store, and the store itself is per repository group
 /// (`crate::store_layout::repo_group_key`, the main worktree's path): two clones at different
-/// paths share a scope but not their notes, and changing `origin` hides the notes filed under the
-/// old one.
+/// paths share a scope but not their notes, and an `origin` that normalises differently hides the
+/// notes filed under the old one.
 pub fn scope_key(repo: &Repo) -> String {
     match repo.remote_url() {
         Some(url) => normalize_remote_url(&url),
