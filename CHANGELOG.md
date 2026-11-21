@@ -846,7 +846,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `git hotspots` counted every such author as one, and `git log`, blame and `code explain` named
   them `?`. `GIT_HISTORY_SCHEMA` and `GIT_CACHE_SCHEMA` are bumped: the git-history index rebuilds
   once on the next scan and cached git answers are recomputed (#305).
-
 - `basemind init` writes the rules file, `.claude/settings*.json`, `basemind.toml` and `.gitignore`
   atomically (#327): each goes to a temporary file beside it that is renamed over it, keeping the
   file's permissions, so a crash or a failed write leaves the original intact instead of truncated.
@@ -988,6 +987,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through any chain of such re-exports, up to eight files deep. A re-export cycle is cut where it
   closes, and `export * from` does not forward `default`. The next scan re-resolves every file once,
   with no cache wipe.
+- `basemind hook install --force` no longer replaces an earlier backup (#248). A foreign
+  pre-commit hook is moved to the first free name of `pre-commit.bak`, `pre-commit.bak.1`,
+  `pre-commit.bak.2`, ..., so a second forced install over a different hook keeps both. Before, it
+  was renamed over `pre-commit.bak`, deleting the hook backed up the first time.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
