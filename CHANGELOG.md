@@ -185,6 +185,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disk filled. The footprint counts each workspace's git cache, which eviction already removed. A
   set `BASEMIND_CACHE_BUDGET_MB` is enforced as given; `0` still disables enforcement.
   `cache_stats.last_gc.cache_budget_bytes` reports the budget the sweep applied.
+
 - **`[documents] embed_exclude` now defaults to the structured data formats**
   ([#260](https://github.com/Goldziher/basemind/issues/260)): `*.json`, `*.jsonc`, `*.json5`,
   `*.jsonl`, `*.ndjson`, `*.geojson`, `*.yaml`, `*.yml`, `*.toml`, `*.csv`, `*.tsv` and `*.xml`. They are still extracted, chunked and
