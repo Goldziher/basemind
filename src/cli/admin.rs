@@ -27,8 +27,10 @@ use super::run_tool;
 #[derive(Subcommand, Debug)]
 pub enum AdminCmd {
     /// Index health plus repository identity (branch, HEAD sha). Same as `basemind status`.
+    #[command(after_long_help = crate::cli::help::ADMIN_REPO)]
     Repo,
     /// Aggregate recorded tool calls into a usage and token-savings summary.
+    #[command(after_long_help = crate::cli::help::ADMIN_TELEMETRY)]
     Telemetry {
         /// Aggregation window (default: today).
         #[arg(long, value_enum)]
@@ -41,6 +43,7 @@ pub enum AdminCmd {
     /// `tokenizer` feature, which `documents` also includes). No `--json` envelope and no MCP
     /// round trip — this is the CLI-only primitive `benchmarks/run.sh` scripts against so both
     /// sides of a benchmark task get scored with the same tokenizer.
+    #[command(after_long_help = crate::cli::help::ADMIN_TOKENS)]
     Tokens {
         /// Read text from stdin. Currently the only input source; kept as an explicit flag so
         /// `basemind admin tokens --stdin <<< "$text"` reads as intentional in scripts.
@@ -50,6 +53,7 @@ pub enum AdminCmd {
     /// Retrieval-quality + token-savings evaluation over a JSONL task file: scores each tool's
     /// answer against gold (P/R/F1, hit@k, MRR, nDCG), measures latency and response tokens, and
     /// compares against a grep/read baseline. See `benchmarks/eval/README.md`.
+    #[command(after_long_help = crate::cli::help::ADMIN_EVAL)]
     Eval(crate::eval::EvalArgs),
 }
 
@@ -117,12 +121,14 @@ pub async fn run(tools: &Tools, cmd: AdminCmd, opts: &Emit, out: &mut impl Write
 pub enum CacheCmd {
     /// Garbage-collect orphaned extraction blobs from the machine-global cache (blobs younger than 6 h are kept;
     /// override with `BASEMIND_BLOB_GC_GRACE_SECS`).
+    #[command(after_long_help = crate::cli::help::CACHE_GC)]
     Gc {
         /// Only count the blobs in the store; delete nothing.
         #[arg(long)]
         dry_run: bool,
     },
     /// Report on-disk size + blob accounting for the machine-global cache.
+    #[command(after_long_help = crate::cli::help::CACHE_STATS)]
     Stats,
     /// Clear a cache component (`blobs|views|lance|git-cache|telemetry|all`), or a
     /// single view with `views:<name>` (e.g. `views:rev-abc1234`).
@@ -134,6 +140,7 @@ pub enum CacheCmd {
     /// requires `--yes` otherwise. `blobs` is the MACHINE-GLOBAL extraction store shared by every
     /// workspace on this machine, not just this repo. The command refuses (exit 3) while a writer
     /// holds this workspace's lock, and for `blobs` while the comms daemon is running.
+    #[command(after_long_help = crate::cli::help::CACHE_CLEAR)]
     Clear {
         /// Component to clear (`blobs|views|lance|git-cache|telemetry|all`), or
         /// `views:<name>` for a single view. Defaults to `git-cache` for back-compat.

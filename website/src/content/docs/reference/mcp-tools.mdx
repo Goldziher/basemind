@@ -5,14 +5,15 @@ description: Complete catalog of basemind's MCP tools, one tool per job, with ar
 
 import { Aside, Badge } from '@astrojs/starlight/components';
 
-basemind exposes **one tool per job** over stdio MCP: fifteen tools for code, documents, git history,
-memory and the index. Each has its own exact schema; none takes a `mode` argument. Builds with the
+basemind exposes **one tool per job** over stdio MCP: the verb tools `VERB_TOOLS` (`src/mcp/types_tools.rs`)
+lists, for code, documents, git history, memory and the index. Each has its own exact schema; none takes a `mode` argument. Builds with the
 `comms` feature add three deferred coordination tools, `agent_post`, `agent_inbox` and `agent_threads`;
-they have no `mode` either.
+they have no `mode` either. `basemind serve --lead` also lists `agent_launch` and `agent_stop`
+([below](#agent_launch-agent_stop--launching-agents)).
 
 Every tool definition carries `_meta["anthropic/alwaysLoad"]: true`, so a host that defers MCP tools
 loads the schemas at session start: the tools are always loaded and are called directly, with no
-tool-search round trip. `tools/list` for the fifteen tools is about 20 KB (about 5k tokens), down
+tool-search round trip. `tools/list` for the verb tools is about 20 KB (about 5k tokens), down
 from about 25 KB (about 6.3k tokens) for the four domain tools they replace; a test holds it under
 20,000 bytes.
 
@@ -177,7 +178,7 @@ index_rescan  {"paths":["src/store.rs"]}
 
 ## `agent_post`, `agent_inbox`, `agent_threads` — multi-agent coordination
 
-A shared chat layer for agents on the same repo. Requires `--features comms`. Unlike the fifteen
+A shared chat layer for agents on the same repo. Requires `--features comms`. Unlike the verb
 tools above these are **deferred**: they carry no always-load marker, so a host finds them by tool
 search, and the session-start hook and the server instructions name them. Every tool takes an
 optional `as` (`[a-z0-9_-]{1,32}`), a sub-identity `<principal>.<name>`. A field that does not apply
@@ -194,6 +195,18 @@ Replies carry `notices`: a rejected agent id, more than one live session for the
 archived by the 256-thread cap. The announcing read the hooks use (`basemind agent inbox
 --announce`) is CLI and hook only. See [Agent Comms](/concepts/agent-comms/) for orchestration
 examples.
+
+## `agent_launch`, `agent_stop` — launching agents
+
+Only `basemind serve --lead` lists and answers these two (Unix, `comms` builds), and only when the
+operator's `agents.toml` in basemind's configuration directory turns launching on. The daemon, its
+HTTP front-end, a plain `basemind serve` and the CLI never list them. The design is
+[ADR-0040](https://github.com/Goldziher/basemind/blob/main/docs/adr/0040-cross-harness-agent-launch.md).
+
+| Tool | Arguments (`?` = optional) | Purpose |
+|---|---|---|
+| `agent_launch` | `harness` (`claude`, `codex` or `opencode`, one the operator allows), `brief`, `working_dir`, `model?`, `effort?`, `max_turns?`, `wall_time_s?` | Start an agent in its own existing worktree under the operator's worktrees root, with `brief` as its first prompt. Returns the session id, the agent's id and a basemind thread both are members of. Every approval the agent asks for is denied; limits are clamped to the operator's caps; a refusal is a stable code. |
+| `agent_stop` | `session` | Stop an agent this lead launched, by the session id `agent_launch` returned. Stopping a finished session changes nothing. |
 
 ## Tool titles and annotations
 

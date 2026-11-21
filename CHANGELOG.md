@@ -10,6 +10,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33
+to 34, so each view's index is wiped at its first open, the blob store moves to `cache/blobs/v34/`,
+and every file is re-extracted and every document and code chunk re-embedded once. Read
+[`docs/UPGRADING.md`](docs/UPGRADING.md) before installing.
+
+**Highlights:**
+
+- **One MCP tool per job (ADR-0018).** The mode-dispatched `code`, `git`, `memory` and `admin` tools
+  are replaced by verb tools with exact schemas and no `mode`; the `agents` tool by `agent_post`,
+  `agent_inbox` and `agent_threads` (agent comms v2, ADR-0021). No aliases.
+- **Smaller answers.** The locating tools answer with rows as the shell prints them (ADR-0052), and
+  the text block of `code_grep`, `code_outline`, `git_diff` and a `find_files` list is no longer JSON
+  (#157, ADR-0053).
+- **The import graph and analysis commands.** `code_refs` lists a file's importers and the import
+  cycles (#121, #135); every call site says how it was resolved (#125, ADR-0047). New CLI commands:
+  `code impact` (#121), `code cycles` (#135), `code explain` (#120), `code deadcode` (#123),
+  `code migration check` (#130), `overview` (#131), `git hotspots` (#134) and `sessions` (#128).
+- **Scoped and size-aware queries.** `changed` limits `code_grep`, `code_symbols`, `code_refs` and
+  `find_files` to the files a change touched (#122); `index_status` and `find_files` `min_lines`
+  name the large files before they are opened (#127).
+- **One index per repository group (ADR-0028)**, shared by every worktree and view, and `docs_search`
+  rebuilt on one document store per group (ADR-0029, ADR-0037), with the documentation of the
+  repository's dependencies behind `[documents.dependencies]` (#132).
+- **Agent launch.** `basemind serve --lead` launches agents in worktrees of their own, off until the
+  operator's `agents.toml` enables it (ADR-0040).
+- **An offline manual**, `basemind manual [topic]`, compiled into the binary.
+- **Removed:** web ingestion, agent shells, the code graph tool, the token-saving text tools, the
+  `workspace` tool, memory audit and mining, archive extraction and LLM summarization.
+
 ### Added
 
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
@@ -70,7 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exit codes, environment variables and troubleshooting. It needs no index or daemon. The pages in
   `docs/manual/` are also the source of the skills' manual sections, spliced in by
   `scripts/sync_public_skills.py --manual` and checked for drift by `plugin_manifest_smoke` (#133).
-- `[documents.dependencies]` (off by default): a full scan indexes the README, CHANGELOG and `docs/**`
+- `[documents.dependencies]` (#132, off by default): a full scan indexes the README, CHANGELOG and `docs/**`
   of the dependencies `Cargo.toml` + `Cargo.lock`, `package.json`, `pyproject.toml` + `uv.lock` /
   `poetry.lock` and `go.mod` name, under `deps/<ecosystem>/<name>@<version>/<file>`, so
   `docs_search {path: "deps/npm/react@*/**"}` filters by package and a hit carries `package` and
@@ -140,11 +169,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- Large files before they are opened (#127): `index_status` reports `large_files`, the count of code
+  files of 2,000 lines or more and the five largest with their line and byte counts, and
+  `find_files` `min_lines` (CLI `basemind code find --min-lines`) lists every code file of at least
+  that many lines, largest first, as path to line count. The file map records each file's line count.
+- Every command's `--help` ends with when to use it, what it returns, one example and what to call
+  next (#163); `-h` keeps the one-line summary. `basemind --help` describes what basemind is, and the
+  `init`, `memory`, `cache` and `comms status` summaries say what those commands do.
+- `basemind comms cleanup [--dry-run] [--older-than <days>]` removes the rendezvous files no daemon
+  uses any more: the directories of other protocol generations under the comms directory, and the
+  files releases up to 0.33 keep directly in it (`comms.sock`, `daemon.lock`, `daemon.pid`,
+  `store.fjall/`, `daemon.log`, `daemon.log.1`, `http.addr`, `last-fatal.json`). A rendezvous goes
+  only when it has a `daemon.lock` the command can take and its newest file is older than 30 days;
+  one without a `daemon.lock`, or with one that cannot be opened, is left alone. `--older-than 0`
+  drops the age test, so the previous release's message store goes as soon as none of its daemons
+  is running. A directory is renamed aside under the lock before it is deleted, so a daemon
+  starting meanwhile finds its generation whole or absent. The command reads locks and file ages
+  only, never contacts or signals a daemon, and never touches the generation of the binary that
+  runs it (ADR-0024 rule 7). It also removes the daemon-registry records other generations left
+  for a daemon whose directory is gone or whose lock is free; with a reused pid such a record
+  counted toward the ceiling of live daemons for good.
 
 ### Changed
 
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
-  list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
+  list is no longer JSON (#157, ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
   `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`
   groups them; the other three are [TOON](https://toonformat.dev), which writes a list of objects
   as one table. Every other tool keeps JSON, which TOON did not shorten on the value-gate corpora;
@@ -701,22 +750,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PaddleOCR in the published binaries.** PaddleOCR is now the opt-in `documents-ocr-paddle` feature,
   which `full` does not include, so the Homebrew, npm, pip and GitHub release binaries no longer contain
   it. Tesseract OCR is unchanged.
-
-### Added
-
-- `basemind comms cleanup [--dry-run] [--older-than <days>]` removes the rendezvous files no daemon
-  uses any more: the directories of other protocol generations under the comms directory, and the
-  files releases up to 0.33 keep directly in it (`comms.sock`, `daemon.lock`, `daemon.pid`,
-  `store.fjall/`, `daemon.log`, `daemon.log.1`, `http.addr`, `last-fatal.json`). A rendezvous goes
-  only when it has a `daemon.lock` the command can take and its newest file is older than 30 days;
-  one without a `daemon.lock`, or with one that cannot be opened, is left alone. `--older-than 0`
-  drops the age test, so the previous release's message store goes as soon as none of its daemons
-  is running. A directory is renamed aside under the lock before it is deleted, so a daemon
-  starting meanwhile finds its generation whole or absent. The command reads locks and file ages
-  only, never contacts or signals a daemon, and never touches the generation of the binary that
-  runs it (ADR-0024 rule 7). It also removes the daemon-registry records other generations left
-  for a daemon whose directory is gone or whose lock is free; with a reused pid such a record
-  counted toward the ceiling of live daemons for good.
 
 ### Fixed
 
@@ -1469,9 +1502,44 @@ rebuilt on the next scan.
 
 ## [0.29.3] - 2026-10-13
 
+### Added
+
+- **`git` mode `show` / `basemind git show <sha>`** returns one commit with its full, untruncated message and
+  changed files, the way back to a body that `search` cut.
+- **Document-guard counters on every scan surface** ([#72](https://github.com/Goldziher/basemind/issues/72)).
+  `docs_degraded` and `doc_timeouts` now travel through the daemon `Rescanned` reply, the MCP `rescan`
+  result and `basemind rescan` when it is forwarded to the daemon, not just the in-process scan summary.
+  The fields are additive and default to 0, so mixed old and new daemon/client pairs keep working
+  (no `PROTO_VER` bump).
+- **Agent Plugins distribution** ([#69](https://github.com/Goldziher/basemind/issues/69)). The repository
+  root now carries a conformant [Agent Plugins](https://agent-plugins.org) 1.0.0 package (`plugin.json`,
+  `mcp.json`, `skills/`), generated by ai-rulez (`generate --plugin`) and checked by
+  `validate --strict`. Its MCP server runs `basemind serve` from `PATH`.
+
 ### Changed
 
 - Dependencies: `xberg` 1.3.9, `tree-sitter-language-pack` 1.22.1, `oxc_*` 0.154, plus compatible lockfile updates. `ort` stays at 2.0.0-rc.13, `arrow` at 58 and `bincode` at 2.x.
+- **Linear-chunker cutovers raised, measured on a release build with xberg 1.3.8.**
+  `[documents] markdown_chunk_max_bytes` goes 256 KiB to 1 MiB and `plain_text_chunk_max_bytes` 128 KiB to
+  4 MiB. The splitter is linear for ordinary text now; only a single markdown block dense with inline
+  markup stays quadratic, and the linear fallback still bounds it. Documents already routed through the
+  linear chunker keep their index entry until the file changes.
+- **Document extraction bounds** ([#72](https://github.com/Goldziher/basemind/issues/72)). The default
+  `[documents] extraction_timeout_secs` drops from 600 to 120, so a few documents timing out together no
+  longer cost ten minutes each, and a new `phase_budget_secs` (default 1800) bounds the whole document
+  phase of a scan. Once it is spent the remaining documents are deferred, not failed, and the next scan
+  picks them up (`docs_deferred` in the scan summary). Raise `extraction_timeout_secs` if your corpus has
+  legitimately slow documents (large scanned PDFs).
+- **Timed-out documents are no longer retried on every scan.** A document that overruns its budget is
+  recorded in the index by content hash together with the extraction limits (timeout, chunk cutovers,
+  `max_pages` and the extraction settings). While both are unchanged the file is skipped and counted as
+  `docs_tombstoned`; editing it, or changing a limit, retries it. Existing indexes stay readable (the
+  record is an additive field).
+- **Abandoned extraction threads are capped.** A timed-out extraction cannot be cancelled and keeps a
+  core busy until it finishes. `[documents] max_abandoned_extractions` (default 4) caps how many may still
+  run; at the cap further documents are deferred instead of spawning more. The live count is logged and
+  shown as `abandoned_extractions` in the scan summary. Running extraction in a killable subprocess was
+  evaluated and rejected, see ADR-0015.
 
 ### Fixed
 
@@ -1518,47 +1586,6 @@ rebuilt on the next scan.
   `docs_degraded` and, separately, as the new `docs_text_fallback` (scan summary, `rescan`, daemon
   `Rescanned` reply and MCP `rescan`; additive, defaults to 0). Binary formats, corrupt PDFs, IO errors and
   timeouts stay failures.
-
-### Changed
-
-- **Linear-chunker cutovers raised, measured on a release build with xberg 1.3.8.**
-  `[documents] markdown_chunk_max_bytes` goes 256 KiB to 1 MiB and `plain_text_chunk_max_bytes` 128 KiB to
-  4 MiB. The splitter is linear for ordinary text now; only a single markdown block dense with inline
-  markup stays quadratic, and the linear fallback still bounds it. Documents already routed through the
-  linear chunker keep their index entry until the file changes.
-
-### Added
-
-- **`git` mode `show` / `basemind git show <sha>`** returns one commit with its full, untruncated message and
-  changed files, the way back to a body that `search` cut.
-- **Document-guard counters on every scan surface** ([#72](https://github.com/Goldziher/basemind/issues/72)).
-  `docs_degraded` and `doc_timeouts` now travel through the daemon `Rescanned` reply, the MCP `rescan`
-  result and `basemind rescan` when it is forwarded to the daemon, not just the in-process scan summary.
-  The fields are additive and default to 0, so mixed old and new daemon/client pairs keep working
-  (no `PROTO_VER` bump).
-- **Agent Plugins distribution** ([#69](https://github.com/Goldziher/basemind/issues/69)). The repository
-  root now carries a conformant [Agent Plugins](https://agent-plugins.org) 1.0.0 package (`plugin.json`,
-  `mcp.json`, `skills/`), generated by ai-rulez (`generate --plugin`) and checked by
-  `validate --strict`. Its MCP server runs `basemind serve` from `PATH`.
-
-### Changed
-
-- **Document extraction bounds** ([#72](https://github.com/Goldziher/basemind/issues/72)). The default
-  `[documents] extraction_timeout_secs` drops from 600 to 120, so a few documents timing out together no
-  longer cost ten minutes each, and a new `phase_budget_secs` (default 1800) bounds the whole document
-  phase of a scan. Once it is spent the remaining documents are deferred, not failed, and the next scan
-  picks them up (`docs_deferred` in the scan summary). Raise `extraction_timeout_secs` if your corpus has
-  legitimately slow documents (large scanned PDFs).
-- **Timed-out documents are no longer retried on every scan.** A document that overruns its budget is
-  recorded in the index by content hash together with the extraction limits (timeout, chunk cutovers,
-  `max_pages` and the extraction settings). While both are unchanged the file is skipped and counted as
-  `docs_tombstoned`; editing it, or changing a limit, retries it. Existing indexes stay readable (the
-  record is an additive field).
-- **Abandoned extraction threads are capped.** A timed-out extraction cannot be cancelled and keeps a
-  core busy until it finishes. `[documents] max_abandoned_extractions` (default 4) caps how many may still
-  run; at the cap further documents are deferred instead of spawning more. The live count is logged and
-  shown as `abandoned_extractions` in the scan summary. Running extraction in a killable subprocess was
-  evaluated and rejected, see ADR-0015.
 
 ## [0.29.2] - 2026-10-12
 
@@ -4910,6 +4937,66 @@ crates.io.
 - `search_documents` post-processing releases the store read-lock before
   blob I/O; `ahash::AHashMap` / `AHashSet` on the post-filter path.
 
+[Unreleased]: https://github.com/Goldziher/basemind/compare/v0.33.0...HEAD
+[0.33.0]: https://github.com/Goldziher/basemind/compare/v0.32.0...v0.33.0
+[0.32.0]: https://github.com/Goldziher/basemind/compare/v0.31.1...v0.32.0
+[0.31.1]: https://github.com/Goldziher/basemind/compare/v0.31.0...v0.31.1
+[0.31.0]: https://github.com/Goldziher/basemind/compare/v0.30.0...v0.31.0
+[0.30.0]: https://github.com/Goldziher/basemind/compare/v0.29.3...v0.30.0
+[0.29.3]: https://github.com/Goldziher/basemind/compare/v0.29.2...v0.29.3
+[0.29.2]: https://github.com/Goldziher/basemind/compare/v0.29.1...v0.29.2
+[0.29.1]: https://github.com/Goldziher/basemind/compare/v0.29.0...v0.29.1
+[0.29.0]: https://github.com/Goldziher/basemind/compare/v0.28.0...v0.29.0
+[0.28.0]: https://github.com/Goldziher/basemind/compare/v0.27.4...v0.28.0
+[0.27.4]: https://github.com/Goldziher/basemind/compare/v0.27.3...v0.27.4
+[0.27.3]: https://github.com/Goldziher/basemind/compare/v0.27.2...v0.27.3
+[0.27.2]: https://github.com/Goldziher/basemind/compare/v0.27.1...v0.27.2
+[0.27.1]: https://github.com/Goldziher/basemind/compare/v0.27.0...v0.27.1
+[0.27.0]: https://github.com/Goldziher/basemind/compare/v0.26.0...v0.27.0
+[0.26.0]: https://github.com/Goldziher/basemind/compare/v0.25.2...v0.26.0
+[0.25.2]: https://github.com/Goldziher/basemind/compare/v0.25.1...v0.25.2
+[0.25.1]: https://github.com/Goldziher/basemind/compare/v0.25.0...v0.25.1
+[0.25.0]: https://github.com/Goldziher/basemind/compare/v0.24.0...v0.25.0
+[0.24.0]: https://github.com/Goldziher/basemind/compare/v0.23.1...v0.24.0
+[0.23.1]: https://github.com/Goldziher/basemind/compare/v0.23.0...v0.23.1
+[0.23.0]: https://github.com/Goldziher/basemind/compare/v0.22.8...v0.23.0
+[0.22.8]: https://github.com/Goldziher/basemind/compare/v0.22.7...v0.22.8
+[0.22.7]: https://github.com/Goldziher/basemind/compare/v0.22.6...v0.22.7
+[0.22.6]: https://github.com/Goldziher/basemind/compare/v0.22.5...v0.22.6
+[0.22.5]: https://github.com/Goldziher/basemind/compare/v0.22.4...v0.22.5
+[0.22.4]: https://github.com/Goldziher/basemind/compare/v0.22.3...v0.22.4
+[0.22.3]: https://github.com/Goldziher/basemind/compare/v0.22.2...v0.22.3
+[0.22.2]: https://github.com/Goldziher/basemind/compare/v0.22.1...v0.22.2
+[0.22.1]: https://github.com/Goldziher/basemind/compare/v0.22.0...v0.22.1
+[0.22.0]: https://github.com/Goldziher/basemind/compare/v0.21.1...v0.22.0
+[0.21.1]: https://github.com/Goldziher/basemind/compare/v0.21.0...v0.21.1
+[0.21.0]: https://github.com/Goldziher/basemind/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/Goldziher/basemind/compare/v0.19.2...v0.20.0
+[0.19.2]: https://github.com/Goldziher/basemind/compare/v0.19.1...v0.19.2
+[0.19.1]: https://github.com/Goldziher/basemind/compare/v0.19.0...v0.19.1
+[0.19.0]: https://github.com/Goldziher/basemind/compare/v0.18.1...v0.19.0
+[0.18.1]: https://github.com/Goldziher/basemind/compare/v0.18.0...v0.18.1
+[0.18.0]: https://github.com/Goldziher/basemind/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/Goldziher/basemind/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/Goldziher/basemind/compare/v0.15.1...v0.16.0
+[0.15.1]: https://github.com/Goldziher/basemind/compare/v0.15.0...v0.15.1
+[0.15.0]: https://github.com/Goldziher/basemind/compare/v0.14.0...v0.15.0
+[0.14.0]: https://github.com/Goldziher/basemind/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/Goldziher/basemind/compare/v0.12.2...v0.13.0
+[0.12.2]: https://github.com/Goldziher/basemind/compare/v0.12.0...v0.12.2
+[0.12.0]: https://github.com/Goldziher/basemind/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/Goldziher/basemind/compare/v0.10.3...v0.11.0
+[0.10.3]: https://github.com/Goldziher/basemind/compare/v0.10.2...v0.10.3
+[0.10.2]: https://github.com/Goldziher/basemind/compare/v0.10.1...v0.10.2
+[0.10.1]: https://github.com/Goldziher/basemind/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/Goldziher/basemind/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/Goldziher/basemind/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/Goldziher/basemind/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/Goldziher/basemind/compare/v0.6.3...v0.7.0
+[0.6.3]: https://github.com/Goldziher/basemind/compare/v0.6.2...v0.6.3
+[0.6.2]: https://github.com/Goldziher/basemind/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/Goldziher/basemind/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/Goldziher/basemind/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Goldziher/basemind/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Goldziher/basemind/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Goldziher/basemind/compare/v0.2.6...v0.3.0

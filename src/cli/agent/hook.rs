@@ -50,8 +50,10 @@ impl Injection {
 #[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookEvent {
     /// `PreToolUse` of an agent tool: add the session-scoped `as` when the call has none.
+    #[command(after_long_help = crate::cli::help::AGENT_HOOK_PRE_TOOL_USE)]
     PreToolUse,
     /// Print the session-scoped name for the event on stdin.
+    #[command(after_long_help = crate::cli::help::AGENT_HOOK_NAME)]
     Name,
 }
 

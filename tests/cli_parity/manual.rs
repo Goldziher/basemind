@@ -44,13 +44,14 @@ fn comms_build() -> bool {
     cfg!(all(feature = "comms", any(unix, windows)))
 }
 
-/// A token that stands for something the reader fills in: stop checking there.
+/// A token that stands for something the reader fills in. In a subcommand's place it hides the
+/// rest of the path, so checking stops; in a leaf's arguments it is a value, so checking goes on.
 fn placeholder(token: &str) -> bool {
     token.starts_with('<') || token.starts_with('[') || token.contains('…')
 }
 
 /// Check one `basemind …` mention against the live tree; `Err` says what is wrong.
-fn check_command(tree: &cli_tree::CliTree, mention: &str) -> Result<(), String> {
+pub(crate) fn check_command(tree: &cli_tree::CliTree, mention: &str) -> Result<(), String> {
     let mut tokens = mention.split_whitespace().skip(1).peekable();
     if let Some(first) = tokens.peek()
         && COMMS_COMMANDS.contains(first)
@@ -60,12 +61,9 @@ fn check_command(tree: &cli_tree::CliTree, mention: &str) -> Result<(), String> 
     }
     let mut path = String::new();
     for token in tokens {
-        if placeholder(token) {
-            return Ok(());
-        }
         let node = tree.commands.get(&path).ok_or_else(|| format!("no command `{path}`"))?;
         if !node.is_leaf() {
-            if token == "--help" || token == "-h" {
+            if placeholder(token) || token == "--help" || token == "-h" {
                 return Ok(());
             }
             if !node.subcommands.iter().any(|sub| sub == token) {
@@ -76,6 +74,9 @@ fn check_command(tree: &cli_tree::CliTree, mention: &str) -> Result<(), String> 
             } else {
                 format!("{path} {token}")
             };
+            continue;
+        }
+        if placeholder(token) {
             continue;
         }
         if let Some(flag) = token.strip_prefix("--") {
@@ -122,6 +123,9 @@ fn a_mistyped_command_or_flag_is_caught() {
     assert!(check_command(tree, "basemind code outlines src/a.rs").is_err());
     assert!(check_command(tree, "basemind git log --paths src/").is_err());
     assert!(check_command(tree, "basemind git log --path src/ --json").is_ok());
+    assert!(check_command(tree, "basemind git log --path <path> --jsno").is_err());
+    assert!(check_command(tree, "basemind code read <path> --line <n> --end-line <m>").is_ok());
+    assert!(check_command(tree, "basemind <command> --help").is_ok());
 }
 
 /// `(name, arguments)` of a span naming a tool: `code_refs` or `code_refs {"name":"x"}`.

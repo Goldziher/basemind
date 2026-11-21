@@ -36,8 +36,8 @@ const DEFAULT_MAX_EMBED_THREADS: usize = 4;
 /// A bigger embed batch grows the ONNX arena, which never shrinks.
 const DEFAULT_MAX_EMBED_BATCH: usize = 8;
 const DEFAULT_MAX_CONCURRENT_DOCUMENTS: usize = 4;
-/// Applied when a workspace leaves the footprint on auto or off; auto is half of machine RAM, which
-/// on a developer laptop never engages before the machine is swapping.
+/// Applied when a workspace leaves the footprint on auto or off; auto is a quarter of machine RAM
+/// (`AUTO_ADVISORY_DENOMINATOR` in `config::resources`), 8 GiB on a 32 GiB machine.
 pub(crate) const DEFAULT_MAX_FOOTPRINT_MB: usize = 3072;
 pub(crate) const DEFAULT_MAX_MAP_CACHE_MB: usize = 1024;
 pub(crate) const DEFAULT_MAX_CANDIDATES: usize = 2_000_000;

@@ -11,6 +11,7 @@
 //! - `forward.rs` — the relay session that forwards a call to the daemon when it is up.
 //! - `render.rs` — JSON extraction + generic human renderer.
 //! - `code.rs` / `git.rs` / `memory.rs` / `admin.rs` — subcommand groups.
+//! - `help.rs` / `help_code.rs` — every command's long help (`--help`).
 
 pub mod admin;
 pub mod agent;
@@ -26,6 +27,8 @@ pub mod exit;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod forward;
 pub mod git;
+pub mod help;
+pub mod help_code;
 pub mod hook;
 pub mod init;
 pub mod init_gitignore;
@@ -63,7 +66,8 @@ pub enum ToolCmd {
     /// Git history / blame / diff queries.
     #[command(subcommand)]
     Git(git::GitCmd),
-    /// Shared agent memory and document search (needs `--features memory,documents`).
+    /// Shared agent memory (needs `--features memory`) and document search (`memory documents`,
+    /// needs `--features documents`).
     #[command(subcommand)]
     Memory(memory::MemoryCmd),
     /// Administration: telemetry, tokens, eval.

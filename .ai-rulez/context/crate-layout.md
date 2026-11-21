@@ -31,7 +31,7 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
   - `overrides.rs` — `DocumentsCliOverrides` (backs clap `#[command(flatten)]` + MCP `#[serde(flatten)]`).
   - `layered.rs` — `merge_layers` (Mcp > Cli > Env > File > Default).
   - `source.rs` — `ConfigSource` + `ProvenanceMap` ledger.
-- `mcp/` — MCP server: fifteen verb tools, one per job with an exact schema (ADR-0018), plus the three deferred agent tools (`agent_post`, `agent_inbox`, `agent_threads`) in a `comms` build (ADR-0021).
+- `mcp/` — MCP server: the verb tools `VERB_TOOLS` lists, one per job with an exact schema (ADR-0018), plus the three deferred agent tools (`agent_post`, `agent_inbox`, `agent_threads`) in a `comms` build (ADR-0021) and the two lead tools (`agent_launch`, `agent_stop`, `lead_tools.rs`) on a `basemind serve --lead` session (ADR-0040).
   - `mod.rs` — server bootstrap.
   - `types_tools.rs` — one `deny_unknown_fields` params struct per verb tool, and the `tool_args!` table that names each tool and builds `VERB_TOOLS`.
   - `strict.rs`, `tool_contract.rs` — `Strict<T>` argument validation (unknown field → did-you-mean + accepted list), `answer` (failures become `isError` results), and `finalize_router` (always-load marker, schema compaction).
