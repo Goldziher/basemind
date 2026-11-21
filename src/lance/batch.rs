@@ -226,7 +226,8 @@ async fn optimize_table(table: &Table, compact: bool, retention: Duration) -> Re
     if compact {
         compact_table(table, CompactionOptions::default()).await?;
     }
-    prune_table(table, retention).await
+    prune_table(table, retention).await?;
+    Ok(())
 }
 
 /// Remove the rows a delete only marked: rewrite every fragment that holds one, however few, then
@@ -238,7 +239,14 @@ pub(super) async fn purge_table(table: &Table) -> Result<()> {
         ..CompactionOptions::default()
     };
     compact_table(table, every_deletion).await?;
-    prune_table(table, Duration::ZERO).await
+    let failed_deletes = prune_table(table, Duration::ZERO).await?;
+    // Lance reports a data file it could not delete as a count, not an error; the rows that file
+    // holds are still on disk, so a purge that left any is not done.
+    anyhow::ensure!(
+        failed_deletes == 0,
+        "{failed_deletes} obsolete data file(s) could not be deleted, so the purge is incomplete; retry it"
+    );
+    Ok(())
 }
 
 async fn compact_table(table: &Table, options: CompactionOptions) -> Result<()> {
@@ -252,10 +260,11 @@ async fn compact_table(table: &Table, options: CompactionOptions) -> Result<()> 
     Ok(())
 }
 
-async fn prune_table(table: &Table, retention: Duration) -> Result<()> {
+/// Drop the versions older than `retention`; returns how many files Lance could not delete.
+async fn prune_table(table: &Table, retention: Duration) -> Result<u64> {
     let older_than = ChronoDuration::try_seconds(i64::try_from(retention.as_secs()).unwrap_or(i64::MAX))
         .unwrap_or_else(ChronoDuration::zero);
-    table
+    let stats = table
         .optimize(OptimizeAction::Prune {
             older_than: Some(older_than),
             delete_unverified: Some(false),
@@ -263,7 +272,7 @@ async fn prune_table(table: &Table, retention: Duration) -> Result<()> {
         })
         .await
         .context("prune")?;
-    Ok(())
+    Ok(stats.prune.map_or(0, |removal| removal.failed_deletes))
 }
 
 #[cfg(test)]

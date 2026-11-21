@@ -230,6 +230,9 @@ pub struct MemoryDeleteParams {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct MemoryDeleteResponse {
     pub deleted: bool,
+    /// Vector stores that could not be purged of the note's rows; the delete can be run again to
+    /// retry them. Zero when every store was purged.
+    pub vector_stores_failed: usize,
 }
 
 /// `basemind memory clear`: every note of the repository group. No arguments.
@@ -244,6 +247,8 @@ pub(crate) struct MemoryClearResponse {
     pub notes_removed: usize,
     /// Embedding models' vector stores emptied of their rows and purged.
     pub vector_stores_purged: usize,
+    /// Vector stores that could not be purged; `memory clear` can be run again to retry them.
+    pub vector_stores_failed: usize,
 }
 
 /// Verification verdict of a memory's code references against the live index, set by the

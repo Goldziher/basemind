@@ -306,32 +306,44 @@ pub(crate) fn delete_vector_row(ws: &Workspace, visibility: Visibility, owner: &
     }
 }
 
-/// Best-effort removal of a deleted note's rows from every model's store of the repo group, each
-/// table purged after ([`LanceStore::purge_memory`]): a store of a preset no longer configured
-/// still holds the rows embedded under it, and a delete only hides a row until the table's files
-/// are rewritten.
-pub(crate) fn purge_vector_rows(ws: &Workspace, visibility: Visibility, owner: &str, key: &str) {
+/// How many of the repo group's vector stores a purge reached.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PurgeOutcome {
+    /// Stores the purge completed on.
+    pub purged: usize,
+    /// Stores that could not be opened or purged; their rows may remain, and the purge can be run again.
+    pub failed: usize,
+}
+
+/// Removal of a deleted note's rows from every model's store of the repo group, each table purged
+/// after ([`LanceStore::purge_memory`]): a store of a preset no longer configured still holds the
+/// rows embedded under it, and a delete only hides a row until the table's files are rewritten. A
+/// store that fails is logged and counted in the outcome, never an error: the note is already gone.
+pub(crate) fn purge_vector_rows(ws: &Workspace, visibility: Visibility, owner: &str, key: &str) -> PurgeOutcome {
     let visibility = lance_visibility(visibility);
     on_every_store(ws, "purge_memory", |lance| {
         lance.purge_memory(&ws.scope, visibility, owner, key)
-    });
+    })
 }
 
-/// Best-effort removal of every row of every model's store of the repo group, each purged after
-/// ([`LanceStore::purge_all_memory`]). Returns how many stores were emptied.
-pub(crate) fn purge_every_vector_row(ws: &Workspace) -> usize {
+/// Removal of every row of every model's store of the repo group, each purged after
+/// ([`LanceStore::purge_all_memory`]).
+pub(crate) fn purge_every_vector_row(ws: &Workspace) -> PurgeOutcome {
     on_every_store(ws, "purge_all_memory", LanceStore::purge_all_memory)
 }
 
 /// Run `work` on every model's store under the group's
-/// [`crate::store_layout::memory_vectors_dir`], the one this process has open through its handle,
-/// and return on how many it succeeded. A store that cannot be opened, or on which `work` fails,
-/// is logged, never an error.
-fn on_every_store(ws: &Workspace, what: &'static str, work: impl Fn(&LanceStore) -> anyhow::Result<u64>) -> usize {
+/// [`crate::store_layout::memory_vectors_dir`], the one this process has open through its handle.
+/// A store that cannot be opened, or on which `work` fails, is logged and counted as failed.
+fn on_every_store(
+    ws: &Workspace,
+    what: &'static str,
+    work: impl Fn(&LanceStore) -> anyhow::Result<u64>,
+) -> PurgeOutcome {
     let Ok(tables) = std::fs::read_dir(crate::store_layout::memory_vectors_dir(&ws.root)) else {
-        return 0;
+        return PurgeOutcome::default();
     };
-    let mut done = 0;
+    let mut outcome = PurgeOutcome::default();
     for table in tables.flatten() {
         let dir = table.path();
         if !table.file_type().is_ok_and(|kind| kind.is_dir()) {
@@ -344,16 +356,27 @@ fn on_every_store(ws: &Workspace, what: &'static str, work: impl Fn(&LanceStore)
                 Ok(None) => continue,
                 Err(error) => {
                     tracing::warn!(%error, store = %dir.display(), what, "a memory vector store was not opened");
+                    outcome.failed += 1;
                     continue;
                 }
             },
         };
         match on_store(&lance, what, &work) {
-            Ok(_) => done += 1,
-            Err(error) => tracing::warn!(%error, store = %dir.display(), "a memory vector store was not purged"),
+            Ok(_) => outcome.purged += 1,
+            Err(error) => {
+                tracing::warn!(%error, store = %dir.display(), "a memory vector store was not purged");
+                outcome.failed += 1;
+            }
         }
     }
-    done
+    outcome
+}
+
+/// Forget which namespaces are level with their rows, so the next search of each looks again. A
+/// clear purges rows after it removes the notes; a save that lands between the two keeps its note
+/// but loses its row, which a `Level` mark would hide for up to its lifetime.
+pub(crate) fn forget_backfill_marks(ws: &Workspace) {
+    backfill_marks(ws).clear();
 }
 
 /// The notes to embed, given the rows the table holds: those with no row, a row embedded from an

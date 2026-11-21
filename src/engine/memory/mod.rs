@@ -291,10 +291,12 @@ impl Workspace {
             let idx = store.index_handle().ok_or_else(index_unavailable)?;
             ops::clear_core(&idx)?
         };
-        let vector_stores_purged = vectors::purge_every_vector_row(self);
+        let purge = vectors::purge_every_vector_row(self);
+        vectors::forget_backfill_marks(self);
         Ok(MemoryClearResponse {
             notes_removed,
-            vector_stores_purged,
+            vector_stores_purged: purge.purged,
+            vector_stores_failed: purge.failed,
         })
     }
 
@@ -306,8 +308,11 @@ impl Workspace {
             let idx = store.index_handle().ok_or_else(index_unavailable)?;
             ops::delete_core(&idx, &self.scope, vis_byte, owner, &params.key)?
         };
-        vectors::purge_vector_rows(self, params.visibility, owner, &params.key);
-        Ok(MemoryDeleteResponse { deleted })
+        let purge = vectors::purge_vector_rows(self, params.visibility, owner, &params.key);
+        Ok(MemoryDeleteResponse {
+            deleted,
+            vector_stores_failed: purge.failed,
+        })
     }
 }
 
