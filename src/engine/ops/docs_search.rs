@@ -79,14 +79,19 @@ mod enabled {
                 || self.rank_docs(&request, &filters, store.as_ref()),
                 crate::lance::docs_rank::is_cacheable,
             )?;
-            let page = crate::lance::docs_page::page(store.as_ref(), ranking, offset, limit, budget(p.max_tokens));
+            let mut page = crate::lance::docs_page::page(store.as_ref(), ranking, offset, limit, budget(p.max_tokens));
             let next_cursor = page
                 .next_offset
                 .map(|next| Cursor::encode_in_memory(u64::from(next), generation));
+            let notice = self.lifecycle_notice();
+            if notice.is_some() {
+                page.notice = None;
+            }
             Ok(DocsSearchResponse {
                 page,
                 next_cursor,
                 elapsed_us: elapsed_us(started),
+                notice,
             })
         }
 

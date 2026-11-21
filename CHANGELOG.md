@@ -1241,6 +1241,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it syncs the journal, flushes only once 8 MiB of rows sit unflushed, and merges only a small
   keyspace holding more than one table. A one-commit append on a 2.7k-commit history went from
   about 530 ms to 23 ms (debug build); a full rebuild still compacts every keyspace.
+- `code_search` and `docs_search` report an incomplete index like the other verb tools (#258): while
+  the index warms, builds, rescans, rebuilds after a partial scan or is empty, the answer carries the
+  same `notice` object (`state`, `message`, `retry`). On `docs_search` it takes the place of the
+  document store's own `notice` text, so an answer has one.
 
 ## [0.33.0] - 2026-11-14
 

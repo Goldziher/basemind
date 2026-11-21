@@ -67,6 +67,7 @@ mod enabled {
                 depth_cut: page.depth_cut,
                 next_cursor: page.next_cursor,
                 elapsed_us: elapsed_us(started),
+                notice: self.lifecycle_notice(),
             })
         }
 
