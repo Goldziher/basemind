@@ -122,6 +122,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("store_gc", Core),
     ("store_gc_budget", Core),
     ("store_gc_groups", Core),
+    ("scanner_hold", Core),
     ("store_gc_legacy_views", Core),
     ("store_gc_live", Core),
     ("store_gc_namespaces", Core),
@@ -137,6 +138,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("testing", Root),
     ("textmatch", Core),
     ("thread_pool", Core),
+    ("upgrade_plan", Core),
     ("version", Core),
     ("watch_health", Core),
     ("watcher", Root),
@@ -772,6 +774,11 @@ fn violations(root: &Path, modules: &[Module]) -> BTreeSet<String> {
             };
             for target in modules_passed(&known, &exports, absolute) {
                 let Some(to) = layer_of(&target) else { continue };
+                // `testing` is the library's test-support facade (isolated git, skip helpers); test
+                // code in every layer is meant to use it, so reaching it is not a layering edge.
+                if target.first().map(String::as_str) == Some("testing") {
+                    continue;
+                }
                 if to > from {
                     found.insert(format!("{file} -> {}{tag}", target.join("::")));
                 }
