@@ -584,6 +584,26 @@ fn cache_stats_warns_of_a_budget_over_a_small_disk_and_not_a_large_one() {
     assert_eq!(large, None);
 }
 
+/// A newer basemind's blob namespace is on the disk but eviction cannot free it: the disk fills when
+/// the enforceable cache reaches what it holds plus the free space, so the warning counts that.
+#[test]
+fn cache_stats_warns_by_the_footprint_eviction_can_free() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspaces = tmp.path().join("workspaces");
+    let blobs = tmp.path().join("blobs");
+    let newer = blobs.join(format!("v{}", crate::extract::SCHEMA_VER + 1));
+    fs::create_dir_all(&newer).expect("mk newer namespace");
+    fs::write(newer.join("new.fm.msgpack"), vec![0_u8; 8 * MIB as usize]).expect("newer blob");
+    let budget = Some(CacheBudget::Fixed(6 * MIB));
+
+    let warning = cache_budget_warning_at(&workspaces, &blobs, budget, || Some(2 * MIB)).expect("measure");
+
+    assert!(
+        warning.is_some_and(|text| text.contains("the cache's 0 MiB plus 2 MiB free")),
+        "the newer namespace must not count as cache"
+    );
+}
+
 /// Only a set budget can exceed the disk, so no other budget pays for measuring the cache.
 #[test]
 fn cache_stats_does_not_measure_the_cache_for_the_default_budget() {

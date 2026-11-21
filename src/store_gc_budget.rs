@@ -125,7 +125,10 @@ pub(crate) fn cache_budget_warning_at(
     if !matches!(budget, Some(CacheBudget::Fixed(_))) {
         return Ok(None);
     }
-    let cache_bytes = occupied_bytes(workspaces_dir, blobs_root, &[])?;
+    // The footprint a fixed budget is compared with: a newer basemind's workspaces and blob
+    // namespaces are on the disk but outside what eviction can free. ~keep
+    let newer = workspaces_of_a_newer_basemind(workspaces_dir);
+    let cache_bytes = cache_footprint(workspaces_dir, blobs_root, crate::extract::SCHEMA_VER, &newer)?;
     Ok(budget_disk_warning(budget, cache_bytes, free_bytes()))
 }
 
@@ -484,13 +487,14 @@ pub(crate) fn read_gc_state_at(path: &Path) -> Option<GcState> {
 /// eviction immediately reclaims blobs that lost their final reference and remeasures the real
 /// footprint before selecting another victim.
 pub fn enforce_cache_budget(data: &DataRoot, budget: CacheBudget) -> Result<EvictReport, GcError> {
-    let free_bytes = free_bytes_at(&data.cache_dir());
+    let cache_dir = data.cache_dir();
     enforce_cache_budget_at(
         &data.workspaces_dir(),
         &data.global_blobs_root(),
         &data.global_blobs_dir(),
         crate::extract::SCHEMA_VER,
-        |cache_bytes| budget.resolve(cache_bytes, free_bytes),
+        // Free space is read after the footprint is measured, so a scan between the two cannot skew them. ~keep
+        |cache_bytes| budget.resolve(cache_bytes, free_bytes_at(&cache_dir)),
         &EvictionRules {
             hot_floor: BUDGET_EVICTION_HOT_FLOOR,
             grace: cache_grace(),

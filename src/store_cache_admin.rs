@@ -329,7 +329,11 @@ pub fn clear_single_view(basemind_dir: &Path, name: &str) -> Result<(), GcError>
 /// against the disk ([`CacheStats::budget_warning`]).
 pub fn cache_stats(data: &crate::data_root::DataRoot, basemind_dir: &Path) -> Result<CacheStats, GcError> {
     let mut stats = cache_stats_in(basemind_dir, &BlobStorePaths::global(data))?;
-    stats.budget_warning = crate::store_gc_budget::cache_budget_warning(data, crate::store_gc_budget::cache_budget())?;
+    // Advisory: a workspace that cannot be measured must not cost the stats already collected.
+    match crate::store_gc_budget::cache_budget_warning(data, crate::store_gc_budget::cache_budget()) {
+        Ok(warning) => stats.budget_warning = warning,
+        Err(error) => tracing::warn!(%error, "could not measure the cache against its budget; no budget warning"),
+    }
     Ok(stats)
 }
 
