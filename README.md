@@ -41,7 +41,8 @@ In a Claude Code session (not your shell), at the repository root:
 
 Restart Claude Code and run `/bm-init`. It asks where the rules go, then runs `basemind init --yes`
 with the binary the plugin downloaded: that writes `basemind.toml` and a rules block telling the
-agent to ask basemind first. Then ask:
+agent to ask basemind first. Then ask about a function in your repository (`parse_config` stands
+in for its name):
 
 ```text
 Where is parse_config defined, and what calls it?
@@ -55,7 +56,7 @@ Without a plugin, from a shell:
 brew install Goldziher/tap/basemind
 basemind init --yes
 basemind scan
-basemind code refs parse_config
+basemind code refs parse_config  # a function name from your repository
 ```
 
 [Other agents →](#installation)
@@ -221,7 +222,7 @@ flowchart LR
   V["basemind serve<br/>answers questions"]
   R --> S --> D --> V
   A <-->|asks questions| V
-  classDef accent fill:#965aff,stroke:#7d4dff,color:#fff
+  classDef accent fill:#7d4dff,stroke:#6a35e8,color:#fff
   class S,V accent
 ```
 
@@ -255,7 +256,7 @@ flowchart LR
   BR["Daemon<br/>threads · inboxes"]
   A <-->|post · read| BR
   B <-->|post · read| BR
-  classDef accent fill:#965aff,stroke:#7d4dff,color:#fff
+  classDef accent fill:#7d4dff,stroke:#6a35e8,color:#fff
   class BR accent
 ```
 
