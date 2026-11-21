@@ -6,8 +6,8 @@ description: Onboard (or refresh) basemind in this repo — write basemind.toml 
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:75997ac8e3582679a1cd37273b348a3341e40e18bdb934680e85b4401aedbdaf
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:d0f8fdeff71154ea6b54eb01ef1dcb5f4f36dbf3cb10ca0eb4c10eaffb9e4495
+Source-Hash: blake3:38100b2dcacec825bdc6c54b5e0d1dc4398422b4ca485e4a466156a137a8e68c
 Schema-Version: v1
 -->
 
@@ -31,7 +31,8 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
 2. **Ask where the rules block should go — do NOT assume.** Never write a committed `CLAUDE.md`
    or `AGENTS.md` without the user's explicit say-so. Present the choice:
    - `CLAUDE.local.md` — personal, gitignored (**recommended default**)
-   - `AGENTS.local.md` — personal, gitignored (for AGENTS-based tools)
+   - `AGENTS.local.md` — personal, gitignored; no agent host loads it by itself (OpenCode does once
+     `"instructions": ["AGENTS.local.md"]` is in `~/.config/opencode/opencode.json`)
    - `CLAUDE.md` — committed, shared with everyone on the repo
    - `AGENTS.md` — committed, shared with everyone on the repo
    - `none` — write no rules
@@ -75,7 +76,8 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
 - `--rules-target auto` (the default) NEVER writes a committed `CLAUDE.md` / `AGENTS.md` unasked:
   it routes to the gitignored `.ai-rulez/local/rules/basemind-usage.md` when `.ai-rulez/config.toml`
   owns governance (then tell the user to run `ai-rulez generate`; do NOT run it for them), otherwise
-  to the gitignored `CLAUDE.local.md` (or `AGENTS.local.md` when the repo uses AGENTS). Choosing
+  to the gitignored `CLAUDE.local.md` (or `AGENTS.local.md` when the repo uses AGENTS; pass on the
+  note `init` prints about which hosts read it). Choosing
   `claude` / `agents` / `ai-rulez` explicitly opts into the corresponding committed file.
 - The block is wrapped in an idempotent `<!-- BEGIN basemind … -->` … `<!-- END basemind -->`
   block that is replaced in place on re-run, never duplicated. Content outside the markers is

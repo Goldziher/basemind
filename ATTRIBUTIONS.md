@@ -322,6 +322,77 @@ belongs to its native user interface; none of it is in the files this crate deri
 
 ---
 
+## Grammars and models downloaded at runtime
+
+basemind ships no tree-sitter grammar library and no model weights: it downloads them on first use.
+This section records where each comes from, what is checked before it is used, and the grammars'
+licences. The line numbers below are in the crates.io sources of the versions named.
+
+### Tree-sitter grammars
+
+- **Source**: <https://github.com/xberg-io/tree-sitter-language-pack> (crates.io
+  `tree-sitter-language-pack` 1.25.2, MIT). It downloads prebuilt grammar shared libraries and loads
+  them into the basemind process with `dlopen`.
+- **When**: `ensure_grammars` (`src/lang_grammars.rs`) fetches the grammars basemind ships queries
+  for (`OVERRIDE_LANGUAGES` in `src/lang.rs`) the first time a process needs them; any other grammar
+  is fetched the first time a file of its language is parsed. `basemind lang install` fetches them
+  ahead of time.
+- **Cache**: `<data home>/grammars/tree-sitter-language-pack/v1.25.2/libs`, or the same suffix under
+  `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR` (`DataRoot::grammars_dir` in `src/data_root.rs`,
+  `cache_dir_from_base` in the pack's `src/download.rs`). `BASEMIND_GRAMMAR_OFFLINE` makes
+  `ensure_grammars` and `ensure_extra_grammars` (`src/lang_grammars.rs`) report a missing grammar
+  instead of downloading it; `lang::language` (`src/lang.rs`) does not check it, so a grammar first
+  loaded through it is still downloaded.
+
+| Step | What is checked | Pack source |
+|---|---|---|
+| Manifest | `parsers.json` is fetched over HTTPS from the pack's `v1.25.2` GitHub release, trusting the OS certificate store (`TREE_SITTER_LANGUAGE_PACK_TLS_ROOTS=webpki` selects the WebPKI roots). It is not signed, and neither the pack nor basemind pins its hash. `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL` replaces the URL, `http://` and `file://` included. | `src/download.rs:22`, `src/download/transport.rs:14` (`resolve_manifest_url`), `:58` (`build_agent`) |
+| Bundle | The platform's `.tar.zst` is read up to the size the manifest gives (at most 2 GiB), and its SHA-256 must equal the manifest's before it is cached or unpacked. A cached bundle is hashed again before reuse and deleted on a mismatch. | `src/download.rs:39`, `:550`, `:573`, `:603` |
+| Unpack | Only the library file of each requested language is written, each atomically. | `src/download.rs:647` |
+| Cache directory | Before the cache becomes a library search path it must be owned by the current user or root and not be group- or other-writable (Unix); a directory the pack creates is mode `0700`. | `src/download/cache.rs:95`, `:133`; `src/lib.rs:428` |
+| Load | The library is loaded from the cache with no hash check. | `src/registry.rs:333` |
+
+A grammar library is therefore the one in the bundle whose hash the release's manifest lists, as
+fetched over TLS, and a corrupt or truncated download is refused. Nothing protects against a manifest
+and bundle replaced together on the release host, a manifest URL override, or a library changed in
+the cache after it was unpacked; the cache directory check limits the last to the current user and
+root.
+
+Each grammar keeps the licence of its upstream repository. The pack's `language_definitions.json`
+pins each grammar's repository and commit (`repo`, `rev`) or names a copy vendored in the pack
+(`local`). The grammars basemind pre-fetches, as pinned by the pack 1.25.2:
+
+| Grammar | Upstream | Commit | License |
+|---|---|---|---|
+| `rust` | [tree-sitter/tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust), vendored at `grammars/rust` | `77a3747266f4d621d0757825e6b11edcbf991ca5` | MIT |
+| `python` | [tree-sitter/tree-sitter-python](https://github.com/tree-sitter/tree-sitter-python), vendored at `grammars/python` | `26855eabccb19c6abf499fbc5b8dc7cc9ab8bc64` | MIT |
+| `java` | [tree-sitter/tree-sitter-java](https://github.com/tree-sitter/tree-sitter-java), vendored at `grammars/java` | `e10607b45ff745f5f876bfa3e94fbcc6b44bdc11` | MIT |
+| `typescript`, `tsx` | [tree-sitter/tree-sitter-typescript](https://github.com/tree-sitter/tree-sitter-typescript) | `75b3874edb2dc714fb1fd77a32013d0f8699989f` | MIT |
+| `javascript` | [grammar-orchard/tree-sitter-javascript-orchard](https://github.com/grammar-orchard/tree-sitter-javascript-orchard) | `c1cb25379be133c2ed7b34bf88680ee13136d09c` | MIT |
+| `go` | [tree-sitter/tree-sitter-go](https://github.com/tree-sitter/tree-sitter-go) | `2346a3ab1bb3857b48b29d779a1ef9799a248cd7` | MIT |
+| `markdown` | [tree-sitter-grammars/tree-sitter-markdown](https://github.com/tree-sitter-grammars/tree-sitter-markdown) | `41ff24a6c775492c543b09228aeb98d1cd2b3a0f` | MIT |
+
+The vendored grammars carry the upstream licence and commit in their `LICENSE` and
+`ATTRIBUTIONS.md` in the pack repository. A grammar fetched on demand carries the licence of the
+repository the pack pins for it; basemind has not reviewed those.
+
+### Models
+
+xberg 1.4.0 downloads the models from Hugging Face over HTTPS. `verify_sha256`
+(`src/model_download.rs:1915`) hashes a file, and `hf_resolve_file_with_progress` (`:1164`) checks a
+cached file against the expected hash before reusing it. `HF_HUB_OFFLINE` stops the downloads
+(`hf_offline_mode`, `:361`).
+
+| Artefact | Revision | What is checked | xberg source |
+|---|---|---|---|
+| Embedding presets, `xberg-io/embedding-models` | `4b127809f88a5aa1569d1238032b5ff40e5879bc` | SHA-256 of every file against `src/embeddings/presets.sha256sum`, compiled into xberg; a file the list does not name is refused | `src/embeddings/mod.rs:283`, `:515`; `src/onnx/mod.rs:268`, `:283` |
+| Reranker presets, `xberg-io/reranker-models` | `3d655b40f2e1e087460434a143b11afac4947318` | The same, against `src/reranking/presets.sha256sum` | `src/reranking/mod.rs:223`, `:472`; `src/onnx/mod.rs:283` |
+| GLiNER NER models, `xberg-io/gliner-models` | `afb0faaa3c8e7d0de7796bd37e625026ff635fe0` | SHA-256 of the model and its tokenizer against `src/text/ner/gliner-models.sha256` | `src/text/ner/gline.rs:28`, `:145`, `:153` |
+| o200k tokenizer, `Xenova/gpt-4o` (`tokenizer` builds) | `7956d98f2a83b2751a98ea7136fdf7fe6cf54e69` | None beyond the pinned revision | `src/chunking/tokenizer_cache.rs:34`, `:104` |
+| Tesseract `eng.traineddata`, `tesseract-ocr/tessdata_fast` on GitHub (`documents-ocr` builds) | `main`, not pinned | None; the download is capped at 64 MiB | `src/ocr/tessdata_download.rs:28`, `:93`; `src/ocr/processor/validation.rs:266` |
+
+---
+
 ## mimalloc_rust `GlobalAlloc` shim
 
 The `GlobalAlloc` implementation that installs mimalloc as basemind's global allocator.

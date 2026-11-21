@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d",
+  "source_hash": "blake3:38100b2dcacec825bdc6c54b5e0d1dc4398422b4ca485e4a466156a137a8e68c",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:36f4c5d42de76b97fcdd6b403dbf02672a487f20ded1da4874805a58e3a4d019",
@@ -15,7 +15,7 @@
       "mode": "0644"
     },
     ".cursor-plugin/commands/bm-init.md": {
-      "content_hash": "blake3:ac36d6125c7a158da959f749a99b1f4bdce989f355576c0ee9ef63c86038a87a",
+      "content_hash": "blake3:5c77d003b507440de255d39eba1a1a777fa266d125a53e434f07261c7633567d",
       "mode": "0644"
     },
     ".cursor-plugin/commands/bm-scan.md": {
@@ -139,7 +139,7 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/commands/bm-init.md": {
-      "content_hash": "blake3:ac36d6125c7a158da959f749a99b1f4bdce989f355576c0ee9ef63c86038a87a",
+      "content_hash": "blake3:5c77d003b507440de255d39eba1a1a777fa266d125a53e434f07261c7633567d",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/commands/bm-scan.md": {
@@ -255,7 +255,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/commands/bm-init.md": {
-      "content_hash": "blake3:ac36d6125c7a158da959f749a99b1f4bdce989f355576c0ee9ef63c86038a87a",
+      "content_hash": "blake3:5c77d003b507440de255d39eba1a1a777fa266d125a53e434f07261c7633567d",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/commands/bm-scan.md": {
@@ -379,7 +379,7 @@
       "mode": "0644"
     },
     ".opencode/commands/bm-init.md": {
-      "content_hash": "blake3:ac36d6125c7a158da959f749a99b1f4bdce989f355576c0ee9ef63c86038a87a",
+      "content_hash": "blake3:5c77d003b507440de255d39eba1a1a777fa266d125a53e434f07261c7633567d",
       "mode": "0644"
     },
     ".opencode/commands/bm-scan.md": {
@@ -487,7 +487,7 @@
       "mode": "0644"
     },
     ".pi/prompts/bm-init.md": {
-      "content_hash": "blake3:75997ac8e3582679a1cd37273b348a3341e40e18bdb934680e85b4401aedbdaf",
+      "content_hash": "blake3:d0f8fdeff71154ea6b54eb01ef1dcb5f4f36dbf3cb10ca0eb4c10eaffb9e4495",
       "mode": "0644"
     },
     ".pi/prompts/bm-scan.md": {
@@ -603,11 +603,11 @@
       "mode": "0644"
     },
     "commands/bm-init.md": {
-      "content_hash": "blake3:ac36d6125c7a158da959f749a99b1f4bdce989f355576c0ee9ef63c86038a87a",
+      "content_hash": "blake3:5c77d003b507440de255d39eba1a1a777fa266d125a53e434f07261c7633567d",
       "mode": "0644"
     },
     "commands/bm-init.toml": {
-      "content_hash": "blake3:a178e2a47aee00686dbd5fd22c0bd86a05a2cbc951d98ddf68de477938285827",
+      "content_hash": "blake3:a420fd0539d86384c76c30b4975cdc8e9a4b1918a3a8febbabe97eb0762f2889",
       "mode": "0644"
     },
     "commands/bm-scan.md": {

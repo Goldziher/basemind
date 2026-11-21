@@ -454,8 +454,9 @@ impl Repo {
             .collect()
     }
 
-    /// Full record (header + per-file change list, union-across-parents) for one commit sha — the
-    /// exact relation the live history tools filter on, so the index inherits output parity.
+    /// Full record (header + per-file change list) for one commit sha. A merge lists only the files
+    /// it changed against every parent (see `commit_files`). This is the exact relation the live
+    /// history tools filter on, so the index inherits output parity.
     pub fn commit_record(&self, sha: &str) -> Option<CommitInfo> {
         let local = self.local();
         let id = Self::resolve_oid(&local, sha)?;

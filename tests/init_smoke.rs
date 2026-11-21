@@ -34,6 +34,10 @@ fn run_init(root: &Path, extra: &[&str]) -> String {
     format!("{stdout}{stderr}")
 }
 
+const AGENTS_LOCAL_NOTE: &str = "rules: no agent host loads AGENTS.local.md by itself; OpenCode reads it when \
+\"instructions\" in ~/.config/opencode/opencode.json lists \"AGENTS.local.md\", other hosts only when AGENTS.md \
+points the agent to it";
+
 fn count_markers(haystack: &str) -> usize {
     haystack.matches(BEGIN_MARKER).count()
 }
@@ -42,7 +46,11 @@ fn count_markers(haystack: &str) -> usize {
 fn fresh_dir_writes_config_and_local_block_and_gitignores_it() {
     let dir = tmpdir();
     let root = dir.path();
-    run_init(root, &["--yes"]);
+    let out = run_init(root, &["--yes"]);
+    assert!(
+        !out.contains(AGENTS_LOCAL_NOTE),
+        "the AGENTS.local.md note is only for a run that writes that file, got:\n{out}"
+    );
 
     let config = root.join("basemind.toml");
     assert!(config.exists(), "basemind.toml should be written");
@@ -161,10 +169,15 @@ fn agents_local_is_used_when_agents_md_is_the_only_committed_file() {
     let root = dir.path();
     std::fs::write(root.join("AGENTS.md"), "# Agents\n\nkeep me\n").expect("seed AGENTS.md");
 
-    run_init(root, &["--yes"]);
+    let out = run_init(root, &["--yes"]);
 
     // ~keep An AGENTS.md-only repo gets the block in AGENTS.local.md — matching the repo's
-    // ~keep convention while leaving the committed AGENTS.md untouched.
+    // ~keep convention while leaving the committed AGENTS.md untouched. A CLAUDE.local.md would
+    // ~keep stop Claude Code from reading AGENTS.md, so no CLAUDE.* file is written.
+    assert!(
+        out.lines().any(|line| line == AGENTS_LOCAL_NOTE),
+        "init must say how a host comes to read AGENTS.local.md, got:\n{out}"
+    );
     let agents_local = std::fs::read_to_string(root.join("AGENTS.local.md")).expect("read AGENTS.local.md");
     assert_eq!(count_markers(&agents_local), 1, "block injected into AGENTS.local.md");
     let agents = std::fs::read_to_string(root.join("AGENTS.md")).expect("read AGENTS.md");
