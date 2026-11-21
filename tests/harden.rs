@@ -1165,13 +1165,13 @@ fn measure_git_ops(repo_root: &Path) -> Option<GitOpsMetrics> {
         bench_query(
             "commits_touching",
             "hot",
-            || index.commits_touching(&hot, 0, 50).len(),
+            || index.commits_touching(&hot, 0, 50).map_or(0, |v| v.len()),
             || repo.log_for_path(&hot, 50).map(|v| v.len()).unwrap_or(0),
         ),
         bench_query(
             "commits_touching",
             "rare",
-            || index.commits_touching(&rare, 0, 50).len(),
+            || index.commits_touching(&rare, 0, 50).map_or(0, |v| v.len()),
             || repo.log_for_path(&rare, 50).map(|v| v.len()).unwrap_or(0),
         ),
         bench_query(

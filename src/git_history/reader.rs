@@ -6,7 +6,7 @@
 
 use ahash::AHashMap;
 
-use super::{CommitMeta, GitHistoryIndex, LocalDb, encoding, keys};
+use super::{CommitMeta, GitHistoryError, GitHistoryIndex, LocalDb, encoding, keys};
 use crate::git::CommitInfo;
 use crate::path::RelPath;
 
@@ -16,7 +16,14 @@ type PathCache<'a> = AHashMap<u32, RelPath>;
 impl GitHistoryIndex {
     /// Commits that touched `rel`, newest-first, after skipping `skip` and taking at most `take`.
     /// Files are omitted (parity with the live `commits_touching`, which passes `include_files=false`).
-    pub fn commits_touching(&self, rel: &RelPath, skip: usize, take: usize) -> Vec<CommitInfo> {
+    /// An empty list is the answer for a path no indexed commit touches; a lookup that failed is an
+    /// error, never an empty list.
+    pub fn commits_touching(
+        &self,
+        rel: &RelPath,
+        skip: usize,
+        take: usize,
+    ) -> Result<Vec<CommitInfo>, GitHistoryError> {
         self.local().commits_touching(rel, skip, take)
     }
 
@@ -33,20 +40,23 @@ impl GitHistoryIndex {
 }
 
 impl LocalDb {
-    fn commits_touching(&self, rel: &RelPath, skip: usize, take: usize) -> Vec<CommitInfo> {
-        let Some(path_id) = self.path_id(rel) else {
-            return Vec::new();
+    fn commits_touching(&self, rel: &RelPath, skip: usize, take: usize) -> Result<Vec<CommitInfo>, GitHistoryError> {
+        let Some(path_id) = self.stored_path_id(rel)? else {
+            return Ok(Vec::new());
         };
-        let Some(buf) = self.posting_bytes(path_id) else {
-            return Vec::new();
+        let Some(buf) = self.stored_posting(path_id)? else {
+            return Ok(Vec::new());
         };
-        let ords = encoding::decode_ords_head(&buf, skip.saturating_add(take));
+        let ords = encoding::try_decode_ords_head(&buf, skip.saturating_add(take))
+            .ok_or_else(|| GitHistoryError::Corrupt(format!("the posting list of `{rel}` does not decode")))?;
         let mut cache = PathCache::new();
         ords.into_iter()
             .skip(skip)
             .take(take)
-            .filter_map(|ord| self.commit_meta(ord, false))
-            .map(|meta| self.meta_to_info(meta, &mut cache))
+            .map(|ord| {
+                self.stored_commit(ord, false)
+                    .map(|meta| self.meta_to_info(meta, &mut cache))
+            })
             .collect()
     }
 
@@ -108,5 +118,31 @@ impl LocalDb {
         let rel = self.path_for_id(path_id)?;
         cache.insert(path_id, rel.clone());
         Some(rel)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_posting_whose_head_does_not_decode_is_an_error_not_a_short_history() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = GitHistoryIndex::open(dir.path()).expect("open the index");
+        let rel = RelPath::from("src/lib.rs");
+        let db = index.local();
+        let key = keys::path_id_by_path_key(&rel).expect("a path key");
+        db.path_id_by_path
+            .insert(key, keys::u32_key(1))
+            .expect("intern the path");
+        for posting in [vec![0x80], [encoding::encode_ords(&[3, 4]), vec![0x80]].concat()] {
+            db.path_to_ords
+                .insert(keys::u32_key(1), posting.as_slice())
+                .expect("write the posting");
+            let Err(GitHistoryError::Corrupt(message)) = index.commits_touching(&rel, 0, 5) else {
+                panic!("a truncated posting must be reported as corrupt");
+            };
+            assert_eq!(message, "the posting list of `src/lib.rs` does not decode");
+        }
     }
 }

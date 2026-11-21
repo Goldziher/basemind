@@ -18,6 +18,23 @@ pub(super) const LOG_LIMIT_MAX: u32 = 100;
 /// `limit` (page size) ≤ `LOG_LIMIT_MAX` and the cursor offset is bounded by this constant
 /// minus one page, so an agent cannot drive the walk arbitrarily deep through pagination.
 pub(super) const LOG_WALK_MAX: usize = 10_000;
+
+#[cfg(test)]
+thread_local! {
+    /// A span this thread's live walks test per page in place of [`LOG_WALK_MAX`], so a test can run
+    /// a span out on a short history.
+    pub(super) static LIVE_WALK_SPAN: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// The commits one page of the live walk tests at most: [`LOG_WALK_MAX`].
+pub(super) fn live_walk_span() -> usize {
+    #[cfg(test)]
+    if let Some(span) = LIVE_WALK_SPAN.with(std::cell::Cell::get) {
+        return span;
+    }
+    LOG_WALK_MAX
+}
+
 /// Default page size for the blame helpers. Selected to fit a screenful of hunks while
 /// keeping the response under ~32 KiB. Opt-in: blame tools only paginate when `limit` is
 /// explicitly set.

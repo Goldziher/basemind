@@ -81,16 +81,26 @@ pub fn decode_ords(buf: &[u8]) -> Vec<u32> {
 /// deep the path's history is — the property that keeps `commits_touching` sub-millisecond on the
 /// hottest files. `n == usize::MAX` decodes the whole list (used by [`decode_ords`]).
 pub fn decode_ords_head(buf: &[u8], n: usize) -> Vec<u32> {
-    if n == 0 {
-        return Vec::new();
-    }
+    decode_head(buf, n).0
+}
+
+/// [`decode_ords_head`] for a read that must not pass a damaged posting off as a short one: `None`
+/// when a varint among the newest `n` does not decode, where [`decode_ords_head`] returns the clean
+/// prefix.
+pub fn try_decode_ords_head(buf: &[u8], n: usize) -> Option<Vec<u32>> {
+    let (ords, clean) = decode_head(buf, n);
+    clean.then_some(ords)
+}
+
+/// The newest `n` ordinals, newest first, and whether every varint read decoded.
+fn decode_head(buf: &[u8], n: usize) -> (Vec<u32>, bool) {
     let mut out = Vec::new();
     let mut cursor = 0;
     let mut acc: u32 = 0;
     let mut first = true;
     while cursor < buf.len() && out.len() < n {
         let Some(delta) = read_uvarint(buf, &mut cursor) else {
-            break;
+            return (out, false);
         };
         acc = if first {
             delta as u32
@@ -100,7 +110,7 @@ pub fn decode_ords_head(buf: &[u8], n: usize) -> Vec<u32> {
         first = false;
         out.push(acc);
     }
-    out
+    (out, true)
 }
 
 /// Append a length-prefixed (`uvarint(len) ‖ bytes`) byte string.
@@ -285,6 +295,18 @@ mod tests {
         let buf = encode_ords(&ords);
         assert_eq!(decode_ords_head(&buf, 100), vec![30, 20, 10]);
         assert_eq!(decode_ords(&buf), ords);
+    }
+
+    #[test]
+    fn a_truncated_varint_in_the_head_is_refused_by_the_strict_decode_only() {
+        let mut buf = encode_ords(&[10, 20, 30]);
+        buf.push(0x80);
+        assert_eq!(decode_ords_head(&buf, 4), vec![30, 20, 10]);
+        assert_eq!(try_decode_ords_head(&buf, 4), None);
+        assert_eq!(try_decode_ords_head(&buf, 3), Some(vec![30, 20, 10]));
+        assert_eq!(try_decode_ords_head(&[0x80], 1), None);
+        assert_eq!(decode_ords_head(&[0x80], 1), Vec::<u32>::new());
+        assert_eq!(try_decode_ords_head(&[], 5), Some(Vec::new()));
     }
 
     #[test]
