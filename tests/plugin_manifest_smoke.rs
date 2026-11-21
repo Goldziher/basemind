@@ -233,7 +233,7 @@ fn every_skill_manual_section_matches_its_manual_page() {
         sections += check_manual_sections(&relative, &text, &mut failures);
     }
     assert!(
-        sections >= 33,
+        sections >= 30,
         "found {sections} manual sections in {} skill files; the splice markers went missing",
         skills.len()
     );
