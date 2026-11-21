@@ -6,11 +6,11 @@ description: Semantic and full-text search over PDFs, Office files, HTML, email,
 import { Aside, Badge, Card, CardGrid } from '@astrojs/starlight/components';
 
 basemind extracts PDFs, Office files, spreadsheets, email, HTML, XML, Markdown and Jupyter
-notebooks (and, with OCR, raster images and scanned PDFs) into a
+notebooks (and, with OCR, raster images, HEIC/HEIF photos and scanned PDFs) into a
 LanceDB vector store and answers meaning-based queries with optional cross-encoder reranking.
 
 <Badge text="--features documents" /> or `--features full`; OCR needs the `documents-ocr`
-feature and entity filtering needs `documents-ner` (both in `full`)
+feature, HEIC/HEIF photos `documents-heic` and entity filtering `documents-ner` (all in `full`)
 
 ## Requirements
 

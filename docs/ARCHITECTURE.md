@@ -305,9 +305,10 @@ Key invariants:
 - **Document feature tiers** — `documents` extracts text from PDFs (text layer), Office formats,
   spreadsheets, email, HTML, XML, Markdown/MDX and Jupyter notebooks, with keywords, extractive
   summaries, the reranker and embeddings. `documents-ocr` adds Tesseract OCR (raster images, PDFs
-  with no text layer), `documents-ner` adds ONNX named-entity recognition (`[documents.ner]`, the
+  with no text layer), `documents-heic` adds HEIC/HEIF photos through a dynamically linked libheif
+  (libde265 decoder, no x265) for that OCR, `documents-ner` adds ONNX named-entity recognition (`[documents.ner]`, the
   `entity` filter of `docs_search`), and `documents-ocr-paddle` adds PaddleOCR as a fallback stage for source
-  builds. `full` enables the first three. Without `documents-ocr` a raster image is skipped like a
+  builds. `full` enables the first four. Without `documents-ocr` a raster image is skipped like a
   binary and a PDF with no text layer is indexed empty with a warning; without `documents-ner` a
   `docs_search` with `entity` is an error and `[documents.ner] enabled = true` logs a warning. Archive
   extraction and the LLM-backed summarization and NER backends are not compiled into any build.
