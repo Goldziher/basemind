@@ -153,7 +153,7 @@ impl LanceStore {
     }
 
     /// Rows of the memory table that a delete marked and no data file has dropped yet.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "memory"))]
     pub(crate) fn memory_rows_marked_deleted(&self) -> Result<Option<usize>> {
         self.inner.rt().block_on(async {
             let table = self.memory_table().await?;

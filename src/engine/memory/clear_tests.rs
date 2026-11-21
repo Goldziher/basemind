@@ -27,7 +27,7 @@ fn put(ws: &Workspace, key: &str, visibility: Visibility) {
 fn listed(ws: &Workspace, visibility: Visibility) -> usize {
     let params = MemoryListParams {
         prefix: None,
-        tag: None,
+        tags: Vec::new(),
         limit: None,
         cursor: None,
         visibility,

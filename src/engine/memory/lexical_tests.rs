@@ -29,7 +29,7 @@ fn search_json(ws: &Workspace, query: &str) -> serde_json::Value {
     let params = MemorySearchParams {
         query: query.into(),
         limit: None,
-        tag: None,
+        tags: Vec::new(),
         visibility: Visibility::Group,
     };
     serde_json::to_value(crate::engine::memory::vectors::search(ws, params).unwrap()).unwrap()
@@ -114,7 +114,7 @@ fn an_empty_query_is_refused_rather_than_matched() {
     let params = MemorySearchParams {
         query: "  ".into(),
         limit: None,
-        tag: None,
+        tags: Vec::new(),
         visibility: Visibility::Group,
     };
     let refused = crate::engine::memory::vectors::search(&ws, params).unwrap_err();

@@ -71,7 +71,7 @@ pub(crate) fn search(
     let mut scored: Vec<(usize, WireMemoryEntry)> = Vec::new();
     let mut cursor = None;
     loop {
-        let page = ws.memory_list_page(vis_byte, owner, "", params.tag.as_deref(), PAGE, cursor)?;
+        let page = ws.memory_list_page(vis_byte, owner, "", &params.tags, PAGE, cursor)?;
         for note in whole_notes(ws, vis_byte, owner, &page.entries)? {
             let held = matched(&query, &note);
             if is_hit(held, query.len()) {
