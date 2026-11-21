@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:8119de89f6686713f6c6b78ae02eb616e9f10050d1fff43914c6a7882738f7f5
-Source-Hash: blake3:294351834780be80269e97225ea5ba77aab16626cedbcfe07b8e5ce14a748c57
+Content-Hash: blake3:3cd1c91c274e209c6a203fdd2a1a15c60fe1a18c5b5aaf19d8eaa5d5d4587014
+Source-Hash: blake3:302191a86d104acd2463a1cb8e462907f0bb56065bf57e98db974e656a2b8e56
 Schema-Version: v1
 -->
 
@@ -199,7 +199,7 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
   `budgeted` means the token budget trimmed it. `truncated` with `truncated_reason` marks a cut you
   did not ask for, with `omitted` counting what was left out where it is known: `scan_cap` (the
   scan stopped early, `total` is a lower bound, `next_cursor` resumes it), `byte_budget`,
-  `hunk_cap`, `byte_cap`, `path_cap`, `window`, `live_walk` or `shallow_clone`.
+  `hunk_cap`, `byte_cap`, `path_cap`, `span_limit`, `unindexed_scan` or `shallow_clone`.
 - **Cursors are bound to their query.** A cursor continues only the call that returned it. Passed
   to another query, or used after a rescan or a HEAD move, the call is an error: repeat it without
   `cursor`. No tool answers a stale cursor with an empty page.
