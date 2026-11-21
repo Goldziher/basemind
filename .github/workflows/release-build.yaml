@@ -212,6 +212,11 @@ jobs:
             git curl wget unzip
           echo "gcc: $(gcc --version | head -1)"
 
+      # ~keep AlmaLinux 8 packages neither libde265 nor a libheif new enough for libheif-sys (1.19),
+      # ~keep so both are built from source in the container, against its glibc 2.28.
+      - name: Install libheif
+        uses: ./.github/actions/install-libheif
+
       - name: Install protoc from official release
         shell: bash
         env:
