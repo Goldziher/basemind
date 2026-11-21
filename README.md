@@ -97,7 +97,7 @@ The plugin downloads the basemind program on first use. Every other path needs t
 | Gemini CLI | `git clone https://github.com/Goldziher/basemind`, then `gemini extensions install ./plugin --skip-settings` inside the clone; update with `gemini extensions update basemind`. |
 | Factory Droid | `droid plugin marketplace add https://github.com/Goldziher/basemind`, then `droid plugin install basemind@basemind`. |
 | GitHub Copilot CLI | `copilot plugin marketplace add Goldziher/basemind`, then `copilot plugin install basemind@basemind`. |
-| OpenCode | Add `{ "plugin": ["basemind-opencode@latest"] }` to `opencode.json` or `~/.config/opencode/opencode.json`. |
+| OpenCode | Needs the program. Add `{ "plugins": ["basemind-opencode@latest"] }` to `opencode.json` or `~/.config/opencode/opencode.json`. |
 | Kimi Code | `/plugins install https://github.com/Goldziher/basemind`. Message notifications are not supported; the tools work. |
 | Agent Plugins | Load the `plugin/` directory as an [Agent Plugins](https://agent-plugins.org) 1.0.0 package. |
 | Hermes | Needs the program. `python -m pip install "basemind-hermes-plugin==$(basemind --version \| awk '{print $2}')"`, then `hermes plugins enable basemind`. |
