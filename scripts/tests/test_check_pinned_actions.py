@@ -97,6 +97,40 @@ class PinnedActionsTests(unittest.TestCase):
             ],
         )
 
+    def test_uses_text_in_comments_and_scalars_is_not_a_reference(self) -> None:
+        body = (
+            "jobs:\n  a:\n    steps:\n"
+            "      - name: Checkout # uses: actions/checkout@v4\n"
+            '      - run: echo "see uses: actions/cache@v4"\n'
+            "      - {name: 'a, uses: actions/cache@v4', run: b}\n"
+            "      - run: |\n"
+            "          uses: actions/setup-node@v5\n"
+            "\n"
+            "          echo uses: actions/setup-node@v5\n"
+            "        shell: bash\n"
+            "      - uses: actions/checkout@v7 # uses: actions/checkout@v4\n"
+        )
+        self.assertEqual(
+            self.check(body),
+            [".github/workflows/publish.yaml:12: actions/checkout@v7 is not pinned to a full commit SHA"],
+        )
+
+    def test_a_reference_after_a_block_scalar_is_still_checked(self) -> None:
+        body = (
+            "jobs:\n  a:\n    steps:\n"
+            "      - run: >-\n          echo a\n"
+            "      - uses: actions/checkout@v7\n"
+            "      - |\n        uses: actions/cache@v4\n"
+            "      - uses: actions/cache@v4\n"
+        )
+        self.assertEqual(
+            self.check(body),
+            [
+                ".github/workflows/publish.yaml:6: actions/checkout@v7 is not pinned to a full commit SHA",
+                ".github/workflows/publish.yaml:9: actions/cache@v4 is not pinned to a full commit SHA",
+            ],
+        )
+
     def test_a_tag_inside_a_called_local_action_is_reported(self) -> None:
         body = "jobs:\n  a:\n    steps:\n      - uses: ./.github/actions/setup\n"
         action = "runs:\n  steps:\n    - uses: Swatinem/rust-cache@v2\n"
