@@ -68,16 +68,6 @@ LINKED_NOTICES=(
 mkdir -p "$STAGING_DIR/licenses"
 cp "${LINKED_NOTICES[@]}" "$STAGING_DIR/licenses/"
 
-# Copies licenses/<basename>.txt into the archive for each bundled library given. Run after
-# check-bundled-libs.sh, which guarantees every allowlisted library has one.
-ship_library_licenses() {
-  local lib
-  for lib in "$@"; do
-    [ -e "$lib" ] || continue
-    cp "licenses/$(basename "$lib").txt" "$STAGING_DIR/licenses/"
-  done
-}
-
 BINS_IN_STAGING=()
 for bin in "${BINARIES[@]}"; do
   cp "${RELEASE_DIR}/${bin}${BINEXT}" "$STAGING_DIR/${bin}${BINEXT}"
@@ -110,7 +100,6 @@ linux)
     done
   fi
   bash "$SCRIPT_DIR/check-bundled-libs.sh" linux "$STAGING_DIR"
-  ship_library_licenses "$STAGING_DIR"/lib/*
 
   for bin_in_staging in "${BINS_IN_STAGING[@]}"; do
     # shellcheck disable=SC2016  # literal $ORIGIN is intended — patchelf/ld expands it at load time
@@ -160,7 +149,6 @@ macos)
     rm -f /tmp/_otool_$$
   done
   bash "$SCRIPT_DIR/check-bundled-libs.sh" macos "$STAGING_DIR"
-  ship_library_licenses "$STAGING_DIR"/lib/*
 
   idx=0
   while [ "$idx" -lt ${#copied_bases[@]} ]; do
@@ -204,6 +192,16 @@ windows)
       cp -L "$dll" "$STAGING_DIR/" 2>/dev/null || true
     done
   fi
+  # libheif and libde265 from the vcpkg tree .github/actions/install-libheif installs, which holds
+  # nothing else.
+  if [ -n "${VCPKG_ROOT:-}" ] && [ -n "${VCPKGRS_TRIPLET:-}" ]; then
+    for dll in "$VCPKG_ROOT/installed/$VCPKGRS_TRIPLET/bin"/*.dll; do
+      [ -f "$dll" ] || continue
+      base=$(basename "$dll")
+      [ -f "$STAGING_DIR/$base" ] && continue
+      cp -L "$dll" "$STAGING_DIR/"
+    done
+  fi
   for ort_path in "C:/Program Files/onnxruntime" "C:/Program Files (x86)/onnxruntime" "${ONNXRUNTIME_ROOT:-}"; do
     [ -n "$ort_path" ] && [ -d "$ort_path/lib" ] || continue
     for dll in "$ort_path/lib"/*.dll; do
@@ -214,7 +212,6 @@ windows)
     done
   done
   bash "$SCRIPT_DIR/check-bundled-libs.sh" windows "$STAGING_DIR"
-  ship_library_licenses "$STAGING_DIR"/*.dll
 
   (cd "$STAGING_DIR" && {
     7z a -tzip "../basemind-${TRIPLE}.zip" . >/dev/null 2>&1 ||

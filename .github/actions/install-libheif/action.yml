@@ -1,0 +1,103 @@
+name: Install libheif
+description: >-
+  Install libheif with the libde265 decoder and without x265, as shared libraries, for the
+  documents-heic feature: built by scripts/build-libheif.sh on Linux and macOS, from a pinned vcpkg
+  on Windows.
+
+runs:
+  using: composite
+  steps:
+    # ~keep The key names the host's distribution and the macOS deployment target: the manylinux
+    # ~keep container and an Ubuntu runner share runner.os and runner.arch, but a library built
+    # ~keep against Ubuntu's glibc would break the release's glibc 2.28 floor.
+    - name: Locate libheif (Linux, macOS)
+      id: unix
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "BASEMIND_LIBHEIF_PREFIX=$HOME/.cache/basemind-libheif" >> "$GITHUB_ENV"
+        if [ -r /etc/os-release ]; then
+          host="$(. /etc/os-release && echo "$ID-$VERSION_ID")"
+        else
+          host="macos-$(sw_vers -productVersion | cut -d. -f1)-target-${MACOSX_DEPLOYMENT_TARGET:-default}"
+        fi
+        echo "host=$host" >> "$GITHUB_OUTPUT"
+
+    - name: Cache libheif (Linux, macOS)
+      if: runner.os != 'Windows'
+      uses: actions/cache@v6
+      with:
+        path: ${{ env.BASEMIND_LIBHEIF_PREFIX }}
+        key: libheif-${{ steps.unix.outputs.host }}-${{ runner.arch }}-${{ hashFiles('scripts/build-libheif.sh') }}
+
+    - name: Build libheif (Linux, macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: bash scripts/build-libheif.sh "$BASEMIND_LIBHEIF_PREFIX"
+
+    # ~keep The loader finds the Linux libraries through ld.so.conf.d rather than LD_LIBRARY_PATH,
+    # ~keep which would outrank a release archive's RUNPATH in the jobs that run one.
+    - name: Register libheif (Linux, macOS)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "PKG_CONFIG_PATH=$BASEMIND_LIBHEIF_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+        if [ "$RUNNER_OS" = Linux ]; then
+          sudo=()
+          [ "$(id -u)" -eq 0 ] || sudo=(sudo)
+          echo "$BASEMIND_LIBHEIF_PREFIX/lib" | "${sudo[@]}" tee /etc/ld.so.conf.d/basemind-libheif.conf >/dev/null
+          "${sudo[@]}" ldconfig
+        fi
+
+    # ~keep vcpkg at the commit that moved its libheif port to 1.23.7, with libde265 1.1.3: the same
+    # ~keep versions scripts/build-libheif.sh builds. The binary cache lives outside the vcpkg tree so
+    # ~keep that actions/cache can carry it between runs.
+    - name: Locate vcpkg (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $root = (Join-Path $env:RUNNER_TEMP 'basemind-vcpkg') -replace '\\', '/'
+        Add-Content -Path $env:GITHUB_ENV -Value "BASEMIND_VCPKG_COMMIT=d7b4974a4199586fda8201d74f80cacaaa27368d"
+        Add-Content -Path $env:GITHUB_ENV -Value "BASEMIND_VCPKG_ROOT=$root"
+        Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_DEFAULT_BINARY_CACHE=$root-archives"
+
+    - name: Cache vcpkg packages (Windows)
+      if: runner.os == 'Windows'
+      uses: actions/cache@v6
+      with:
+        path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+        key: vcpkg-libheif-${{ runner.arch }}-${{ env.BASEMIND_VCPKG_COMMIT }}
+
+    # ~keep `core` drops the port's default features, whose `hevc` is the x265 encoder; `libde265`
+    # ~keep adds the decoder back. x64-windows is vcpkg's dynamic triplet: libheif-sys links the
+    # ~keep import libraries and package-release.sh ships the DLLs beside basemind.exe.
+    # ~keep VCPKGRS_DYNAMIC and VCPKGRS_TRIPLET make the vcpkg crate pick that triplet.
+    - name: Install libheif through vcpkg (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = 'Stop'
+        $root = $env:BASEMIND_VCPKG_ROOT
+        $triplet = 'x64-windows'
+        New-Item -ItemType Directory -Path $env:VCPKG_DEFAULT_BINARY_CACHE -Force | Out-Null
+        if (-not (Test-Path (Join-Path $root '.git'))) {
+          git init --quiet $root
+          if ($LASTEXITCODE -ne 0) { throw "git init $root failed ($LASTEXITCODE)" }
+        }
+        git -C $root fetch --quiet --depth 1 https://github.com/microsoft/vcpkg $env:BASEMIND_VCPKG_COMMIT
+        if ($LASTEXITCODE -ne 0) { throw "fetching vcpkg $env:BASEMIND_VCPKG_COMMIT failed ($LASTEXITCODE)" }
+        git -C $root checkout --quiet --detach FETCH_HEAD
+        if ($LASTEXITCODE -ne 0) { throw "checking out vcpkg $env:BASEMIND_VCPKG_COMMIT failed ($LASTEXITCODE)" }
+        & (Join-Path $root 'bootstrap-vcpkg.bat') -disableMetrics
+        if ($LASTEXITCODE -ne 0) { throw "bootstrapping vcpkg failed ($LASTEXITCODE)" }
+        & (Join-Path $root 'vcpkg.exe') install "libheif[core,libde265]:$triplet" --clean-after-build
+        if ($LASTEXITCODE -ne 0) { throw "vcpkg install libheif failed ($LASTEXITCODE)" }
+        $x265 = Get-ChildItem -Path (Join-Path $root "installed/$triplet") -Recurse -Filter '*x265*' -ErrorAction SilentlyContinue
+        if ($x265) { throw "vcpkg installed x265: $($x265.FullName -join ', ')" }
+        Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$root"
+        Add-Content -Path $env:GITHUB_ENV -Value "VCPKGRS_DYNAMIC=1"
+        Add-Content -Path $env:GITHUB_ENV -Value "VCPKGRS_TRIPLET=$triplet"

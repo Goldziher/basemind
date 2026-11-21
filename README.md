@@ -352,6 +352,7 @@ A source build picks its document tiers by Cargo feature:
 |---|---|---|
 | `documents` | Document search over local files: PDF (text layer), Office formats, spreadsheets, email, HTML, XML (SVG text is read as XML), Markdown/MDX and Jupyter notebooks, with chunking, language detection, quality scoring, keywords, extractive summaries, the cross-encoder reranker and embeddings. No OCR, no NER. | yes |
 | `documents-ocr` | `documents` plus Tesseract OCR: raster images and scanned PDFs (no text layer). Runs implicitly, no configuration. | yes |
+| `documents-heic` | `documents-ocr` plus HEIC/HEIF photos, decoded through libheif with the libde265 HEVC decoder (LGPL-3.0, linked dynamically; no x265 encoder) and then OCR'd like any raster image. Needs libheif 1.19 or newer as a shared library. | yes |
 | `documents-ner` | `documents` plus ONNX named-entity recognition (GLiNER): `[documents.ner]` and the `entity` filter of `docs_search`. | yes |
 | `documents-ocr-paddle` | `documents-ocr` plus PaddleOCR as an optional fallback stage. Source builds only. | no |
 

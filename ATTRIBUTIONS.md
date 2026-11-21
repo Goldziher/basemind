@@ -9,7 +9,9 @@ files or workspace crates under `crates/` that basemind now maintains as forks â
 library, whose licence text ships in the archive as `licenses/<library>.txt`, and the native code
 that crates link into the binary, which cargo metadata does not see. Each native entry names the
 crate that brings the code in at the version it was checked against;
-`scripts/check_native_notices.py` fails when `Cargo.lock` moves that crate to another version.
+`scripts/check_native_notices.py` fails when `Cargo.lock` moves that crate to another version, and
+when `scripts/build-libheif.sh` builds libheif or libde265 at a version, or from a tarball or vcpkg
+commit, that their entries and `licenses/` notices do not name.
 
 ## stack-graphs name-binding rules (`.tsg`)
 
@@ -396,6 +398,46 @@ from the manylinux_2_28 (AlmaLinux 8) build image.
 - **Licence text**: `licenses/libstdc++.so.6.txt`, shipped in the archive beside `lib/`; it holds
   both texts verbatim
 - **Modifications**: none; packaging only resets its RUNPATH to `$ORIGIN`
+
+---
+
+## libheif (bundled in every archive)
+
+The HEIF image library that decodes HEIC/HEIF photos for OCR, linked dynamically through
+`libheif-sys`. Every archive bundles it as a shared library: `lib/libheif.so.1` on Linux,
+`lib/libheif.1.dylib` on macOS, `heif.dll` beside `basemind.exe` on Windows. It decodes HEVC through
+libde265 alone; it is built without the x265 encoder or any other codec, and
+`scripts/check-bundled-libs.sh` fails a release that would ship x265.
+
+- **Source**: <https://github.com/strukturag/libheif> (tag `v1.23.7`)
+- **Checked against**: libheif 1.23.7, built by `scripts/build-libheif.sh` on Linux and macOS and by
+  vcpkg at commit `d7b4974a4199586fda8201d74f80cacaaa27368d` (features `core,libde265`) on Windows
+  (`.github/actions/install-libheif`)
+- **License**: LGPL-3.0-only
+- **Copyright**: the libheif authors
+- **Licence text**: `licenses/libheif.txt`, shipped in the archive as `licenses/<library>.txt`; it
+  names the source, states how to relink basemind against a modified libheif and reproduces
+  libheif's `COPYING` verbatim
+- **Modifications**: none on Linux and macOS; on Windows, the patches of vcpkg's `libheif` port at
+  that commit; packaging only rewrites its RUNPATH (Linux) or install name (macOS)
+
+---
+
+## libde265 (bundled in every archive)
+
+The HEVC decoder libheif decodes HEIC images with, linked dynamically by libheif. Every archive
+bundles it as a shared library: `lib/libde265.so.0` on Linux, `lib/libde265.0.dylib` on macOS,
+`libde265.dll` beside `basemind.exe` on Windows.
+
+- **Source**: <https://github.com/strukturag/libde265> (tag `v1.1.3`)
+- **Checked against**: libde265 1.1.3, built as for libheif above
+- **License**: LGPL-3.0-only
+- **Copyright**: the libde265 authors
+- **Licence text**: `licenses/libde265.txt`, shipped in the archive as `licenses/<library>.txt`; it
+  names the source, states how to relink basemind against a modified libde265 and reproduces
+  libde265's `COPYING` verbatim
+- **Modifications**: none on Linux and macOS; on Windows, the patch of vcpkg's `libde265` port at
+  that commit; packaging only rewrites its RUNPATH (Linux) or install name (macOS)
 
 ---
 
