@@ -17,5 +17,8 @@
     "rag",
     "code-map",
     "tree-sitter"
-  ]
+  ],
+  "brandColor": "#965aff",
+  "icon": "assets/basemind-icon.svg",
+  "logo": "assets/basemind-logo.png"
 }

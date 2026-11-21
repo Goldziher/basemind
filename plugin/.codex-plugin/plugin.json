@@ -36,6 +36,8 @@
       "What changed in this file in the last 20 commits?"
     ],
     "websiteURL": "https://basemind.ai",
-    "brandColor": "#965aff"
+    "brandColor": "#965aff",
+    "composerIcon": "assets/basemind-icon.svg",
+    "logo": "assets/basemind-logo.png"
   }
 }
