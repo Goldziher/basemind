@@ -93,14 +93,16 @@ const INHERITED_IDENTITY_VARS: [&str; 5] = [
 /// with.
 const INHERITED_CWD_VARS: [&str; 2] = ["PWD", "OLDPWD"];
 
-/// Grants that widen what the daemon does for every session on the machine: admit any root or extra
-/// roots, follow symlinks, index credential files, open the HTTP transport and where it binds. A
+/// Grants that widen what the daemon does for every session on the machine: admit any root, extra
+/// roots or dependency roots, follow symlinks, index credential files, open the HTTP transport and
+/// where it binds. A
 /// daemon serves every session of the generation, so one that inherited them from whichever shell
 /// happened to start it applied that shell's grants to all of them. They reach the daemon only from
 /// an operator's explicit start (`comms start`, or `daemon ensure` with the HTTP grant set).
-const INHERITED_GRANT_VARS: [&str; 6] = [
+const INHERITED_GRANT_VARS: [&str; 7] = [
     crate::config::root_guard::ALLOW_ANY_ROOT_ENV,
     crate::scanner_candidates::ALLOW_EXTRA_ROOTS_ENV,
+    crate::config::trust::ALLOW_DEPENDENCY_ROOTS_ENV,
     crate::config::trust::ALLOW_FOLLOW_SYMLINKS_ENV,
     crate::scanner_filter::ALLOW_REPO_CREDENTIALS_ENV,
     crate::comms::http_auth::ALLOW_HTTP_ENV,
@@ -517,6 +519,7 @@ mod tests {
             "BASEMIND_ALLOW_ANY_ROOT",
             "BASEMIND_ALLOW_HTTP",
             "BASEMIND_ALLOW_EXTRA_ROOTS",
+            "BASEMIND_ALLOW_DEPENDENCY_ROOTS",
         ] {
             assert!(implicit.iter().any(|removed| removed == key), "{key}: {implicit:?}");
         }
