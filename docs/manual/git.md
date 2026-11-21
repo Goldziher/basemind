@@ -45,5 +45,7 @@ shape of the calls above. `basemind git churn` ranks the most frequently changed
 `basemind git hotspots` lists the files where change and size meet: the commits and authors in a
 window (`--since`, default `90d`), lines, symbols, the longest function and importers, keeping the
 files with two or more of these in the top 10% of the files changed in the window. It prints raw
-numbers, no score; `--path` narrows it and `--limit` caps the rows (default 20). None of the three
-has an MCP tool.
+numbers, no score; `--path` narrows it and `--limit` caps the rows (default 20). The window ends at
+HEAD's commit time and counts the commits authored in it; a rebased or merged branch whose commits
+keep older author dates is passed over, not taken for the window's start. None of the three has an
+MCP tool.

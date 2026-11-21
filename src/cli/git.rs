@@ -193,7 +193,7 @@ pub enum GitCmd {
     /// the files changed in the window. Raw numbers, no score; branch and nesting counts are not
     /// measured (CLI only).
     Hotspots {
-        /// Window ending at HEAD's author time: `<N>d`, `<N>w` or `<N>y` (default `90d`).
+        /// Window ending at HEAD's commit time: `<N>d`, `<N>w` or `<N>y` (default `90d`).
         #[arg(long)]
         since: Option<String>,
         /// Only files at this path or under this directory.
