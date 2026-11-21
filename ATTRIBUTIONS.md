@@ -9,7 +9,9 @@ files or workspace crates under `crates/` that basemind now maintains as forks â
 library, whose licence text ships in the archive as `licenses/<library>.txt`, and the native code
 that crates link into the binary, which cargo metadata does not see. Each native entry names the
 crate that brings the code in at the version it was checked against;
-`scripts/check_native_notices.py` fails when `Cargo.lock` moves that crate to another version.
+`scripts/check_native_notices.py` fails when `Cargo.lock` moves that crate to another version, and
+when `scripts/build-libheif.sh` builds libheif or libde265 at a version, or from a tarball or vcpkg
+commit, that their entries and `licenses/` notices do not name.
 
 ## stack-graphs name-binding rules (`.tsg`)
 

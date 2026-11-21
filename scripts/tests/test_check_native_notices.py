@@ -12,6 +12,8 @@ from types import ModuleType
 ROOT = Path(__file__).resolve().parents[2]
 LINKED = ("licenses/a.txt", "licenses/b.txt")
 VERSIONS = {"ort-sys": "2.0.0", "xberg-tesseract": "1.4.1", "tree-sitter-language-pack": "1.25.2"}
+BUILT = {"libheif": ("1.23.7", "a" * 64), "libde265": ("1.1.3", "b" * 64)}
+COMMIT = "c" * 40
 
 
 def load_checker() -> ModuleType:
@@ -32,11 +34,24 @@ def lock_text(versions: dict[str, list[str]]) -> str:
     )
 
 
+def built_notice(library: str, version: str, sha256: str, commit: str) -> str:
+    """A licenses/<library>.txt for ``library`` ``version`` from the tarball ``sha256`` and vcpkg ``commit``."""
+    return f"{library} {version}: a library\n  (sha256 {sha256})\n  vcpkg at commit {commit}\n"
+
+
+def default_built_notices() -> dict[str, str]:
+    """The notice of each library in ``BUILT`` that matches its build."""
+    return {library: built_notice(library, version, sha256, COMMIT) for library, (version, sha256) in BUILT.items()}
+
+
 @dataclass(frozen=True)
 class Repo:
     """A repository whose Cargo.lock has ``locked``, whose ATTRIBUTIONS.md names each crate of
     ``named`` at its version and each notice of ``attributed``, whose package-release.sh ships
-    ``shipped``, whose archive smoke test expects ``checked``, and whose ``present`` notices exist."""
+    ``shipped``, whose archive smoke test expects ``checked``, and whose ``present`` notices exist.
+    build-libheif.sh pins each library of ``built`` at its version and sha256, install-libheif pins
+    vcpkg at ``vcpkg``, ATTRIBUTIONS.md names each label of ``built_named`` at its version, and
+    ``built_notices`` holds the text of each ``licenses/<library>.txt``."""
 
     locked: dict[str, list[str]] = field(default_factory=lambda: {name: [v] for name, v in VERSIONS.items()})
     named: dict[str, str] = field(default_factory=lambda: dict(VERSIONS))
@@ -44,6 +59,10 @@ class Repo:
     checked: tuple[str, ...] = LINKED
     present: tuple[str, ...] = LINKED
     attributed: tuple[str, ...] = LINKED
+    built: dict[str, tuple[str, str]] = field(default_factory=lambda: dict(BUILT))
+    vcpkg: str = COMMIT
+    built_named: dict[str, str] = field(default_factory=lambda: {name: v for name, (v, _) in BUILT.items()})
+    built_notices: dict[str, str] = field(default_factory=default_built_notices)
 
     def write(self, root: Path) -> Path:
         """Write the repository under ``root`` and return ``root``."""
@@ -52,7 +71,8 @@ class Repo:
         (root / "Cargo.lock").write_text(lock_text(self.locked), encoding="utf-8")
         (root / "ATTRIBUTIONS.md").write_text(
             "".join(f"- **Checked against**: `{name}` {version}\n" for name, version in self.named.items())
-            + "".join(f"- **Licence text**: `{notice}`\n" for notice in self.attributed),
+            + "".join(f"- **Licence text**: `{notice}`\n" for notice in self.attributed)
+            + "".join(f"- **Checked against**: {label} {v}, built\n" for label, v in self.built_named.items()),
             encoding="utf-8",
         )
         (root / "scripts" / "package-release.sh").write_text(
@@ -66,6 +86,19 @@ class Repo:
         )
         for notice in self.present:
             (root / notice).write_text("licence text\n", encoding="utf-8")
+        (root / "scripts" / "build-libheif.sh").write_text(
+            "set -euo pipefail\n\n"
+            + "".join(
+                f"{name.upper()}_VERSION={version}\n{name.upper()}_SHA256={sha256}\n"
+                for name, (version, sha256) in self.built.items()
+            ),
+            encoding="utf-8",
+        )
+        action = root / ".github" / "actions" / "install-libheif" / "action.yml"
+        action.parent.mkdir(parents=True)
+        action.write_text(f'        Add-Content -Value "BASEMIND_VCPKG_COMMIT={self.vcpkg}"\n', encoding="utf-8")
+        for library, notice in self.built_notices.items():
+            (root / "licenses" / f"{library}.txt").write_text(notice, encoding="utf-8")
         return root
 
 
@@ -150,6 +183,68 @@ class ProblemsTests(unittest.TestCase):
             with self.subTest(present=present, attributed=attributed):
                 repo = Repo(present=present, attributed=attributed).write(self.root / f"repo-{index}")
                 self.assertEqual(self.checker.problems(repo), expected)
+
+    def test_a_built_library_attributions_does_not_name_is_stale(self) -> None:
+        stale = "build-libheif.sh builds libheif 1.23.7, ATTRIBUTIONS.md does not name it so"
+        cases = (
+            ({"libheif": "1.23.6", "libde265": "1.1.3"}, [stale]),
+            ({"libheif": "1.23.70", "libde265": "1.1.3"}, [stale]),
+            ({"xberg-libheif": "1.23.7", "libde265": "1.1.3"}, [stale]),
+            ({"libheif": "1.23.7.", "libde265": "1.1.3"}, []),
+        )
+        for index, (named, expected) in enumerate(cases):
+            with self.subTest(named=named):
+                repo = Repo(built_named=named).write(self.root / f"repo-{index}")
+                self.assertEqual(self.checker.problems(repo), expected)
+
+    def test_a_built_library_notice_must_match_its_build(self) -> None:
+        version, sha256 = BUILT["libheif"]
+        cases = (
+            (
+                built_notice("libheif", "1.23.6", sha256, COMMIT),
+                COMMIT,
+                ['licenses/libheif.txt does not open with "libheif 1.23.7:"'],
+            ),
+            (
+                built_notice("libheif", version, "d" * 64, COMMIT),
+                COMMIT,
+                [f"licenses/libheif.txt does not name the libheif 1.23.7 tarball's sha256 {sha256}"],
+            ),
+            (
+                built_notice("libheif", version, sha256, COMMIT),
+                "e" * 40,
+                [f"licenses/{library}.txt does not name vcpkg commit {'e' * 40}" for library in BUILT],
+            ),
+        )
+        for index, (notice, vcpkg, expected) in enumerate(cases):
+            with self.subTest(expected=expected):
+                notices = {**default_built_notices(), "libheif": notice}
+                repo = Repo(built_notices=notices, vcpkg=vcpkg).write(self.root / f"repo-{index}")
+                self.assertEqual(self.checker.problems(repo), expected)
+
+    def test_a_missing_built_library_notice_fails_every_check(self) -> None:
+        notices = {"libheif": default_built_notices()["libheif"]}
+        repo = Repo(built_notices=notices).write(self.root / "repo")
+        self.assertEqual(
+            self.checker.problems(repo),
+            [
+                'licenses/libde265.txt does not open with "libde265 1.1.3:"',
+                f"licenses/libde265.txt does not name the libde265 1.1.3 tarball's sha256 {'b' * 64}",
+                f"licenses/libde265.txt does not name vcpkg commit {COMMIT}",
+            ],
+        )
+
+    def test_built_pins_pairs_each_version_with_its_sha256(self) -> None:
+        script = "LIBDE265_VERSION=1.1.3\nLIBDE265_SHA256=abc\nLIBHEIF_VERSION=1.23.7\nLIBHEIF_SHA256=def\njobs=4\n"
+        self.assertEqual(self.checker.built_pins(script), {"libde265": ("1.1.3", "abc"), "libheif": ("1.23.7", "def")})
+
+    def test_the_real_build_script_pins_libheif_and_libde265(self) -> None:
+        pins = self.checker.built_pins((ROOT / "scripts/build-libheif.sh").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(pins), ["libde265", "libheif"])
+
+    def test_an_action_without_the_vcpkg_commit_is_an_error(self) -> None:
+        with self.assertRaisesRegex(ValueError, "^install-libheif pins no BASEMIND_VCPKG_COMMIT$"):
+            self.checker.vcpkg_commit("BASEMIND_VCPKG_COMMIT=main\n")
 
     def test_a_package_script_without_the_array_is_an_error(self) -> None:
         with self.assertRaisesRegex(ValueError, "^package-release.sh defines no LINKED_NOTICES array$"):
