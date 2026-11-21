@@ -143,7 +143,7 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # extension_denylist = []
 # Embedding scope: when embed_include is non-empty only matching documents are embedded; embed_exclude
 # always wins. Non-embedded documents stay extracted + keyword-searchable. Changing either (or embed)
-# removes the vectors of newly ineligible documents on the next scan. The default embed_exclude keeps
+# removes the vectors of newly ineligible documents on the next full scan. The default embed_exclude keeps
 # structured data (json, jsonc, json5, jsonl, ndjson, geojson, yaml, toml, csv, tsv, xml) out of the
 # vector store; setting the key replaces the list, so `embed_exclude = []` embeds those formats too.
 # embed_include = []
