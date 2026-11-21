@@ -370,12 +370,16 @@ esac
 # <base>/v<version>/basemind_<version>_checksums.txt. Its checksums file is checked like GitHub's. ~keep
 GITHUB_RELEASE_BASE="https://github.com/Goldziher/basemind/releases/download"
 MIRROR="${BASEMIND_RELEASE_BASE_URL:-}"
-MIRROR="${MIRROR%/}"
 if [ -n "$MIRROR" ]; then
+  # Validated as written, before the trailing slash goes, so "/" is refused and never reads as unset.
+  # Plain HTTP carries the archive and its checksums file alike, so a network attacker could replace
+  # both: only a loopback host may use it. ~keep
   case "$MIRROR" in
-  https://?* | http://?* | file:///*) ;;
-  *) die "BASEMIND_RELEASE_BASE_URL=\"${BASEMIND_RELEASE_BASE_URL}\" is not an https://, http:// or file:/// URL" ;;
+  https://?* | file:///* | http://127.0.0.1 | http://127.0.0.1[:/]* | http://localhost | http://localhost[:/]* | http://\[::1\] | http://\[::1\][:/]*) ;;
+  http://?*) die "BASEMIND_RELEASE_BASE_URL=\"${BASEMIND_RELEASE_BASE_URL}\" uses plain http://, which does not authenticate the archive or its checksums: use https://, file:///, or a loopback http:// host" ;;
+  *) die "BASEMIND_RELEASE_BASE_URL=\"${BASEMIND_RELEASE_BASE_URL}\" is not an https://, loopback http:// or file:/// URL" ;;
   esac
+  MIRROR="${MIRROR%/}"
 fi
 RELEASE_BASE="${MIRROR:-$GITHUB_RELEASE_BASE}"
 BASE_URL="${RELEASE_BASE}/v${VERSION}"

@@ -226,10 +226,37 @@ class DownloadTests(unittest.TestCase):
         result = self.launch("serve", mirror="mirror.example/basemind")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(
-            'BASEMIND_RELEASE_BASE_URL="mirror.example/basemind" is not an https://, http:// or file:/// URL',
+            'BASEMIND_RELEASE_BASE_URL="mirror.example/basemind" is not an https://, loopback http:// or file:/// URL',
             result.stderr,
         )
         self.assertEqual(self.requests(), [])
+
+    def test_a_mirror_of_only_slashes_is_refused_and_never_falls_back_to_github(self) -> None:
+        self.pin("9.9.0")
+        result = self.launch("serve", mirror="/")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('BASEMIND_RELEASE_BASE_URL="/" is not an https://', result.stderr)
+        self.assertEqual(self.requests(), [])
+
+    def test_a_plain_http_mirror_off_loopback_is_refused(self) -> None:
+        self.pin("9.9.0")
+        result = self.launch("serve", mirror="http://mirror.example/basemind")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("uses plain http://", result.stderr)
+        self.assertEqual(self.requests(), [])
+
+    def test_a_loopback_http_mirror_is_served(self) -> None:
+        self.pin("9.9.0")
+        self.publish("9.9.0", under="basemind")
+        result = self.launch("serve", mirror="http://127.0.0.1:8080/basemind")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.requests(),
+            [
+                f"http://127.0.0.1:8080/basemind/v9.9.0/{self.asset}",
+                "http://127.0.0.1:8080/basemind/v9.9.0/basemind_9.9.0_checksums.txt",
+            ],
+        )
 
     def cache(self, version: str) -> None:
         """Install v`version` in the launcher's cache, as an earlier launch would have."""

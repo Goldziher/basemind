@@ -30,8 +30,11 @@ downloaded once per cache.
 
 ## Offline mode
 
-`BASEMIND_OFFLINE=1` turns every download above off, except the npm and pip installers, which run
-before basemind does. `1`, `true`, `yes` or `on` turns it on and `0`, `false`, `no` or `off` leaves it
+`BASEMIND_OFFLINE=1` turns every download above off at runtime, for the basemind process that reads it
+and the daemon it starts, except the npm and pip installers, which run before basemind does and still
+download a binary that is not cached. A scan forwarded to a daemon that is already running follows
+that daemon's own environment, not the CLI's: a daemon started online can still download an uncached
+grammar for it, so start the daemon with the variable set (`basemind comms stop`, then run again). `1`, `true`, `yes` or `on` turns it on and `0`, `false`, `no` or `off` leaves it
 off, in any case; any other value stops basemind and the launcher with an error naming the variable. basemind exports `HF_HUB_OFFLINE=1` to the Hugging Face client, for its own
 process and the daemon it starts. A grammar, model or binary missing from its cache is then an error
 that names it:
@@ -42,10 +45,32 @@ that names it:
 - an embedding or a rerank names the model file and its repository, and the document or code-search
   tier reports itself unavailable while the rest of the index works.
 
-To prepare a machine for offline use, run basemind once online with the same cache locations, or
+To prepare a machine for offline use, use the same cache locations and exercise every feature you
+intend to use offline while online: one run does not fill every cache (`basemind lang install` fetches
+grammars only, and each embedding, reranker and tokenizer preset downloads on its own first use). Or
 copy the caches (`~/.cache/basemind/versions/`, the grammar cache that `basemind lang list` prints,
-and the Hugging Face cache) from a machine that has them. A mirror of the release downloads is
-described in the [README](../README.md#1-as-a-plugin-recommended).
+and the Hugging Face cache) from a machine that has them.
+
+## Release mirror
+
+Behind a proxy that blocks github.com, set `BASEMIND_RELEASE_BASE_URL` to a mirror of the release
+downloads: an `https://` URL, a `file:///` URL, or an `http://` URL on a loopback host (plain HTTP to
+another host is refused, since it would let a network attacker replace the archive and its checksums
+together). The mirror keeps GitHub's layout under its base, one directory per release:
+
+```text
+<base>/v0.34.0/basemind-aarch64-apple-darwin.tar.gz
+<base>/v0.34.0/basemind-aarch64-unknown-linux-gnu.tar.gz
+<base>/v0.34.0/basemind-x86_64-unknown-linux-gnu.tar.gz
+<base>/v0.34.0/basemind-x86_64-pc-windows-msvc.zip
+<base>/v0.34.0/basemind_0.34.0_checksums.txt
+```
+
+Copy the files unchanged from the GitHub release. The launcher downloads the archive and the
+checksums file from the mirror and installs nothing whose SHA-256 does not match. It asks GitHub for
+nothing while a mirror is set, so it cannot fall back to another release of the same minor when the
+mirror lacks the pinned one; a cached binary of that minor still serves. On a machine with no network
+at all, install the binary yourself and set `BASEMIND_BIN` to it.
 
 ## Compiled in but unused
 
