@@ -21,10 +21,10 @@ use serde::Serialize;
 
 use crate::data_root::DataRoot;
 use crate::disk_space::{SpaceEstimate, available_bytes, dir_bytes};
-use crate::render::human_bytes;
 use crate::store::{INDEX_FILE, VIEWS_DIR, ViewOnOpen, read_workspace_marker, sets_aside, view_on_open};
 use crate::store_gc::{GcError, read_dir};
 use crate::store_layout::{GROUPS_DIR, VIEW_WORKING, group_of_workspace};
+use crate::sysres::human_bytes;
 
 /// Code-map scan throughput the estimate assumes, in files per second: the slowest scan the README
 /// reports (the TypeScript compiler, 81 324 files in about 18 s), rounded down. Document extraction

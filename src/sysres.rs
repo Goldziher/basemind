@@ -574,6 +574,22 @@ fn peak_rss() -> Option<u64> {
     None
 }
 
+/// A byte count in the largest binary unit that keeps it at or above 1: `512B`, `1.5KB`, `2.0MB`.
+pub(crate) fn human_bytes(b: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if b >= GB {
+        format!("{:.1}GB", b as f64 / GB as f64)
+    } else if b >= MB {
+        format!("{:.1}MB", b as f64 / MB as f64)
+    } else if b >= KB {
+        format!("{:.1}KB", b as f64 / KB as f64)
+    } else {
+        format!("{b}B")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
