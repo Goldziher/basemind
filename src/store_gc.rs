@@ -82,7 +82,8 @@ pub use crate::store_gc_workspace::{
 /// Cache size-budget enforcement + persisted last-GC state — the third leg of keeping the
 /// machine-global cache bounded (and observable). Re-exported so callers see one GC surface.
 pub use crate::store_gc_budget::{
-    GcState, GcStatus, cache_budget_bytes, enforce_cache_budget, persist_gc_error, persist_gc_state, read_gc_state,
+    CacheBudget, GcState, GcStatus, cache_budget, enforce_cache_budget, persist_gc_error, persist_gc_state,
+    read_gc_state,
 };
 
 /// Whole-component cleanup + cache introspection — responsibility (2) in the module doc above.
@@ -502,9 +503,9 @@ pub fn reap_and_gc_global(data: &DataRoot) -> Result<GcReport, GcError> {
 /// and finally persistence of the sweep's health and budget outcome to `gc-state.json`.
 pub fn reap_gc_and_enforce_budget(data: &DataRoot) -> Result<GcReport, GcError> {
     let mut report = reap_and_gc_global(data)?;
-    if let Some(budget) = cache_budget_bytes() {
+    if let Some(budget) = cache_budget() {
         let evicted = enforce_cache_budget(data, budget)?;
-        report.cache_budget_bytes = Some(budget);
+        report.cache_budget_bytes = Some(evicted.budget_bytes);
         report.cache_bytes_after = Some(evicted.total_bytes_after);
         report.hot_workspaces_evicted = evicted.hot_evicted;
         report.locked_workspaces_skipped = evicted.locked_skipped;

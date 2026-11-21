@@ -466,13 +466,135 @@ fn legacy_gc_state_defaults_attempt_health_fields() {
 
 #[test]
 fn cache_budget_parses_default_zero_and_garbage() {
-    assert_eq!(cache_budget_from(None), Some(DEFAULT_CACHE_BUDGET_MIB * 1024 * 1024));
+    assert_eq!(cache_budget_from(None), Some(CacheBudget::DiskAware));
     assert_eq!(cache_budget_from(Some("0")), None, "0 disables enforcement");
-    assert_eq!(cache_budget_from(Some("512")), Some(512 * 1024 * 1024));
+    assert_eq!(cache_budget_from(Some(" 512 ")), Some(CacheBudget::Fixed(512 * MIB)));
     assert_eq!(
         cache_budget_from(Some("not-a-number")),
         None,
         "garbage disables enforcement (logged)"
+    );
+}
+
+const GIB: u64 = 1024 * MIB;
+
+/// `(cache, free, expected)`: half of cache plus free on a small disk, the 20 GiB ceiling on a large
+/// one or when the free space is unreadable.
+#[test]
+fn the_default_budget_is_half_the_space_the_cache_could_occupy_up_to_the_ceiling() {
+    let ceiling = DEFAULT_CACHE_BUDGET_MIB * MIB;
+    for (cache, free, expected) in [
+        (0, Some(20 * GIB), 10 * GIB),
+        (4 * GIB, Some(6 * GIB), 5 * GIB),
+        (8 * GIB, Some(2 * GIB), 5 * GIB),
+        (4 * GIB, Some(500 * GIB), ceiling),
+        (4 * GIB, None, ceiling),
+        (u64::MAX, Some(u64::MAX), ceiling),
+    ] {
+        assert_eq!(disk_aware_budget(cache, free), expected, "cache {cache}, free {free:?}");
+        assert_eq!(CacheBudget::DiskAware.resolve(cache, free), expected);
+    }
+}
+
+/// A cache that grew to its budget is granted no more at the next sweep: the budget does not
+/// ratchet up with each sweep until the disk is full.
+#[test]
+fn a_cache_at_the_default_budget_is_not_granted_more_at_the_next_sweep() {
+    let first = disk_aware_budget(0, Some(20 * GIB));
+    let grown_free = 20 * GIB - first;
+    assert_eq!(disk_aware_budget(first, Some(grown_free)), first);
+}
+
+#[test]
+fn a_fixed_budget_ignores_the_disk() {
+    assert_eq!(CacheBudget::Fixed(GIB).resolve(4 * GIB, Some(0)), GIB);
+    assert_eq!(CacheBudget::Fixed(100 * GIB).resolve(0, Some(GIB)), 100 * GIB);
+}
+
+/// [`enforce_cache_budget_at`] over a flat blob dir with the disk-aware budget, `free` bytes free.
+fn enforce_disk_aware(workspaces: &Path, blobs: &Path, free: u64) -> EvictReport {
+    enforce_cache_budget_at(
+        workspaces,
+        blobs,
+        blobs,
+        crate::extract::SCHEMA_VER,
+        |cache| CacheBudget::DiskAware.resolve(cache, Some(free)),
+        Duration::ZERO,
+        Duration::ZERO,
+    )
+    .expect("enforce")
+}
+
+#[test]
+fn the_disk_aware_budget_evicts_on_a_small_disk() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspaces = tmp.path().join("workspaces");
+    let blobs = tmp.path().join("blobs");
+    fs::create_dir_all(&blobs).expect("mk blobs");
+    let cold = seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), DAY_AGO);
+    let newest = seed_workspace_aged(&workspaces, "key-newest", &"b".repeat(64), Duration::from_secs(60));
+
+    let report = enforce_disk_aware(&workspaces, &blobs, 0);
+
+    assert_eq!(report.budget_bytes, report.total_bytes_before / 2);
+    assert_eq!(report.evicted, 1);
+    assert!(!cold.join(VIEWS_DIR).exists(), "the cold payload is evicted");
+    assert!(
+        newest.join(VIEWS_DIR).exists(),
+        "the most recently used workspace is kept"
+    );
+}
+
+#[test]
+fn the_disk_aware_budget_is_the_ceiling_on_a_large_disk() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspaces = tmp.path().join("workspaces");
+    let blobs = tmp.path().join("blobs");
+    fs::create_dir_all(&blobs).expect("mk blobs");
+    let cold = seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), DAY_AGO);
+    seed_workspace_aged(&workspaces, "key-newest", &"b".repeat(64), Duration::from_secs(60));
+
+    let report = enforce_disk_aware(&workspaces, &blobs, 500 * GIB);
+
+    assert_eq!(report.budget_bytes, DEFAULT_CACHE_BUDGET_MIB * MIB);
+    assert_eq!(report.evicted, 0);
+    assert!(cold.join(VIEWS_DIR).exists(), "nothing is evicted");
+}
+
+/// A workspace's git cache is part of the footprint the budget holds, and goes with an eviction.
+#[test]
+fn the_git_cache_counts_against_the_budget() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let workspaces = tmp.path().join("workspaces");
+    let blobs = tmp.path().join("blobs");
+    fs::create_dir_all(&blobs).expect("mk blobs");
+    let ws = seed_workspace_aged(&workspaces, "key-cold", &"a".repeat(64), DAY_AGO);
+    seed_workspace_aged(&workspaces, "key-newest", &"b".repeat(64), Duration::from_secs(60));
+    let without_git_cache =
+        enforce_cache_budget_in(&workspaces, &blobs, u64::MAX, Duration::ZERO, Duration::ZERO).expect("measure");
+    let git_cache = ws.join(crate::git_cache::GIT_CACHE_DIR).join("log");
+    fs::create_dir_all(&git_cache).expect("mk git cache");
+    fs::write(git_cache.join("entry.msgpack"), vec![1_u8; 256 * 1024]).expect("git cache entry");
+
+    let report = enforce_cache_budget_in(
+        &workspaces,
+        &blobs,
+        without_git_cache.total_bytes_before,
+        Duration::ZERO,
+        Duration::ZERO,
+    )
+    .expect("enforce");
+
+    assert!(
+        report.total_bytes_before >= without_git_cache.total_bytes_before + 256 * 1024,
+        "the git cache is measured: {} vs {}",
+        report.total_bytes_before,
+        without_git_cache.total_bytes_before
+    );
+    assert_eq!(report.evicted, 1, "the git cache alone puts the cache over budget");
+    assert!(
+        !ws.join(crate::git_cache::GIT_CACHE_DIR).exists(),
+        "the git cache is evicted"
     );
 }
 

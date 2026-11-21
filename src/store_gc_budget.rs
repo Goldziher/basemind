@@ -27,14 +27,62 @@ use crate::store::{WORKSPACE_MARKER_FILE, acquire_lock, read_workspace_marker};
 use crate::store_gc::{GcError, GcReport, dir_size, gc_global_blobs_in, read_dir};
 use crate::store_gc_protect::{ProtectedWorkspace, ProtectionReason, cache_grace};
 
-/// Environment variable holding the cache byte budget in MiB. Unset ⇒
-/// [`DEFAULT_CACHE_BUDGET_MIB`]; `0` ⇒ unlimited (budget enforcement disabled).
+/// Environment variable holding the cache byte budget in MiB. Unset ⇒ the disk-aware default
+/// ([`disk_aware_budget`]); `0` ⇒ unlimited (budget enforcement disabled).
 pub const CACHE_BUDGET_ENV: &str = "BASEMIND_CACHE_BUDGET_MB";
 
-/// Default cache budget when [`CACHE_BUDGET_ENV`] is unset: 20 GiB. Generous enough that a
-/// handful of monorepos never trip it; small enough that an unbounded-growth regression is
-/// contained long before it threatens the disk.
+/// Ceiling of the default cache budget: 20 GiB. Generous enough that a handful of monorepos never
+/// trip it; small enough that an unbounded-growth regression is contained long before it threatens
+/// a large disk.
 const DEFAULT_CACHE_BUDGET_MIB: u64 = 20 * 1024;
+
+/// Below the ceiling, the default budget is the cache's bytes plus the volume's free space divided
+/// by this: the cache may take half of the space it could occupy.
+const DISK_SHARE_DIVISOR: u64 = 2;
+
+const MIB: u64 = 1024 * 1024;
+
+/// How the cache byte budget is set, when enforcement is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheBudget {
+    /// [`CACHE_BUDGET_ENV`] names the budget, in bytes here; it is enforced as given.
+    Fixed(u64),
+    /// [`CACHE_BUDGET_ENV`] is unset: [`disk_aware_budget`], resolved at every sweep.
+    DiskAware,
+}
+
+impl CacheBudget {
+    /// The bytes a cache of `cache_bytes` is held to when its volume has `free_bytes` free
+    /// (`None`: the free space could not be read).
+    pub fn resolve(self, cache_bytes: u64, free_bytes: Option<u64>) -> u64 {
+        match self {
+            Self::Fixed(bytes) => bytes,
+            Self::DiskAware => disk_aware_budget(cache_bytes, free_bytes),
+        }
+    }
+}
+
+/// The default budget: half of what the cache could occupy (its own bytes plus the volume's free
+/// space), capped at [`DEFAULT_CACHE_BUDGET_MIB`]. The ceiling alone would not evict before a disk
+/// with less than that free is full.
+///
+/// The share is of the sum, not of the free space alone: a budget of `cache + free / 2` re-derived
+/// at every sweep grants a cache that grew into it half of the remaining free space again, and so on
+/// until the disk is full. Half of the sum stops the cache where it is as large as the free space
+/// left. An unreadable free space falls back to the ceiling.
+pub fn disk_aware_budget(cache_bytes: u64, free_bytes: Option<u64>) -> u64 {
+    let ceiling = DEFAULT_CACHE_BUDGET_MIB * MIB;
+    free_bytes.map_or(ceiling, |free| {
+        ceiling.min(cache_bytes.saturating_add(free) / DISK_SHARE_DIVISOR)
+    })
+}
+
+/// Free bytes on the volume holding `dir`, or its closest existing ancestor on a fresh machine;
+/// `None` when the platform cannot say.
+fn free_bytes_at(dir: &Path) -> Option<u64> {
+    let existing = dir.ancestors().find(|path| path.exists()).unwrap_or(dir);
+    fs2::available_space(existing).ok()
+}
 
 /// Workspaces touched more recently than this are considered only after every cold candidate.
 /// Evicting a hot workspace risks an immediate rescan, but an absolute veto would let the cache
@@ -168,6 +216,8 @@ pub struct GcState {
 /// Result of one budget-enforcement pass.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct EvictReport {
+    /// The budget the pass held the cache to, resolved from the footprint it measured first.
+    pub budget_bytes: u64,
     /// Combined cache footprint (workspaces + groups + blobs) measured before eviction, without what a newer
     /// basemind wrote. A pass that finds the cache within budget does not tell a newer basemind's
     /// workspaces apart (that reads a view of every workspace) and counts them here.
@@ -204,28 +254,27 @@ struct EvictionCandidate {
     dir: PathBuf,
 }
 
-/// The configured cache byte budget: [`CACHE_BUDGET_ENV`] in MiB, defaulting to
-/// [`DEFAULT_CACHE_BUDGET_MIB`]; `0` (or an unparseable value, which is logged) disables
+/// The configured cache budget: [`CACHE_BUDGET_ENV`] in MiB, defaulting to
+/// [`CacheBudget::DiskAware`]; `0` (or an unparseable value, which is logged) disables
 /// enforcement and returns `None`.
-pub fn cache_budget_bytes() -> Option<u64> {
-    crate::config::engine::with(|config| config.gc.budget_bytes)
+pub fn cache_budget() -> Option<CacheBudget> {
+    crate::config::engine::with(|config| config.gc.budget)
 }
 
-/// A [`CACHE_BUDGET_ENV`] value in MiB, read as [`cache_budget_bytes`] documents.
-pub fn cache_budget_from(raw: Option<&str>) -> Option<u64> {
-    let mib = match raw {
-        Some(raw) => match raw.trim().parse::<u64>() {
-            Ok(mib) => mib,
-            Err(_) => {
-                crate::config::trust::warn_once(format!(
-                    "{CACHE_BUDGET_ENV}={raw:?} is not a number; disabling cache budget enforcement"
-                ));
-                return None;
-            }
-        },
-        None => DEFAULT_CACHE_BUDGET_MIB,
+/// A [`CACHE_BUDGET_ENV`] value in MiB, read as [`cache_budget`] documents.
+pub fn cache_budget_from(raw: Option<&str>) -> Option<CacheBudget> {
+    let Some(raw) = raw else {
+        return Some(CacheBudget::DiskAware);
     };
-    (mib > 0).then_some(mib * 1024 * 1024)
+    match raw.trim().parse::<u64>() {
+        Ok(mib) => (mib > 0).then(|| CacheBudget::Fixed(mib.saturating_mul(MIB))),
+        Err(_) => {
+            crate::config::trust::warn_once(format!(
+                "{CACHE_BUDGET_ENV}={raw:?} is not a number; disabling cache budget enforcement"
+            ));
+            None
+        }
+    }
 }
 
 /// Path of the persisted last-GC state in the machine-global cache root.
@@ -349,18 +398,20 @@ pub(crate) fn read_gc_state_at(path: &Path) -> Option<GcState> {
     }
 }
 
-/// Enforce the cache byte budget against the machine-global cache: when workspaces + groups +
-/// blobs exceed `budget_bytes`, evict the coldest workspace dirs, then hot dirs only if necessary,
+/// Enforce the cache budget against the machine-global cache: when workspaces (their git caches
+/// included) + groups + blobs exceed `budget` resolved against the measured footprint and the
+/// cache volume's free space, evict the coldest workspace dirs, then hot dirs only if necessary,
 /// and the group directory of each evicted workspace once no workspace holding a view uses it.
 /// Locked workspaces remain protected. Each eviction immediately reclaims blobs that lost their
 /// final reference and remeasures the real footprint before selecting another victim.
-pub fn enforce_cache_budget(data: &DataRoot, budget_bytes: u64) -> Result<EvictReport, GcError> {
+pub fn enforce_cache_budget(data: &DataRoot, budget: CacheBudget) -> Result<EvictReport, GcError> {
+    let free_bytes = free_bytes_at(&data.cache_dir());
     enforce_cache_budget_at(
         &data.workspaces_dir(),
         &data.global_blobs_root(),
         &data.global_blobs_dir(),
         crate::extract::SCHEMA_VER,
-        budget_bytes,
+        |cache_bytes| budget.resolve(cache_bytes, free_bytes),
         BUDGET_EVICTION_HOT_FLOOR,
         cache_grace(),
     )
@@ -380,7 +431,7 @@ pub(crate) fn enforce_cache_budget_in(
         blobs_dir,
         blobs_dir,
         crate::extract::SCHEMA_VER,
-        budget_bytes,
+        |_| budget_bytes,
         hot_floor,
         grace,
     )
@@ -390,21 +441,26 @@ pub(crate) fn enforce_cache_budget_in(
 /// can free: the workspaces except those holding a newer basemind's view, and everything under
 /// `blobs_root` except the namespaces of a blob schema newer than `schema` (see
 /// [`cache_footprint`]). Blobs an eviction orphans are reclaimed
-/// in `blobs_dir`, the namespace the evicted workspaces of this version referenced.
+/// in `blobs_dir`, the namespace the evicted workspaces of this version referenced. `budget` maps
+/// the bytes the cache occupies ([`occupied_bytes`]), a newer basemind's workspaces and blob
+/// namespaces included since they occupy the same disk, to the budget of the pass.
 pub(crate) fn enforce_cache_budget_at(
     workspaces_dir: &Path,
     blobs_root: &Path,
     blobs_dir: &Path,
     schema: u16,
-    budget_bytes: u64,
+    budget: impl FnOnce(u64) -> u64,
     hot_floor: Duration,
     grace: Duration,
 ) -> Result<EvictReport, GcError> {
     // Within budget counting a newer basemind's workspaces, the cache is within it without them:
     // telling them apart reads a view of every workspace, so only a cache over budget pays for it.
-    let raw = cache_footprint(workspaces_dir, blobs_root, schema, &[])?;
+    let occupied = occupied_bytes(workspaces_dir, blobs_root, &[])?;
+    let budget_bytes = budget(occupied);
+    let raw = occupied.saturating_sub(newer_namespace_bytes(blobs_root, schema)?);
     if raw <= budget_bytes {
         return Ok(EvictReport {
+            budget_bytes,
             total_bytes_before: raw,
             total_bytes_after: raw,
             ..EvictReport::default()
@@ -417,6 +473,7 @@ pub(crate) fn enforce_cache_budget_at(
         cache_footprint(workspaces_dir, blobs_root, schema, &newer)?
     };
     let mut report = EvictReport {
+        budget_bytes,
         total_bytes_before: total,
         total_bytes_after: total,
         ..EvictReport::default()
@@ -659,7 +716,7 @@ fn rebuildable_workspace_paths(workspace: &Path) -> [PathBuf; 8] {
     let lance = workspace.join(LANCE_WORKSPACE_DIR);
     [
         workspace.join(crate::store::VIEWS_DIR),
-        workspace.join("git-cache"),
+        workspace.join(crate::git_cache::GIT_CACHE_DIR),
         workspace.join(crate::git_history::GIT_HISTORY_DIR),
         workspace.join("status.json"),
         workspace.join("telemetry.jsonl"),
@@ -698,12 +755,17 @@ fn workspaces_of_a_newer_basemind(workspaces_dir: &Path) -> Vec<PathBuf> {
     )
 }
 
-/// The bytes the budget is held against: the workspaces other than `newer`, the group directories
-/// (`cache/groups/`, beside `workspaces_dir`) other than those of `newer`, and the blob store
-/// without the namespaces of a schema newer than `schema`. What is left out belongs to a newer
-/// basemind sharing the cache. This binary never deletes it, so counting it would have it evict
-/// workspaces every cycle to make up for bytes no eviction can free.
+/// The bytes the budget is held against: [`occupied_bytes`] without the blob namespaces of a
+/// schema newer than `schema`. What is left out belongs to a newer basemind sharing the cache. This
+/// binary never deletes it, so counting it would have it evict workspaces every cycle to make up
+/// for bytes no eviction can free.
 fn cache_footprint(workspaces_dir: &Path, blobs_root: &Path, schema: u16, newer: &[PathBuf]) -> Result<u64, GcError> {
+    Ok(occupied_bytes(workspaces_dir, blobs_root, newer)?.saturating_sub(newer_namespace_bytes(blobs_root, schema)?))
+}
+
+/// The bytes the cache occupies on disk: the workspaces other than `newer`, the group directories
+/// (`cache/groups/`, beside `workspaces_dir`) other than those of `newer`, and the whole blob store.
+fn occupied_bytes(workspaces_dir: &Path, blobs_root: &Path, newer: &[PathBuf]) -> Result<u64, GcError> {
     let groups_dir = workspaces_dir
         .parent()
         .map(|cache| cache.join(crate::store_layout::GROUPS_DIR));
@@ -720,16 +782,23 @@ fn cache_footprint(workspaces_dir: &Path, blobs_root: &Path, schema: u16, newer:
             total = total.saturating_sub(dir_size_or_zero(&group)?);
         }
     }
-    if blobs_root.exists() {
-        for entry in read_dir(blobs_root)?.flatten() {
-            let newer = entry
-                .file_name()
-                .to_str()
-                .and_then(crate::store_gc_namespaces::namespace_schema)
-                .is_some_and(|found| found > schema);
-            if newer && entry.path().is_dir() {
-                total = total.saturating_sub(dir_size(&entry.path())?);
-            }
+    Ok(total)
+}
+
+/// The bytes under `blobs_root` in the namespaces of a blob schema newer than `schema`.
+fn newer_namespace_bytes(blobs_root: &Path, schema: u16) -> Result<u64, GcError> {
+    if !blobs_root.exists() {
+        return Ok(0);
+    }
+    let mut total = 0;
+    for entry in read_dir(blobs_root)?.flatten() {
+        let newer = entry
+            .file_name()
+            .to_str()
+            .and_then(crate::store_gc_namespaces::namespace_schema)
+            .is_some_and(|found| found > schema);
+        if newer && entry.path().is_dir() {
+            total += dir_size(&entry.path())?;
         }
     }
     Ok(total)

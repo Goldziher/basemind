@@ -141,8 +141,8 @@ fn the_budget_footprint_counts_the_older_blob_namespaces() {
     fs::write(root.join("flat.fm.msgpack"), vec![0_u8; 64 * 1024]).expect("flat blob");
     seed_workspace_aged(&workspaces, "key-a", &"a".repeat(64), Duration::from_secs(9999));
 
-    let report =
-        enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, u64::MAX, DAY, Duration::ZERO).expect("enforce");
+    let report = enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, |_| u64::MAX, DAY, Duration::ZERO)
+        .expect("enforce");
 
     assert!(
         report.total_bytes_before >= 2 * 64 * 1024,
@@ -176,8 +176,8 @@ fn a_newer_blob_namespace_is_outside_the_budget_and_costs_no_workspace() {
     // Exactly this version's bytes, as measured here: allocation differs between file systems.
     let budget = dir_size(&workspaces).expect("size") + dir_size(&root).expect("size")
         - dir_size(&root.join("v8")).expect("size");
-    let report =
-        enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, budget, DAY, Duration::ZERO).expect("enforce");
+    let report = enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, |_| budget, DAY, Duration::ZERO)
+        .expect("enforce");
 
     assert!(
         report.total_bytes_before <= budget,
@@ -188,6 +188,48 @@ fn a_newer_blob_namespace_is_outside_the_budget_and_costs_no_workspace() {
     assert!(
         idle.join(crate::store::VIEWS_DIR).exists(),
         "the idle workspace is kept"
+    );
+}
+
+/// A newer basemind's namespace occupies the disk the budget is derived from: the budget resolves
+/// from the footprint with it, while the eviction comparison still leaves it out.
+#[test]
+fn the_disk_aware_budget_resolves_from_the_footprint_with_a_newer_blob_namespace() {
+    let (_tmp, workspaces, root) = roots();
+    let current = root.join("v7");
+    fs::create_dir_all(&current).expect("mk current");
+    fs::create_dir_all(root.join("v8")).expect("mk newer");
+    fs::write(root.join("v8").join("new.fm.msgpack"), vec![0_u8; 256 * 1024]).expect("newer blob");
+    seed_workspace_aged(&workspaces, "key-a", &"a".repeat(64), DAY);
+    let occupied = dir_size(&workspaces).expect("size") + dir_size(&root).expect("size");
+    let newer_bytes = dir_size(&root.join("v8")).expect("size");
+    let free = 4 * newer_bytes;
+
+    let resolved_from = std::cell::Cell::new(0);
+    let report = enforce_cache_budget_at(
+        &workspaces,
+        &root,
+        &current,
+        SCHEMA,
+        |cache| {
+            resolved_from.set(cache);
+            CacheBudget::DiskAware.resolve(cache, Some(free))
+        },
+        DAY,
+        Duration::ZERO,
+    )
+    .expect("enforce");
+
+    assert_eq!(
+        resolved_from.get(),
+        occupied,
+        "the newer namespace is part of the occupied disk"
+    );
+    assert_eq!(report.budget_bytes, (occupied + free) / 2);
+    assert_eq!(
+        report.total_bytes_before,
+        occupied - newer_bytes,
+        "the eviction comparison leaves the newer namespace out"
     );
 }
 
