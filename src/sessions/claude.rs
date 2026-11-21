@@ -54,9 +54,11 @@ pub fn slug(path: &Path) -> String {
     slug
 }
 
-/// The slug length past which Claude Code cuts the name and appends a hash of the whole path
-/// (inferred from its `sanitizePath`, not checked against a source in this repository): a project
-/// directory of a longer slug is matched by this prefix, and its transcripts by their `cwd`.
+/// The longest slug Claude Code keeps whole. Its `sanitizePath` returns a slug of at most this
+/// length as it is, and cuts a longer one to this length and appends `-` and a base-36 hash of the
+/// whole path, a hash that differs between its runtimes; Claude Code itself then finds the project
+/// directory by the cut slug and `-`, and so does [`in_checkout`], its transcripts kept by their
+/// `cwd`.
 const SLUG_MAX: usize = 200;
 
 /// The scalar fields are lenient: one of another type is absent, and the record still counts.
@@ -123,8 +125,11 @@ impl TranscriptParser for Claude {
 
     fn transcripts(&self, root: &Path, scope: &Scope, found: &mut Found) {
         let mut slugs: Vec<String> = Vec::new();
-        for checkout in scope.checkouts() {
-            for path in std::iter::once(&checkout.path).chain(checkout.alias.iter()) {
+        // A removed worktree's sessions are filed under a slug that extends its directory's.
+        let checkouts = scope.checkouts().iter().map(|c| (&c.path, &c.alias));
+        let dirs = scope.worktree_dirs().iter().map(|d| (&d.path, &d.alias));
+        for (path, alias) in checkouts.chain(dirs) {
+            for path in std::iter::once(path).chain(alias.iter()) {
                 let slug = slug(path);
                 if !slugs.contains(&slug) {
                     slugs.push(slug);
@@ -258,11 +263,12 @@ impl TranscriptParser for Claude {
 /// checkout itself or a directory below it. The slug is lossy (`a-b` and `a/b` share one), so a
 /// sibling such as `repo-old` passes too; its transcripts are dropped by their recorded `cwd`.
 fn in_checkout(name: &str, slug: &str) -> bool {
-    if slug.len() >= SLUG_MAX {
-        return slug.get(..SLUG_MAX).is_some_and(|prefix| name.starts_with(prefix));
+    match slug.get(..SLUG_MAX).filter(|_| slug.len() > SLUG_MAX) {
+        Some(cut) => name.strip_prefix(cut).is_some_and(|rest| rest.starts_with('-')),
+        None => name
+            .strip_prefix(slug)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('-')),
     }
-    name.strip_prefix(slug)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
 }
 
 /// The subagent transcripts filed under each session directory of `project`. A session directory or
@@ -401,11 +407,33 @@ mod tests {
         assert!(in_checkout("-w-repo-crates-core", &checkout));
         assert!(!in_checkout("-w-repository", &checkout));
         assert!(!in_checkout("-w", &checkout));
-        let long = format!("/w/{}", "d".repeat(250));
-        let long = slug(Path::new(&long));
+    }
+
+    /// The `sanitizePath` boundary: a slug of [`SLUG_MAX`] characters is kept whole, one character
+    /// more is cut to [`SLUG_MAX`] and given `-` and a hash.
+    #[test]
+    fn a_long_slug_is_matched_as_claude_code_cuts_it() {
+        let checkout = |len: usize| slug(Path::new(&format!("/{}", "d".repeat(len - 1))));
+        let whole = checkout(SLUG_MAX);
+        assert_eq!(whole.len(), SLUG_MAX);
+        assert!(in_checkout(&whole, &whole), "kept whole");
         assert!(
-            in_checkout(&format!("{}-1a2b3c", &long[..SLUG_MAX]), &long),
+            in_checkout(&format!("{whole}-1a2b3c"), &whole),
+            "a subdirectory, whose longer slug is cut to this one"
+        );
+        assert!(
+            !in_checkout(&format!("{whole}d"), &whole),
+            "a sibling one character longer"
+        );
+        let cut = checkout(SLUG_MAX + 1);
+        assert!(
+            in_checkout(&format!("{}-1a2b3c", &cut[..SLUG_MAX]), &cut),
             "cut and hashed"
+        );
+        assert!(!in_checkout(&cut, &cut), "a slug past the limit is never kept whole");
+        assert!(
+            !in_checkout(&format!("{}x-1a2b3c", &cut[..SLUG_MAX]), &cut),
+            "the cut is followed by `-`"
         );
     }
 

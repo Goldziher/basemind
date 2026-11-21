@@ -71,6 +71,16 @@ impl Lexical {
             .then(|| self.parts[base.parts.len()..].to_vec())
     }
 
+    /// This path with the component `name` appended.
+    pub fn child(&self, name: &str) -> Self {
+        let mut parts = self.parts.clone();
+        parts.push(name.to_owned());
+        Self {
+            root: self.root.clone(),
+            parts,
+        }
+    }
+
     /// The components of a relative path, `..` kept.
     pub fn parts(&self) -> &[String] {
         &self.parts
