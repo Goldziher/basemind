@@ -313,12 +313,14 @@ try_exec() {
 # `cargo build` is almost never the version the installed plugin manifest pins, so the gate silently ~keep
 # ignored the override and went off to download a release binary instead. A mismatched schema minor ~keep
 # triggers a wipe-and-rebuild of the caches, which is why the version is still reported. ~keep
-if [ -n "${BASEMIND_BIN:-}" ] && [ -x "${BASEMIND_BIN}" ]; then
-  bin_ver="$(binary_version "$BASEMIND_BIN")"
+# BASEMIND_BINARY, the pip package's name for the same pin, is read when BASEMIND_BIN is unset. ~keep
+PINNED_BIN="${BASEMIND_BIN:-${BASEMIND_BINARY:-}}"
+if [ -n "$PINNED_BIN" ] && [ -x "$PINNED_BIN" ]; then
+  bin_ver="$(binary_version "$PINNED_BIN")"
   if [ "$bin_ver" != "$VERSION" ]; then
     log "BASEMIND_BIN pins basemind ${bin_ver:-unknown} while the plugin manifest pins $VERSION; using the pin"
   fi
-  exec "$BASEMIND_BIN" "$@"
+  exec "$PINNED_BIN" "$@"
 fi
 if [ -x "$MANAGED_BIN" ] && [ "$(binary_version "$MANAGED_BIN")" = "$VERSION" ]; then
   mark_used "$CACHE_ROOT"

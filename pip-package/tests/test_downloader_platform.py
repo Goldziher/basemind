@@ -136,6 +136,7 @@ def test_the_binary_replaces_the_wrapper_process(monkeypatch):
 def _fake_release(monkeypatch, tmp_path, version="0.19.2"):
     """ensure_binary with the network replaced: the "download" writes a binary to extract."""
     monkeypatch.setattr(downloader.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.delenv("BASEMIND_BIN", raising=False)
     monkeypatch.delenv("BASEMIND_BINARY", raising=False)
     import basemind
 
@@ -194,6 +195,24 @@ def test_a_waiter_outlasts_a_slow_install(monkeypatch, tmp_path):
     assert len(sleeps) == 50
 
 
+@pytest.mark.parametrize(
+    ("variables", "expected"),
+    [
+        ({"BASEMIND_BIN": "/opt/bin/basemind"}, "/opt/bin/basemind"),
+        ({"BASEMIND_BINARY": "/opt/old/basemind"}, "/opt/old/basemind"),
+        ({"BASEMIND_BIN": "/opt/bin/basemind", "BASEMIND_BINARY": "/opt/old/basemind"}, "/opt/bin/basemind"),
+    ],
+)
+def test_the_binary_override_is_used_without_a_download(monkeypatch, variables, expected):
+    monkeypatch.delenv("BASEMIND_BIN", raising=False)
+    monkeypatch.delenv("BASEMIND_BINARY", raising=False)
+    for name, value in variables.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(downloader, "_asset", lambda v: pytest.fail("resolved a release asset"))
+
+    assert downloader.ensure_binary() == expected
+
+
 def test_prune_is_noop_when_cache_absent(monkeypatch, tmp_path):
     monkeypatch.setattr(downloader.Path, "home", classmethod(lambda cls: tmp_path))
     downloader._prune_stale_versions("0.19.2")
@@ -203,6 +222,7 @@ def test_staging_dir_is_created_on_the_cache_filesystem(monkeypatch, tmp_path):
     """#38: staging must sit under the cache root so the final atomic rename is not a
     cross-device (EXDEV) link when the system temp dir and $HOME are on different filesystems."""
     monkeypatch.setattr(downloader.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.delenv("BASEMIND_BIN", raising=False)
     monkeypatch.delenv("BASEMIND_BINARY", raising=False)
 
     captured: dict[str, object] = {}

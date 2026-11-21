@@ -55,7 +55,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 The code, git, memory, document and index rows are 15 tools, one per job, each with its own exact
 schema; there is no `mode` argument. They are always loaded (`_meta["anthropic/alwaysLoad"]`), so a host that defers MCP tools
 needs no tool-search round trip: call them directly. Their `tools/list` entry is about 20 KB (about
-5k tokens). The three agent tools (`comms` builds) are deferred: a host finds them by tool search, and the session-start hook and the server instructions name them. An unknown argument is
+5k tokens). The three agent tools (`comms` builds) are listed separately and are needed only when collaborating; the session-start hook and the server instructions name them. An unknown argument is
 rejected with a did-you-mean suggestion, every line number is 1-based, and a failure the caller can
 fix comes back as an `isError` result that names the fix. Arguments, examples and the mapping from
 the previous `code` / `git` / `memory` / `admin` tools: the
@@ -405,7 +405,7 @@ Opus · basemind · ⎇ main · 12% ctx
 
 The dot is green when basemind is live and fresh, amber when idle, red when stale. The middle shows
 activity by type, then tokens saved, then unread messages. Adjust with
-`BASEMIND_STATUSLINE=full|compact|minimal`, or hide the top line with `BASEMIND_STATUSLINE_CONTEXT=0`.
+`BASEMIND_STATUSLINE=full|compact|minimal` (default `auto`, by terminal width), or hide the top line with `BASEMIND_STATUSLINE_CONTEXT=0`.
 
 </details>
 
@@ -604,7 +604,7 @@ stdio transport and need none of this.
 <summary><strong>How agents coordinate</strong></summary>
 
 A single shared service in the background lets agents talk to each other — even across different
-tools and different repos on the same machine. Three deferred tools carry it (`agent_post`,
+tools and different repos on the same machine. Three tools carry it (`agent_post`,
 `agent_inbox`, `agent_threads`; the CLI mirror is `basemind agent post|inbox|threads`). A post with
 a `subject` opens a **thread**: open to every agent of the repository, or invitation-only when it
 names recipients (`to`). Each agent has an **inbox**: reading returns unread messages with their
@@ -1127,7 +1127,9 @@ A cap variable must be a positive integer; anything else falls back to the defau
 | `BASEMIND_WARM_READ_STACKS` | Daemon-hosted read stacks kept warm at once; default 3. |
 | `BASEMIND_NO_AUTOSPAWN=1` | Connect to a running daemon but never start one. |
 | `BASEMIND_MAX_DAEMONS` | Ceiling on live daemons per machine before a spawn is refused; default 8. |
-| `BASEMIND_BIN`, `BASEMIND_FORCE_VERSION` | Plugin launcher: run a local build / pin a release (see [Installation](#1-as-a-plugin-recommended)). |
+| `BASEMIND_BIN` | Plugin launcher and the npm and pip packages: run a local build (see [Installation](#1-as-a-plugin-recommended)); `BASEMIND_BINARY` is read when it is unset. |
+
+`basemind manual environment` lists every variable with its default.
 
 **Reload.** The daemon re-reads a workspace's `basemind.toml` on the next request after it changes
 (size or modification time) and logs `config changed`. A file that no longer parses keeps the last

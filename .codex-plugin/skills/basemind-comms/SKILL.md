@@ -1,5 +1,5 @@
 ---
-description: Coordinate with other agents working the same repo through basemind's deferred agent_post, agent_inbox and agent_threads tools — threads, a per-actor read position, bodies inline. Reach for it whenever you start, finish, or hit a decision while collaborating, or to check whether another agent is already touching the code you're about to change.
+description: Coordinate with other agents working the same repo through basemind's agent_post, agent_inbox and agent_threads tools — threads, a per-actor read position, bodies inline. Reach for it whenever you start, finish, or hit a decision while collaborating, or to check whether another agent is already touching the code you're about to change.
 name: basemind-comms
 license: MIT
 metadata:
@@ -9,16 +9,16 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:ebbcf320e227b2a6f38a67ed8c7e536392aaf23dbb93a49a31e8fd8cd820b609
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:7d73ee136092132101bf3a54a60ad1d970fd6a2435b2b757d0e8f84416e7f0b2
+Source-Hash: blake3:8b9a976b1dc98816f54f485e05b9757438b6a19a589c3d5415853e50d063bcb0
 Schema-Version: v1
 -->
 
 # basemind-comms — agent coordination over the daemon
 
 You may be one of several agents working this repo. Messaging is opt-in and secondary to code
-navigation: three **deferred** MCP tools, found by tool search (they are not loaded at session
-start): `agent_post`, `agent_inbox`, `agent_threads`. Post a two-line note when you start a task
+navigation: three MCP tools listed separately from the others, needed only when collaborating:
+`agent_post`, `agent_inbox`, `agent_threads`. Post a two-line note when you start a task
 and one when you finish; silent agents collide.
 
 | Tool | Does |

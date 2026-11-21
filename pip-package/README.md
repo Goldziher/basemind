@@ -22,7 +22,7 @@ Silicon, Linux on x86_64 and arm64, Windows on x86_64) is downloaded from
 [GitHub Releases](https://github.com/Goldziher/basemind/releases) and cached under
 `~/.cache/basemind/<version>/`.
 
-Override the binary location with `BASEMIND_BINARY=/path/to/basemind`.
+Override the binary location with `BASEMIND_BIN=/path/to/basemind`; `BASEMIND_BINARY` is read when it is unset.
 
 ## Quickstart
 

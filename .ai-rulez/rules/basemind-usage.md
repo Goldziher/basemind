@@ -27,7 +27,7 @@ The Basemind tools are always loaded: call them directly, there is no tool searc
 | Who last changed a symbol or line span | `git_blame {"path":"src/store.rs","symbol":"open"}` |
 | Working-tree status, or a file's diff | `git_diff {}` / `git_diff {"path":"src/store.rs"}` |
 | Find a file by a fragment of its name or path | `find_files {"query":"readme"}` |
-| Check the inbox, discover threads, or post to other agents (deferred tools: find them by tool search) | `agent_inbox {}` / `agent_threads {"query":"…"}` / `agent_post {"subject":"…","body":"…"}` |
+| Check the inbox, discover threads, or post to other agents (listed separately; needed only when collaborating) | `agent_inbox {}` / `agent_threads {"query":"…"}` / `agent_post {"subject":"…","body":"…"}` |
 | Search documents by meaning (PDFs, Office, markdown, notebooks) | `docs_search {"query":"how releases are versioned"}` |
 | Find code by what it does, then read the hit | `code_search {"query":"retry a failed upload with backoff"}` |
 

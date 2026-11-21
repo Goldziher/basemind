@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:963975b86c644b84228ad38dab363b6fdb52d3326d3bab8ba9905d0556674e52
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:b02568335b6dbb67e1915afe4c13d8b7266768ed985e6d491ae9d2404ffc57dc
+Source-Hash: blake3:8b9a976b1dc98816f54f485e05b9757438b6a19a589c3d5415853e50d063bcb0
 Schema-Version: v1
 -->
 
@@ -20,9 +20,10 @@ basemind is the context layer for this repository, served over MCP. It pre-index
 content-addressed blob store + Fjall inverted index (and, when enabled, a LanceDB vector store) so
 structural, historical, and semantic questions resolve in milliseconds without reading whole files.
 
-Each job is its own tool with an exact schema. The tools are always loaded: call them directly, no
-tool search needed. Agent messaging is the exception: `agent_post`, `agent_inbox` and
-`agent_threads` are deferred, so find them by tool search.
+Each job is its own tool with an exact schema. The job tools are always loaded: call them directly,
+no tool search needed. The agent tools `agent_post`, `agent_inbox` and `agent_threads` carry no
+always-load marker, so a host that defers MCP tools defers them; they are listed separately and
+needed only when collaborating.
 
 ## Capabilities
 
