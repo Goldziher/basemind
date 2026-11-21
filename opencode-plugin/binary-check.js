@@ -50,14 +50,42 @@ export function isNotFound(error, shell) {
   return error?.code === "ENOENT" || (shell && error?.code === CMD_NOT_FOUND);
 }
 
-function runVersion(env, timeoutMs) {
-  const { file, args, shell } = versionInvocation(process.platform);
-  // A read-only probe: a binary that ignores SIGTERM must not keep setup waiting past the timeout.
-  const options = { env, timeout: timeoutMs, killSignal: "SIGKILL", shell };
+/**
+ * How a probe that outlived its timeout is stopped on `platform`: the
+ * `taskkill` command for its process tree on Windows, where the probe is
+ * `cmd.exe` running the `basemind.cmd` shim and killing `cmd.exe` alone leaves
+ * the CLI it started running; `null` elsewhere, where the probe is the binary.
+ */
+export function treeKillInvocation(platform, pid) {
+  return platform === "win32" ? { file: "taskkill", args: ["/pid", String(pid), "/T", "/F"] } : null;
+}
+
+// A read-only probe: a binary that ignores SIGTERM must not keep setup waiting past the timeout.
+function stopProbe(child, platform, env) {
+  const tree = treeKillInvocation(platform, child.pid);
+  if (tree === null) {
+    child.kill("SIGKILL");
+    return;
+  }
+  execFile(tree.file, tree.args, { env }, (error) => {
+    if (error) {
+      child.kill("SIGKILL");
+    }
+  });
+}
+
+function runVersion(env, timeoutMs, platform) {
+  const { file, args, shell } = versionInvocation(platform);
   return new Promise((resolve) => {
-    execFile(file, args, options, (error, stdout) => {
-      resolve({ error, notFound: isNotFound(error, shell), stdout: String(stdout ?? "") });
+    let timedOut = false;
+    const child = execFile(file, args, { env, shell }, (error, stdout) => {
+      clearTimeout(timer);
+      resolve({ error, timedOut, notFound: isNotFound(error, shell), stdout: String(stdout ?? "") });
     });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stopProbe(child, platform, env);
+    }, timeoutMs);
   });
 }
 
@@ -72,10 +100,17 @@ function runVersion(env, timeoutMs) {
  *   but its tools may not match the skills.
  *
  * `message` is the one line to show the user, naming the install command.
+ * `platform` picks how the probe is spawned and stopped (`versionInvocation`,
+ * `treeKillInvocation`); it defaults to this process's.
  */
-export async function checkBinary({ expected, env = process.env, timeoutMs = VERSION_TIMEOUT_MS }) {
+export async function checkBinary({
+  expected,
+  env = process.env,
+  timeoutMs = VERSION_TIMEOUT_MS,
+  platform = process.platform,
+}) {
   const install = installCommands(expected);
-  const { error, notFound, stdout } = await runVersion(env, timeoutMs);
+  const { error, timedOut, notFound, stdout } = await runVersion(env, timeoutMs, platform);
   if (notFound) {
     return {
       status: "missing",
@@ -83,7 +118,7 @@ export async function checkBinary({ expected, env = process.env, timeoutMs = VER
     };
   }
   if (error) {
-    const reason = error.killed ? `no answer within ${timeoutMs} ms` : error.message.split("\n")[0];
+    const reason = timedOut ? `no answer within ${timeoutMs} ms` : error.message.split("\n")[0];
     return {
       status: "missing",
       message: `basemind: \`basemind --version\` failed (${reason}), so the basemind MCP server is not registered. Reinstall it with ${install}, then restart OpenCode.`,

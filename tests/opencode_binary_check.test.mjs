@@ -11,22 +11,24 @@ import {
   checkBinary,
   isNotFound,
   packageVersion,
+  treeKillInvocation,
   versionInvocation,
   versionMinor,
 } from "../opencode-plugin/binary-check.js";
 
 const posix = { skip: process.platform === "win32" && "the stub binary is a POSIX shell script" };
 
-function pathWith(script) {
+function pathWith(script, tools = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "basemind-opencode-bin-"));
-  if (script !== null) {
-    fs.writeFileSync(path.join(dir, "basemind"), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+  const scripts = script === null ? tools : { ...tools, basemind: script };
+  for (const [name, body] of Object.entries(scripts)) {
+    fs.writeFileSync(path.join(dir, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   }
   return { dir, env: { ...process.env, PATH: dir } };
 }
 
-async function check(script, options = {}) {
-  const { dir, env } = pathWith(script);
+async function check(script, options = {}, tools = {}) {
+  const { dir, env } = pathWith(script, tools);
   try {
     return await checkBinary({ expected: "0.33.0", env, ...options });
   } finally {
@@ -99,6 +101,34 @@ test("a binary that ignores SIGTERM is killed at the timeout and not registered"
     message: `basemind: \`basemind --version\` failed (no answer within 200 ms), so the basemind MCP server is not registered. Reinstall it with ${install}, then restart OpenCode.`,
   });
 });
+
+test("a hung binary behind the Windows shell is stopped with its whole process tree", posix, async () => {
+  const calls = path.join(os.tmpdir(), `basemind-opencode-taskkill-${process.pid}.log`);
+  // Stands in for `taskkill /pid N /T /F`: records its arguments, then kills N and its descendants.
+  const taskkill = `echo "$*" > '${calls}'
+kill_tree() { for c in $(/usr/bin/pgrep -P "$1"); do kill_tree "$c"; done; kill -KILL "$1"; }
+kill_tree "$2"`;
+  try {
+    const result = await check("/bin/sleep 10", { timeoutMs: 200, platform: "win32" }, { taskkill });
+    assert.deepEqual(result, {
+      status: "missing",
+      message: `basemind: \`basemind --version\` failed (no answer within 200 ms), so the basemind MCP server is not registered. Reinstall it with ${install}, then restart OpenCode.`,
+    });
+    assert.match(fs.readFileSync(calls, "utf8"), /^\/pid \d+ \/T \/F\n$/u);
+  } finally {
+    fs.rmSync(calls, { force: true });
+  }
+});
+
+for (const [platform, kill] of [
+  ["win32", { file: "taskkill", args: ["/pid", "4242", "/T", "/F"] }],
+  ["linux", null],
+  ["darwin", null],
+]) {
+  test(`on ${platform} a timed-out probe is stopped ${kill ? "with its process tree" : "by killing it"}`, () => {
+    assert.deepEqual(treeKillInvocation(platform, 4242), kill);
+  });
+}
 
 for (const [platform, invocation] of [
   ["win32", { file: "basemind --version", args: [], shell: true }],
