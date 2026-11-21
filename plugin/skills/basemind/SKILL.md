@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:52a96100c8ebce58ad3a9a935d58688c03a72417ba11c8eb6308be3063e69117
-Source-Hash: blake3:8283b7a2d7e38e2000eb55a65debea95ffd2bae88613c86f10cef4146b3e06f3
+Content-Hash: blake3:a352c07f31bc52d0f70f0195205c8e1588eeaa0482b099727a4c134b9f09deeb
+Source-Hash: blake3:961ee015a38484b8e90dd963b22e7993755e22a995f5986d76e06f2aeb144de7
 Schema-Version: v1
 -->
 
@@ -98,7 +98,7 @@ Drop to raw shell, grep, or git only when no basemind tool covers the question.
 | "What imports module M?" | `code_refs {"name":"tokio::sync","relation":"importers"}` |
 | "Which definition does this reference bind to?" | `code_refs {"name":"open_store","relation":"definition","path":"src/main.rs","line":42}` |
 | "Which file is named like X?" | `find_files {"query":"readme"}` |
-| "What files are indexed under a directory?" | `find_files {"path_prefix":"src/mcp/"}` |
+| "What files are indexed under a directory?" | `find_files {"path":"src/mcp/"}` |
 | "What changed recently?" | `git_log {}` |
 | "Which commits touched file F?" | `git_log {"path":"src/store.rs","limit":5}` |
 | "Which commit mentions X?" | `git_log {"query":"fix race"}` |
@@ -208,7 +208,8 @@ A 1000-line file becomes a 30-line table of contents.
   error naming `index_rescan`.
 - `code_search` reports which retrieval lanes ran (`lanes_ran`) and which could not, with the
   reason (`lanes_unavailable`).
-- `code_grep`'s `path` is a literal substring of the repo-relative path, never a glob.
+- `path` on `code_grep`, `find_files`, `code_symbols`, `code_search` and `docs_search` is a repo-relative prefix (`src/mcp/`), or a
+  glob over the whole path when it holds `*` (`src/**/*.rs`); `mcp/` is not a prefix of `src/mcp/`.
 - A cursor continues only the call that returned it, with the same arguments apart from `limit`
   and `max_tokens`. On another query, or after a rescan or a new commit, the call is an error:
   repeat it without `cursor`.
