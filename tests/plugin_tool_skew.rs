@@ -80,6 +80,10 @@ const RESULT_VOCABULARY: &[(&str, &str)] = &[
         "code_read / code_outline cut bodies (src/mcp/types_code.rs)",
     ),
     ("lanes_ran", "code_search (src/mcp/types_code.rs)"),
+    (
+        "rescan_needed",
+        "index_status on an index only a scan can rebuild (src/engine/types/index.rs)",
+    ),
 ];
 
 /// Identifiers that appear on a line naming a tool but are not part of any tool's vocabulary: shell
