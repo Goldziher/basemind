@@ -16,7 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry) and lists the keys that table allows instead of the raw JSON-schema message, preceded by the
   closest known key when one is within two edits (#249):
   ``unknown key `folow_symlinks` in [scan]; did you mean `follow_symlinks`? allowed keys: ...``.
-
 - `path` and `language` on `code_symbols` and `code_search` (#252), with the meaning they have on
   `code_grep` and `find_files`: `code_symbols {"name":"Config","path":"services/payments/"}` finds the
   definitions under that directory only. `code_search` keeps the hits in files the filters pass
@@ -196,6 +195,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--path`. On `code_grep` and `find_files` a `path` no indexed file passes is refused with the rule it
   was read by (`docs_search` returns no hits), and a value holding `*` that is not a glob is
   refused with an example.
+
 - **BREAKING:** `memory_search` takes `tags`, a list, where it took one `tag` (#252), as
   `memory_save` does: a search or a listing keeps the notes carrying any of them.
   `basemind memory search|list --tag` is repeatable.
@@ -954,7 +954,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   characters followed by `-`. The transcript roots are under the home directory: `HOME` on Unix,
   else the account's home directory; on Windows `USERPROFILE` when it is set, else the account's
   profile directory. An empty home is refused rather than read as the current directory.
-
 - Agent comms: a thread the per-repository cap of 256 active threads archives no longer hides its
   unread messages from its members without a word (#300). A member's next `agent_inbox` read over
   all its threads, a marking read or a peek, carries a notice naming the thread and how many of its
