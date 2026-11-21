@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:7fbdc0f2d473f546fba6331ac784d7456b74eb37de7fcbb3190374c52ec83e58
-Source-Hash: blake3:db41db461cca96f8e1776c758d0c2e5844b9943db61812492af557d90cfb98c7
+Content-Hash: blake3:4e0c6129b75370eb731577681f361351d175605ae707936d9b445072cab00288
+Source-Hash: blake3:6096d72a18aa6057d3b82b97246f0727a376525c3b654bd223df0807fa87108d
 Schema-Version: v1
 -->
 
@@ -65,7 +65,16 @@ neither. Both files live in this workspace's directory under the machine-global 
 `~/.local/share/basemind/`, macOS `~/Library/Application Support/basemind/`; override
 `BASEMIND_DATA_HOME`), keyed by workspace — not in the repo.
 
-- If that `pid` is **alive** (`ps -p <pid>`), let it finish, or stop it. While it holds the index and
+- If that `pid` is **alive** (`ps -p <pid>`) and is a `basemind serve`, use the MCP tools if this
+  session has them attached (if not, reconnect the client: step 4); it keeps the index fresh as you
+  edit. For a file a result calls stale, run `index_rescan {"paths":["src/store.rs"]}` or
+  `basemind rescan src/store.rs`; for an empty, `degraded` or `rescan_needed` index, or changed
+  `scan.extra_roots` files, `index_rescan {}`. If the session cannot call the tools, stop that
+  `basemind serve`, run `basemind scan`, then reconnect.
+- If it is a standalone `basemind watch`, there is no MCP server to take an `index_rescan`, and
+  `basemind rescan` exits 3 on the lock. The watcher re-indexes edits itself; to rescan or rebuild,
+  stop it, run `basemind rescan src/store.rs` (or `basemind scan`), then restart `basemind watch`.
+- Otherwise, let it finish, or stop it. While it holds the index and
   no daemon serves the workspace, index-backed MCP tools (`code_refs`, the keyword lane of
   `code_search`) answer with a busy error, and `basemind rescan` exits 3 the same way. Starting the
   daemon with `basemind comms start` does not serve this workspace while the holder keeps the index,

@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:a352c07f31bc52d0f70f0195205c8e1588eeaa0482b099727a4c134b9f09deeb
-Source-Hash: blake3:db41db461cca96f8e1776c758d0c2e5844b9943db61812492af557d90cfb98c7
+Content-Hash: blake3:03728e8b6cf923f24209d3e0d5eef5f02c5705717025e4c0604933fdbc066415
+Source-Hash: blake3:6096d72a18aa6057d3b82b97246f0727a376525c3b654bd223df0807fa87108d
 Schema-Version: v1
 -->
 
@@ -73,8 +73,12 @@ structural answer costs a fraction of the tokens of reading source.
 - **`code_refs` instead of grepping call sites.** Indexed call edges, not text matches.
 - **`code_grep` instead of shelling out to ripgrep.** The pattern is literal text unless you pass
   `"regex":true`; every hit carries its line and the enclosing symbol.
-- **`index_rescan` after you edit code**, not a server reconnect. Pass `paths` to limit it to the
-  files you touched.
+- **The index follows your edits**: no rescan and no server reconnect after each one. If a result
+  says `stale` or a new file is missing, run `index_rescan {"paths":["src/store.rs"]}` for the files
+  you touched; run `index_rescan {}` only when `index_status` reports an empty index, `degraded` or
+  `rescan_needed`. Files under `scan.extra_roots` are the exception: the watcher does not track them
+  and a path-scoped rescan skips them, so a new, changed or deleted file there needs a full pass:
+  `index_rescan {}` while a server holds the lock, else `basemind scan`.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 
 Drop to raw shell, grep, or git only when no basemind tool covers the question.
@@ -113,7 +117,7 @@ Drop to raw shell, grep, or git only when no basemind tool covers the question.
 | "Remember this for future sessions" | `memory_save {"key":"decision/auth-tokens","value":"Tokens rotate every 24h.","tags":["auth"]}` |
 | "Recall something stored earlier" | `memory_search {"query":"token rotation"}` |
 | "What's indexed? What's HEAD / branch?" | `index_status {}` |
-| "Refresh the index after editing code" | `index_rescan {"paths":["src/store.rs"]}` |
+| "A result says stale, or a new file is missing" | `index_rescan {"paths":["src/store.rs"]}` |
 | "Fetch the next page" | pass the response's `next_cursor` back as `cursor` |
 
 Churn ranking, regex path filters over history, deleting a note, cache administration and the usage
@@ -137,9 +141,8 @@ TypeScript monorepo.
 The MCP server is launched by the host (`basemind serve`, wired up in `.claude-plugin/plugin.json`
 for you). You do not start it manually.
 
-Re-run `basemind scan` after large changes, or run `basemind watch` to keep the index fresh on file
-save. A tool that reports an empty index says so in its result: run `index_rescan {}` or
-`basemind scan`.
+The server watches the workspace and keeps the index fresh as you edit. A tool that reports an empty
+index says so in its result: run `index_rescan {}` or `basemind scan`.
 
 ## Examples
 

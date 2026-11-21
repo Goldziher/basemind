@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:81a03cf76b38413742f68547883b150acff47a18165f1473c2b0b20c2c566ec4
-Source-Hash: blake3:db41db461cca96f8e1776c758d0c2e5844b9943db61812492af557d90cfb98c7
+Content-Hash: blake3:1685d828b4bc43c102fa2f3a0b91e9b83eb5b9538d6a50133d96c34d4f471c47
+Source-Hash: blake3:6096d72a18aa6057d3b82b97246f0727a376525c3b654bd223df0807fa87108d
 Schema-Version: v1
 -->
 
@@ -94,8 +94,8 @@ command covers the question.
 | "Score retrieval quality?" | `basemind admin eval --tasks tasks.jsonl` | CLI-only; see `benchmarks/eval/README.md`. |
 | "Clear caches?" | `basemind cache clear --component blobs --yes` | Destructive; `--yes` is required off a terminal. `views` / `all` need the offline CLI. |
 | "Keep index fresh?" | `basemind watch` | Live re-index watcher; no MCP server (that's `serve`). |
-| "Refresh the index after edits?" | `basemind scan` | Full or incremental scan. |
-| "Refresh changed paths?" | `basemind rescan [path…]` | Re-index in the live server. |
+| "Build the index, or rebuild an empty, `degraded` or `rescan_needed` one?" | `basemind scan` | Full or incremental scan. |
+| "Refresh files I edited?" | `basemind rescan <path>…` | Re-index just those paths in the live server, which already watches the tree. |
 | "Per-tool activity summary?" | `basemind admin telemetry [--window today\|1h\|24h\|all]` | CLI only. Histogram + estimated tokens saved. |
 | "Is this install healthy?" | `basemind doctor` | Checks root, config, index, grammars, hook, daemon; exits 1 on failure. |
 | "Block commits from staling the index?" | `basemind hook install` | Pre-commit `scan --staged`; see Notes. |
@@ -124,7 +124,8 @@ Fjall inverted index into the machine-global cache (Linux `~/.local/share/basemi
 `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`). A few seconds for small
 repos, ~22 s for an ~80k-file TypeScript monorepo.
 
-Re-run `basemind scan` after large changes, or run `basemind watch` to keep the index fresh.
+A running daemon (`basemind serve`) watches the tree and keeps the index fresh; without one, run
+`basemind watch`, or `basemind rescan <path>…` for the files you changed.
 
 ## Examples
 

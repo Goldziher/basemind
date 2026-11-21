@@ -6,8 +6,8 @@ description: Build or refresh the basemind index by running `basemind scan` via 
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:ed1be130646af08c9fbc9f00459bad474ef277201fbca42bf6c6fe9b733f10bb
-Source-Hash: blake3:db41db461cca96f8e1776c758d0c2e5844b9943db61812492af557d90cfb98c7
+Content-Hash: blake3:6801198cb045bb89d01af03f6623c5f81788efd3a15123a0bc6893229f7ff9e9
+Source-Hash: blake3:6096d72a18aa6057d3b82b97246f0727a376525c3b654bd223df0807fa87108d
 Schema-Version: v1
 -->
 
@@ -17,8 +17,10 @@ Run `basemind scan` via the CLI so the code map exists and is current.
 
 ## When to use
 
-basemind (or its statusline) reports "no index" / "no indexed files", an MCP tool returns empty
-results that shouldn't be empty, or the index is stale after large changes.
+basemind (or its statusline) reports "no index" / "no indexed files", or `index_status` reports
+`degraded` or `rescan_needed`. A healthy index that misses a file you just created needs only
+`basemind rescan <path>` for that file, not a whole-tree scan. Files under `scan.extra_roots` are the
+exception: `rescan <path>` skips them, so a new or changed one needs a full scan.
 
 ## How to use
 
@@ -42,7 +44,8 @@ basemind rescan "$ARGUMENTS"   # a path argument
 - Report files scanned / updated / skipped and elapsed time. Non-extractable files are
   **skipped**, not failures.
 - If a daemon is running, `scan` is forwarded to it and reports `scan via daemon`. Another
-  process holding the store lock (`basemind watch`, another scan) makes `scan` exit 3 and name it.
+  process holding the store lock (`basemind watch`, another scan) makes `scan` and `rescan` exit 3 and
+  name it: stop the watcher, run the command, then restart `basemind watch`.
 
 ## See also
 

@@ -1,5 +1,5 @@
 ---
-description: Build or refresh the basemind index by running `basemind scan` via the CLI. Use this when basemind reports "no index" / "no indexed files", when the MCP server isn't available, or after large changes when the index is stale. Works without the MCP server — it shells the basemind binary directly.
+description: Build or refresh the basemind index by running `basemind scan` via the CLI. Use this when basemind reports "no index" / "no indexed files", or when `index_status` reports `degraded` or `rescan_needed`. Works without the MCP server — it shells the basemind binary directly.
 name: basemind-scan
 license: MIT
 metadata:
@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:5306a3c75a59973b5f30b324eadd5a051b389e63eb6a678f2d26591886b24c1a
-Source-Hash: blake3:db41db461cca96f8e1776c758d0c2e5844b9943db61812492af557d90cfb98c7
+Content-Hash: blake3:fa2b9f49ce3d009ebfecf51f1748703195fde17ec79c0de5ab39afb36097e508
+Source-Hash: blake3:6096d72a18aa6057d3b82b97246f0727a376525c3b654bd223df0807fa87108d
 Schema-Version: v1
 -->
 
@@ -26,9 +26,18 @@ basemind answers code-map questions from an index in a machine-global cache (Lin
 ## When to use
 
 - basemind / the statusline reports **no index** for this repo.
-- An MCP tool returns "no indexed files" or empty results that should not be empty.
-- The MCP server isn't running or isn't reachable, and you need the code map.
-- The index is stale after large changes and you want a full rebuild.
+- An MCP tool returns "no indexed files".
+- The MCP server isn't running or isn't reachable and the index is missing or unhealthy. A healthy
+  cached index still answers CLI queries (`basemind code …`) without a scan.
+- `index_status` reports `degraded` or `rescan_needed: true` and you want a full rebuild. Either one
+  qualifies: a scan that stops after writing the code map sets `degraded` alone.
+- Files under `scan.extra_roots` changed: only a full scan re-indexes them (`rescan <path>` skips
+  them). With a live `basemind serve` holding the lock, `index_rescan {}` is the full pass; with a
+  standalone `basemind watch`, stop it, run `basemind scan`, then restart it.
+
+Not for a healthy index that misses a file you just created: run `basemind rescan <path>` (or
+`index_rescan {"paths":[…]}`) for that file. A running server already re-indexes the files you edit
+in the repository; it does not watch `scan.extra_roots`.
 
 ## How to run
 
@@ -61,7 +70,8 @@ use it first: a bare `basemind` from `PATH` can be a different version over the 
 - If a daemon is running, `scan` is forwarded to it and prints `scan via daemon`; it never
   starts one. A flag the daemon cannot apply (`--rebuild-git-history`, a `--documents-*` /
   `--llm-*` override) exits 2 naming it. Another process holding the store lock
-  (`basemind watch`, another scan) makes `scan` exit 3 and name the holder.
+  (`basemind watch`, another scan) makes `scan` exit 3 and name the holder; stop a standalone
+  watcher, scan, then restart it.
 - **Indexing directories outside the repo** — set `scan.extra_roots` in the repo-root `basemind.toml`
   to a list of absolute paths (e.g. a Bazel external repo cache) to index them alongside the repo.
   This needs `BASEMIND_ALLOW_EXTRA_ROOTS` in the environment that launches basemind (`1`, or a

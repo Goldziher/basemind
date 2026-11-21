@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:f9bc63e4543db064243947ca67eaefa6237fc0698f7f0ad7ae215dc8bb6b9f31
-Source-Hash: blake3:db41db461cca96f8e1776c758d0c2e5844b9943db61812492af557d90cfb98c7
+Content-Hash: blake3:0731507eaa473df5f79d98238ac1f3197dc5c0e01089dd8d0081af9576020144
+Source-Hash: blake3:6096d72a18aa6057d3b82b97246f0727a376525c3b654bd223df0807fa87108d
 Schema-Version: v1
 -->
 
@@ -40,7 +40,17 @@ no tool covers the question.
   line and enclosing symbol. A file created since the last scan is not in it until the watcher or
   an `index_rescan {"paths":[…]}` indexes it, so a miss there is not proof of absence.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
-- **`index_rescan` after you edit code**, not a server reconnect. Pass `paths` to limit it.
+- **The index follows your edits** while a server, daemon or `basemind watch` runs: no rescan and
+  no server reconnect after each one. If a result says `stale` or a new file is missing, run
+  `index_rescan {"paths":["src/store.rs"]}` for that file; run `index_rescan {}` only when
+  `index_status` reports an empty index, `degraded` or `rescan_needed`. Files under
+  `scan.extra_roots` are not watched and `paths` skips them: refresh a changed one with a full pass
+  (`index_rescan {}`, or `basemind scan` with no server). With only a standalone `basemind watch`
+  there is no `index_rescan` and `basemind rescan` exits 3 on its lock: stop the watcher, rescan,
+  restart it.
+- **CLI only, with nothing watching**: the index does not follow edits, and a symbol added to an
+  indexed file is simply missing (no hit, no `stale` flag). Run `basemind rescan <path>…` for the
+  files you edited before querying them.
 
 ## Tool routing
 
@@ -64,7 +74,7 @@ no tool covers the question.
 | "Which file is named like X?" | `find_files {"query":"readme"}` | `basemind code find readme` |
 | "What files are indexed under a directory?" | `find_files {"path_prefix":"src/mcp/"}` | `basemind code files --path-prefix src/mcp/` |
 | "What's indexed?" | `index_status {}` | `basemind status` |
-| "Refresh the index after editing?" | `index_rescan {"paths":["src/store.rs"]}` | `basemind rescan src/store.rs` |
+| "A result says stale, or a new file is missing?" | `index_rescan {"paths":["src/store.rs"]}` | `basemind rescan src/store.rs` |
 | "Fetch the next page?" | pass the response's `next_cursor` back as `cursor` | `--cursor <next_cursor>` |
 
 ## Examples

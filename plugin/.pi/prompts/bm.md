@@ -5,8 +5,8 @@ description: Ask basemind anything about the current codebase — outlines, refs
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:96198b4315b9311caab80e27483ce7653c67c946df8a36151a0080ae345758d3
-Source-Hash: blake3:db41db461cca96f8e1776c758d0c2e5844b9943db61812492af557d90cfb98c7
+Content-Hash: blake3:a308775de78208b3fea4b033c74e064cdc600a4abc6a355d9cdb3ac0700b3eb3
+Source-Hash: blake3:6096d72a18aa6057d3b82b97246f0727a376525c3b654bd223df0807fa87108d
 Schema-Version: v1
 -->
 
@@ -45,7 +45,7 @@ Route the question to the tool that answers it directly:
 | "Search PDFs/docs in the repo by meaning?" | `docs_search {"query":"how releases are versioned"}` |
 | "Recall something remembered earlier?" | `memory_search {"query":"token rotation"}`, or `{"key":"…"}` / `{"prefix":"…"}` |
 | "Remember this for later sessions?" | `memory_save {"key":"decision/x","value":"…"}` (delete: `basemind memory delete <key>`) |
-| "Refresh the index after editing code?" | `index_rescan {"paths":["src/scanner.rs"]}` |
+| "A result says stale, or a new file is missing?" | `index_rescan {"paths":["src/scanner.rs"]}` |
 
 ## Notes
 
