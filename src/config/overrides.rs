@@ -149,6 +149,32 @@ fn bool_arg(name: &'static str) -> impl Fn(&str) -> Result<bool, String> + Clone
     move |value: &str| bool_var(name, value)
 }
 
+/// The boolean `BASEMIND_DOCUMENTS_*` variables clap reads for the flags above.
+const BOOLEAN_ENVS: [&str; 8] = [
+    "BASEMIND_DOCUMENTS_ENABLED",
+    "BASEMIND_DOCUMENTS_EMBED",
+    "BASEMIND_DOCUMENTS_LANGUAGE_AUTO_DETECT",
+    "BASEMIND_DOCUMENTS_LANGUAGE_DETECT_MULTIPLE",
+    "BASEMIND_DOCUMENTS_RERANKER_ENABLED",
+    "BASEMIND_DOCUMENTS_KEYWORDS_ENABLED",
+    "BASEMIND_DOCUMENTS_NER_ENABLED",
+    "BASEMIND_DOCUMENTS_SUMMARIZATION_ENABLED",
+];
+
+/// `command` and its subcommands with every boolean `BASEMIND_DOCUMENTS_*` variable that is blank
+/// treated as unset, as [`bool_env`](super::engine::bool_env) does for the other boolean variables:
+/// clap hands an empty environment value to the value parser, which refuses it.
+pub fn ignore_blank_boolean_env(command: clap::Command) -> clap::Command {
+    let command = command.mut_args(|arg| {
+        let blank = arg.get_env().and_then(std::ffi::OsStr::to_str).is_some_and(|name| {
+            BOOLEAN_ENVS.contains(&name)
+                && std::env::var_os(name).is_some_and(|value| value.to_string_lossy().trim().is_empty())
+        });
+        if blank { arg.env(None::<&'static str>) } else { arg }
+    });
+    command.mut_subcommands(ignore_blank_boolean_env)
+}
+
 impl DocumentsCliOverrides {
     /// Empty override set — every field `None`. Equivalent to `Default::default()`
     /// but spelled out for callers that prefer the explicit constructor.
@@ -443,6 +469,39 @@ mod tests {
             }
             assert_eq!(read(&parse(&[]).expect("no flags")), None, "{flag} unset");
         }
+    }
+
+    #[test]
+    fn the_boolean_env_list_names_every_boolean_flag_variable() {
+        let mut listed = BOOLEAN_ENVS.to_vec();
+        let mut flagged: Vec<&str> = BOOLEANS.iter().map(|(_, env, _)| *env).collect();
+        listed.sort_unstable();
+        flagged.sort_unstable();
+        assert_eq!(listed, flagged);
+    }
+
+    #[test]
+    fn a_blank_boolean_variable_counts_as_unset() {
+        let (flag, env, read) = BOOLEANS[0];
+        for blank in ["", "   "] {
+            // SAFETY: no other test reads or writes this variable.
+            unsafe { std::env::set_var(env, blank) };
+            let command = ignore_blank_boolean_env(Cli::command());
+            let matches = command.try_get_matches_from(["basemind"]);
+            unsafe { std::env::remove_var(env) };
+            let parsed = Cli::from_arg_matches(&matches.unwrap_or_else(|error| panic!("{env}={blank:?}: {error}")))
+                .expect("overrides")
+                .documents;
+            assert_eq!(read(&parsed), None, "{flag} with {env}={blank:?}");
+        }
+        // SAFETY: as above.
+        unsafe { std::env::set_var(env, "on") };
+        let matches = ignore_blank_boolean_env(Cli::command()).try_get_matches_from(["basemind"]);
+        unsafe { std::env::remove_var(env) };
+        let parsed = Cli::from_arg_matches(&matches.expect("a set value parses"))
+            .expect("overrides")
+            .documents;
+        assert_eq!(read(&parsed), Some(true), "a nonblank value still applies");
     }
 
     #[test]

@@ -341,7 +341,7 @@ fn run() -> Result<()> {
     basemind::alloc_tag::retag_heap_pages();
     let process_started = std::time::Instant::now();
     // ~keep Parsed by hand so `scan` can tell a flag the user typed from a default or env value.
-    let matches = Cli::command().get_matches();
+    let matches = basemind::config::overrides::ignore_blank_boolean_env(Cli::command()).get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
 
