@@ -21,6 +21,7 @@ disagree.
 | `basemind manual agents` | Messaging other agents: threads, inboxes, identity, the daemon. |
 | `basemind manual indexing` | Scanning, freshness, notices, the daemon and the cache. |
 | `basemind manual paging` | `limit`, `cursor`, token budgets and how a cut result says so. |
+| `basemind manual cli` | Read-only lookups from a script: `--root`, JSON, exit status, partial and unresolved answers. |
 | `basemind manual setup` | Onboarding, the MCP server, grammars, hooks, cache and admin commands. |
 | `basemind manual exit-codes` | What each CLI exit status means. |
 | `basemind manual environment` | The `BASEMIND_*` environment variables an operator sets. |

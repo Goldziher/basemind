@@ -66,8 +66,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   build.js`), a build output in `main`, `exports` or `types` maps back to its `src/` source, and
   `source`, `module`, `types` and Python `[project.entry-points]` are read as targets.
 - `basemind manual [topic]` prints an offline manual compiled into the binary: an index and pages
-  on code navigation, resolution, git, documents, memory, agent messaging, indexing, paging, setup,
-  exit codes, environment variables and troubleshooting. It needs no index or daemon. The pages in
+  on code navigation, resolution, git, documents, memory, agent messaging, indexing, paging, read-only
+  lookups from a script with an explicit `--root` (#333), setup, exit codes, environment variables
+  and troubleshooting. It needs no index or daemon. The pages in
   `docs/manual/` are also the source of the skills' manual sections, spliced in by
   `scripts/sync_public_skills.py --manual` and checked for drift by `plugin_manifest_smoke` (#133).
 - `[documents.dependencies]` (off by default): a full scan indexes the README, CHANGELOG and `docs/**`
