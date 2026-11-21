@@ -63,8 +63,11 @@ user did not grant.
   `BASEMIND_HTTP_ADDR` to another address. Every request presents `Authorization: Bearer <token>`,
   checked before routing. The token is drawn from the OS random source at daemon start and
   published in `<comms_dir>/http.addr`, mode `0600`. On loopback a request whose `Host` is not a
-  loopback name is refused, against DNS rebinding. Design notes: `src/comms/http_auth.rs` and
-  `src/comms/http_frontend.rs`.
+  loopback name is refused, against DNS rebinding. The front-end serves plain HTTP with no TLS: on
+  a non-loopback address the bearer token crosses the network in cleartext, and anyone on the path
+  can read it and replay it while the daemon runs. Keep the listener on loopback, or put remote
+  access behind a channel with authenticated encryption (an SSH tunnel, a VPN, a TLS proxy). Design
+  notes: `src/comms/http_auth.rs` and `src/comms/http_frontend.rs`.
 - **The HTTP `?agent=` parameter is asserted by the caller.** It sets the memory-owner key of the
   request, and only the bearer token bounds who may set it (`src/comms/http_frontend.rs`). A
   server on that path neither advertises nor serves the agent comms tools (`from_shared`,
