@@ -481,7 +481,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) {
-        let status = std::process::Command::new("git")
+        let status = crate::testing::git_command()
             .args(["-c", "user.name=t", "-c", "user.email=t@e.x"])
             .args(args)
             .current_dir(dir)

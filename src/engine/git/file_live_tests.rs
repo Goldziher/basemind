@@ -12,14 +12,8 @@ use crate::path::RelPath;
 const STEADY_RS: &str = "pub fn stable() -> u32 {\n    7\n}\n\npub fn churn() -> u32 {\n    0\n}\n";
 
 fn git_command(root: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new("git");
-    command
-        .args(args)
-        .current_dir(root)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x");
+    let mut command = crate::testing::git_command();
+    command.args(args).current_dir(root);
     command
 }
 

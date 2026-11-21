@@ -142,13 +142,9 @@ async fn find_and_list_cover_files_git_tracks_that_are_not_indexed() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     let git = |args: &[&str]| {
-        let status = std::process::Command::new("git")
+        let status = crate::testing::git_command()
             .args(args)
             .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@e.x")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@e.x")
             .status()
             .expect("git in PATH");
         assert!(status.success(), "git {args:?}");

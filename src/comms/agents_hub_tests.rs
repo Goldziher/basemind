@@ -187,6 +187,7 @@ async fn a_wait_on_one_thread_ignores_posts_to_another() {
     .await
     .expect("b reads both first posts");
 
+    let subscribed = hub.arrivals.receiver_count();
     let waiting = {
         let (hub, watched) = (Arc::clone(&hub), watched.clone());
         tokio::spawn(async move {
@@ -199,7 +200,13 @@ async fn a_wait_on_one_thread_ignores_posts_to_another() {
             .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // The waiter subscribes to the arrivals before its first read, so a post from here on lands
+    // during the wait.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while hub.arrivals.receiver_count() == subscribed {
+        assert!(std::time::Instant::now() < deadline, "the wait never started");
+        tokio::task::yield_now().await;
+    }
     hub.post(caller("a"), into(&other, "elsewhere"), &live())
         .await
         .expect("post");

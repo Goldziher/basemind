@@ -2,7 +2,6 @@
 //! walking the history, and the live walk tests a bounded span of commits per page.
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 
 use super::*;
@@ -13,7 +12,7 @@ use crate::git_history::GitHistoryIndex;
 const COMMITS: usize = 40;
 
 fn git(root: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = crate::testing::git_command()
         .args(args)
         .current_dir(root)
         .env("GIT_AUTHOR_NAME", "t")

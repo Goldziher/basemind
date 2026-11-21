@@ -34,7 +34,7 @@ struct Env {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .arg("-C")
         .arg(dir)
         .args([

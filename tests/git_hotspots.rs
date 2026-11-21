@@ -20,7 +20,7 @@ fn days_before_head(days: i64) -> i64 {
 /// Run `git args` in `root` as `email`, with the author date `authored` and the commit date
 /// `committed` (unix seconds).
 fn git_dated(root: &Path, args: &[&str], email: &str, authored: i64, committed: i64) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(root)
         .env("GIT_AUTHOR_NAME", email)
@@ -256,7 +256,7 @@ fn hotspots_rank_the_files_where_change_and_size_coincide() {
 /// Run `git args` in `root` with `stdin` piped in; its trimmed stdout.
 fn git_out(root: &Path, args: &[&str], stdin: &[u8]) -> String {
     use std::io::Write;
-    let mut child = Command::new("git")
+    let mut child = basemind::testing::git_command()
         .args(args)
         .current_dir(root)
         .stdin(std::process::Stdio::piped())

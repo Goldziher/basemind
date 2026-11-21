@@ -343,7 +343,7 @@ fn a_torn_blob_sends_its_document_to_be_extracted_again() {
 }
 
 fn git(args: &[&str], cwd: &std::path::Path) {
-    let out = std::process::Command::new("git")
+    let out = crate::testing::git_command()
         .args(args)
         .current_dir(cwd)
         .output()

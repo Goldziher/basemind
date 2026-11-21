@@ -323,7 +323,7 @@ impl Env {
 
 /// Run `git` in `repo` as the fixture's committer.
 fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(["-c", "user.name=upgrade", "-c", "user.email=upgrade@example.invalid"])
         .args(["-c", "commit.gpgsign=false"])
         .args(args)

@@ -19,13 +19,9 @@ const GAMMA: &str = "pub fn gamma() {}\n";
 
 /// `git` with a fixed author, committer and date, so a commit's sha is the same on every run.
 fn git_at(repo: &Path, date: &str, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .env("GIT_AUTHOR_DATE", date)
         .env("GIT_COMMITTER_DATE", date)
         .status()

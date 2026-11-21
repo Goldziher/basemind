@@ -42,7 +42,7 @@ impl Layout {
         for sub in ["repo", "home", "xdg", "worktrees/one"] {
             std::fs::create_dir_all(base.join(sub)).expect("mkdir");
         }
-        let status = Command::new("git")
+        let status = basemind::testing::git_command()
             .args(["init", "-q"])
             .current_dir(&repo)
             .status()

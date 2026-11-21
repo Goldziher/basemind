@@ -438,18 +438,13 @@ impl<'a> PathInterner<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
 
     use super::*;
 
     fn git(root: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
+        let out = crate::testing::git_command()
             .args(args)
             .current_dir(root)
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@e.x")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@e.x")
             .output()
             .expect("git in PATH");
         assert!(out.status.success(), "git {args:?} failed");

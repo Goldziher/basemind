@@ -11,6 +11,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use basemind::comms::singleton::{comms_socket_path, generation_dir, probe_alive};
+use basemind::scanner_hold::{TEST_HOLD_SCAN_ENV, held_marker};
 use basemind::store::{CACHE_DIR, WORKSPACES_DIR, WriterProbe, probe_writer_lock, workspace_key};
 use tempfile::TempDir;
 
@@ -63,13 +64,9 @@ impl Env {
 }
 
 fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .status()
         .expect("git in PATH");
     assert!(status.success(), "git {args:?} failed");
@@ -292,42 +289,61 @@ fn live_daemon_serves_rescan_memory_and_blocks_destructive_commands() {
     assert!(text(&blobs).contains("daemon"), "{}", text(&blobs));
 }
 
+/// Wait until a scan holding on `gate` reports it is held, failing if `child` exits first.
+fn wait_until_held(gate: &Path, child: &mut Child) {
+    let marker = held_marker(gate);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !marker.exists() {
+        if let Some(status) = child.try_wait().expect("poll") {
+            panic!("the scan exited ({status}) before it was held");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the scan was never held on {}",
+            gate.display()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn ctrl_c_during_scan_stops_cleanly_and_leaves_a_consistent_index() {
     let env = Env::new();
-    for i in 0..4000 {
+    for i in 0..200 {
         std::fs::write(
             env.root().join(format!("f{i}.rs")),
             format!("pub fn f{i}() {{ f{}() }}\n", i + 1),
         )
         .unwrap();
     }
+    let hold = tempfile::tempdir().expect("hold tempdir");
+    let gate = hold.path().join("gate");
+    std::fs::write(&gate, b"").unwrap();
     let mut scan = env
         .command(&["scan"])
-        .stdout(Stdio::piped())
+        .env(TEST_HOLD_SCAN_ENV, &gate)
+        .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("scan");
-    // The first output line is printed after the Ctrl-C handler is installed, so signalling after
-    // it exercises the clean-stop path rather than the default kill.
-    let mut stdout = scan.stdout.take().expect("piped stdout");
-    let mut first = [0u8; 1];
-    std::io::Read::read_exact(&mut stdout, &mut first).expect("scan output");
-    // Keep draining so a full pipe can never stall the scan under test.
-    std::thread::spawn(move || {
-        let _ = std::io::copy(&mut stdout, &mut std::io::sink());
-    });
-    std::thread::sleep(Duration::from_millis(500));
-    if scan.try_wait().expect("poll").is_some() {
-        return; // finished before the signal: nothing to interrupt on this machine
-    }
+    // Held mid-pass, after the Ctrl-C handler is installed: the signal lands on a running scan and
+    // exercises the clean-stop path rather than the default kill.
+    wait_until_held(&gate, &mut scan);
     // SAFETY: signalling a child PID this test spawned and still owns.
     unsafe { libc::kill(i32::try_from(scan.id()).expect("pid fits"), libc::SIGINT) };
-    let status = scan.wait().expect("wait").code();
-    assert!(
-        matches!(status, Some(0) | Some(130)),
-        "an interrupted scan exits 130, got {status:?}"
-    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = scan.try_wait().expect("poll") {
+            break status.code();
+        }
+        if Instant::now() >= deadline {
+            let _ = scan.kill();
+            let _ = scan.wait();
+            panic!("the held scan did not stop within 60s of SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(status, Some(130), "an interrupted scan exits 130");
     let rerun = env.run(&["scan", "--quiet"]);
     assert_eq!(
         code(&rerun),
@@ -335,8 +351,13 @@ fn ctrl_c_during_scan_stops_cleanly_and_leaves_a_consistent_index() {
         "the index must be usable after an interrupt: {}",
         text(&rerun)
     );
-    let files = env.run(&["--json", "code", "symbols", "f3999"]);
+    let files = env.run(&["--json", "code", "symbols", "f199"]);
     assert_eq!(code(&files), 0, "{}", text(&files));
+    assert!(
+        String::from_utf8_lossy(&files.stdout).contains("f199.rs"),
+        "{}",
+        text(&files)
+    );
 }
 
 /// `stdout` with the timings taken out: a call's own `elapsed_us` and the process's `startup_us`
@@ -460,7 +481,7 @@ fn a_view_independent_git_call_on_another_view_is_forwarded_and_answers_alike() 
         let scan = env.run(args);
         assert_eq!(code(&scan), 0, "{}", text(&scan));
     }
-    let head = Command::new("git")
+    let head = basemind::testing::git_command()
         .args(["rev-parse", "--short=7", "HEAD"])
         .current_dir(env.root())
         .output()

@@ -37,7 +37,7 @@ fn scan_source_with_free(
 }
 
 fn git(root: &std::path::Path, args: &[&str]) {
-    let status = std::process::Command::new("git")
+    let status = crate::testing::git_command()
         .args(args)
         .current_dir(root)
         .env("GIT_AUTHOR_NAME", "t")
@@ -185,7 +185,7 @@ fn a_conflicted_path_is_charged_the_stage_a_staged_scan_reads() {
     let ours = [ALPHA, GAMMA, BETA].concat();
     std::fs::write(root.join("x.rs"), &ours).expect("write ours");
     git(root, &["commit", "-qam", "ours"]);
-    let merge = std::process::Command::new("git")
+    let merge = crate::testing::git_command()
         .args(["merge", "-q", "side", "-m", "merge"])
         .current_dir(root)
         .env("GIT_AUTHOR_NAME", "t")

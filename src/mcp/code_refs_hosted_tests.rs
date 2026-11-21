@@ -40,7 +40,7 @@ async fn a_hosted_cross_file_definition_is_refused_while_the_resolve_pass_is_uns
     crate::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    let status = std::process::Command::new("git")
+    let status = crate::testing::git_command()
         .args(["init", "--quiet"])
         .current_dir(root)
         .status()

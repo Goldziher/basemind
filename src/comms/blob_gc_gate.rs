@@ -64,7 +64,7 @@ mod tests {
     fn a_hosted_rescan_waits_for_a_running_sweep() {
         crate::store::init_isolated_cache();
         let root = tempfile::tempdir().unwrap();
-        let status = std::process::Command::new("git")
+        let status = crate::testing::git_command()
             .args(["init", "--quiet"])
             .current_dir(root.path())
             .status()
@@ -102,7 +102,7 @@ mod tests {
     fn a_hosted_rescan_holds_the_gate_while_it_runs() {
         crate::store::init_isolated_cache();
         let root = tempfile::tempdir().unwrap();
-        let status = std::process::Command::new("git")
+        let status = crate::testing::git_command()
             .args(["init", "--quiet"])
             .current_dir(root.path())
             .status()

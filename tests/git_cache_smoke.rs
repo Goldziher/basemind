@@ -18,7 +18,6 @@ fn git_cache_schema_tracks_release_minor() {
 
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use basemind::git::Repo;
 use basemind::git_cache::{GIT_CACHE_DIR, GIT_CACHE_SCHEMA, GitCache};
@@ -26,13 +25,9 @@ use basemind::version::RELEASE_MINOR;
 use tempfile::TempDir;
 
 fn run(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .status()
         .expect("git in PATH");
     assert!(status.success(), "git {args:?} failed");

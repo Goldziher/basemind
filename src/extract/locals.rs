@@ -336,16 +336,23 @@ mod tests {
         );
     }
 
-    /// Parse `bytes` with `lang`'s grammar, returning the tree — or `None` when the grammar (or
-    /// its download) is unavailable in this environment, so grammar-gated tests can skip cleanly.
+    /// Parse `bytes` with `lang`'s grammar. `None` only when the grammar or its locals query is
+    /// unavailable, reported through [`crate::testing::unavailable`]; a failed or timed-out parse
+    /// fails the test.
     fn try_parse(lang: LangId, bytes: &[u8]) -> Option<Tree> {
         use crate::lang::{self, ParseOutcome};
+        let _ = lang::ensure_grammars();
         if !matches!(locals_query(lang), Ok(Some(_))) {
+            crate::testing::unavailable(
+                "BASEMIND_TEST_ALLOW_NO_GRAMMAR",
+                &format!("the {lang} grammar or its locals query is unavailable"),
+            );
             return None;
         }
         match lang::with_parser(lang, |p| lang::parse_with_default_timeout(p, bytes)) {
             Ok(ParseOutcome::Ok(tree)) => Some(tree),
-            _ => None,
+            Ok(outcome) => panic!("{lang}: the parse must succeed, got {outcome:?}"),
+            Err(err) => panic!("{lang}: the parser could not be set up: {err}"),
         }
     }
 
@@ -361,7 +368,6 @@ mod tests {
         let src = "def outer(a):\n    x = 1\n    return x + a\n";
         let bytes = src.as_bytes();
         let Some(tree) = try_parse(lang, bytes) else {
-            eprintln!("skip {lang}: grammar or locals query unavailable in this environment");
             return;
         };
         let bindings = resolve_locals(lang, &tree, bytes).expect("resolve_locals must not error");
@@ -398,7 +404,6 @@ mod tests {
         let src = "package main\n\nfunc outer(a int) int {\n\tx := 1\n\treturn x + a\n}\n";
         let bytes = src.as_bytes();
         let Some(tree) = try_parse(lang, bytes) else {
-            eprintln!("skip {lang}: grammar or locals query unavailable in this environment");
             return;
         };
         let bindings = resolve_locals(lang, &tree, bytes).expect("resolve_locals must not error");
@@ -427,7 +432,6 @@ mod tests {
         let src = "function outer(a: number): number {\n  const x = 1;\n  return x + a;\n}\n";
         let bytes = src.as_bytes();
         let Some(tree) = try_parse(lang, bytes) else {
-            eprintln!("skip {lang}: grammar or locals query unavailable in this environment");
             return;
         };
         let bindings = resolve_locals(lang, &tree, bytes).expect("resolve_locals must not error");
@@ -464,7 +468,6 @@ mod tests {
         let src = "function outer(a: number): number {\n  const x = 1;\n  return x + a;\n}\n";
         let bytes = src.as_bytes();
         let Some(tree) = try_parse(lang, bytes) else {
-            eprintln!("skip {lang}: grammar or locals query unavailable in this environment");
             return;
         };
         let bindings = resolve_locals(lang, &tree, bytes).expect("resolve_locals must not error");
@@ -489,16 +492,11 @@ mod tests {
 
     #[test]
     fn resolve_locals_binds_real_javascript() {
-        use crate::lang::{self, ParseOutcome};
         let lang = "javascript";
-        let Ok(Some(_)) = locals_query(lang) else {
-            return;
-        };
         let src = "function outer(a) {\n  let x = 1;\n  return function () { return x + a; };\n}\n";
         let bytes = src.as_bytes();
-        let tree = match lang::with_parser(lang, |p| lang::parse_with_default_timeout(p, bytes)) {
-            Ok(ParseOutcome::Ok(t)) => t,
-            _ => return,
+        let Some(tree) = try_parse(lang, bytes) else {
+            return;
         };
         let bindings = resolve_locals(lang, &tree, bytes).expect("resolve_locals must not error");
 

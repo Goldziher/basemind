@@ -252,7 +252,7 @@ fn broker_with_registry(dir: &std::path::Path) -> Broker {
 
 /// Run git in `cwd`, asserting success.
 fn git(args: &[&str], cwd: &std::path::Path) {
-    let status = std::process::Command::new("git")
+    let status = crate::testing::git_command()
         .args(args)
         .current_dir(cwd)
         .status()

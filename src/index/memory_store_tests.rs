@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 
 use fjall::{Database, KeyspaceCreateOptions};
 use serde::Serialize;
@@ -51,7 +50,7 @@ fn legacy_keyspace_exists(view_dir: &Path, keyspace: &str) -> bool {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = crate::testing::git_command()
         .current_dir(dir)
         .args(["-c", "user.name=t", "-c", "user.email=t@t"])
         .args(args)

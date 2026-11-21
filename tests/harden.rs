@@ -833,7 +833,7 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
 /// deep-history author). Best-effort: a canary that can't derive its input is simply not recorded,
 /// so a git hiccup never turns into a spurious failure.
 fn git_first_line(repo: &Path, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("git")
+    let out = basemind::testing::git_command()
         .arg("-C")
         .arg(repo)
         .args(args)
@@ -1051,7 +1051,7 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                 // `author` matches the name or the email and a row names only the author, so the
                 // check is git's: every commit whose author name or email holds the token, by full sha.
                 let token_lc = token.to_lowercase();
-                let by_token: Vec<String> = std::process::Command::new("git")
+                let by_token: Vec<String> = basemind::testing::git_command()
                     .arg("-C")
                     .arg(repo_root)
                     .args(["log", "--format=%H %an %ae"])

@@ -18,7 +18,7 @@ fn no_history() -> impl FnOnce(&Path) -> Option<crate::comms::git_history_ops::H
 /// than dropping a `basemind.toml` marker: `.git/` is invisible to the scanner, so the exact
 /// `scanned` / `updated` counts these fixtures assert stay what they were.
 fn git_init(dir: &std::path::Path) {
-    let status = std::process::Command::new("git")
+    let status = crate::testing::git_command()
         .args(["init", "--quiet"])
         .current_dir(dir)
         .status()

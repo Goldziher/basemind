@@ -76,12 +76,11 @@ fn export_error(path: &Path, error: impl std::fmt::Display) -> GitError {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
 
     use super::*;
 
     fn git(root: &Path, args: &[&str]) {
-        let status = Command::new("git")
+        let status = crate::testing::git_command()
             .args(args)
             .current_dir(root)
             .env("GIT_AUTHOR_NAME", "Test")

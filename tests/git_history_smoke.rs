@@ -7,7 +7,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use basemind::git::Repo;
 use basemind::git_history::GitHistoryIndex;
@@ -15,13 +14,9 @@ use basemind::git_history::builder::{self, RebuildOutcome};
 use basemind::git_history::fts::FtsScope;
 
 fn run(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .env("GIT_AUTHOR_DATE", "2025-01-01T00:00:00")
         .env("GIT_COMMITTER_DATE", "2025-01-01T00:00:00")
         .status()
@@ -30,7 +25,7 @@ fn run(repo: &Path, args: &[&str]) {
 }
 
 fn capture(repo: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
         .output()
@@ -280,7 +275,7 @@ fn full_history_touching(root: &Path, path: &str) -> Vec<String> {
             let parents: Vec<&str> = fields.collect();
             let from_a_parent = parents.len() > 1
                 && parents.iter().any(|parent| {
-                    Command::new("git")
+                    basemind::testing::git_command()
                         .args(["diff", "--quiet", parent, &sha, "--", path])
                         .current_dir(root)
                         .status()
@@ -308,13 +303,9 @@ fn a_merge_resolved_to_one_side_lists_both_sides_commits_and_not_the_merge() {
     run(root, &["checkout", "-q", "main"]);
     commit_file(root, "x.rs", "fn main_side() {}\n", "m1");
     let m1 = capture(root, &["rev-parse", "HEAD"]).trim().to_string();
-    let conflicted = Command::new("git")
+    let conflicted = basemind::testing::git_command()
         .args(["merge", "-q", "--no-ff", "feature", "-m", "merge"])
         .current_dir(root)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .output()
         .expect("git in PATH");
     assert!(
@@ -471,7 +462,7 @@ fn commit_authored(root: &Path, path: &str, content: &str, name: &str, email: &s
         args.push("-m");
         args.push(body);
     }
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(&args)
         .current_dir(root)
         .env("GIT_AUTHOR_NAME", name)
@@ -588,7 +579,7 @@ fn empty_index_before_sync_falls_back() {
 fn commit_authored_at(root: &Path, path: &str, content: &str, name: &str, email: &str, subject: &str, date: &str) {
     fs::write(root.join(path), content).unwrap();
     run(root, &["add", path]);
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(["commit", "-q", "-m", subject])
         .current_dir(root)
         .env("GIT_AUTHOR_NAME", name)

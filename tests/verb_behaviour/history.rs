@@ -1,7 +1,6 @@
 //! `git_log` searches: `query` is matched against the message and `author` against the author.
 
 use std::path::Path;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -13,13 +12,11 @@ use super::{
 
 /// Commit everything as `name <email>`.
 fn commit_as(root: &Path, name: &str, email: &str, message: &str) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(["commit", "-qam", message])
         .current_dir(root)
         .env("GIT_AUTHOR_NAME", name)
         .env("GIT_AUTHOR_EMAIL", email)
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .status()
         .expect("git in PATH");
     assert!(status.success(), "git commit as {name} failed");

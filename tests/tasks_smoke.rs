@@ -13,7 +13,6 @@
 //! Modeled on rmcp's own `tests/test_task.rs`, adapted to basemind's in-process serve harness.
 
 use std::path::Path;
-use std::process::Command;
 
 use rmcp::ServiceExt;
 use rmcp::model::{
@@ -24,13 +23,9 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .status()
         .expect("git in PATH");
     assert!(status.success(), "git {args:?} failed");

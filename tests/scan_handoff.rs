@@ -34,7 +34,7 @@ fn a_one_shot_scan_leaves_its_rows_in_tables() {
     let comms_dir = tempfile::tempdir().expect("comms dir");
     let repo = tempfile::tempdir().expect("repo");
     let root = repo.path();
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(["init", "-q"])
         .current_dir(root)
         .status()

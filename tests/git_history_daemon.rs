@@ -35,13 +35,9 @@ use tempfile::TempDir;
 const BODY_ONLY_TOKEN: &str = "zzqqxindexonlytoken";
 
 fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e.x")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .status()
         .expect("git in PATH");
     assert!(status.success(), "git {args:?} failed");
@@ -190,7 +186,7 @@ async fn a_live_serve_holds_no_git_history_lock_so_the_daemon_can_build() {
         head.as_deref(),
         Some(
             String::from_utf8_lossy(
-                &Command::new("git")
+                &basemind::testing::git_command()
                     .args(["rev-parse", "HEAD"])
                     .current_dir(root)
                     .output()

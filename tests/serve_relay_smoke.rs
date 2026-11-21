@@ -12,7 +12,6 @@
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
 use std::path::Path;
-use std::process::Command;
 
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
@@ -21,7 +20,7 @@ use serde_json::Value;
 use tokio::process::Command as AsyncCommand;
 
 fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
         .status()

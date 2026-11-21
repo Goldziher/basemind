@@ -3,7 +3,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use basemind::git::{BlameResult, ChangeKind, Repo};
 use basemind::git_cache::{GIT_CACHE_DIR, GitCache};
@@ -13,7 +12,7 @@ use basemind::path::RelPath;
 use tempfile::TempDir;
 
 fn run(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
         .env("GIT_AUTHOR_NAME", "t")
@@ -165,7 +164,7 @@ fn a_history_index_built_while_shallow_is_rebuilt_once_the_clone_is_unshallowed(
 /// walk by commit time has one order.
 fn commit_on(root: &Path, day: u32, message: &str) {
     let date = format!("2025-01-{day:02}T00:00:00");
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(["commit", "-qam", message])
         .current_dir(root)
         .env("GIT_AUTHOR_NAME", "t")
@@ -284,7 +283,7 @@ fn a_history_index_is_rebuilt_when_a_boundary_other_than_the_root_is_deepened() 
     step("a1.rs", 4, "A1");
     step("a2.rs", 5, "A2");
     let date = "2025-01-06T00:00:00";
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(["merge", "-q", "--no-ff", "-m", "M", "side"])
         .current_dir(&upstream)
         .env("GIT_AUTHOR_NAME", "t")

@@ -163,16 +163,16 @@ mod tests {
 
     #[test]
     fn resolve_via_locals_emits_real_spans() {
+        let _ = crate::lang::ensure_grammars();
         if !matches!(crate::extract::locals::locals_query("python"), Ok(Some(_))) {
-            eprintln!("skip: python locals query unavailable in this environment");
+            crate::testing::unavailable(
+                "BASEMIND_TEST_ALLOW_NO_GRAMMAR",
+                "the python grammar or its locals query is unavailable",
+            );
             return;
         }
         let src = b"def outer(a):\n    count = 1\n    return count + a\n";
         let refs = resolve_via_locals("python", src);
-        if refs.intra.is_empty() {
-            eprintln!("skip: python grammar unavailable — no intra edges");
-            return;
-        }
         assert!(
             refs.intra
                 .iter()

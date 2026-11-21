@@ -249,7 +249,7 @@ fn the_longest_function_is_measured_in_lines_from_its_byte_span() {
 }
 
 fn git(root: &std::path::Path, args: &[&str]) {
-    let status = std::process::Command::new("git")
+    let status = crate::testing::git_command()
         .args(args)
         .current_dir(root)
         .env("GIT_AUTHOR_NAME", "t")

@@ -317,7 +317,7 @@ mod tests {
     }
 
     fn git(root: &Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
+        let output = crate::testing::git_command()
             .current_dir(root)
             .env("GIT_AUTHOR_NAME", "Test")
             .env("GIT_AUTHOR_EMAIL", "test@example.test")
