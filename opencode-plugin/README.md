@@ -4,51 +4,41 @@ OpenCode and Pi package for [basemind](https://github.com/Goldziher/basemind) â€
 
 ## Install
 
-Add to your `opencode.json` (global or project-level):
-
-```json
-{
-  "plugins": ["basemind-opencode@latest"]
-}
-```
-
-Restart OpenCode. You also need the `basemind` binary on your `PATH`:
+Both runtimes need the `basemind` program on your `PATH`; see
+[Install the program](https://github.com/Goldziher/basemind#install-the-program):
 
 ```bash
-pnpm add -g basemind        # or: pip install basemind / cargo install basemind
+pnpm add -g basemind        # or: brew install Goldziher/tap/basemind / pip install basemind
 ```
 
-Then scan your repo once before starting OpenCode:
+A plain `cargo install basemind` lacks `basemind serve`; build with
+`cargo install basemind --features full --locked` instead.
+
+### OpenCode
+
+Add to `opencode.json` (project) or `~/.config/opencode/opencode.json` (global):
+
+```json
+{ "plugins": ["basemind-opencode@latest"] }
+```
+
+Restart OpenCode, then scan your repo once:
 
 ```bash
 cd /path/to/your/repo
 basemind scan
 ```
 
-## Pi
-
-The next release adds Pi resources to this existing npm package. Install the
-`basemind` binary first, then run `pi install npm:basemind-opencode` after that
-release. Git installation is also available:
+### Pi
 
 ```sh
-pi install git:github.com/Goldziher/basemind
+pi install npm:basemind-opencode
 ```
 
-Pi loads ten skills and a native extension that injects basemind context at
-session start and after compaction. It uses the CLI through its shell tool;
-no MCP bridge or binary is bundled. OpenCode continues using the existing
-JavaScript and terminal adapters below.
-
-## Package maintenance
-
-`scripts/sync-plugin-skills.sh` mirrors the canonical `.pi/extensions/basemind.ts`
-and product skills into this package. `mise run package:plugin` stages the combined
-package from canonical sources and runs a real pnpm pack without changing the
-checkout. The existing `publish_opencode` job checks the ten skills, native Pi
-extension, and both OpenCode adapters before publishing the packed archive.
-The existing package name, version bump, and npm trusted publisher are shared;
-Pi does not require another registry package.
+`pi install git:github.com/Goldziher/basemind` installs the same resources from the repository.
+Add `-l` to save the package in the current project's configuration. Pi loads ten skills and a
+native extension that injects basemind context at session start and after compaction. It uses the
+CLI through its shell tool; no MCP bridge or binary is bundled.
 
 ## What OpenCode registers
 

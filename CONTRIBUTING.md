@@ -96,6 +96,36 @@ brand-new Fjall keyspace whose absence reads as "nothing known" needs no bump. W
 component, follow the checklist in [`docs/UPGRADING.md`](docs/UPGRADING.md) (blob suffixes, cache
 clear/stats, `tests/upgrade_from_release.rs`).
 
+## Plugin and packages
+
+Product sources live in `plugin/.ai-rulez/`; root `.ai-rulez/` governs development. Runtime manifests,
+packages, marketplace indexes, and skill mirrors are generated from these sources: regenerate with
+`mise run plugin:generate` and verify with `mise run plugin:verify` before submitting changes, and
+never edit generated runtime files directly. A skill section between `<!-- manual:<topic> -->` markers
+is spliced from `docs/manual/<topic>.md`, so edit the manual page, not the skill. `plugin:generate`
+runs `ai-rulez` from `PATH` (`npm install -g ai-rulez`), or the executable `AI_RULEZ` names. Gemini
+context lives at `plugin/assets/GEMINI.md`.
+Run `mise run plugin:hermes:native:test` with `HERMES_PYTHON` pointing to the Hermes SDK interpreter
+to test the Hermes plugin against Hermes itself.
+
+`mise run plugin:generate` also mirrors the canonical `.pi/extensions/basemind.ts` and the
+product skills into `opencode-plugin/`. `mise run package:plugin` stages the combined package from
+canonical sources and runs a real pnpm pack without changing the checkout. The `publish_opencode`
+job checks the ten skills, the Pi extension and both OpenCode adapters before publishing the packed
+archive; Pi needs no separate registry package.
+
+Publishing verifies the packed npm archive, the Hermes wheel and the all-runtime archive before
+checking whether a version already exists. The manual artifact workflow packages the selected
+checkout only when its core and plugin versions match the requested existing release tag.
+Marketplace indexes pin that checkout's immutable commit; the archive attaches to the requested
+release. It does not create a product tag or publish registry packages.
+
+A new registry package needs a first manual publish and a trusted publisher. For the npm agent
+package `@goldziher/basemind-plugin`, configure it with
+`npm trust github @goldziher/basemind-plugin --repo Goldziher/basemind --file publish.yaml --allow-publish`;
+without it the OIDC token exchange returns 404 and the publish fails. Hermes publishing needs its
+PyPI trusted publisher. Configure those account settings before requesting a release.
+
 ## Changelog
 
 User-visible changes get an entry under `## [Unreleased]` in `CHANGELOG.md`, grouped under `### Added`,
