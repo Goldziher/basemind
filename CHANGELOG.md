@@ -140,6 +140,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- The OpenCode plugin checks the `basemind` binary on `PATH` at startup (#240): with none, or one
+  that cannot report its version within 5 seconds, it skips the MCP server; with one from another
+  minor version it warns. Either way OpenCode shows one message naming the install command
+  (`pnpm add -g basemind@<version>`, or `pip install basemind==<version>`).
 
 ### Changed
 
