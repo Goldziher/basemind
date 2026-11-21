@@ -54,7 +54,6 @@ pub mod keys;
 mod maintenance;
 pub mod proto;
 pub mod reader;
-
 use std::path::{Path, PathBuf};
 
 use fjall::config::CompressionPolicy;

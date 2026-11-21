@@ -2938,12 +2938,6 @@ async fn code_and_index_tools_reject_inexact_arguments() {
         "a missing required field must be named: {message}"
     );
 
-    let message = refused(&service, "code_grep", json!({ "pattern": "x", "path": "*.rs" })).await;
-    assert!(
-        message.contains("`path` is a substring") && message.contains("not a glob"),
-        "a glob passed as `path` must be refused, not matched against nothing: {message}"
-    );
-
     let message = refused(&service, "code_read", json!({ "path": "a.rs" })).await;
     assert!(
         message.contains("neither `symbol` nor `line` was given") && message.contains("pass {path, symbol}"),

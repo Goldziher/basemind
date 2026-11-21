@@ -392,8 +392,8 @@ async fn grep_is_literal_unless_regex_is_set() {
 
     let glob: CodeGrepParams =
         parse_args(serde_json::json!({ "pattern": "cache_root", "path": "*.rs" })).expect("valid arguments");
-    let not_a_glob = text_of(&into_tool_result(server.code_grep_call(glob).await));
-    assert!(not_a_glob.contains("not a glob"), "{not_a_glob}");
+    let globbed = json_of(&server.code_grep_call(glob).await.expect("a path with `*` is a glob"));
+    assert!(grep_rows(&globbed) > 0, "a path with `*` matches as a glob: {globbed}");
 }
 
 /// Matching lines in a `code_grep` answer: its rows under every file and symbol, less context rows.
