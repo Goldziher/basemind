@@ -35,6 +35,28 @@ fn keyword_seeds(store: &Store, query: &str) -> Vec<CodeSearchHit> {
         .collect()
 }
 
+fn read_only_workspace(store: Store, root: &Path) -> Workspace {
+    use std::sync::Arc;
+
+    Workspace::new(
+        store,
+        root.to_path_buf(),
+        Arc::new(crate::config::Config::with_defaults()),
+        None,
+        Arc::new(crate::git_cache::GitCache::open(root, 1, false).unwrap()),
+        None,
+        crate::engine::workspace::OpenOptions {
+            background: false,
+            read_only: true,
+            forwards_writes: false,
+            lazy_cache: false,
+            history_sync: None,
+            #[cfg(feature = "memory")]
+            memory_owner: |_| "owner".to_string(),
+        },
+    )
+}
+
 #[test]
 fn a_renamed_file_is_cited_at_its_new_path() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -43,7 +65,7 @@ fn a_renamed_file_is_cited_at_its_new_path() {
     std::fs::rename(dir.path().join("old.rs"), dir.path().join("new.rs")).unwrap();
     let store = scanned(dir.path());
 
-    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0);
+    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0, &|| false).expect("hydrated");
 
     assert!(!hydrated.hits.is_empty(), "the keyword lane finds the chunk");
     for hit in &hydrated.hits {
@@ -65,7 +87,7 @@ fn identical_files_are_one_hit_listing_every_path() {
     let distinct = seeds.len();
     // A vector lane holds one row per path, so the same id can be ranked more than once.
     let doubled: Vec<CodeSearchHit> = seeds.iter().flat_map(|s| [s.clone(), s.clone()]).collect();
-    let hydrated = hydrate_hits(&store, doubled, 10, 10);
+    let hydrated = hydrate_hits(&store, doubled, 10, 10, &|| false).expect("hydrated");
 
     assert_eq!(hydrated.hits.len(), distinct, "one hit per chunk, not per copy");
     let top = &hydrated.hits[0];
@@ -86,7 +108,7 @@ fn a_chunk_no_file_holds_is_dropped_and_counted() {
     let mut seeds = vec![seed("00ff:0".to_string())];
     seeds.extend(keyword_seeds(&store, "retry upload"));
 
-    let hydrated = hydrate_hits(&store, seeds, 10, 0);
+    let hydrated = hydrate_hits(&store, seeds, 10, 0, &|| false).expect("hydrated");
 
     assert_eq!(hydrated.omitted, 1);
     assert!(hydrated.hits.iter().all(|h| h.path == "a.rs"));
@@ -122,7 +144,7 @@ fn a_prose_query_reaches_camel_case_identifiers() {
     .unwrap();
     let store = scanned(dir.path());
 
-    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "find references"), 10, 0);
+    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "find references"), 10, 0, &|| false).expect("hydrated");
 
     assert!(
         hydrated
@@ -173,31 +195,13 @@ fn common_terms_are_skipped_and_candidates_are_bounded() {
 /// as busy (the adapter marks it so the CLI exits `3`), instead of an internal error.
 #[test]
 fn the_keyword_lane_without_an_index_is_refused_with_the_fix() {
-    use std::sync::Arc;
-
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     std::fs::write(root.join("lib.rs"), BODY).unwrap();
     drop(scanned(root));
     let store = Store::open_read_only_no_index(root, crate::store::VIEW_WORKING).expect("index-less store");
     assert!(!store.rescan_owed(), "the scanned index owes no rebuild");
-    let ws = Workspace::new(
-        store,
-        root.to_path_buf(),
-        Arc::new(crate::config::Config::with_defaults()),
-        None,
-        Arc::new(crate::git_cache::GitCache::open(root, 1, false).unwrap()),
-        None,
-        crate::engine::workspace::OpenOptions {
-            background: false,
-            read_only: true,
-            forwards_writes: false,
-            lazy_cache: false,
-            history_sync: None,
-            #[cfg(feature = "memory")]
-            memory_owner: |_| "owner".to_string(),
-        },
-    );
+    let ws = read_only_workspace(store, root);
 
     let refused =
         keyword_hits(&ws, "retry upload", 5).expect_err("a session with no index cannot run the keyword lane");
@@ -256,4 +260,63 @@ fn a_ranking_without_the_lane_the_config_turned_off_is_kept() {
     let mut empty = ranking(Vec::new());
     empty.hits.clear();
     assert!(!is_cacheable(&empty));
+}
+
+/// Hydration stops at its next check once the call is cancelled: it reads sidecars on a blocking
+/// thread that abandoning the call does not stop.
+#[test]
+fn hydration_stops_at_the_next_check_once_cancelled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("a.rs"), BODY).unwrap();
+    let store = scanned(dir.path());
+    let first = keyword_seeds(&store, "retry upload").remove(0);
+    let seeds: Vec<CodeSearchHit> = (0..HYDRATE_CANCEL_EVERY + 1)
+        .map(|_| seed(first.chunk_id.clone()))
+        .collect();
+
+    let live = hydrate_hits(&store, seeds.clone(), 50, 0, &|| false).expect("hydrated");
+    assert_eq!(live.hits.len(), 1, "copies of one chunk are one hit");
+
+    let checks = std::cell::Cell::new(0);
+    let cancelled = || {
+        checks.set(checks.get() + 1);
+        checks.get() > 1
+    };
+    let outcome = hydrate_hits(&store, seeds, 50, 0, &cancelled);
+    assert!(matches!(outcome, Err(EngineError::Cancelled)));
+    assert_eq!(
+        checks.get(),
+        2,
+        "checked at the first seed and again after {HYDRATE_CANCEL_EVERY}"
+    );
+}
+
+/// A hybrid search cancelled while its keyword lane runs stops before the exact lane: both read
+/// the index on a blocking thread that abandoning the call does not stop.
+#[test]
+fn the_hybrid_lanes_stop_before_the_exact_lane_once_cancelled() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("lib.rs"), BODY).unwrap();
+    let ws = read_only_workspace(scanned(root), root);
+
+    let (hits, report) = hybrid_hits(&ws, "retry_upload", 5, &|| false).expect("ranked");
+    assert_eq!(report.ran, vec!["keyword", "exact"]);
+    assert!(
+        hits.iter().any(|hit| hit.exact_rank == Some(1)),
+        "the exact lane matched"
+    );
+
+    let checks = std::cell::Cell::new(0);
+    let cancelled = || {
+        checks.set(checks.get() + 1);
+        checks.get() > 1
+    };
+    let outcome = hybrid_hits(&ws, "retry_upload", 5, &cancelled);
+    assert!(matches!(outcome, Err(EngineError::Cancelled)));
+    assert_eq!(
+        checks.get(),
+        2,
+        "checked before the keyword lane and again before the exact lane"
+    );
 }

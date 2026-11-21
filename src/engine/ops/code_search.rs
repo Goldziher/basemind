@@ -14,7 +14,7 @@ use crate::engine::workspace::Workspace;
 #[cfg(not(feature = "code-search"))]
 impl Workspace {
     /// `code_search` in a build without the retrieval stack.
-    pub(crate) fn code_search(&self, _p: CodeSearchParams) -> Result<(), EngineError> {
+    pub(crate) fn code_search(&self, _p: CodeSearchParams, _cancelled: &dyn Fn() -> bool) -> Result<(), EngineError> {
         Err(EngineError::feature_missing("code_search", "code-search"))
     }
 
@@ -37,8 +37,13 @@ mod enabled {
 
     impl Workspace {
         /// `code_search`: the ranking of the query (computed once per index generation and kept),
-        /// and the page of it the cursor points at.
-        pub(crate) fn code_search(&self, p: CodeSearchParams) -> Result<CodeSearchPage, EngineError> {
+        /// and the page of it the cursor points at. Stops with [`EngineError::Cancelled`] once
+        /// `cancelled` says so: between the lanes, while hits are hydrated and before the rerank.
+        pub(crate) fn code_search(
+            &self,
+            p: CodeSearchParams,
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<CodeSearchPage, EngineError> {
             let started = std::time::Instant::now();
             let generation = self.index_generation.load(Ordering::Relaxed);
             let offset = ranked_offset("code_search", p.cursor.as_ref(), generation)?;
@@ -49,7 +54,15 @@ mod enabled {
                 "code_search",
                 &arguments,
                 generation,
-                || crate::engine::code_search::retrieve(self, p.query, p.lane.as_deref(), RANKED_FETCH as usize),
+                || {
+                    crate::engine::code_search::retrieve(
+                        self,
+                        p.query,
+                        p.lane.as_deref(),
+                        RANKED_FETCH as usize,
+                        cancelled,
+                    )
+                },
                 crate::engine::code_search::is_cacheable,
             )?;
             let mut ranking = ranking;

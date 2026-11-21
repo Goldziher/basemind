@@ -26,9 +26,22 @@ use super::types_tools::{
 use crate::engine::Workspace;
 
 tokio::task_local! {
-    /// The cancellation token of the MCP `code_grep` call running on this task. The sweep runs on
-    /// rayon threads that aborting the tool's task does not stop, so it checks the token per file.
-    static GREP_CANCEL: tokio_util::sync::CancellationToken;
+    /// The cancellation token of the MCP read (`code_grep`, `code_search`, `docs_search`) running on
+    /// this task. Its body runs on blocking or rayon threads that aborting the tool's task does not
+    /// stop, so its long loops check the token ([`read_cancel_check`]).
+    pub(super) static READ_CANCEL: tokio_util::sync::CancellationToken;
+}
+
+/// Whether the MCP read running on this task was cancelled, as a check its body can make from any
+/// thread. Read in the call's task, before the body moves to a blocking thread; never true outside
+/// an MCP read (the `basemind` command running the same body).
+pub(super) fn read_cancel_check() -> impl Fn() -> bool + Send + Sync + 'static {
+    let cancel = READ_CANCEL.try_with(Clone::clone).ok();
+    move || {
+        cancel
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+    }
 }
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_core")]
@@ -120,7 +133,7 @@ impl BasemindServer {
         Parameters(args): Parameters<Strict<CodeGrepParams>>,
         ctx: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        GREP_CANCEL
+        READ_CANCEL
             .scope(ctx.ct, self.answer(args, |p| self.code_grep_call(p)))
             .await
     }
@@ -142,8 +155,11 @@ impl BasemindServer {
     pub(crate) async fn code_search(
         &self,
         Parameters(args): Parameters<Strict<CodeSearchParams>>,
+        ctx: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        self.answer(args, |p| self.code_search_call(p)).await
+        READ_CANCEL
+            .scope(ctx.ct, self.answer(args, |p| self.code_search_call(p)))
+            .await
     }
 
     #[tool(
@@ -246,22 +262,18 @@ impl BasemindServer {
     }
 
     /// Body of the `code_grep` tool: [`Workspace::code_grep`], stopped when the MCP request running
-    /// it is cancelled ([`GREP_CANCEL`]).
+    /// it is cancelled ([`READ_CANCEL`]).
     pub(crate) async fn code_grep_call(&self, p: CodeGrepParams) -> Result<CallToolResult, McpError> {
-        let cancel = GREP_CANCEL.try_with(Clone::clone).ok();
-        self.op(p, move |ws: &Workspace, p| {
-            ws.code_grep_until(p, &|| {
-                cancel
-                    .as_ref()
-                    .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
-            })
-        })
-        .await
+        let cancelled = read_cancel_check();
+        self.op(p, move |ws: &Workspace, p| ws.code_grep_until(p, &cancelled))
+            .await
     }
 
-    /// Body of the `code_search` tool.
+    /// Body of the `code_search` tool, stopped when the MCP request running it is cancelled
+    /// ([`READ_CANCEL`]).
     pub(crate) async fn code_search_call(&self, p: CodeSearchParams) -> Result<CallToolResult, McpError> {
-        self.op(p, Workspace::code_search).await
+        let cancelled = read_cancel_check();
+        self.op(p, move |ws: &Workspace, p| ws.code_search(p, &cancelled)).await
     }
 
     /// Body of the `code_refs` tool.

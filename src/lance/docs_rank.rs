@@ -51,6 +51,8 @@ pub enum DocsSearchError {
     NoLane(String),
     /// The store failed.
     Store(String),
+    /// The caller stopped the search ([`rank_until`]).
+    Cancelled,
 }
 
 impl std::fmt::Display for DocsSearchError {
@@ -59,6 +61,7 @@ impl std::fmt::Display for DocsSearchError {
             Self::InvalidArgument(text) | Self::Unsupported(text) | Self::NoLane(text) | Self::Store(text) => {
                 f.write_str(text)
             }
+            Self::Cancelled => f.write_str("the search was cancelled"),
         }
     }
 }
@@ -194,6 +197,26 @@ pub struct RankInputs<'a> {
 
 /// Rank the chunks of the live documents for `query` under `filters`.
 pub fn rank(query: &str, filters: &Filters, inputs: RankInputs<'_>) -> Result<DocsRanking, DocsSearchError> {
+    rank_until(query, filters, inputs, &|| false)
+}
+
+/// [`rank`] that stops with [`DocsSearchError::Cancelled`] once `cancelled` says so, checked before
+/// each lane, each widening fetch and the rerank: the caller's thread is a blocking one that
+/// abandoning the call does not stop.
+pub fn rank_until(
+    query: &str,
+    filters: &Filters,
+    inputs: RankInputs<'_>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<DocsRanking, DocsSearchError> {
+    let stop = || {
+        if cancelled() {
+            Err(DocsSearchError::Cancelled)
+        } else {
+            Ok(())
+        }
+    };
+    stop()?;
     let mut ranking = DocsRanking {
         query: query.to_string(),
         ..DocsRanking::default()
@@ -240,8 +263,11 @@ pub fn rank(query: &str, filters: &Filters, inputs: RankInputs<'_>) -> Result<Do
         }),
     };
 
-    let vector = vector_lane(store, query, &predicate, &allowed, caps, inputs.embed);
-    let lexical = lexical_lane(store, query, &predicate, &allowed, caps);
+    stop()?;
+    let vector = vector_lane(store, query, &predicate, &allowed, caps, inputs.embed, cancelled);
+    stop()?;
+    let lexical = lexical_lane(store, query, &predicate, &allowed, caps, cancelled);
+    stop()?;
     let mut lanes: Vec<(&'static str, Vec<DocChunkHit>)> = Vec::new();
     for (name, outcome) in [(LANE_VECTOR, vector), (LANE_LEXICAL, lexical)] {
         match outcome {
@@ -256,7 +282,8 @@ pub fn rank(query: &str, filters: &Filters, inputs: RankInputs<'_>) -> Result<Do
                 }
                 lanes.push((name, lane.hits));
             }
-            Err(reason) => ranking.lanes_unavailable.push(DocLaneUnavailable {
+            Err(LaneError::Cancelled) => return Err(DocsSearchError::Cancelled),
+            Err(LaneError::Failed(reason)) => ranking.lanes_unavailable.push(DocLaneUnavailable {
                 lane: name.to_string(),
                 reason,
             }),
@@ -275,9 +302,24 @@ pub fn rank(query: &str, filters: &Filters, inputs: RankInputs<'_>) -> Result<Do
     }
     ranking.hits = fuse(&lanes, &live);
     if let Some(settings) = &inputs.rerank {
+        stop()?;
         rerank(query, settings, &mut ranking);
     }
     Ok(ranking)
+}
+
+/// Why a lane gave no ranking: it could not run (the reason is reported on the ranking), or the
+/// caller stopped the search.
+#[derive(Debug, PartialEq, Eq)]
+enum LaneError {
+    Failed(String),
+    Cancelled,
+}
+
+impl From<String> for LaneError {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
 }
 
 /// A lane's ranking: its hits, whether it ran fuzzy, and whether the liveness projection gave up
@@ -295,10 +337,13 @@ fn vector_lane(
     allowed: &AHashSet<String>,
     caps: StoreCapabilities,
     embed: Result<QueryEmbedder<'_>, String>,
-) -> Result<Lane, String> {
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Lane, LaneError> {
     let embed = embed?;
     if caps.vectors == 0 {
-        return Err("no document has a vector yet: the documents were not embedded".to_string());
+        return Err("no document has a vector yet: the documents were not embedded"
+            .to_string()
+            .into());
     }
     let embedding = embed(query).map_err(|error| format!("the embedding model could not run: {error}"))?;
     if embedding.len() != usize::from(store.dim()) {
@@ -306,15 +351,17 @@ fn vector_lane(
             "the query vector has {} dimensions, the store {}",
             embedding.len(),
             store.dim()
-        ));
+        )
+        .into());
     }
-    project(predicate, allowed, |k| store.nearest(&embedding, predicate, k))
-        .map(|(hits, capped)| Lane {
-            hits,
-            fuzzy: false,
-            capped,
-        })
-        .map_err(|error| format!("{error:#}"))
+    let (hits, capped) = project(predicate, allowed, cancelled, |k| {
+        store.nearest(&embedding, predicate, k)
+    })?;
+    Ok(Lane {
+        hits,
+        fuzzy: false,
+        capped,
+    })
 }
 
 fn lexical_lane(
@@ -323,14 +370,18 @@ fn lexical_lane(
     predicate: &DocPredicate,
     allowed: &AHashSet<String>,
     caps: StoreCapabilities,
-) -> Result<Lane, String> {
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Lane, LaneError> {
     if !caps.lexical {
         return Err(
-            "the full-text index is not built yet; the scan that wrote the rows builds it as it ends".to_string(),
+            "the full-text index is not built yet; the scan that wrote the rows builds it as it ends"
+                .to_string()
+                .into(),
         );
     }
-    let (hits, capped) = project(predicate, allowed, |k| store.lexical(query, predicate, k, false))
-        .map_err(|error| format!("{error:#}"))?;
+    let (hits, capped) = project(predicate, allowed, cancelled, |k| {
+        store.lexical(query, predicate, k, false)
+    })?;
     if hits.len() >= LEXICAL_FUZZY_BELOW {
         return Ok(Lane {
             hits,
@@ -338,7 +389,9 @@ fn lexical_lane(
             capped,
         });
     }
-    match project(predicate, allowed, |k| store.lexical(query, predicate, k, true)) {
+    match project(predicate, allowed, cancelled, |k| {
+        store.lexical(query, predicate, k, true)
+    }) {
         // The fuzzy query matches unstemmed terms, so it can find fewer chunks than the exact one
         // (`reconciled` is indexed as `reconcil`, two edits away); it only ever widens the answer.
         Ok((fuzzy_hits, fuzzy_capped)) if fuzzy_hits.len() > hits.len() => Ok(Lane {
@@ -351,7 +404,8 @@ fn lexical_lane(
             fuzzy: false,
             capped,
         }),
-        Err(error) => {
+        Err(LaneError::Cancelled) => Err(LaneError::Cancelled),
+        Err(LaneError::Failed(error)) => {
             tracing::debug!(%error, "docs_search: the fuzzy lexical rerun failed; keeping the exact hits");
             Ok(Lane {
                 hits,
@@ -369,14 +423,21 @@ fn lexical_lane(
 fn project(
     predicate: &DocPredicate,
     allowed: &AHashSet<String>,
+    cancelled: &dyn Fn() -> bool,
     mut search: impl FnMut(usize) -> anyhow::Result<Vec<DocChunkHit>>,
-) -> anyhow::Result<(Vec<DocChunkHit>, bool)> {
+) -> Result<(Vec<DocChunkHit>, bool), LaneError> {
+    let mut fetch_checked = |k: usize| {
+        if cancelled() {
+            return Err(LaneError::Cancelled);
+        }
+        search(k).map_err(|error| LaneError::Failed(format!("{error:#}")))
+    };
     if predicate.keys.is_some() {
-        return Ok((search(LANE_CANDIDATES)?, false));
+        return Ok((fetch_checked(LANE_CANDIDATES)?, false));
     }
     let mut fetch = (LANE_CANDIDATES * 3).max(LANE_CANDIDATES + 64);
     loop {
-        let found = search(fetch)?;
+        let found = fetch_checked(fetch)?;
         let exhausted = found.len() < fetch;
         let mut kept: Vec<DocChunkHit> = found.into_iter().filter(|hit| allowed.contains(&hit.doc_key)).collect();
         if kept.len() >= LANE_CANDIDATES || exhausted {

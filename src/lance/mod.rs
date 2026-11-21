@@ -344,6 +344,43 @@ impl LanceStore {
         Self::connect(dir, dim, &model, &[], session::shared())
     }
 
+    /// Make this store, opened by [`Self::open_existing`], one a writer can use: create those of
+    /// `tables` it lacks, on its own connection and runtime, under the same lock and checks as
+    /// [`Self::open`]. `Ok(false)`, creating nothing, when the directory's `meta.json` no longer
+    /// names this store's dimension, model and schema (it was wiped or rebuilt since): the caller
+    /// opens it again.
+    ///
+    /// A writer must not open a second store on a directory this process already reads through
+    /// another. Lance keeps a loaded index in the process's session with the IO loop of the runtime
+    /// that loaded it, and a store's current-thread runtime drives that loop only inside its own
+    /// `block_on`; once the first store stops being used, or is dropped and shuts its runtime down,
+    /// a read of the cached index through the second store (a posting list for a query term not read
+    /// yet) waits on a loop nobody runs, for ever.
+    #[cfg(feature = "documents")]
+    pub(crate) fn adopt_tables(&self, tables: &[(&str, lancedb::arrow::arrow_schema::SchemaRef)]) -> Result<bool> {
+        let dir = self.dir();
+        let _opening = lock_open(dir, OPEN_LOCK_WAIT)?;
+        let expected = LanceMeta {
+            dim: self.inner.dim,
+            embedding_model: self.inner.embedding_model.clone(),
+            schema_ver: VECTOR_STORE_VER,
+        };
+        let current = std::fs::read(dir.join(META_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<LanceMeta>(&bytes).ok());
+        if current.as_ref() != Some(&expected) {
+            return Ok(false);
+        }
+        ensure_store_id(dir)?;
+        self.inner.rt().block_on(async {
+            for (name, schema) in tables {
+                ensure_table(&self.inner.connection, name, schema.clone()).await?;
+            }
+            anyhow::Ok(())
+        })?;
+        Ok(true)
+    }
+
     /// Connect to the store at `dir` of model `model_key` through `session` (its caches), creating
     /// those of `tables` it lacks.
     fn connect(

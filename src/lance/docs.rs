@@ -202,16 +202,16 @@ fn handles() -> &'static std::sync::Mutex<AHashMap<PathBuf, DocStore>> {
     HANDLES.get_or_init(Default::default)
 }
 
+/// The store's two tables at `dim`.
+fn tables(dim: u16) -> [(&'static str, lancedb::arrow::arrow_schema::SchemaRef); 2] {
+    [(DOC_CHUNKS_TABLE, doc_chunks_schema(dim)), (DOCS_TABLE, docs_schema())]
+}
+
 impl DocStore {
     /// Open (or create) the store at `dir` for vectors of `model` at `dim`. A store of another
     /// model, dimension or table version is wiped; one of a newer version is refused.
     pub fn open(dir: &Path, dim: u16, model: &str) -> Result<Self> {
-        let lance = LanceStore::open_tables(
-            dir,
-            dim,
-            model,
-            &[(DOC_CHUNKS_TABLE, doc_chunks_schema(dim)), (DOCS_TABLE, docs_schema())],
-        )?;
+        let lance = LanceStore::open_tables(dir, dim, model, &tables(dim))?;
         Ok(Self {
             lance,
             gate: sweep_gate(dir),
@@ -220,17 +220,27 @@ impl DocStore {
     }
 
     /// The process's handle on the store at `dir`, opening it on first use. A scan and a search in
-    /// one process share it. A handle whose directory was removed since is dropped and the store
-    /// opened again.
+    /// one process share it: a handle a search opened ([`Self::shared_existing`]) is adopted, never
+    /// opened beside ([`LanceStore::adopt_tables`]). A handle whose directory was removed or rebuilt
+    /// since is dropped and the store opened again.
     pub fn shared(dir: &Path, dim: u16, model: &str) -> Result<Self> {
         let mut handles = handles().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(store) = handles.get(dir)
-            && store.created
             && store.dim() == dim
             && store.lance.embedding_model() == crate::embeddings::model_key(model)
             && dir.join(super::META_FILE).exists()
         {
-            return Ok(store.clone());
+            if store.created {
+                return Ok(store.clone());
+            }
+            if store.lance.adopt_tables(&tables(dim))? {
+                let adopted = Self {
+                    created: true,
+                    ..store.clone()
+                };
+                handles.insert(dir.to_path_buf(), adopted.clone());
+                return Ok(adopted);
+            }
         }
         let store = Self::open(dir, dim, model)?;
         handles.insert(dir.to_path_buf(), store.clone());
