@@ -457,7 +457,7 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
         .name("basemind-mcp-view-watcher".to_string())
         .spawn(move || {
             use notify::RecommendedWatcher;
-            use notify_debouncer_full::{DebounceEventResult, NoCache, new_debouncer_opt};
+            use notify_debouncer_full::{Config as DebounceConfig, DebounceEventResult, NoCache, new_debouncer_opt};
             use std::sync::atomic::{AtomicBool, Ordering};
             // Bound before `state`, so it drops after it on every return. ~keep
             let _exit = exit;
@@ -480,11 +480,11 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
             // ~keep NoCache, not the default FileIdMap — see src/watcher.rs (issue #43). We only
             // ~keep compare event paths to `target`, so the FileId rename cache is dead weight here.
             let mut debouncer = match new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
-                VIEW_WATCHER_DEBOUNCE,
-                None,
+                DebounceConfig::default()
+                    .with_timeout(VIEW_WATCHER_DEBOUNCE)
+                    .with_notify_config(notify::Config::default()),
                 handler,
                 NoCache::new(),
-                notify::Config::default(),
             ) {
                 Ok(d) => d,
                 Err(e) => {

@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use notify::event::ModifyKind;
 use notify::{Config as NotifyConfig, EventKind, RecommendedWatcher, RecursiveMode};
-use notify_debouncer_full::{DebounceEventResult, DebouncedEvent, NoCache, new_debouncer_opt};
+use notify_debouncer_full::{
+    Config as DebounceConfig, DebounceEventResult, DebouncedEvent, NoCache, new_debouncer_opt,
+};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -177,8 +179,16 @@ impl<W: notify::Watcher> notify::Watcher for RescanTap<W> {
         self.0.unwatch(path)
     }
 
-    fn paths_mut<'me>(&'me mut self) -> Box<dyn notify::PathsMut + 'me> {
-        self.0.paths_mut()
+    fn watch_with(&mut self, path: &Path, config: notify::WatchPathConfig) -> notify::Result<()> {
+        self.0.watch_with(path, config)
+    }
+
+    fn update_paths(&mut self, ops: Vec<notify::PathOp>) -> Result<(), notify::UpdatePathsError> {
+        self.0.update_paths(ops)
+    }
+
+    fn watched_paths(&self) -> notify::Result<Vec<notify::WatchedPath>> {
+        self.0.watched_paths()
     }
 
     fn configure(&mut self, option: NotifyConfig) -> notify::Result<bool> {
@@ -306,11 +316,11 @@ fn watch_with<W: notify::Watcher>(
     // ~keep rename just degrades to remove-old + create-new, which scan_paths already handles. Linux
     // ~keep already defaults to NoCache.
     let debouncer = new_debouncer_opt::<_, RescanTap<W>, NoCache>(
-        debounce,
-        None,
+        DebounceConfig::default()
+            .with_timeout(debounce)
+            .with_notify_config(NotifyConfig::default()),
         move |res| dispatch_debounced(&tx, &pending_producer, res),
         NoCache::new(),
-        NotifyConfig::default(),
     );
     TAP_SIGNALS.with(|slot| slot.borrow_mut().take());
     let mut debouncer = debouncer?;
