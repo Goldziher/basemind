@@ -667,6 +667,12 @@ class McpJsonCachedLauncherTests(unittest.TestCase):
         self.configure('model = "m"\n\n[plugins."basemind@curated"]\nenabled = true\n')
         self.assert_runs(enabled, "curated 1.0.0")
 
+    def test_a_quoted_plugins_table_key_selects_its_marketplace(self) -> None:
+        self.install("basemind", "9.9.9")
+        enabled = self.install("curated", "1.0.0", modified_ago=DAY)
+        self.configure('["plugins"."basemind@curated"]\nenabled = true\n')
+        self.assert_runs(enabled, "curated 1.0.0")
+
     def test_a_disabled_plugin_is_passed_over(self) -> None:
         self.install("curated", "9.9.9")
         enabled = self.install("basemind", "1.0.0", modified_ago=DAY)
