@@ -23,9 +23,10 @@ basemind is the context layer for this repository, served over MCP. It pre-index
 content-addressed blob store + Fjall inverted index (and, when enabled, a LanceDB vector store) so
 structural, historical, and semantic questions resolve in milliseconds without reading whole files.
 
-Each job is its own tool with an exact schema. The tools are always loaded: call them directly, no
-tool search needed. The agent tools `agent_post`, `agent_inbox` and `agent_threads` are listed
-separately; they are needed only when collaborating.
+Each job is its own tool with an exact schema. The job tools are always loaded: call them directly,
+no tool search needed. The agent tools `agent_post`, `agent_inbox` and `agent_threads` carry no
+always-load marker, so a host that defers MCP tools defers them; they are listed separately and
+needed only when collaborating.
 
 ## Capabilities
 

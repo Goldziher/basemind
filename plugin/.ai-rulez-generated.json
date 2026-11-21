@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:00a77c68bd7bb6c1cab200e2d36a9f97291cc4d2f4c88bbeeb7c31d6c545ef37",
+  "source_hash": "blake3:8b9a976b1dc98816f54f485e05b9757438b6a19a589c3d5415853e50d063bcb0",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:36f4c5d42de76b97fcdd6b403dbf02672a487f20ded1da4874805a58e3a4d019",
@@ -115,7 +115,7 @@
       "mode": "0644"
     },
     ".cursor-plugin/skills/basemind/SKILL.md": {
-      "content_hash": "blake3:3fad41a7f2d5734328963416a904dc0105ebb8cc41ec1ec6dbafb323a5ab95f4",
+      "content_hash": "blake3:b02568335b6dbb67e1915afe4c13d8b7266768ed985e6d491ae9d2404ffc57dc",
       "mode": "0644"
     },
     ".cursor-plugin/skills/basemind/index.md": {
@@ -239,7 +239,7 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind/SKILL.md": {
-      "content_hash": "blake3:3fad41a7f2d5734328963416a904dc0105ebb8cc41ec1ec6dbafb323a5ab95f4",
+      "content_hash": "blake3:b02568335b6dbb67e1915afe4c13d8b7266768ed985e6d491ae9d2404ffc57dc",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind/index.md": {
@@ -355,7 +355,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind/SKILL.md": {
-      "content_hash": "blake3:3fad41a7f2d5734328963416a904dc0105ebb8cc41ec1ec6dbafb323a5ab95f4",
+      "content_hash": "blake3:b02568335b6dbb67e1915afe4c13d8b7266768ed985e6d491ae9d2404ffc57dc",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind/index.md": {
@@ -475,7 +475,7 @@
       "mode": "0644"
     },
     ".opencode/skills/basemind/SKILL.md": {
-      "content_hash": "blake3:3fad41a7f2d5734328963416a904dc0105ebb8cc41ec1ec6dbafb323a5ab95f4",
+      "content_hash": "blake3:b02568335b6dbb67e1915afe4c13d8b7266768ed985e6d491ae9d2404ffc57dc",
       "mode": "0644"
     },
     ".opencode/skills/basemind/index.md": {
@@ -579,7 +579,7 @@
       "mode": "0644"
     },
     ".pi/skills/basemind/SKILL.md": {
-      "content_hash": "blake3:3fad41a7f2d5734328963416a904dc0105ebb8cc41ec1ec6dbafb323a5ab95f4",
+      "content_hash": "blake3:b02568335b6dbb67e1915afe4c13d8b7266768ed985e6d491ae9d2404ffc57dc",
       "mode": "0644"
     },
     ".pi/skills/basemind/index.md": {
@@ -767,7 +767,7 @@
       "mode": "0644"
     },
     "skills/basemind/SKILL.md": {
-      "content_hash": "blake3:3fad41a7f2d5734328963416a904dc0105ebb8cc41ec1ec6dbafb323a5ab95f4",
+      "content_hash": "blake3:b02568335b6dbb67e1915afe4c13d8b7266768ed985e6d491ae9d2404ffc57dc",
       "mode": "0644"
     },
     "skills/basemind/index.md": {
