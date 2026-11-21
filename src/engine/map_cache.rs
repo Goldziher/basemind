@@ -219,6 +219,19 @@ impl MapCache {
         updated: &[crate::path::RelPath],
         removed: &[crate::path::RelPath],
     ) -> Self {
+        self.with_delta_docs(store, updated, removed, None)
+    }
+
+    /// [`with_delta`](Self::with_delta) with the document set of `store` when the caller has
+    /// already computed it: a replaced document is no path of the code delta, so patching from the
+    /// delta alone would keep the old one.
+    fn with_delta_docs(
+        &self,
+        store: &Store,
+        updated: &[crate::path::RelPath],
+        removed: &[crate::path::RelPath],
+        doc_paths: Option<Arc<PagedSet<RelPath>>>,
+    ) -> Self {
         let superseded: ahash::AHashSet<&str> = updated
             .iter()
             .chain(removed)
@@ -240,7 +253,7 @@ impl MapCache {
             l1: Arc::clone(&self.l1),
             terms: Default::default(),
             routes: Default::default(),
-            doc_paths: self.doc_paths_patched(store, updated, removed),
+            doc_paths: doc_paths.unwrap_or_else(|| self.doc_paths_patched(store, updated, removed)),
         };
         self.l1.forget_superseded(superseded, &next.files);
         if let Some(terms) = self.terms.get() {
@@ -312,7 +325,7 @@ impl MapCache {
         if unchanged {
             return None;
         }
-        Some(self.with_delta(store, &updated, &removed))
+        Some(self.with_delta_docs(store, &updated, &removed, Some(doc_paths)))
     }
 }
 

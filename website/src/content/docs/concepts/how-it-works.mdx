@@ -59,8 +59,9 @@ background, so a client never blocks waiting for a large repo to load. `index_st
 `warming` (still loading) and, once done, `warm_ms`; a first-time index build similarly reports
 `indexing` / `index_build_ms`.
 A daemon-hosted workspace whose watcher pass waits for one of the daemon's four scan slots, which
-every workspace it hosts shares, reports it as `queued_scan`: the watcher batches merged into the pass
-(`batches`), the paths it will scan (`paths`) and whether it rescans the whole tree (`whole_tree`).
+every workspace it hosts shares, reports it as `queued_scan`: `batches`, the count of watcher batches
+merged into the pass, and `paths`, the count of distinct paths it will scan (0 for a whole-tree pass).
+`whole_tree` is `true` when the pass rescans the whole tree and is omitted otherwise.
 
 While the server isn't fully ready, `index_status` and every code-map read tool may carry a
 `notice` object — `{ state, message, retry }` — instead of (or alongside) their normal result:

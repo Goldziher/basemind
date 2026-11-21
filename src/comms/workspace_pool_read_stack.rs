@@ -59,9 +59,9 @@ impl WorkspacePool {
                         std::sync::Arc::clone(&entry),
                         root.to_path_buf(),
                     );
-                    let hosted = super::read_stack_gate::run_gated_build(
-                        std::sync::Arc::clone(&super::read_stack_gate::READ_STACK_BUILD_GATE),
-                        super::read_stack_gate::READ_STACK_BUILD_GATE_WAIT,
+                    let hosted = crate::comms::read_stack_gate::run_gated_build(
+                        std::sync::Arc::clone(&crate::comms::read_stack_gate::READ_STACK_BUILD_GATE),
+                        crate::comms::read_stack_gate::READ_STACK_BUILD_GATE_WAIT,
                         move || pool.host_read_stack(&building, &root_buf, git_history),
                     )
                     .await??;
@@ -289,7 +289,7 @@ impl WorkspacePool {
     /// The flag is read again once the slot is held, so a rebuild queued behind an earlier one that
     /// cleared it does not walk the tree twice.
     fn spawn_pending_rebuild(self: &std::sync::Arc<Self>, entry: &std::sync::Arc<WorkspaceEntry>) {
-        use super::scan_slots::RESCAN_SLOTS;
+        use crate::comms::scan_slots::RESCAN_SLOTS;
 
         if !entry.rebuild_pending.load(std::sync::atomic::Ordering::Acquire) {
             return;
@@ -304,6 +304,6 @@ impl WorkspacePool {
                 tracing::warn!(root = %entry.root.display(), %error, "index rebuild scan failed");
             }
         };
-        tokio::spawn(super::scan_slots::on_blocking_slot(&RESCAN_SLOTS, rebuild));
+        tokio::spawn(crate::comms::scan_slots::on_blocking_slot(&RESCAN_SLOTS, rebuild));
     }
 }

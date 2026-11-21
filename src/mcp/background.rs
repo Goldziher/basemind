@@ -228,8 +228,8 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
 /// watcher ran (the stack shed, the daemon gone, a `git checkout` in between) are indexed without
 /// anyone calling `index_rescan`.
 ///
-/// The map warm (`warm_first`) runs first so the pass refreshes a full map, then a whole-tree pass
-/// through the pool, which judges every file by its stat and hash as `index_rescan {}` does and
+/// The map warm (`warm_first`) runs first, on the background pool, so the pass refreshes a full map
+/// and the warm never waits for a scan slot; then a whole-tree pass through the pool, which judges every file by its stat and hash as `index_rescan {}` does and
 /// coalesces with a client's rescan of the same tree. The workspace reports `rescanning` from the
 /// moment the stack is served until that pass has published its file map; a pass that changed
 /// anything is followed, as the initial scan is, by a detached embedding pass. The host's work pin,
@@ -240,10 +240,9 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
     let writer = Writer::of(&state);
     let rescanning = writer.ws.mark_rescan();
     let pin = writer.ws.work_pin.as_ref().map(|pin| pin());
-    spawn_scan_logged(writer.hosted(), "catch-up scan task panicked", move || {
-        if warm_first {
-            writer.ws.warm();
-        }
+    let hosted = writer.hosted();
+    let state_ws = Arc::clone(&writer.ws);
+    let catch_up = move || {
         if writer.catch_up_moot() {
             tracing::debug!("catch-up skipped: the daemon is draining or the workspace was evicted");
             return;
@@ -282,7 +281,18 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
         }
         // Last: a workspace that reads settled holds no reference from this pass. ~keep
         drop(rescanning);
-    });
+    };
+    if warm_first {
+        // Cache-reading calls wait on the warm, so it runs on the background pool, not behind the
+        // scan slots a burst of other workspaces' scans may hold.
+        let ws = Arc::clone(&state_ws);
+        super::background_pool::background().spawn(move || {
+            ws.warm();
+            spawn_scan_logged(hosted, "catch-up scan task panicked", catch_up);
+        });
+    } else {
+        spawn_scan_logged(hosted, "catch-up scan task panicked", catch_up);
+    }
 }
 
 /// Boot-time in-RAM code-map preload, spawned once from `BasemindServer::new_with_options` when the

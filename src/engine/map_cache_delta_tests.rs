@@ -410,3 +410,26 @@ fn a_delta_maps_the_documents_a_rebuild_maps() {
     assert_eq!(after.doc_paths.iter().cloned().collect::<Vec<_>>(), [kept, added]);
     assert_eq!(after.doc_paths, MapCache::build(&store, 0).doc_paths);
 }
+
+/// A full rescan that replaces one document with another, leaving the code files alone, publishes
+/// the new document and not the old: the counts match, the paths do not.
+#[test]
+fn a_refresh_maps_a_replaced_document_when_the_document_count_is_unchanged() {
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::write(root.join("f0.rs"), source("replaced_docs", 0)).unwrap();
+    let mut store = Store::open(root, VIEW_WORKING).unwrap();
+    scan(root, &mut store);
+    let (old, new) = (RelPath::from("a.md"), RelPath::from("b.md"));
+    store.index.doc_files.insert(old.clone(), doc_entry());
+    let cache = MapCache::build(&store, 0);
+    assert!(cache.contains_doc(&old));
+
+    store.index.doc_files.remove(&old);
+    store.index.doc_files.insert(new.clone(), doc_entry());
+    let refreshed = cache.refreshed(&store, 0).expect("the document set changed");
+    assert!(refreshed.contains_doc(&new), "the replacement document is mapped");
+    assert!(!refreshed.contains_doc(&old), "the replaced document is not");
+    assert_eq!(refreshed.doc_paths, MapCache::build(&store, 0).doc_paths);
+}

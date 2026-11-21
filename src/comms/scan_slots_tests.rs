@@ -55,6 +55,16 @@ impl Gate {
     }
 }
 
+/// Opens its gate when dropped, including while a failed assertion unwinds, so passes still
+/// blocked on it finish instead of hanging the runtime's shutdown.
+struct OpenOnDrop(Arc<Gate>);
+
+impl Drop for OpenOnDrop {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
+
 /// What the passes of a storm did: how many ran at once, and each pass with its workspace.
 #[derive(Default)]
 struct Passes {
@@ -107,6 +117,7 @@ fn start_drain(
 async fn a_storm_over_ten_workspaces_runs_at_most_the_slot_count_and_merges_later_batches() {
     static SLOTS: Semaphore = Semaphore::const_new(4);
     let (passes, gate) = (Arc::new(Passes::default()), Arc::new(Gate::default()));
+    let _release = OpenOnDrop(Arc::clone(&gate));
     let queues: Vec<Arc<ScanQueue>> = (0..10).map(|_| Arc::default()).collect();
     let mut drains = Vec::new();
     for (id, queue) in queues.iter().enumerate() {
