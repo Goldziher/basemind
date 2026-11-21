@@ -83,7 +83,7 @@ pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineCo
     config.grammars.cache_dir = lookup(GRAMMAR_CACHE_DIR_ENV)
         .filter(|value| value.to_str().is_none_or(|value| !value.trim().is_empty()))
         .map(absolute);
-    config.gc.budget_bytes = cache_budget_from(text(&lookup, CACHE_BUDGET_ENV).as_deref());
+    config.gc.budget = cache_budget_from(text(&lookup, CACHE_BUDGET_ENV).as_deref());
     config.gc.grace = cache_grace_from(text(&lookup, CACHE_GRACE_ENV).as_deref());
     config.gc.blob_grace = grace_from(text(&lookup, BLOB_GC_GRACE_ENV).as_deref());
     config.min_free_bytes = headroom_bytes(text(&lookup, MIN_FREE_ENV).as_deref());
@@ -198,6 +198,7 @@ mod tests {
 
     use super::*;
     use crate::daemon_lock::MAX_LIVE_DAEMONS;
+    use crate::store_gc_budget::CacheBudget;
 
     fn config_of(vars: &[(&str, &str)]) -> EngineConfig {
         let vars: HashMap<String, OsString> = vars
@@ -311,7 +312,7 @@ mod tests {
             (MIN_FREE_ENV, "64"),
             (MAX_LIVE_DAEMONS_ENV, "3"),
         ]);
-        assert_eq!(config.gc.budget_bytes, Some(512 << 20));
+        assert_eq!(config.gc.budget, Some(CacheBudget::Fixed(512 << 20)));
         assert_eq!(config.gc.grace, Duration::from_secs(30 * 60));
         assert_eq!(config.gc.blob_grace, Duration::ZERO);
         assert_eq!(config.min_free_bytes, 64 << 20);
@@ -319,7 +320,8 @@ mod tests {
 
         let defaults = config_of(&[]);
         assert_eq!(defaults, EngineConfig::default());
-        assert_eq!(config_of(&[(CACHE_BUDGET_ENV, "0")]).gc.budget_bytes, None);
+        assert_eq!(config_of(&[(CACHE_BUDGET_ENV, "0")]).gc.budget, None);
+        assert_eq!(defaults.gc.budget, Some(CacheBudget::DiskAware));
         assert_eq!(
             config_of(&[(MAX_LIVE_DAEMONS_ENV, "0")]).max_live_daemons,
             MAX_LIVE_DAEMONS

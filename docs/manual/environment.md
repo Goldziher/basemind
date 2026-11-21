@@ -40,7 +40,7 @@ repository. A truthy value is `1`, `true` or `yes`.
 | `BASEMIND_GRAMMAR_OFFLINE` | Never download a grammar; a missing one is reported instead. |
 | `BASEMIND_PARSE_TIMEOUT_MS` | Time after which parsing one file is abandoned. |
 | `BASEMIND_MIN_FREE_MB` | Headroom, on top of 1.5 times the index size, a scan needs free on disk or it refuses. |
-| `BASEMIND_CACHE_BUDGET_MB` | Byte budget for the cache, enforced by eviction (`0`: unlimited). |
+| `BASEMIND_CACHE_BUDGET_MB` | Budget for the cache in MiB, enforced by eviction (`0`: unlimited). Unset: `min(20 GiB, (cache size + free space) / 2)`, the free space being that of the cache's volume. |
 | `BASEMIND_BLOB_GC_GRACE_SECS` | Age under which `basemind cache gc` keeps an unreferenced blob (default 6 h). |
 
 Logging follows `RUST_LOG`; `-v` and `-q` adjust it per command. `NO_COLOR` disables colour.
