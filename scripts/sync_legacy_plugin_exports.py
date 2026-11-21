@@ -9,8 +9,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TREES = (".codex-plugin", ".cursor-plugin", "opencode-plugin")
 HOOK_MANIFESTS = ("hooks/hooks.json", "*/hooks/hooks.json", "plugin/*/hooks/hooks.json")
-# A default that is not another variable (`${CURSOR_PLUGIN_ROOT:-.}`) runs the session's own script.
-LITERAL_ROOT_FALLBACK = re.compile(r"\$\{\w+:-(?!\$\{)")
+# A default that is not another variable (`${CURSOR_PLUGIN_ROOT:-.}`; `$NAME` and `${NAME}` pass)
+# runs the session's own script.
+LITERAL_ROOT_FALLBACK = re.compile(r"\$\{\w+:-(?!\$)")
 
 
 def reject_redirects(root: Path, destination: Path) -> None:

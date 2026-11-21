@@ -76,6 +76,7 @@ class SessionRelativeHookTests(unittest.TestCase):
         commands = (
             '"${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:?basemind: the host set no plugin root}}/hooks/run-hook.cmd" x',
             '"${CURSOR_PLUGIN_ROOT:?basemind: the host set no plugin root}/hooks/run-hook.cmd" x',
+            '"${PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd" x',
         )
         for command in commands:
             with self.subTest(command=command), tempfile.TemporaryDirectory() as temporary:
