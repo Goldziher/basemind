@@ -72,10 +72,13 @@ mod enabled {
                 },
                 crate::engine::code_search::is_cacheable,
             )?;
-            if ranking.hits.is_empty()
-                && let Some(refusal) = grep_selects_no_file(self, &self.cache.load_full(), &filters)
-            {
-                return Err(refusal);
+            if ranking.hits.is_empty() {
+                // A lazy-cache CLI call has an empty map until this barrier builds it, which would
+                // make the no-file refusal below see nothing to refuse.
+                self.wait_map_ready();
+                if let Some(refusal) = grep_selects_no_file(self, &self.cache.load_full(), &filters) {
+                    return Err(refusal);
+                }
             }
             let mut ranking = ranking;
             let page = page_ranked(

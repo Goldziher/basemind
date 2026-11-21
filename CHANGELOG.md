@@ -185,8 +185,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `code_grep`, a prefix named `path_prefix` on `find_files` and always a glob on `docs_search`, so
   `mcp/` no longer selects `src/mcp/tools.rs` in `code_grep`: pass `src/mcp/` or `**/mcp/**`.
   `find_files`' `path_prefix` and `basemind code find|files --path-prefix` are renamed `path` /
-  `--path`. A `path` no indexed file passes is refused with the rule it was read by, and a value
-  holding `*` that is not a glob is refused with an example.
+  `--path`. On `code_grep` and `find_files` a `path` no indexed file passes is refused with the rule it
+  was read by (`docs_search` returns no hits), and a value holding `*` that is not a glob is
+  refused with an example.
 - **BREAKING:** `memory_search` takes `tags`, a list, where it took one `tag` (#252), as
   `memory_save` does: a search or a listing keeps the notes carrying any of them.
   `basemind memory search|list --tag` is repeatable.
