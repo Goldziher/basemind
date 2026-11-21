@@ -1,4 +1,4 @@
-"""A crate crates.io has never seen stops the release before anything publishes."""
+"""The vendored-crate drift check: new crates stop the release, descriptive manifest keys never drift."""
 
 import contextlib
 import importlib.util
@@ -50,6 +50,23 @@ class NewCrateTests(unittest.TestCase):
         code, out = self.run_main(["--release"])
         self.assertEqual(code, 0)
         self.assertEqual(out.count("not on crates.io yet; the release publishes it"), 2)
+
+
+class ManifestSemanticsTests(unittest.TestCase):
+    """Only the manifest keys that change what a dependent compiles count as drift."""
+
+    PUBLISHED = '[package]\nname = "fork"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\nserde = "1"\n'
+
+    def setUp(self) -> None:
+        self.module = load_checker()
+
+    def test_an_added_rust_version_is_not_drift(self) -> None:
+        tree = self.PUBLISHED.replace('edition = "2024"\n', 'edition = "2024"\nrust-version.workspace = true\n')
+        self.assertEqual(self.module.manifest_semantics(tree), self.module.manifest_semantics(self.PUBLISHED))
+
+    def test_a_changed_dependency_is_drift(self) -> None:
+        tree = self.PUBLISHED.replace('serde = "1"', 'serde = "2"')
+        self.assertNotEqual(self.module.manifest_semantics(tree), self.module.manifest_semantics(self.PUBLISHED))
 
 
 if __name__ == "__main__":
