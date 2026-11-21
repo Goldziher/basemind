@@ -128,6 +128,29 @@ fn a_fresh_index_answers_a_path_no_commit_touches_without_a_walk() {
     assert_eq!(walked, 0, "the index answered; no commit was walked");
 }
 
+/// The index keys a path by its exact bytes, while the live walk ignores empty components: both
+/// must read `src//lib.rs` as `src/lib.rs`, or a fresh index answers a tracked file with nothing.
+#[test]
+fn repeated_separators_do_not_read_as_an_untouched_path() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let root = repo_dir.path();
+    repository(root, 3);
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), "1\n").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "add lib"]);
+    let history_dir = tempfile::tempdir().unwrap();
+    let index = GitHistoryIndex::open(history_dir.path()).expect("open the index");
+    let repo = crate::git::Repo::discover(root).expect("repo");
+    crate::git_history::builder::sync(&index, &repo, history_dir.path()).expect("build the index");
+    let cache_dir = tempfile::tempdir().unwrap();
+    let ws = workspace_over(root, cache_dir.path(), Some(Arc::new(index)));
+
+    let page = run_touching(&ws, touching("src//lib.rs", 5)).expect("a tracked file");
+    let summaries: Vec<&str> = page.commits.iter().map(|commit| commit.summary.as_str()).collect();
+    assert_eq!(summaries, ["add lib"]);
+}
+
 /// Without the index, one page tests at most its span of commits; a span that runs out before a
 /// match hands back where the next page resumes, and the pages together find the match.
 #[test]

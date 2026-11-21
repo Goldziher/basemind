@@ -459,6 +459,9 @@ pub(super) fn touching_page(
     take: usize,
 ) -> Result<(TouchingSpan, u32), EngineError> {
     let repo = require_git_repo(ws)?;
+    // The index keys a path by its exact bytes and the live walk ignores empty components, so both
+    // read the path through its components, or the index would answer `src//lib.rs` with nothing.
+    let path = &without_empty_components(path);
     // The lookup's reads take no lock, so a sync that clears or rebuilds the index between the
     // freshness check and them can make a path with history read as untouched: the answer counts
     // only when the index still stamps `head` after it.
@@ -486,6 +489,16 @@ pub(super) fn touching_page(
                 .map_err(|e| EngineError::internal(format!("log: {e}")))
         },
     )
+}
+
+/// `path` with its empty components (a doubled, leading or trailing `/`) dropped, bytes untouched.
+fn without_empty_components(path: &RelPath) -> RelPath {
+    let kept: Vec<&[u8]> = path
+        .as_bytes()
+        .split(|&b| b == b'/')
+        .filter(|c| !c.is_empty())
+        .collect();
+    RelPath::from(kept.join(&b'/').as_slice())
 }
 
 /// The refusal for a `path` that no commit reachable from HEAD touches and that is not on disk

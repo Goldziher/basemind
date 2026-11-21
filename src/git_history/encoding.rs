@@ -36,7 +36,11 @@ pub fn read_uvarint(buf: &[u8], cursor: &mut usize) -> Option<u64> {
         if shift >= 64 {
             return None;
         }
-        result |= u64::from(byte & 0x7f) << shift;
+        let payload = u64::from(byte & 0x7f);
+        if shift == 63 && payload > 1 {
+            return None;
+        }
+        result |= payload << shift;
         if byte & 0x80 == 0 {
             return Some(result);
         }
@@ -266,6 +270,19 @@ mod tests {
     fn read_uvarint_returns_none_on_truncation() {
         let mut cursor = 0;
         assert_eq!(read_uvarint(&[0x80], &mut cursor), None);
+    }
+
+    #[test]
+    fn read_uvarint_rejects_a_tenth_byte_that_overflows_u64() {
+        let mut overflow = vec![0x80; 9];
+        overflow.push(0x02);
+        let mut cursor = 0;
+        assert_eq!(read_uvarint(&overflow, &mut cursor), None);
+
+        let mut max = vec![0xff; 9];
+        max.push(0x01);
+        let mut cursor = 0;
+        assert_eq!(read_uvarint(&max, &mut cursor), Some(u64::MAX));
     }
 
     #[test]
