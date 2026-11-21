@@ -720,6 +720,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `basemind hook install --force` no longer replaces an earlier backup (#248). It renamed a foreign
+  `pre-commit` hook to `pre-commit.bak` every time, so a second forced install over a different foreign
+  hook deleted the first one; it now keeps the old hook under the first free name, `pre-commit.bak`,
+  `pre-commit.bak.1`, `pre-commit.bak.2`, and so on.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
