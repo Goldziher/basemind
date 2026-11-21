@@ -33,7 +33,7 @@ pub(crate) fn open_index_for_writer(
 /// memory notes an index of the per-view layout may still hold to the group store before it deletes
 /// that index; deleting it here, first, lost them.
 pub(super) fn discard_view_of_a_stale_layout(view_dir: &Path, why: &StoreError) -> Result<(), StoreError> {
-    if matches!(why, StoreError::UnreadableFileMap { .. }) {
+    if super::file_map::sets_aside(why) {
         super::file_map::set_aside_unreadable_map(view_dir)?;
     } else {
         super::wipe_view(view_dir)?;
