@@ -8,6 +8,7 @@
 //! All assertions are deterministic — no timing-sensitive ordering checks.
 
 use std::path::Path;
+#[cfg(all(feature = "comms", any(unix, windows)))]
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
