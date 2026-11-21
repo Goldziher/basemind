@@ -5,7 +5,7 @@
 # and steers the agent toward basemind's indexed tools, which return paths + line numbers
 # instead of file bodies. Every suggestion is a callable tool with its arguments: the tools are
 # always loaded, so the agent can issue the call as written. For Bash it only reacts to a code search or history lookup
-# (rg, grep, git log/blame/show, find -name); every other command proceeds silently.
+# (rg, grep, git log/blame/show/diff/status, find -name); every other command proceeds silently.
 # Three modes via the BASEMIND_GUARD env var:
 #
 #   nudge    (default) — leave the permission decision to the host and attach a one-time
@@ -15,8 +15,9 @@
 #                        basemind tool instead. Enforcing; no dedup. Bash stays advisory.
 #   off                — no-op.
 #
-# Hook input fields used: tool_name, tool_input.command (Bash), session_id and, when the
-# call comes from a subagent, agent_id. Without agent_id the marker is per session.
+# Hook input fields used: tool_name, tool_input.command (Bash), tool_input.pattern, .path and
+# .glob (Grep), cwd, session_id and, when the call comes from a subagent, agent_id. Without
+# agent_id the marker is per session.
 #
 # Output is the PreToolUse JSON result on stdout; the hook never blocks startup and
 # degrades to a silent no-op (exit 0 = proceed normally) when it cannot run.
@@ -45,7 +46,7 @@ classify_bash() {
   local cmd="$1" lead='(^|;|&&|\|\|)[[:space:]]*(sudo[[:space:]]+)?'
   if printf '%s' "${cmd}" | grep -Eq "${lead}(rg|grep|egrep|fgrep|ag|ack)([[:space:]]|\$)"; then
     bash_kind="search"
-    bash_alt='basemind code_grep {"pattern":"…"} (literal text in indexed code; add "regex":true for a regex and "path":"src/" to scope it), code_symbols {"name":"…"} for a definition or code_refs {"name":"…"} for usages; markdown, config and data files: docs_search {"query":"…"}'
+    bash_alt='basemind code_grep {"pattern":"…"} (literal text in code, markdown, config and data files; add "regex":true for a regex and "path":"src/" to scope it), code_symbols {"name":"…"} for a definition or code_refs {"name":"…"} for usages; a question by meaning: docs_search {"query":"…"}'
   elif printf '%s' "${cmd}" | grep -Eq "${lead}git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+blame([[:space:]]|\$)"; then
     bash_kind="blame"
     bash_alt='basemind git_blame {"path":"…"} (add "line" and "end_line" for a span, or "symbol" for one symbol)'
@@ -55,10 +56,73 @@ classify_bash() {
   elif printf '%s' "${cmd}" | grep -Eq "${lead}git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+show([[:space:]]|\$)"; then
     bash_kind="show"
     bash_alt='basemind git_log {"rev":"…"} (one commit in full) or git_diff {"path":"…","from":"…","to":"…"} (one file between revisions)'
+  # git_diff compares HEAD with the working tree, so a diff of the staged index or of two
+  # arbitrary files is left alone.
+  elif printf '%s' "${cmd}" | grep -Eq "${lead}git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+diff([[:space:]]|\$)" &&
+    ! printf '%s' "${cmd}" | grep -Eq -- '--(cached|staged|no-index)([[:space:]=]|$)'; then
+    bash_kind="diff"
+    bash_alt='basemind git_diff {"path":"…"} (one file against HEAD; add "from" and "to" for two revisions) or git_diff {} (the working-tree status)'
+  elif printf '%s' "${cmd}" | grep -Eq "${lead}git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+status([[:space:]]|\$)"; then
+    bash_kind="status"
+    bash_alt='basemind git_diff {} (the working-tree status; add "path" with a directory ending in / to narrow it)'
   elif printf '%s' "${cmd}" | grep -Eq "${lead}find[[:space:]].*-(i?name|i?path|i?regex)([[:space:]]|\$)"; then
     bash_kind="find"
     bash_alt='basemind find_files {"query":"…"} (fuzzy file name or path; omit "query" and pass "path_prefix" or "language" to list)'
   fi
+}
+
+# The Grep tool's path relative to the repository root (git's top level, else cwd): a directory
+# becomes a `dir/` prefix and a file its path. Empty for the root itself, a missing path or one
+# outside the repository, which code_grep cannot scope to.
+repo_relative() {
+  local target="$1" cwd="$2" root dir base=""
+  [ -n "${target}" ] || return 0
+  case "${target}" in
+  /*) ;;
+  *) target="${cwd%/}/${target}" ;;
+  esac
+  root="$(git -C "${cwd}" rev-parse --show-toplevel 2>/dev/null || printf '%s' "${cwd}")"
+  root="$(cd "${root}" 2>/dev/null && pwd -P)" || return 0
+  if [ -d "${target}" ]; then
+    dir="$(cd "${target}" && pwd -P)" || return 0
+  elif [ -e "${target}" ]; then
+    dir="$(cd "$(dirname "${target}")" && pwd -P)" || return 0
+    base="$(basename "${target}")"
+  else
+    return 0
+  fi
+  case "${dir}/" in
+  "${root}/") printf '%s' "${base}" ;;
+  "${root}/"*)
+    dir="${dir#"${root}"/}/"
+    printf '%s' "${dir}${base}"
+    ;;
+  esac
+}
+
+# code_grep's `path` for a Grep call: the repo-relative path, narrowed by the Grep glob. A glob
+# without a `/` matches a file name at any depth, as in the Grep tool; a negated glob or one
+# given with a single file adds nothing.
+grep_scope() {
+  local prefix="$1" glob="$2"
+  case "${glob}" in
+  "" | "!"*)
+    printf '%s' "${prefix}"
+    return 0
+    ;;
+  esac
+  case "${prefix}" in
+  "" | */) ;;
+  *)
+    printf '%s' "${prefix}"
+    return 0
+    ;;
+  esac
+  case "${glob}" in
+  */*) ;;
+  *) glob="**/${glob}" ;;
+  esac
+  printf '%s' "${prefix}${glob}"
 }
 
 # Tailor the suggestion to the tool. Anything outside the matcher set just proceeds.
@@ -74,16 +138,23 @@ Bash)
   [ "${MODE}" = "redirect" ] && MODE="nudge"
   ;;
 Grep)
-  # The Grep tool's pattern is a regex, so the suggested call carries it verbatim with regex on.
+  # The Grep tool's pattern is a regex, so the suggested call carries it verbatim with regex on,
+  # scoped to the Grep call's path and glob.
   grep_call='code_grep {"pattern":"…","regex":true}'
   grep_pattern="$(printf '%s' "${input}" | jq -r '.tool_input.pattern // empty' 2>/dev/null || true)"
-  if [ -n "${grep_pattern}" ]; then
-    grep_args="$(jq -cn --arg p "${grep_pattern}" '{pattern:$p,regex:true}' 2>/dev/null || true)"
-    if [ -n "${grep_args}" ]; then
-      grep_call="code_grep ${grep_args}"
-    fi
+  grep_path="$(printf '%s' "${input}" | jq -r '.tool_input.path // empty' 2>/dev/null || true)"
+  grep_glob="$(printf '%s' "${input}" | jq -r '.tool_input.glob // empty' 2>/dev/null || true)"
+  grep_cwd="$(printf '%s' "${input}" | jq -r '.cwd // empty' 2>/dev/null || true)"
+  [ -n "${grep_cwd}" ] || grep_cwd="$(pwd)"
+  # Grep without a path searches its working directory, so scope to cwd as for an explicit ".".
+  [ -n "${grep_path}" ] || grep_path="."
+  grep_path="$(grep_scope "$(repo_relative "${grep_path}" "${grep_cwd}")" "${grep_glob}")"
+  grep_args="$(jq -cn --arg p "${grep_pattern:-…}" --arg s "${grep_path}" \
+    '{pattern:$p,regex:true} + (if $s == "" then {} else {path:$s} end)' 2>/dev/null || true)"
+  if [ -n "${grep_args}" ]; then
+    grep_call="code_grep ${grep_args}"
   fi
-  alt="basemind ${grep_call} (indexed code), code_symbols {\"name\":\"…\"} for a definition or code_refs {\"name\":\"…\"} for usages; markdown, config and data files: docs_search {\"query\":\"…\"}"
+  alt="basemind ${grep_call} (code, markdown, config and data files), code_symbols {\"name\":\"…\"} for a definition or code_refs {\"name\":\"…\"} for usages; a question by meaning: docs_search {\"query\":\"…\"}"
   ;;
 Glob)
   alt='basemind find_files {"query":"…"} (fuzzy file name or path; omit "query" and pass "path_prefix" or "language" to list)'
