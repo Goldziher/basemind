@@ -78,7 +78,7 @@ impl ServerHandler for BasemindServer {
                 // ~keep Like `server_busy`: the agent reads a stop it can act on; a CLI keeps the error.
                 Err(stopped) if !self.cli && tasks::is_deadline_exceeded(&stopped) => {
                     Ok(rmcp::model::CallToolResponse::Complete(
-                        super::tool_contract::tool_error(super::error_kind::ErrorKind::of(&stopped), stopped.message),
+                        super::tool_contract::tool_error(super::tool_contract::kind_of(&stopped), stopped.message),
                     ))
                 }
                 answered => answered,

@@ -553,3 +553,84 @@ async fn a_failure_is_reported_without_host_paths() {
         Some(serde_json::json!({ "error": "internal", "retryable": false }))
     );
 }
+
+mod error_mapping {
+    use rmcp::ErrorData as McpError;
+    use rmcp::model::ErrorCode;
+    use serde_json::json;
+
+    use super::super::tool_contract::{kind_data, kind_of, kind_structured, scrub};
+    use crate::engine::error_kind::{ALL_KINDS, ERROR_KEY, ErrorKind};
+    use crate::engine::redaction::Redaction;
+
+    #[test]
+    fn a_marked_error_keeps_its_kind_whatever_its_json_rpc_code() {
+        for kind in ALL_KINDS {
+            let error = McpError::invalid_request("marked", Some(kind_data(kind)));
+            assert_eq!(kind_of(&error), kind, "{}", kind.code());
+        }
+    }
+
+    #[test]
+    fn an_unmarked_error_is_read_off_its_json_rpc_code() {
+        let cases = [
+            (McpError::invalid_params("bad", None), ErrorKind::InvalidArgument),
+            (McpError::invalid_request("no git", None), ErrorKind::Unavailable),
+            (
+                McpError::invalid_request("held", Some(json!({ super::super::BUSY_DATA: true }))),
+                ErrorKind::Busy,
+            ),
+            (super::super::tasks::request_cancelled(), ErrorKind::Cancelled),
+            (McpError::internal_error("broken", None), ErrorKind::Internal),
+            (McpError::new(ErrorCode(-32002), "timeout", None), ErrorKind::Internal),
+            (
+                McpError::internal_error("unknown mark", Some(json!({ ERROR_KEY: "no_such_code" }))),
+                ErrorKind::Internal,
+            ),
+        ];
+        for (error, kind) in cases {
+            assert_eq!(kind_of(&error), kind, "{}", error.message);
+        }
+    }
+
+    fn redaction() -> Redaction {
+        Redaction::new(
+            std::path::Path::new("/home/someone/code/repo"),
+            std::path::Path::new("/home/someone/.local/share/basemind"),
+            Some(std::path::Path::new("/home/someone")),
+        )
+    }
+
+    #[test]
+    fn a_message_without_host_paths_is_unchanged() {
+        let text = "`code_outline`: no file `src/x.rs` in this repository";
+        assert_eq!(scrub(&redaction(), McpError::invalid_params(text, None)).message, text);
+    }
+
+    #[test]
+    fn scrubbing_keeps_the_code_and_data_and_redacts_the_message() {
+        let error = McpError::invalid_request(
+            "another basemind process holds the lock on /home/someone/.local/share/basemind/cache/workspaces/k/.lock",
+            Some(json!({ "busy": true })),
+        );
+        let scrubbed = scrub(&redaction(), error);
+        assert_eq!(scrubbed.code, ErrorCode::INVALID_REQUEST);
+        assert_eq!(
+            scrubbed.message,
+            "another basemind process holds the lock on $BASEMIND_DATA_HOME/cache/workspaces/k/.lock"
+        );
+        assert_eq!(scrubbed.data, Some(json!({ "busy": true })));
+    }
+
+    #[test]
+    fn the_structured_content_names_the_code_and_the_retry_flag() {
+        assert_eq!(
+            kind_structured(ErrorKind::IndexUnavailable),
+            json!({ "error": "index_unavailable", "retryable": true })
+        );
+        assert_eq!(
+            kind_structured(ErrorKind::InvalidArgument),
+            json!({ "error": "invalid_argument", "retryable": false })
+        );
+    }
+}

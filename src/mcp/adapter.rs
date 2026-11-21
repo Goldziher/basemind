@@ -33,9 +33,12 @@ impl From<EngineError> for McpError {
         match error.settled() {
             EngineError::InvalidArgument(message) => McpError::invalid_params(message, None),
             EngineError::Unavailable(message) => McpError::invalid_request(message, None),
-            EngineError::IndexUnavailable(message) => {
-                McpError::invalid_request(message, Some(super::error_kind::ErrorKind::IndexUnavailable.data()))
-            }
+            EngineError::IndexUnavailable(message) => McpError::invalid_request(
+                message,
+                Some(super::tool_contract::kind_data(
+                    crate::engine::error_kind::ErrorKind::IndexUnavailable,
+                )),
+            ),
             EngineError::Busy(message) => {
                 McpError::invalid_request(message, Some(serde_json::json!({ BUSY_DATA: true })))
             }

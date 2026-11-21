@@ -251,7 +251,7 @@ impl From<ServerBusy> for ErrorData {
     fn from(_: ServerBusy) -> Self {
         ErrorData::new(
             ErrorCode(SERVER_BUSY_CODE),
-            super::error_kind::ErrorKind::Busy.code(),
+            crate::engine::error_kind::ErrorKind::Busy.code(),
             Some(serde_json::json!({
                 "retryable": true,
                 RETRY_AFTER_MS_KEY: DEFAULT_RETRY_AFTER_MS
@@ -269,7 +269,7 @@ impl ServerBusy {
             "busy: basemind is running as many calls of this kind as it allows and this one was not started. \
              Nothing was changed. Retry the same call in about {DEFAULT_RETRY_AFTER_MS} ms."
         ))]);
-        let mut structured = super::error_kind::ErrorKind::Busy.structured();
+        let mut structured = super::tool_contract::kind_structured(crate::engine::error_kind::ErrorKind::Busy);
         structured[RETRY_AFTER_MS_KEY] = serde_json::json!(DEFAULT_RETRY_AFTER_MS);
         result.structured_content = Some(structured);
         result

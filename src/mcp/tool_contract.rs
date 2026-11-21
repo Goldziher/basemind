@@ -5,22 +5,74 @@ use std::future::Future;
 
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::tool::ToolRouter;
-use rmcp::model::{CallToolResult, ContentBlock, MetaObject};
-use serde_json::Value;
+use rmcp::model::{CallToolResult, ContentBlock, ErrorCode, MetaObject};
+use serde_json::{Value, json};
 
 use super::BasemindServer;
-use super::error_kind::ErrorKind;
 use super::strict::{Strict, ToolArgs};
+use crate::engine::error_kind::{ERROR_KEY, ErrorKind, RETRYABLE_KEY};
+use crate::engine::redaction::Redaction;
 
 /// `_meta` key that keeps a tool's schema loaded in hosts that defer MCP tools and load only names.
 pub(crate) const ALWAYS_LOAD_META_KEY: &str = "anthropic/alwaysLoad";
+
+/// The `data` that marks an error as `kind`, for a kind its JSON-RPC code does not tell apart.
+pub(super) fn kind_data(kind: ErrorKind) -> Value {
+    json!({ ERROR_KEY: kind.code() })
+}
+
+/// The `structuredContent` of an `isError` result of `kind`.
+pub(super) fn kind_structured(kind: ErrorKind) -> Value {
+    json!({ ERROR_KEY: kind.code(), RETRYABLE_KEY: kind.retryable() })
+}
+
+/// Redact against the repository `root`, this process's data home and the user's home directory.
+fn redaction_for(root: &std::path::Path) -> Redaction {
+    let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+    Redaction::new(root, crate::data_root::DataRoot::current().path(), home.as_deref())
+}
 
 /// A failure the caller can act on, as a tool result rather than a JSON-RPC error: the message as
 /// text, and the failure's code and retry flag as `structuredContent`.
 pub(super) fn tool_error(kind: ErrorKind, message: impl Into<String>) -> CallToolResult {
     let mut result = CallToolResult::error(vec![ContentBlock::text(message.into())]);
-    result.structured_content = Some(kind.structured());
+    result.structured_content = Some(kind_structured(kind));
     result
+}
+
+/// The kind of a tool body's error: the code its `data` was marked with, else the one its
+/// JSON-RPC code stands for.
+pub(super) fn kind_of(error: &McpError) -> ErrorKind {
+    let data = error.data.as_ref();
+    if let Some(kind) = ErrorKind::marked(data) {
+        return kind;
+    }
+    if data
+        .and_then(|data| data.get(super::BUSY_DATA))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return ErrorKind::Busy;
+    }
+    if error.code == ErrorCode::INVALID_PARAMS {
+        ErrorKind::InvalidArgument
+    } else if error.code == ErrorCode::INVALID_REQUEST {
+        ErrorKind::Unavailable
+    } else if error.code == ErrorCode(super::tasks::REQUEST_CANCELLED_CODE) {
+        ErrorKind::Cancelled
+    } else {
+        ErrorKind::Internal
+    }
+}
+
+/// `error` with its message redacted, the unredacted message logged when it named a host path.
+pub(super) fn scrub(redaction: &Redaction, mut error: McpError) -> McpError {
+    let redacted = redaction.apply(&error.message);
+    if redacted != error.message {
+        tracing::warn!(error = %error.message, "a tool error named host paths; its result names them redacted");
+        error.message = redacted.into();
+    }
+    error
 }
 
 /// Report a tool body's error as an `isError` result. JSON-RPC errors are left to the protocol
@@ -28,13 +80,13 @@ pub(super) fn tool_error(kind: ErrorKind, message: impl Into<String>) -> CallToo
 pub(super) fn into_tool_result(result: Result<CallToolResult, McpError>) -> CallToolResult {
     match result {
         Ok(result) => result,
-        Err(error) => tool_error(ErrorKind::of(&error), error.message.into_owned()),
+        Err(error) => tool_error(kind_of(&error), error.message.into_owned()),
     }
 }
 
 impl BasemindServer {
     /// Answer one verb-tool call: reject inexact arguments, run the body, and report any failure as
-    /// an `isError` result whose text names no absolute host path (`super::error_text`).
+    /// an `isError` result whose text names no absolute host path (`crate::engine::redaction`).
     pub(super) async fn answer<T, F, Fut>(&self, args: Strict<T>, body: F) -> Result<CallToolResult, McpError>
     where
         T: ToolArgs,
@@ -44,9 +96,11 @@ impl BasemindServer {
         // ~keep A CLI session keeps the error as an error: its code is the CLI's exit status.
         match args.0 {
             Ok(params) if self.cli => body(params).await,
-            Ok(params) => Ok(into_tool_result(body(params).await.map_err(|error| {
-                super::error_text::Redaction::for_workspace(&self.state.shared.root).scrub(error)
-            }))),
+            Ok(params) => {
+                Ok(into_tool_result(body(params).await.map_err(|error| {
+                    scrub(&redaction_for(&self.state.shared.root), error)
+                })))
+            }
             Err(message) if self.cli => Err(McpError::invalid_params(message, None)),
             Err(message) => Ok(tool_error(ErrorKind::InvalidArgument, message)),
         }

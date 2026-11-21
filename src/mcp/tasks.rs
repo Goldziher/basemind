@@ -82,7 +82,7 @@ fn deadline_stop(cli: bool, deadline: Duration) -> Result<CallToolResult, TaskEx
         return Err(TaskExit::Error(stopped));
     }
     Ok(super::tool_contract::tool_error(
-        super::error_kind::ErrorKind::of(&stopped),
+        super::tool_contract::kind_of(&stopped),
         stopped.message,
     ))
 }

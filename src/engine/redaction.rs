@@ -4,9 +4,7 @@
 //! A data-home path is written `$BASEMIND_DATA_HOME/…`, a repository path repository-relative, and
 //! any other path under the home directory `~/…`. The unredacted text goes to the log.
 
-use std::path::{Path, PathBuf};
-
-use rmcp::ErrorData as McpError;
+use std::path::Path;
 
 /// How a data-home path is written in a tool error.
 pub(crate) const DATA_HOME_PLACEHOLDER: &str = "$BASEMIND_DATA_HOME";
@@ -53,12 +51,6 @@ impl Redaction {
         Self { roots }
     }
 
-    /// Redact against the repository `root`, this process's data home and the user's home directory.
-    pub(crate) fn for_workspace(root: &Path) -> Self {
-        let home: Option<PathBuf> = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
-        Self::new(root, crate::data_root::DataRoot::current().path(), home.as_deref())
-    }
-
     /// `text` with every spelling of a root rewritten, the longest first, so a path is written
     /// against the most specific root that holds it.
     pub(crate) fn apply(&self, text: &str) -> String {
@@ -71,16 +63,6 @@ impl Redaction {
         spellings.into_iter().fold(text.to_string(), |text, (spelling, root)| {
             rewrite(&text, spelling, root)
         })
-    }
-
-    /// `error` with its message redacted, the unredacted message logged when it named a host path.
-    pub(crate) fn scrub(&self, mut error: McpError) -> McpError {
-        let redacted = self.apply(&error.message);
-        if redacted != error.message {
-            tracing::warn!(error = %error.message, "a tool error named host paths; its result names them redacted");
-            error.message = redacted.into();
-        }
-        error
     }
 }
 
@@ -162,23 +144,6 @@ mod tests {
     fn a_message_without_host_paths_is_unchanged() {
         let text = "`code_outline`: no file `src/x.rs` in this repository";
         assert_eq!(redaction().apply(text), text);
-        let error = redaction().scrub(McpError::invalid_params(text, None));
-        assert_eq!(error.message, text);
-    }
-
-    #[test]
-    fn scrubbing_keeps_the_code_and_data_and_redacts_the_message() {
-        let error = McpError::invalid_request(
-            "another basemind process holds the lock on /home/someone/.local/share/basemind/cache/workspaces/k/.lock",
-            Some(serde_json::json!({ "busy": true })),
-        );
-        let scrubbed = redaction().scrub(error);
-        assert_eq!(scrubbed.code, rmcp::model::ErrorCode::INVALID_REQUEST);
-        assert_eq!(
-            scrubbed.message,
-            "another basemind process holds the lock on $BASEMIND_DATA_HOME/cache/workspaces/k/.lock"
-        );
-        assert_eq!(scrubbed.data, Some(serde_json::json!({ "busy": true })));
     }
 
     /// The text of a real temporary repository, which `canonicalize` may spell differently (macOS
