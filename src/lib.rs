@@ -25,6 +25,7 @@ pub mod eval;
 pub mod extract;
 pub mod git;
 pub mod git_cache;
+mod git_cache_disk;
 pub mod git_history;
 pub mod hashing;
 pub mod index;

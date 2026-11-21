@@ -738,6 +738,11 @@ Contract of the 15 verb tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
 Commits are immutable, so once a sha-keyed entry is on disk it's valid forever.
 HEAD-keyed entries (`log`) roll off naturally when HEAD moves.
 
+Each disk subdirectory is held to `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` (256 MiB) by an mtime-LRU sweep on
+a background thread (`src/git_cache_disk.rs`): one when the cache opens, and one whenever the bytes
+written since the last sweep take a subdirectory past its budget. A sweep evicts the oldest payloads
+down to nine tenths of the budget.
+
 Drop the disk cache with `basemind cache clear`.
 
 ### Git-history index

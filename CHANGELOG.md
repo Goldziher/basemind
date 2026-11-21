@@ -795,6 +795,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`extends React.Component`), a generic type (`implements Repo<T>`, `interface A extends B<T>`) or a
   Python subscript (`Generic[T]`) is now an implementation, named by its last segment.
   `EXTRACT_EPOCH` is 7.
+- The git cache's disk directories stay within their budget while the daemon runs (#304). They were
+  swept only when a workspace's read stack opened, so a daemon hosting one for days grew `log/`,
+  `blame/` and `commit_files/` without bound. Each write now counts its bytes, and the write that
+  takes a directory past `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` starts a sweep that evicts the oldest
+  payloads down to nine tenths of it. The sweep at open runs in the background too, so opening a
+  stack no longer stats every cached file.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
