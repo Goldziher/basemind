@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-lsp-positions"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "bincode",
  "memchr",
@@ -905,7 +905,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-tree-sitter-graph"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "env_logger",
  "indoc",
@@ -922,7 +922,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-tree-sitter-stack-graphs"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "basemind-lsp-positions",
  "basemind-stack-graphs",

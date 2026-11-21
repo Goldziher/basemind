@@ -256,9 +256,9 @@ toon-format = { version = "0.7", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.27"
-tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.1", path = "crates/tree-sitter-graph", optional = true }
+tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.2", path = "crates/tree-sitter-graph", optional = true }
 tree-sitter-language-pack = "1.25.2"
-tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.1", path = "crates/tree-sitter-stack-graphs", optional = true }
+tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.2", path = "crates/tree-sitter-stack-graphs", optional = true }
 xberg = { version = "1.4.2", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 zstd = "0.14.4"
 
