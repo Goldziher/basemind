@@ -41,9 +41,19 @@ fn submodule(
     (got.and_then(|rel| rel.as_str().map(str::to_string)), probes)
 }
 
+/// `(files, importer, package, import, name, expected)` for one submodule-resolution case.
+type SubmoduleCase<'a> = (
+    &'a [&'a str],
+    &'a str,
+    Option<&'a str>,
+    &'a str,
+    &'a str,
+    Option<&'a str>,
+);
+
 #[test]
 fn python_from_import_name_resolves_as_a_submodule() {
-    let cases: &[(&[&str], &str, Option<&str>, &str, &str, Option<&str>)] = &[
+    let cases: &[SubmoduleCase<'_>] = &[
         (
             &["pkg/__init__.py", "pkg/views.py", "pkg/app.py"],
             "pkg/app.py",
