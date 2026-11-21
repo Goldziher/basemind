@@ -23,6 +23,7 @@ use crate::scanner_candidates::ALLOW_EXTRA_ROOTS_ENV;
 use crate::scanner_filter::ALLOW_REPO_CREDENTIALS_ENV;
 use crate::store_gc::{BLOB_GC_GRACE_ENV, grace_from};
 use crate::store_gc_budget::{CACHE_BUDGET_ENV, cache_budget_from};
+use crate::store_gc_namespaces::{PRUNE_AFTER_DAYS_ENV, prune_hold_from};
 use crate::store_gc_protect::{CACHE_GRACE_ENV, cache_grace_from};
 use crate::store_layout::DATA_HOME_ENV;
 
@@ -86,6 +87,7 @@ pub fn engine_config_from(lookup: impl Fn(&str) -> Option<OsString>) -> EngineCo
     config.gc.budget_bytes = cache_budget_from(text(&lookup, CACHE_BUDGET_ENV).as_deref());
     config.gc.grace = cache_grace_from(text(&lookup, CACHE_GRACE_ENV).as_deref());
     config.gc.blob_grace = grace_from(text(&lookup, BLOB_GC_GRACE_ENV).as_deref());
+    config.gc.superseded_hold = prune_hold_from(text(&lookup, PRUNE_AFTER_DAYS_ENV).as_deref());
     config.min_free_bytes = headroom_bytes(text(&lookup, MIN_FREE_ENV).as_deref());
     config.max_live_daemons = max_live_daemons_from(text(&lookup, MAX_LIVE_DAEMONS_ENV).as_deref());
     git(&lookup, &mut config);
@@ -308,12 +310,14 @@ mod tests {
             (CACHE_BUDGET_ENV, "512"),
             (CACHE_GRACE_ENV, "30"),
             (BLOB_GC_GRACE_ENV, "0"),
+            (PRUNE_AFTER_DAYS_ENV, "3"),
             (MIN_FREE_ENV, "64"),
             (MAX_LIVE_DAEMONS_ENV, "3"),
         ]);
         assert_eq!(config.gc.budget_bytes, Some(512 << 20));
         assert_eq!(config.gc.grace, Duration::from_secs(30 * 60));
         assert_eq!(config.gc.blob_grace, Duration::ZERO);
+        assert_eq!(config.gc.superseded_hold, Duration::from_secs(3 * 24 * 60 * 60));
         assert_eq!(config.min_free_bytes, 64 << 20);
         assert_eq!(config.max_live_daemons, 3);
 

@@ -150,6 +150,11 @@ pub struct DaemonRecord {
     pub dir: PathBuf,
     /// The daemon's build version.
     pub version: String,
+    /// The blob schema whose namespace the daemon reads ([`crate::extract::SCHEMA_VER`]). `None` in a
+    /// record a release up to 0.33 wrote: [`crate::store_gc_namespaces`] then reads the namespace
+    /// off `version`.
+    #[serde(default)]
+    pub blob_schema: Option<u16>,
     /// Unix seconds when the daemon acquired the lock.
     pub started_unix: i64,
     /// The daemon's own [`crate::boot_identity::process_start`]: the process at `pid` is the daemon
@@ -168,7 +173,12 @@ pub struct DaemonRecord {
 /// up to 0.33 keep their records directly in it; their scan reads only `*.pid` files there, so a
 /// generation subdirectory is invisible to them.
 fn daemons_root() -> PathBuf {
-    DataRoot::current().path().join(DAEMONS_SUBDIR)
+    daemons_root_of(&DataRoot::current())
+}
+
+/// The registry root of the data home `data`.
+fn daemons_root_of(data: &DataRoot) -> PathBuf {
+    data.path().join(DAEMONS_SUBDIR)
 }
 
 /// This generation's registry directory (`<data_home>/daemons/g<N>/`): where this binary's daemons
@@ -322,34 +332,135 @@ fn count_recorded_in(dir: &Path, kind: DaemonKind) -> usize {
         .count()
 }
 
-/// The registry record of the live daemon running as `pid`, whatever its generation or kind: the
-/// releases up to 0.33 record directly in the registry root, later ones in a `g<N>/` below it.
-/// Read-only. For naming the process that holds something this daemon wants; a pid alone does not
-/// say which basemind version it is. A record that does not name the process now under its pid
-/// ([`crate::process_start::can_have_written`]) is passed over: a daemon that was killed left it,
-/// and the number now belongs to something else.
+/// The registry record of the live daemon running as `pid`, whatever its generation or kind (see
+/// [`registered_daemons`]). For naming the process that holds something this daemon wants; a pid
+/// alone does not say which basemind version it is. A process that refuses to be opened is not
+/// named ([`pid_is_live`]): it is more likely a stranger given a stale record's pid.
 pub fn registered_daemon(pid: u32) -> Option<DaemonRecord> {
     registered_daemon_in(&daemons_root(), pid)
 }
 
 /// [`registered_daemon`] over an explicit registry root.
 fn registered_daemon_in(root: &Path, pid: u32) -> Option<DaemonRecord> {
-    let recorded_in = |dir: &Path| {
-        std::fs::read_dir(dir)
-            .ok()?
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("pid"))
-            .filter_map(|path| read_record(&path))
-            .find(|record| record.pid == pid && pid_is_live(pid) && crate::process_start::can_have_written(record))
+    registered_daemon_judged_by(root, pid, crate::boot_identity::pid_state)
+}
+
+/// [`registered_daemon_in`] with what runs at a pid read by `state`.
+fn registered_daemon_judged_by(
+    root: &Path,
+    pid: u32,
+    state: impl Fn(u32) -> crate::boot_identity::PidState,
+) -> Option<DaemonRecord> {
+    if state(pid) != crate::boot_identity::PidState::Live {
+        return None;
+    }
+    census_of(root, state, crate::process_start::can_have_written)
+        .daemons
+        .into_iter()
+        .map(|daemon| daemon.record)
+        .find(|record| record.pid == pid)
+}
+
+/// A registered daemon's record and where it was found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredDaemon {
+    /// The daemon's record.
+    pub record: DaemonRecord,
+    /// Whether the record sits directly in the registry root, where only releases up to 0.33
+    /// record; a later release records under its generation's `g<N>/`.
+    pub pre_generation: bool,
+}
+
+/// The daemons [`registered_daemons`] lists, and whether it read the whole registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonCensus {
+    /// The registered daemons that may be running.
+    pub daemons: Vec<RegisteredDaemon>,
+    /// Whether every registry directory was listed and every record in it read. A registry, a
+    /// generation or a record that does not exist is read as empty: its daemons exited. Any other
+    /// read error may leave out a daemon that runs, so a caller keeping what the daemons use keeps
+    /// everything when this is false.
+    pub complete: bool,
+}
+
+/// Every daemon registered under the data home `data` that may be running, of every generation and
+/// kind: the records in the registry root first, then those of each `g<N>/`. Read-only. For a
+/// caller that keeps what such a daemon uses, so a process that refuses to be opened counts as
+/// running ([`crate::boot_identity::PidState::may_be_live`]), and only a recorded process start
+/// that is not the one under the pid passes a record over
+/// ([`crate::process_start::may_still_have_written`]): a daemon that was killed left it, and the
+/// number now belongs to something else.
+pub fn registered_daemons(data: &DataRoot) -> DaemonCensus {
+    registered_daemons_in(&daemons_root_of(data))
+}
+
+/// [`registered_daemons`] over an explicit registry root.
+fn registered_daemons_in(root: &Path) -> DaemonCensus {
+    registered_daemons_judged_by(root, crate::boot_identity::pid_state)
+}
+
+/// [`registered_daemons_in`] with what runs at a pid read by `state`.
+fn registered_daemons_judged_by(root: &Path, state: impl Fn(u32) -> crate::boot_identity::PidState) -> DaemonCensus {
+    census_of(root, state, crate::process_start::may_still_have_written)
+}
+
+/// The daemons registered under `root` whose pid `state` says may be live and whose record
+/// `may_have_written` says the process under that pid can have written.
+fn census_of(
+    root: &Path,
+    state: impl Fn(u32) -> crate::boot_identity::PidState,
+    may_have_written: impl Fn(&DaemonRecord) -> bool,
+) -> DaemonCensus {
+    let (mut records, mut complete) = records_in(root, true);
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                complete = false;
+                continue;
+            };
+            let is_generation = entry.file_name().to_str().is_some_and(is_generation_name) && entry.path().is_dir();
+            if is_generation {
+                let (generation, listed) = records_in(&entry.path(), false);
+                records.extend(generation);
+                complete &= listed;
+            }
+        }
+    }
+    let daemons = records
+        .into_iter()
+        .filter(|daemon| state(daemon.record.pid).may_be_live() && may_have_written(&daemon.record))
+        .collect();
+    DaemonCensus { daemons, complete }
+}
+
+/// The `.pid` records directly in `dir`, and whether all of them were read: a directory or record
+/// that is gone reads as none, any other error leaves the listing incomplete.
+fn records_in(dir: &Path, pre_generation: bool) -> (Vec<RegisteredDaemon>, bool) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => return (Vec::new(), error.kind() == std::io::ErrorKind::NotFound),
     };
-    recorded_in(root).or_else(|| {
-        std::fs::read_dir(root)
-            .ok()?
-            .flatten()
-            .filter(|entry| entry.file_name().to_str().is_some_and(is_generation_name))
-            .find_map(|entry| recorded_in(&entry.path()))
-    })
+    let mut complete = true;
+    let mut records = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            complete = false;
+            continue;
+        };
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("pid") {
+            continue;
+        }
+        match std::fs::read(&path) {
+            Ok(bytes) => records.extend(
+                serde_json::from_slice::<DaemonRecord>(&bytes)
+                    .ok()
+                    .map(|record| RegisteredDaemon { record, pre_generation }),
+            ),
+            Err(error) => complete &= error.kind() == std::io::ErrorKind::NotFound,
+        }
+    }
+    (records, complete)
 }
 
 /// What `<dir>/daemon.lock` says about a daemon in `dir`.
@@ -540,6 +651,7 @@ impl DaemonLock {
             kind,
             dir: dir.to_path_buf(),
             version: version.to_string(),
+            blob_schema: Some(crate::extract::SCHEMA_VER),
             started_unix: now_unix(),
             process_start: crate::boot_identity::process_start(std::process::id()),
             boot: crate::boot_identity::current(),

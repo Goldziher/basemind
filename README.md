@@ -1124,6 +1124,7 @@ A cap variable must be a positive integer; anything else falls back to the defau
 | `BASEMIND_DATA_HOME` | Root of the machine-global cache (default: the XDG data directory). |
 | `BASEMIND_GREP_BLOOM=0` | Force `code grep` to sweep every file instead of using the per-file trigram bloom prefilter. |
 | `BASEMIND_BLOB_GC_GRACE_SECS` | Age (seconds) below which the blob sweep keeps a blob; default 6 hours. |
+| `BASEMIND_PRUNE_AFTER_DAYS` | Days an older version is kept: by the plugin launcher after its last launch, and by the blob sweep (its blob namespace) after its last write; default 14. |
 | `BASEMIND_WARM_READ_STACKS` | Daemon-hosted read stacks kept warm at once; default 3. |
 | `BASEMIND_NO_AUTOSPAWN=1` | Connect to a running daemon but never start one. |
 | `BASEMIND_MAX_DAEMONS` | Ceiling on live daemons per machine before a spawn is refused; default 8. |
