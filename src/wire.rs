@@ -38,9 +38,15 @@ pub fn encode(tool: &str, value: &Value) -> String {
 }
 
 /// `value` as TOON. Never fails for a JSON value; an encoder error falls back to compact JSON, which
-/// [`decode`] also reads.
+/// [`decode`] also reads. A debug build panics on that error instead, so a test sees it.
 pub fn toon(value: &Value) -> String {
-    toon_format::encode_default(value).unwrap_or_else(|_| value.to_string())
+    let encoded = toon_format::encode_default(value);
+    debug_assert!(
+        encoded.is_ok(),
+        "TOON could not encode a JSON value ({:?}): {value}",
+        encoded.as_ref().err()
+    );
+    encoded.unwrap_or_else(|_| value.to_string())
 }
 
 /// The JSON a tool's text answer encodes: compact JSON, TOON, or TOON followed by a `code_grep` row
@@ -87,8 +93,9 @@ pub fn decode(text: &str) -> Result<Value, String> {
 }
 
 /// `code_grep`'s answer as TOON lines for everything but `hits`, then the rows under file and symbol
-/// headers. `None` when `hits` lists nothing or holds a row the block cannot carry: one not starting
-/// with its line number, or holding a line break or carriage return.
+/// headers; an empty first group gets its bare `##` header, or it would read back as absent. `None`
+/// when `hits` lists nothing or holds a row the block cannot carry: one not starting with its line
+/// number, or holding a line break or carriage return.
 fn encode_grep(value: &Value) -> Option<String> {
     let map = value.as_object()?;
     let hits = map.get(HITS)?.as_object()?;
@@ -101,7 +108,8 @@ fn encode_grep(value: &Value) -> Option<String> {
         block.push_str(&header(path));
         block.push('\n');
         for (i, (symbol, rows)) in groups.as_object()?.iter().enumerate() {
-            if i > 0 || !symbol.is_empty() {
+            let rows = rows.as_array()?;
+            if i > 0 || !symbol.is_empty() || rows.is_empty() {
                 block.push_str(SYMBOL_HEADER);
                 if !symbol.is_empty() {
                     block.push(' ');
@@ -109,7 +117,7 @@ fn encode_grep(value: &Value) -> Option<String> {
                 }
                 block.push('\n');
             }
-            for row in rows.as_array()? {
+            for row in rows {
                 let row = row.as_str()?;
                 if !row.starts_with(|c: char| c.is_ascii_digit()) || row.contains(['\n', '\r']) {
                     return None;

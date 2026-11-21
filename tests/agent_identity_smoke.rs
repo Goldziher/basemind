@@ -88,7 +88,7 @@ async fn a_hook_in_a_subdirectory_acts_as_the_serve_session() {
             _ => None,
         })
         .expect("a reply");
-    let thread = serde_json::from_str::<Value>(&text).expect("JSON")["thread"]
+    let thread = basemind::wire::decode(&text).expect("a readable reply")["thread"]
         .as_str()
         .expect("thread")
         .to_string();

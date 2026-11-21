@@ -70,7 +70,7 @@ impl Fixture {
 }
 
 fn body(result: &Value) -> Value {
-    serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    crate::wire::decode(result["content"][0]["text"].as_str().unwrap()).unwrap()
 }
 
 #[test]
