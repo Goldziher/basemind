@@ -23,7 +23,7 @@ url = "https://github.com/Goldziher"
 
 [[plugin.mcp]]
 name = "basemind"
-command = "${PLUGIN_ROOT}/scripts/mcp-launch.sh"
+command = "${PLUGIN_ROOT}/scripts/mcp-launch.cmd"
 args = ["serve"]
 
 [plugin.interface]

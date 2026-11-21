@@ -28,6 +28,15 @@ cd basemind
 The MCP launcher downloads the matching published basemind binary. Set `BASEMIND_BIN` to select a
 local build for launcher-based integrations. Hermes and Pi require `basemind` on `PATH`.
 
+### Platforms
+
+The plugin runs on macOS (Apple silicon), Linux (x86-64 and arm64, glibc) and Windows (x86-64).
+Every manifest starts the server through `scripts/mcp-launch.cmd`, which runs the bash launcher
+`scripts/mcp-launch.sh`. macOS and Linux need `bash`. Windows needs bash from
+[Git for Windows](https://git-scm.com/download/win): the shim looks for it at
+`CLAUDE_CODE_GIT_BASH_PATH`, then in the Program Files and per-user Git installs, then on `PATH`, and
+never uses the WSL `bash`. Without it the server exits with a message naming Git for Windows.
+
 ### Hermes
 
 Use Python 3.11 or newer in the environment that runs Hermes, and install the plugin at the version
