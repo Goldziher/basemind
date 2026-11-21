@@ -7,8 +7,8 @@ name: bm-init
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:85a6038939f73ae3a50da568619bda404ef167ffd1b5395daa4bee77b93606c4
-Source-Hash: blake3:8a1b4c27c72c1dfd5dc8bbc39f88e7ae981bd15664dc19aa0d40461ce744820f
+Content-Hash: blake3:e6893f12949b02628f316507ca77686ddc810f736293464903bf242c632c0631
+Source-Hash: blake3:db41db461cca96f8e1776c758d0c2e5844b9943db61812492af557d90cfb98c7
 Schema-Version: v1
 -->
 
@@ -32,7 +32,8 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
 2. **Ask where the rules block should go — do NOT assume.** Never write a committed `CLAUDE.md`
    or `AGENTS.md` without the user's explicit say-so. Present the choice:
    - `CLAUDE.local.md` — personal, gitignored (**recommended default**)
-   - `AGENTS.local.md` — personal, gitignored (for AGENTS-based tools)
+   - `AGENTS.local.md` — personal, gitignored; no agent host loads it by itself (OpenCode does once
+     `"instructions": ["AGENTS.local.md"]` is in `~/.config/opencode/opencode.json`)
    - `CLAUDE.md` — committed, shared with everyone on the repo
    - `AGENTS.md` — committed, shared with everyone on the repo
    - `none` — write no rules
@@ -76,7 +77,8 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
 - `--rules-target auto` (the default) NEVER writes a committed `CLAUDE.md` / `AGENTS.md` unasked:
   it routes to the gitignored `.ai-rulez/local/rules/basemind-usage.md` when `.ai-rulez/config.toml`
   owns governance (then tell the user to run `ai-rulez generate`; do NOT run it for them), otherwise
-  to the gitignored `CLAUDE.local.md` (or `AGENTS.local.md` when the repo uses AGENTS). Choosing
+  to the gitignored `CLAUDE.local.md` (or `AGENTS.local.md` when the repo uses AGENTS; pass on the
+  note `init` prints about which hosts read it). Choosing
   `claude` / `agents` / `ai-rulez` explicitly opts into the corresponding committed file.
 - The block sits between HTML-comment markers (`BEGIN basemind` … `END basemind`) and is
   replaced in place on re-run, never duplicated. Content outside the markers is never touched.
