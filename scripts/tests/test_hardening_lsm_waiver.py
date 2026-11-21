@@ -67,6 +67,18 @@ class DaemonSlopeWaiverTest(unittest.TestCase):
         self.assertTrue(rules[DAEMON_FOOTPRINT].passed)
         self.assertFalse(rules[DAEMON_FOOTPRINT].waived)
 
+    def test_a_late_step_above_the_cache_is_not_waived_although_its_slope_is(self) -> None:
+        records = daemon_climb(0.0)
+        proc = [r for r in records if r.get("kind") == "proc" and r["pid"] == synth.DAEMON and r["phase"] == "load"]
+        step_from = proc[len(proc) * 9 // 10]["t"]
+        for r in proc:
+            if r["t"] >= step_from:
+                r["footprint"] = r.get("footprint", 0) + 320 * 1024 * 1024
+                r["rss"] = r.get("rss", 0) + 320 * 1024 * 1024
+        rule = judge(records)[DAEMON_FOOTPRINT]
+        self.assertFalse(rule.passed, rule.detail)
+        self.assertIn("measured rise", rule.detail)
+
     def test_a_climbing_serve_is_not_waived(self) -> None:
         records = synth.climb(synth.healthy(random.Random(11)), synth.MAIN, 3.0)
         rule = judge(records)[f"R2 main serve {synth.MAIN} memory (footprint)"]

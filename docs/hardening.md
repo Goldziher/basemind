@@ -131,8 +131,10 @@ daemon may grow by no more than the block caches it holds for the soaked workspa
 in `src/git_history/mod.rs` and `src/comms/v2/store/open.rs`). R2 and R2f turn that capacity into a
 slope bound over the window they judge: 296 MiB divided by the load minutes (16.5 MiB/min over the
 18 judged minutes of a 20-minute soak, 6.9 MiB/min over the 43 of a 45-minute one). A daemon climb
-at or under it passes as `waived`; one above it is more than the caches can hold and fails. The
-waiver covers the daemon only (a `serve` holds no database), and over a short soak the bound is
+at or under it passes as `waived`; one above it is more than the caches can hold and fails. R2 also
+requires the measured rise (the median of the last tenth of the load samples less the median of the
+first tenth) to fit in the 296 MiB, since a slope fitted over the window can understate a late step.
+The waiver covers the daemon only (a `serve` holds no database), and over a short soak the bound is
 loose, since the caches can fill within minutes. `--lsm-cache-mib 0` lifts it, which is how the
 selftest's leak cases are judged and how #164 is closed.
 

@@ -159,18 +159,28 @@ def lsm_waiver_bound(minutes: float, args: argparse.Namespace) -> float:
     return args.lsm_cache_mib / minutes if minutes > 0 else 0.0
 
 
-def _waiver(rate: float, minutes: float, args: argparse.Namespace) -> tuple[bool, str, str]:
+def _waiver(rate: float, minutes: float, args: argparse.Namespace, rise: float | None = None) -> tuple[bool, str, str]:
     """Whether a daemon memory `rate` (MiB/min) over `minutes` is waived, the note for its detail and
-    the suffix for its threshold."""
+    the suffix for its threshold. A fitted slope can understate a late step, so a measured `rise`
+    (MiB) must also fit in the block caches when the caller has one."""
     if args.lsm_cache_mib <= 0:
         return False, "; no lsm-tree block-cache waiver (--lsm-cache-mib 0)", ""
     bound = lsm_waiver_bound(minutes, args)
-    waived = rate <= bound
+    waived = rate <= bound and (rise is None or rise <= args.lsm_cache_mib)
+    rise_note = f", measured rise {rise:.1f} MiB" if rise is not None else ""
     note = (
         f"; {'waived until #164' if waived else 'over the #164 waiver bound'}: lsm-tree block-cache bound "
-        f"{bound:.3f} MiB/min ({args.lsm_cache_mib:g} MiB of block cache over {minutes:.1f} min)"
+        f"{bound:.3f} MiB/min ({args.lsm_cache_mib:g} MiB of block cache over {minutes:.1f} min{rise_note})"
     )
     return waived, note, f"; waived to {bound:.3f} MiB/min until #164"
+
+
+def measured_rise(points: list[tuple[float, float]], scale: float = 1.0) -> float:
+    """The level at the end of a series less the level at its start, each the median of a tenth of the
+    samples (at least three), so sampling noise does not move it and a late step is not averaged away."""
+    k = max(3, len(points) // 10)
+    ys = [y / scale for _, y in points]
+    return statistics.median(ys[-k:]) - statistics.median(ys[:k])
 
 
 def daemon_memory_rule(v: Verdict, label: str, points: list[tuple[float, float]], args: argparse.Namespace) -> None:
@@ -184,7 +194,7 @@ def daemon_memory_rule(v: Verdict, label: str, points: list[tuple[float, float]]
     if not growth.climbing:
         v.add(label, True, growth.detail("MiB"), growth.value("MiB"), threshold)
         return
-    waived, note, suffix = _waiver(growth.whole.slope, growth.minutes, args)
+    waived, note, suffix = _waiver(growth.whole.slope, growth.minutes, args, measured_rise(points, MIB))
     v.rules.append(Rule(label, waived, growth.detail("MiB") + note, growth.value("MiB"), threshold + suffix, waived))
 
 
