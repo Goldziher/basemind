@@ -80,9 +80,11 @@ impl ServerHandler for BasemindServer {
             let deadline = self.heavy_admission.deadline();
             return match tasks::run_bounded_read(admission, ct, deadline, self.tool_router.call(tcc)).await {
                 // ~keep Like `server_busy`: the agent reads a stop it can act on; a CLI keeps the error.
-                Err(stopped) if !self.cli && tasks::is_deadline_exceeded(&stopped) => Ok(
-                    rmcp::model::CallToolResponse::Complete(super::tool_contract::tool_error(stopped.message)),
-                ),
+                Err(stopped) if !self.cli && tasks::is_deadline_exceeded(&stopped) => {
+                    Ok(rmcp::model::CallToolResponse::Complete(
+                        super::tool_contract::tool_error(super::error_kind::ErrorKind::of(&stopped), stopped.message),
+                    ))
+                }
                 answered => answered,
             };
         }

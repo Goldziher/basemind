@@ -174,7 +174,7 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   |---|---|---|
   | `invalid_argument` | the call cannot be answered as given; change the arguments | `false` |
   | `unavailable` | not available in this workspace, session or build | `false` |
-  | `index_unavailable` | the index is empty, damaged or held by another process | `true` |
+  | `index_unavailable` | the index is empty, damaged or unreadable | `true` |
   | `busy` | another call or process holds what the call needs | `true` |
   | `cancelled` | the request was cancelled before it finished | `true` |
   | `internal` | a failure inside basemind the caller cannot fix | `false` |

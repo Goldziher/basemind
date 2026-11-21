@@ -19,7 +19,7 @@ pub enum EngineError {
     /// read-only store asked to write.
     #[error("{0}")]
     Unavailable(String),
-    /// The index cannot be read right now (empty, or held by another process); retry later.
+    /// The index cannot be read right now (empty, damaged or unreadable); retry later.
     #[error("{0}")]
     IndexUnavailable(String),
     /// Another process holds what the operation reads (the index, the writer lock): retry, or route

@@ -47,7 +47,10 @@ impl ScanObserver for RescanPaths {
 /// name their repair (`scan_error` in `src/engine/error.rs`).
 pub(crate) fn rescan_error(error: &ScanError) -> EngineError {
     match error {
-        ScanError::Store(_) | ScanError::IndexFault(_) => super::error::scan_error(error).in_context("rescan"),
+        ScanError::Store(_) | ScanError::IndexFault(_) => {
+            tracing::warn!(error = %error, "a rescan failed; the reply carries the settled message");
+            super::error::scan_error(error).in_context("rescan")
+        }
         _ => EngineError::internal(format!("rescan: {error}")),
     }
 }

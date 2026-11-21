@@ -22,7 +22,7 @@ pub(crate) enum ErrorKind {
     InvalidArgument,
     /// The operation is not available in this workspace, session or build.
     Unavailable,
-    /// The index cannot be read right now: empty, damaged, or held elsewhere.
+    /// The index cannot be read right now: empty, damaged or unreadable.
     IndexUnavailable,
     /// Another call or process holds what this one needs.
     Busy,

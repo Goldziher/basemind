@@ -81,7 +81,10 @@ fn deadline_stop(cli: bool, deadline: Duration) -> Result<CallToolResult, TaskEx
     if cli {
         return Err(TaskExit::Error(stopped));
     }
-    Ok(super::tool_contract::tool_error(stopped.message))
+    Ok(super::tool_contract::tool_error(
+        super::error_kind::ErrorKind::of(&stopped),
+        stopped.message,
+    ))
 }
 
 /// Whether `error` is a [`deadline_exceeded`] stop.
