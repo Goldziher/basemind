@@ -25,15 +25,22 @@ repository.
 - `git_log` with no arguments is a recency window; `query` (commit message) and `author` (name and
   email) find a commit arbitrarily far back and combine with each other. `symbol` needs `path`.
 - A symbol's history and a directory's history (a `path` ending in `/`) read one window of commits
-  per page: an empty page with `truncated_reason: "window"` and a `next_cursor` is not the end.
+  per page: an empty page with `truncated_reason: "span_limit"` and a `next_cursor` is not the end.
   Follow the cursor until it is absent.
 - `git_blame` locates a `symbol` in the file as it is at `rev` (default HEAD), so a symbol that
   exists only uncommitted is not found. `line` / `end_line` are 1-based and inclusive.
+- A file's history, and a symbol's, comes from the git-history index when it holds HEAD, and a path
+  no commit touches answers at once. Without it each page tests at most 10 000 commits of the live
+  history: a page cut there says `truncated_reason: "span_limit"`, and its `next_cursor` goes on
+  further back.
 - `git_diff` with `path` diffs against HEAD by default (`from`) and the working tree (`to`). A diff
   stops at 200 hunks or 128 KiB and sets `truncated`; it has no cursor, so narrow `from` / `to`. A
-  structural diff compares `from` with the indexed working tree and takes no `to`.
+  structural diff compares `from` with the indexed working tree and takes no `to`. Both kinds
+  compare the working tree in the form git stores, as `git diff` does: line endings per `core.autocrlf` and
+  `.gitattributes`, clean filters such as Git LFS run. A filter that fails is an error.
 - A shallow clone sets `truncated` with `truncated_reason: "shallow_clone"`: an absent commit is
-  then inconclusive.
+  then inconclusive. Answers taken while the clone is shallow are not cached, so the call after a
+  `git fetch --unshallow` answers from the full history.
 
 ## CLI shorthands and CLI-only commands
 
@@ -45,5 +52,7 @@ shape of the calls above. `basemind git churn` ranks the most frequently changed
 `basemind git hotspots` lists the files where change and size meet: the commits and authors in a
 window (`--since`, default `90d`), lines, symbols, the longest function and importers, keeping the
 files with two or more of these in the top 10% of the files changed in the window. It prints raw
-numbers, no score; `--path` narrows it and `--limit` caps the rows (default 20). None of the three
-has an MCP tool.
+numbers, no score; `--path` narrows it and `--limit` caps the rows (default 20). The window ends at
+HEAD's commit time and counts the commits authored in it; a rebased or merged branch whose commits
+keep older author dates is passed over, not taken for the window's start. None of the three has an
+MCP tool.

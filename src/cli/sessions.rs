@@ -6,7 +6,7 @@
 //! stdout and writes nothing else.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Args;
@@ -37,11 +37,10 @@ fn parse_since(value: &str) -> Result<String, String> {
     }
 }
 
-/// Run `basemind sessions` for the repository at `root`, reading the roots under the home directory.
+/// Run `basemind sessions` for the repository at `root`, reading the roots under the home directory:
+/// `HOME`, or `USERPROFILE` on Windows, else the account's profile directory.
 pub fn run(root: &Path, json: bool, args: &SessionsArgs) -> Result<()> {
-    let home = directories::BaseDirs::new()
-        .map(|dirs| dirs.home_dir().to_path_buf())
-        .context("no home directory to read session transcripts from")?;
+    let home = transcript_home(std::env::home_dir())?;
     let report = collect(
         &SessionRoots::under_home(&home),
         &Scope::discover(root),
@@ -49,6 +48,13 @@ pub fn run(root: &Path, json: bool, args: &SessionsArgs) -> Result<()> {
     );
     let mut out = std::io::stdout().lock();
     render(&report, json, &mut out)
+}
+
+/// The home directory the transcript roots are under. An empty one (`HOME` set to nothing, or an
+/// account without a home field) is none: its roots would be relative to the current directory.
+fn transcript_home(home: Option<PathBuf>) -> Result<PathBuf> {
+    home.filter(|home| !home.as_os_str().is_empty())
+        .context("no home directory to read session transcripts from")
 }
 
 /// Write `report` as JSON or as text.
@@ -228,6 +234,18 @@ mod tests {
         assert!(parse_since("2026-13-01").is_err());
         assert!(parse_since("7d").is_err());
         assert!(parse_since("2026-1-01").is_err());
+    }
+
+    #[test]
+    fn an_empty_or_missing_home_is_refused() {
+        for home in [None, Some(PathBuf::new())] {
+            let error = transcript_home(home).expect_err("no home");
+            assert_eq!(error.to_string(), "no home directory to read session transcripts from");
+        }
+        assert_eq!(
+            transcript_home(Some(PathBuf::from("/home/a"))).expect("a home"),
+            PathBuf::from("/home/a")
+        );
     }
 
     #[test]

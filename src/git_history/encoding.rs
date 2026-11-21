@@ -36,7 +36,11 @@ pub fn read_uvarint(buf: &[u8], cursor: &mut usize) -> Option<u64> {
         if shift >= 64 {
             return None;
         }
-        result |= u64::from(byte & 0x7f) << shift;
+        let payload = u64::from(byte & 0x7f);
+        if shift == 63 && payload > 1 {
+            return None;
+        }
+        result |= payload << shift;
         if byte & 0x80 == 0 {
             return Some(result);
         }
@@ -81,16 +85,26 @@ pub fn decode_ords(buf: &[u8]) -> Vec<u32> {
 /// deep the path's history is — the property that keeps `commits_touching` sub-millisecond on the
 /// hottest files. `n == usize::MAX` decodes the whole list (used by [`decode_ords`]).
 pub fn decode_ords_head(buf: &[u8], n: usize) -> Vec<u32> {
-    if n == 0 {
-        return Vec::new();
-    }
+    decode_head(buf, n).0
+}
+
+/// [`decode_ords_head`] for a read that must not pass a damaged posting off as a short one: `None`
+/// when a varint among the newest `n` does not decode, where [`decode_ords_head`] returns the clean
+/// prefix.
+pub fn try_decode_ords_head(buf: &[u8], n: usize) -> Option<Vec<u32>> {
+    let (ords, clean) = decode_head(buf, n);
+    clean.then_some(ords)
+}
+
+/// The newest `n` ordinals, newest first, and whether every varint read decoded.
+fn decode_head(buf: &[u8], n: usize) -> (Vec<u32>, bool) {
     let mut out = Vec::new();
     let mut cursor = 0;
     let mut acc: u32 = 0;
     let mut first = true;
     while cursor < buf.len() && out.len() < n {
         let Some(delta) = read_uvarint(buf, &mut cursor) else {
-            break;
+            return (out, false);
         };
         acc = if first {
             delta as u32
@@ -100,7 +114,7 @@ pub fn decode_ords_head(buf: &[u8], n: usize) -> Vec<u32> {
         first = false;
         out.push(acc);
     }
-    out
+    (out, true)
 }
 
 /// Append a length-prefixed (`uvarint(len) ‖ bytes`) byte string.
@@ -259,6 +273,19 @@ mod tests {
     }
 
     #[test]
+    fn read_uvarint_rejects_a_tenth_byte_that_overflows_u64() {
+        let mut overflow = vec![0x80; 9];
+        overflow.push(0x02);
+        let mut cursor = 0;
+        assert_eq!(read_uvarint(&overflow, &mut cursor), None);
+
+        let mut max = vec![0xff; 9];
+        max.push(0x01);
+        let mut cursor = 0;
+        assert_eq!(read_uvarint(&max, &mut cursor), Some(u64::MAX));
+    }
+
+    #[test]
     fn ords_round_trip_through_encode_decode() {
         let ords = vec![0u32, 1, 2, 5, 100, 101, 250_000, 1_000_000];
         let buf = encode_ords(&ords);
@@ -285,6 +312,18 @@ mod tests {
         let buf = encode_ords(&ords);
         assert_eq!(decode_ords_head(&buf, 100), vec![30, 20, 10]);
         assert_eq!(decode_ords(&buf), ords);
+    }
+
+    #[test]
+    fn a_truncated_varint_in_the_head_is_refused_by_the_strict_decode_only() {
+        let mut buf = encode_ords(&[10, 20, 30]);
+        buf.push(0x80);
+        assert_eq!(decode_ords_head(&buf, 4), vec![30, 20, 10]);
+        assert_eq!(try_decode_ords_head(&buf, 4), None);
+        assert_eq!(try_decode_ords_head(&buf, 3), Some(vec![30, 20, 10]));
+        assert_eq!(try_decode_ords_head(&[0x80], 1), None);
+        assert_eq!(decode_ords_head(&[0x80], 1), Vec::<u32>::new());
+        assert_eq!(try_decode_ords_head(&[], 5), Some(Vec::new()));
     }
 
     #[test]

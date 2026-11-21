@@ -6,15 +6,16 @@
 //! `diff_outline`, `blame`, `blame_symbol`, `symbol_history`) in `file.rs`. The split
 //! is only about the 1000-line per-file cap.
 
-use super::by_path::{LIVE_WALK, by_path};
+use super::by_path::{LIVE_WALK, MATCHED_EARLIER, by_path};
 use super::common::{
     LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, LOG_WALK_MAX, commit_to_view, git_history_if_fresh, head_sha, head_snapshot_id,
-    require_git_repo,
+    live_walk_span, require_git_repo,
 };
 use super::show::{budget_commits, budget_commits_with_files, run_show};
 use crate::engine::budget::budget;
 use crate::engine::error::EngineError;
 use crate::engine::timing::elapsed_us;
+use crate::engine::types::{SPAN_LIMIT, UNINDEXED_SCAN};
 use crate::engine::types::git::{
     BlameFileParams, BlameSymbolParams, CommitView, CommitsTouchingParams, CommitsTouchingResponse, DiffFileParams,
     DiffOutlineParams, FindCommitsByPathParams, GitBlameParams, GitBlameResult, GitDiffParams, GitDiffResult,
@@ -23,7 +24,7 @@ use crate::engine::types::git::{
     WorkingTreeStatusView,
 };
 use crate::engine::workspace::Workspace;
-use crate::git::CommitInfo;
+use crate::git::{CommitInfo, TouchingSpan};
 use crate::git_history::fts::{self, FtsScope};
 use crate::path::RelPath;
 
@@ -418,30 +419,86 @@ pub(super) fn walk_cursor(
 /// One page of a newest-first history, and the cursor snapshot that says which list it was cut from:
 /// the git-history index's page when it returned one, the live walk's otherwise.
 ///
-/// The index answers with an empty list both when no commit matches and when the lookup failed (a
-/// forward to the daemon that did not come back), so an empty answer is checked against the
-/// repository itself. A cursor `issued` on the index is refused once the index stops answering: the
-/// index appends the commits a sync finds after the ones it holds, where the live walk interleaves
-/// them by commit time, so an offset into one is not an offset into the other. A cursor issued on
-/// the live walk keeps paging the live walk, which still lists the same HEAD: an index that catches
-/// up between two pages does not cut the walk off.
-pub(super) fn history_page(
+/// `indexed` is the index's answer, `None` when there is no fresh index or its lookup failed. An
+/// answer is trusted as given, an empty one too: it is the answer for a path no commit touches. A
+/// cursor `issued` on the index is refused once the index stops answering: the index appends the
+/// commits a sync finds after the ones it holds, where the live walk interleaves them by commit
+/// time, so an offset into one is not an offset into the other. A cursor issued on the live walk
+/// keeps paging the live walk, which still lists the same HEAD: an index that catches up between
+/// two pages does not cut the walk off.
+pub(super) fn history_page<T>(
     tool: &str,
     head: &str,
     issued: Option<u32>,
-    indexed: Option<Vec<CommitInfo>>,
-    live: impl FnOnce() -> Result<Vec<CommitInfo>, EngineError>,
-) -> Result<(Vec<CommitInfo>, u32), EngineError> {
+    indexed: Option<T>,
+    live: impl FnOnce() -> Result<T, EngineError>,
+) -> Result<(T, u32), EngineError> {
     let live_cursor = issued.is_some_and(|issued| issued & LIVE_WALK != 0);
-    let indexed = indexed.filter(|commits| !live_cursor && !commits.is_empty());
+    let indexed = indexed.filter(|_| !live_cursor);
     let snapshot = (head_snapshot_id(head) & !LIVE_WALK) | u32::from(indexed.is_none());
     if issued.is_some_and(|issued| issued != snapshot) {
         return Err(crate::engine::cursor::walk_switched(tool));
     }
     match indexed {
-        Some(commits) => Ok((commits, snapshot)),
+        Some(page) => Ok((page, snapshot)),
         None => Ok((live()?, snapshot)),
     }
+}
+
+/// The commits touching `path` from offset `from` on, at most `take` of them, and the cursor
+/// snapshot of the list they come from. The index answers with offsets into its list of the
+/// commits touching the path. Without it the live walk tests at most [`LOG_WALK_MAX`] commits from
+/// position `from` of the whole history, so a path that rarely or never changed costs a bounded
+/// walk, and a span that runs out says where the next page resumes.
+pub(super) fn touching_page(
+    ws: &Workspace,
+    head: &str,
+    issued: Option<u32>,
+    path: &RelPath,
+    from: usize,
+    take: usize,
+) -> Result<(TouchingSpan, u32), EngineError> {
+    let repo = require_git_repo(ws)?;
+    // The index keys a path by its exact bytes and the live walk ignores empty components, so both
+    // read the path through its components, or the index would answer `src//lib.rs` with nothing.
+    let path = &without_empty_components(path);
+    // The lookup's reads take no lock, so a sync that clears or rebuilds the index between the
+    // freshness check and them can make a path with history read as untouched: the answer counts
+    // only when the index still stamps `head` after it.
+    let indexed = git_history_if_fresh(ws, head).and_then(|index| {
+        index
+            .commits_touching(path, from, take)
+            .inspect_err(|error| tracing::warn!(%error, "git-history lookup failed; walking the history live"))
+            .ok()
+            .filter(|_| index.last_indexed_head_hex().as_deref() == Some(head))
+    });
+    history_page(
+        "git_log",
+        head,
+        issued,
+        indexed.map(|commits| TouchingSpan {
+            commits: commits
+                .into_iter()
+                .enumerate()
+                .map(|(index, commit)| (from + index, commit))
+                .collect(),
+            resume: None,
+        }),
+        || {
+            repo.touching_span(head, path, from, take, live_walk_span())
+                .map_err(|e| EngineError::internal(format!("log: {e}")))
+        },
+    )
+}
+
+/// `path` with its empty components (a doubled, leading or trailing `/`) dropped, bytes untouched.
+fn without_empty_components(path: &RelPath) -> RelPath {
+    let kept: Vec<&[u8]> = path
+        .as_bytes()
+        .split(|&b| b == b'/')
+        .filter(|c| !c.is_empty())
+        .collect();
+    RelPath::from(kept.join(&b'/').as_slice())
 }
 
 /// The refusal for a `path` that no commit reachable from HEAD touches and that is not on disk
@@ -488,7 +545,11 @@ fn run_recent(ws: &Workspace, params: RecentChangesParams) -> Result<RecentChang
         "git_log",
         &head,
         issued,
-        git_history_if_fresh(ws, &head).map(|index| index.recent_commits(skip, fetch, params.include_files)),
+        // The global log reads a row that fails as absent, so an empty page is checked against
+        // the live walk, which costs this page's commits only.
+        git_history_if_fresh(ws, &head)
+            .map(|index| index.recent_commits(skip, fetch, params.include_files))
+            .filter(|commits| !commits.is_empty()),
         || {
             repo.log_window(&head, skip, fetch, params.include_files)
                 .map_err(|e| EngineError::internal(format!("log: {e}")))
@@ -520,7 +581,7 @@ fn run_touching(ws: &Workspace, params: CommitsTouchingParams) -> Result<Commits
     let repo = require_git_repo(ws)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let head = head_sha(repo)?;
-    let Some((skip, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
+    let Some((packed, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
         return Ok(CommitsTouchingResponse {
             commits: Vec::new(),
             truncated: false,
@@ -530,39 +591,71 @@ fn run_touching(ws: &Workspace, params: CommitsTouchingParams) -> Result<Commits
             cursor_invalidated: true,
         });
     };
-    let skip = usize::try_from(skip).unwrap_or(usize::MAX);
+    let skip = usize::try_from(packed & !MATCHED_EARLIER).unwrap_or(usize::MAX);
+    let matched_earlier = packed & MATCHED_EARLIER != 0;
     let fetch = limit + 1;
-    let (commits, snapshot) = history_page(
-        "git_log",
-        &head,
-        issued,
-        git_history_if_fresh(ws, &head).map(|index| index.commits_touching(&params.path, skip, fetch)),
-        || {
-            repo.log_window_touching(&head, &params.path, skip, fetch)
-                .map_err(|e| EngineError::internal(format!("log: {e}")))
-        },
-    )?;
-    if commits.is_empty() && skip == 0 && !repo.is_shallow() && !on_disk(repo, &params.path) {
+    let (found, snapshot) = touching_page(ws, &head, issued, &params.path, skip, fetch)?;
+    // The history ran out with no page matching: the path is a mistake in the call unless it is on
+    // disk. One an earlier page matched has a history, which may end in its deletion.
+    if found.commits.is_empty()
+        && found.resume.is_none()
+        && !matched_earlier
+        && !repo.is_shallow()
+        && !on_disk(repo, &params.path)
+    {
         return Err(no_such_path(&params.path));
     }
-    let more = commits.len() > limit;
-    let page: Vec<CommitView> = commits
+    Ok(touching_response(
+        found,
+        limit,
+        params.max_tokens,
+        snapshot,
+        repo.is_shallow(),
+        matched_earlier,
+    ))
+}
+
+/// The `touching` page for the commits `found`, `limit` of them at most, its cursor cut from the
+/// list `snapshot` names and carrying whether this page or one before it (`matched_earlier`) listed
+/// a commit.
+fn touching_response(
+    found: TouchingSpan,
+    limit: usize,
+    max_tokens: Option<u32>,
+    snapshot: u32,
+    shallow: bool,
+    matched_earlier: bool,
+) -> CommitsTouchingResponse {
+    let offsets: Vec<usize> = found.commits.iter().map(|(offset, _)| *offset).collect();
+    let page: Vec<CommitView> = found
+        .commits
         .into_iter()
         .take(limit)
-        .map(|c| commit_to_view(c, false))
+        .map(|(_, c)| commit_to_view(c, false))
         .collect();
-    let (page, budgeted) = budget_commits(page, params.max_tokens);
-    let next_cursor = (more || budgeted)
-        .then(|| crate::engine::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
-    let truncated = repo.is_shallow();
-    Ok(CommitsTouchingResponse {
+    let (page, budgeted) = budget_commits(page, max_tokens);
+    let matched = matched_earlier || !page.is_empty();
+    // The next page starts at the first commit this one left out, or where the live walk's span ran
+    // out when it held no more.
+    let resume = found.resume.map(|(position, _)| position);
+    let next_offset = offsets.get(page.len()).copied().or(resume);
+    let span_edge = resume.is_some() && offsets.len() <= page.len();
+    let truncated_reason = if span_edge {
+        Some(SPAN_LIMIT)
+    } else {
+        shallow.then_some("shallow_clone")
+    };
+    CommitsTouchingResponse {
         commits: page,
         budgeted,
-        truncated,
-        truncated_reason: truncated.then_some("shallow_clone"),
-        next_cursor,
+        truncated: truncated_reason.is_some(),
+        truncated_reason,
+        next_cursor: next_offset.map(|offset| {
+            let carried = if matched { MATCHED_EARLIER } else { 0 };
+            crate::engine::cursor::Cursor::encode_in_memory(offset as u64 | carried, snapshot)
+        }),
         cursor_invalidated: false,
-    })
+    }
 }
 
 /// The `churn` operation: the top-K most-frequently-modified files in a recent window.
@@ -660,7 +753,7 @@ fn by_author(
 /// The `search` operation: full-text search over git history. Uses the git-history inverted
 /// index when it is fresh (`last_indexed_head == HEAD`), searching author name + email + summary +
 /// full body; otherwise degrades to a bounded live walk over the recent window, flagged
-/// `truncated` with reason `live_walk` (author + summary only, no body). Pagination and the HEAD-scoped cursor mirror `recent`.
+/// `truncated` with reason `unindexed_scan` (author + summary only, no body). Pagination and the HEAD-scoped cursor mirror `recent`.
 fn run_search(ws: &Workspace, params: SearchGitHistoryParams) -> Result<SearchGitHistoryResponse, EngineError> {
     let repo = require_git_repo(ws)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
@@ -725,7 +818,7 @@ fn run_search(ws: &Workspace, params: SearchGitHistoryParams) -> Result<SearchGi
                 .take(want)
                 .cloned()
                 .collect();
-            (matched, Some("live_walk"))
+            (matched, Some(UNINDEXED_SCAN))
         }
     };
 
@@ -755,6 +848,10 @@ fn run_search(ws: &Workspace, params: SearchGitHistoryParams) -> Result<SearchGi
         cursor_invalidated: false,
     })
 }
+
+#[cfg(test)]
+#[path = "touching_tests.rs"]
+mod touching_tests;
 
 #[cfg(test)]
 mod tests {
@@ -791,23 +888,26 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_indexed_answer_is_checked_against_the_live_walk() {
+    fn an_indexed_answer_is_used_as_is_even_when_empty() {
         let head = "0123456789abcdef0123456789abcdef01234567";
         let walked = || Ok(vec![commit(1, "alice")]);
         let page = |indexed| history_page("git_log", head, None, indexed, walked).expect("page");
         let (indexed, snapshot) = page(Some(vec![commit(7, "bob")]));
         assert_eq!(indexed[0].author, "bob", "a non-empty indexed answer is used as is");
         assert_eq!(snapshot & LIVE_WALK, 0, "and its cursor counts in the index's list");
-        let (failed_forward, snapshot) = page(Some(Vec::new()));
+        let (untouched, snapshot) = page(Some(Vec::new()));
         assert_eq!(
-            failed_forward[0].author, "alice",
-            "an empty one may be a lookup that failed"
+            untouched,
+            Vec::<CommitInfo>::new(),
+            "an empty one is the answer for a path no commit touches"
+        );
+        assert_eq!(snapshot & LIVE_WALK, 0, "the index's list");
+        let (no_index, snapshot) = page(None);
+        assert_eq!(
+            no_index[0].author, "alice",
+            "no answer from the index is the live walk's"
         );
         assert_eq!(snapshot & LIVE_WALK, LIVE_WALK, "the live walk's list");
-        let (no_index, _) = page(None);
-        assert_eq!(no_index[0].author, "alice");
-        let (truly_empty, _) = history_page("git_log", head, None, Some(Vec::new()), || Ok(Vec::new())).expect("live");
-        assert!(truly_empty.is_empty());
     }
 
     #[test]

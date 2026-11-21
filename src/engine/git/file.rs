@@ -7,14 +7,15 @@
 
 use super::by_path::MATCHED_EARLIER;
 use super::common::{
-    LOG_WALK_MAX, blame_resume_after, blame_symbol_too_large_response, blame_too_large_response, git_history_if_fresh,
-    head_sha, head_snapshot_id, paginate_blame_hunks, require_git_repo,
+    LOG_WALK_MAX, blame_resume_after, blame_symbol_too_large_response, blame_too_large_response, head_sha,
+    head_snapshot_id, paginate_blame_hunks, require_git_repo,
 };
 use super::fingerprint::{HashMode, outline_entry_for_blob, parse_hash_mode, symbol_fingerprint};
-use super::log::{history_page, reject_external_path, walk_cursor};
+use super::log::{reject_external_path, touching_page, walk_cursor};
 use crate::engine::error::EngineError;
 use crate::engine::pick::pick_symbol;
 use crate::engine::timing::elapsed_us;
+use crate::engine::types::SPAN_LIMIT;
 use crate::engine::types::code::{kind_to_str, parse_kind};
 use crate::engine::types::git::{
     BlameFileParams, BlameHunks, BlameResponse, BlameSymbolParams, BlameSymbolResponse, DiffFileParams,
@@ -184,7 +185,7 @@ pub(super) fn run_diff_outline(ws: &Workspace, params: DiffOutlineParams) -> Res
         .map_err(|e| EngineError::invalid_argument(format!("resolve_rev({rev_spec}): {e}")))?;
 
     let here = match detect_lang(ws, &params.path) {
-        Some(lang) => working_tree_outline(ws, "git_diff", &params.path, lang)?.map(|(l1, _)| {
+        Some(lang) => git_form_outline(ws, repo, &params.path, lang)?.map(|l1| {
             l1.symbols
                 .iter()
                 .map(|s| (s.name.clone(), kind_to_str(s.kind)))
@@ -271,6 +272,34 @@ pub(super) fn run_diff_outline(ws: &Workspace, params: DiffOutlineParams) -> Res
         common,
         note,
     })
+}
+
+/// The working-tree outline of `path` taken from the form git stores for it, so a structural diff
+/// against a revision compares like with like, as `git diff` does: line endings converted, clean
+/// filters such as Git LFS run. A path outside the repository has no git form and keeps its bytes.
+fn git_form_outline(
+    ws: &Workspace,
+    repo: &crate::git::Repo,
+    path: &crate::path::RelPath,
+    lang: crate::lang::LangId,
+) -> Result<Option<std::sync::Arc<crate::extract::FileMapL1>>, EngineError> {
+    let Some((l1, source)) = working_tree_outline(ws, "git_diff", path, lang)? else {
+        return Ok(None);
+    };
+    if path.is_external() {
+        return Ok(Some(l1));
+    }
+    let converted = repo
+        .to_git_form(path.as_ref(), &source)
+        .map_err(|e| EngineError::internal(format!("`git_diff`: {e}")))?;
+    if converted == *source {
+        return Ok(Some(l1));
+    }
+    let oid = gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, &converted)
+        .map_err(|e| EngineError::internal(format!("`git_diff`: hash `{path}`: {e}")))?;
+    let entry = outline_entry_for_blob(&ws.outline_cache, oid, lang, converted)
+        .ok_or_else(|| EngineError::internal(format!("`git_diff`: could not parse `{path}` in its git form")))?;
+    Ok(Some(std::sync::Arc::clone(&entry.map)))
 }
 
 /// The `blame` operation: per-line blame at `rev`, optionally clamped to a 1-based inclusive
@@ -496,9 +525,9 @@ pub(super) fn run_symbol_history(
         })
     };
 
-    // The cursor is an offset into the commits touching the file, newest first, and whether a
-    // commit on an earlier page defined the name. Its snapshot says which list the offset counts
-    // in: the live walk simplifies history where the index keeps every commit touching the file.
+    // The cursor is an offset, newest first, and whether a commit on an earlier page defined the
+    // name. Its snapshot says which list the offset counts in: the index's list of the commits
+    // touching the file, or the whole history the live walk tests a span of.
     let Some((packed, issued)) = walk_cursor(params.cursor.as_ref(), &head)? else {
         return invalidated();
     };
@@ -510,16 +539,7 @@ pub(super) fn run_symbol_history(
     // state the window's oldest commit is compared against. Only the window is walked into: a log
     // cached under its depth would be a new entry, walked again from HEAD, for every page.
     let fetch = window + 1;
-    let (mut commits, snapshot) = history_page(
-        "git_log",
-        &head,
-        issued,
-        git_history_if_fresh(ws, &head).map(|index| index.commits_touching(&params.path, start, fetch)),
-        || {
-            repo.log_window_touching(&head, &params.path, start, fetch)
-                .map_err(|e| EngineError::internal(format!("log: {e}")))
-        },
-    )?;
+    let (found, snapshot) = touching_page(ws, &head, issued, &params.path, start, fetch)?;
     let fingerprint_at = |sha: &str| -> Result<Option<Vec<u8>>, EngineError> {
         let blob = repo
             .read_blob_at_rev_with_oid(sha, &params.path)
@@ -530,11 +550,27 @@ pub(super) fn run_symbol_history(
         }))
     };
     // Without the seed the oldest commit inspected would read as the symbol's introduction
-    // whenever the symbol exists there.
+    // whenever the symbol exists there. It is the file at the next older commit touching it, or,
+    // when the live walk's span ran out first, at the oldest inspected commit's first parent: the
+    // commit the span left untested can sit on another branch of a merge, without the file. A page
+    // with no commit reads the file where the span resumes.
+    let mut commits = found.commits;
     let beyond_window = (commits.len() > window).then(|| commits.split_off(window));
-    let window_exhausted = beyond_window.is_some();
-    let seed = match beyond_window.as_deref().and_then(<[CommitInfo]>::first) {
-        Some(older) => fingerprint_at(&older.sha)?,
+    let next_touching = beyond_window
+        .as_deref()
+        .and_then(<[(usize, CommitInfo)]>::first)
+        .map(|(offset, commit)| (*offset, commit.sha.clone()));
+    let span_ran_out = next_touching.is_none() && found.resume.is_some();
+    let older = next_touching.or(found.resume);
+    let window_exhausted = older.is_some();
+    let seed_sha = match (span_ran_out, commits.last()) {
+        (true, Some((_, oldest))) => repo
+            .first_parent(&oldest.sha)
+            .map_err(|e| EngineError::internal(format!("parent: {e}")))?,
+        _ => older.as_ref().map(|(_, sha)| sha.clone()),
+    };
+    let seed = match seed_sha {
+        Some(sha) => fingerprint_at(&sha)?,
         None => None,
     };
 
@@ -544,7 +580,7 @@ pub(super) fn run_symbol_history(
     let mut defined = defined_earlier || seed.is_some();
     let mut prev_fp: Option<Vec<u8>> = seed;
     let inspected = commits.len();
-    for (index, c) in commits.iter().enumerate().rev() {
+    for (offset, c) in commits.iter().rev() {
         let fingerprint = fingerprint_at(&c.sha)?;
         defined |= fingerprint.is_some();
         let change = match (prev_existed, fingerprint.as_ref()) {
@@ -555,7 +591,7 @@ pub(super) fn run_symbol_history(
         };
         if let Some(change) = change {
             history.push((
-                start + index,
+                *offset,
                 SymbolHistoryEntry {
                     sha: super::common::abbreviated_sha(c.sha.clone()),
                     summary: c.summary.clone(),
@@ -578,7 +614,7 @@ pub(super) fn run_symbol_history(
     // window held no more changes and the history goes on.
     let next_offset = match offsets.get(page.len()) {
         Some(left_out) => Some(*left_out),
-        None => window_exhausted.then_some(start + window),
+        None => older.map(|(offset, _)| offset),
     };
     // A name the working tree does not define and no commit inspected so far defines either: the
     // last page says it is a mistake in the call, and every page before it says why it is empty.
@@ -592,7 +628,7 @@ pub(super) fn run_symbol_history(
     };
     let window_edge = window_exhausted && offsets.len() <= page.len();
     let truncated_reason = if window_edge {
-        Some("window")
+        Some(SPAN_LIMIT)
     } else if repo.is_shallow() {
         Some("shallow_clone")
     } else {

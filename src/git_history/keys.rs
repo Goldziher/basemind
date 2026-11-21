@@ -14,6 +14,9 @@ pub const META_NEXT_ORD: &[u8] = b"next_commit_ord";
 pub const META_NEXT_PATH_ID: &[u8] = b"next_path_id";
 pub const META_ROOT_SHA: &[u8] = b"root_sha";
 pub const META_COMMIT_COUNT: &[u8] = b"commit_count";
+/// The clone's `shallow` file as it was when the index was built or last rebuilt: a boundary that
+/// is not the oldest indexed commit is deepened without that commit gaining a parent.
+pub const META_SHALLOW: &[u8] = b"shallow";
 /// Present from the start of a build or append until the meta batch that stamps its head. Rows
 /// written by a run cut off in between are not covered by any posting list, so while this row
 /// exists the index has no indexed head and the next sync rebuilds it.

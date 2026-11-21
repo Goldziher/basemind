@@ -163,9 +163,9 @@ pub(crate) fn indexed_file(
 /// Why `path` cannot be served from the code map, phrased as the next call to make.
 ///
 /// "Not indexed" has three different fixes, and an agent that is only told the first word guesses:
-/// a document is searched with `docs_search`, a file that exists needs `index_rescan`, and a path
-/// that does not exist needs `find_files`. Judged on the store's file map: the in-RAM map is also
-/// empty before a lazy build.
+/// a document is searched with `code_grep` or `docs_search`, a file that exists needs `index_rescan`,
+/// and a path that does not exist needs `find_files`. Judged on the store's file map: the in-RAM map
+/// is also empty before a lazy build.
 pub(crate) fn not_indexed_in(
     store: &crate::store::Store,
     root: &std::path::Path,
@@ -203,10 +203,15 @@ fn not_indexed_because(root: &std::path::Path, tool: &str, path: &RelPath, facts
         format!("`{tool}`: {EMPTY_INDEX_FIX}")
     } else if on_disk.is_err() {
         return outside_repository(tool, path);
+    } else if facts.is_document && is_text_document(path) {
+        format!(
+            "`{tool}`: `{path}` is a document, not code, so it has no outline or symbols. Find exact text in \
+             it with `code_grep`, search it by meaning with `docs_search`, or read a line span with `code_read`."
+        )
     } else if facts.is_document {
         format!(
-            "`{tool}`: `{path}` is a document, not code, so it has no outline or symbols. Search it with \
-             `docs_search`, or read a line span with `code_read`."
+            "`{tool}`: `{path}` is a document, not code, so it has no outline or symbols. Search it by meaning \
+             with `docs_search`."
         )
     } else if facts.blob_lost {
         format!(
@@ -222,6 +227,11 @@ fn not_indexed_because(root: &std::path::Path, tool: &str, path: &RelPath, facts
         format!("`{tool}`: no file `{path}` in this repository. Locate it with `find_files {{\"query\":\"…\"}}`.")
     };
     EngineError::invalid_argument(message)
+}
+
+fn is_text_document(path: &RelPath) -> bool {
+    path.as_str()
+        .is_some_and(|path| crate::engine::grep_text::text_document_language(std::path::Path::new(path)).is_some())
 }
 
 /// What to do about an index with no files in it.
@@ -240,6 +250,42 @@ mod tests {
             assert!(
                 !text.contains("`full`") && !text.contains("\"full\""),
                 "`index_rescan` takes no such argument: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_document_is_sent_to_code_grep_for_exact_text_and_docs_search_by_meaning() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let facts = IndexFacts {
+            is_document: true,
+            ..IndexFacts::default()
+        };
+        let error = not_indexed_because(dir.path(), "code_outline", &RelPath::from("README.md"), facts);
+        assert_eq!(
+            error.to_string(),
+            "`code_outline`: `README.md` is a document, not code, so it has no outline or symbols. Find exact \
+             text in it with `code_grep`, search it by meaning with `docs_search`, or read a line span with \
+             `code_read`."
+        );
+    }
+
+    /// `code_grep` does not search PDFs or Office files, so their guidance names `docs_search` alone.
+    #[test]
+    fn a_binary_document_is_sent_to_docs_search_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for path in ["docs/report.pdf", "docs/plan.docx", "docs/budget.xlsx"] {
+            let facts = IndexFacts {
+                is_document: true,
+                ..IndexFacts::default()
+            };
+            let error = not_indexed_because(dir.path(), "code_outline", &RelPath::from(path), facts);
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "`code_outline`: `{path}` is a document, not code, so it has no outline or symbols. Search it \
+                     by meaning with `docs_search`."
+                )
             );
         }
     }

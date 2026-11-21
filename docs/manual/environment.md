@@ -39,7 +39,7 @@ repository. A truthy value is `1`, `true` or `yes`.
 | `BASEMIND_GH_INDEX` | `0` turns the git-history index off; history queries then walk git. |
 | `BASEMIND_GRAMMAR_OFFLINE` | Never download a grammar; a missing one is reported instead. |
 | `BASEMIND_PARSE_TIMEOUT_MS` | Time after which parsing one file is abandoned. |
-| `BASEMIND_MIN_FREE_MB` | Headroom, on top of 1.5 times the index size, a scan needs free on disk or it refuses. |
+| `BASEMIND_MIN_FREE_MB` | Headroom a scan needs free on disk on top of its size estimate (1.5 times the index, plus the index rows, blobs and vectors of the files no file map lists yet), or it refuses. |
 | `BASEMIND_CACHE_BUDGET_MB` | Budget for the cache in MiB, enforced by eviction (`0`: unlimited). Unset: `min(20 GiB, (cache size + free space) / 2)`, the free space being that of the cache's volume. |
 | `BASEMIND_BLOB_GC_GRACE_SECS` | Age under which `basemind cache gc` keeps an unreferenced blob (default 6 h). |
 

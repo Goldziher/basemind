@@ -38,7 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `basemind git hotspots [--since 90d] [--path P] [--limit N]` (CLI only, #134): the files a commit in
   the window touched where two or more of commits, distinct authors, lines, symbols, the longest
   function and importers are in their top 10%, as raw numbers with no score. The window ends at
-  HEAD's author time.
+  HEAD's commit time and counts the commits authored in it; the walk ends at a run of commits made
+  before the window, so a merged or rebased branch whose commits keep older author dates does not
+  end it (#299).
 - `basemind code explain <symbol|path|path:line>` (CLI only, #120): one briefing composed from the
   outline, `code_refs`, the import graph and git history. A symbol gets its definition (line span,
   signature, doc comment, read across attributes and decorators), its body when it has 60 lines or
@@ -94,7 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `skipped_files` on `code_grep`: the files it could not search (deleted, not UTF-8, grown past
   `scan.max_file_bytes`, or leading out of the repository).
 - `budgeted` and `omitted` on `git_log {rev}`: the commit's file list is held to `max_tokens`.
-- `budgeted`, `truncated_reason: "window"` and a `next_cursor` that continues past the window on
+- `budgeted`, `truncated_reason: "span_limit"` and a `next_cursor` that continues past the window on
   `git_log {path, symbol}` and on `git_log` with a directory `path`. An empty page of either carries
   `unmatched` while nothing inspected so far defines the symbol or touches the directory.
 - `resolution_note: "no resolution facts for this definition"` on `code_refs` with `path`.
@@ -144,6 +146,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the output header. History copied by a fork, a revert, a resume or a subagent is counted once,
   and relative paths are taken from the session's working directory. Sessions of a removed worktree
   are not counted.
+- The `PreToolUse` guard steers `git diff` to `git_diff {"path":"…"}` and `git status` to
+  `git_diff {}` (#263); a diff of the staged index (`--cached`, `--staged`) or `--no-index` is left
+  alone. Its `code_grep` suggestion for a `Grep` call carries that call's `path` (relative to the
+  repository root, a directory as `dir/`) and `glob` (a glob without `/` as `**/<glob>`) in `path`.
+- The OpenCode plugin checks the `basemind` binary on `PATH` at startup (#240): with none, or one
+  that cannot report its version within 5 seconds, it skips the MCP server; with one from another
+  minor version it warns. Either way OpenCode shows one message naming the install command
+  (`pnpm add -g basemind@<version>`, or `pip install basemind==<version>`).
+  count as this repository's.
 
 ### Changed
 
@@ -429,7 +440,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `git_log` matches `query` against the commit message and `author` against the author, each on its
     own field. A directory `path` inspects 200 commits per page and returns a `next_cursor` to the
     next window while history continues. A search answered before the git-history index is ready
-    sets `truncated` with `truncated_reason: "live_walk"` (subjects and authors of the newest 10,000
+    sets `truncated` with `truncated_reason: "unindexed_scan"` (subjects and authors of the newest 10,000
     commits only) in place of `partial`.
   - `memory_save` reports `embedded`. When the note cannot be embedded the save still succeeds, with a
     `notice`, instead of answering with an error after the write.
@@ -456,7 +467,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     left out where the count is known. `code_grep`'s `truncation_reason` is renamed `truncated_reason`
     and is only ever `byte_budget`; `code_symbols` and `code_grep` no longer set `truncated` on a
     `limit` cut and `find_files` has no `truncated`; `total_is_partial` (`code_symbols`, `code_refs`)
-    and `git_log {query}`'s `partial` are `truncated` with a reason (`scan_cap`, `live_walk`);
+    and `git_log {query}`'s `partial` are `truncated` with a reason (`scan_cap`, `unindexed_scan`);
     `git_diff`'s `total_hunks` is replaced by `truncated_reason` (`hunk_cap`, `byte_cap`) and `omitted`;
     `code_outline`'s `imports_truncated` is replaced by `truncated`, `truncated_reason: "imports"` and
     `omitted`; `code_read` counts the bytes it left out in `omitted_bytes`. Four fields keep their own
@@ -799,6 +810,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   steered, and `inbox-notify` stayed silent. The hooks now read and write JSON in bash and POSIX awk
   (`hooks/json-lib.sh`) instead. They need bash and a POSIX awk: Git for Windows ships both, and a
   minimal image without bash, such as Alpine, needs it installed.
+- **The free-space check counts what a scan writes, not only the index it has**
+  ([#203](https://github.com/Goldziher/basemind/issues/203)). A full scan asked for 1.5x the group
+  index plus 512 MiB, so a first scan, or the first after a release-minor bump, started from an empty
+  index and passed with about 512 MiB free before writing several GB of index rows, blobs and vectors.
+  The check now runs once the walk has listed the candidates and before anything is extracted, and adds
+  3.5x (index rows), 2.5x (blobs) and, when code is embedded, 1.5x (vectors) the bytes of every
+  candidate with a grammar that no file map lists yet, sized as the scan reads it: a staged or rev scan
+  by its git blobs, a working-tree scan by its files. The refusal, in the CLI and from the daemon,
+  states the free and needed bytes and each part of the estimate, and names the blob namespaces and
+  per-view indexes an older release left in the cache, with how each is removed.
+- **A blob write that finds the disk full stops the scan**
+  ([#203](https://github.com/Goldziher/basemind/issues/203)). It marks the scan partial and fails it,
+  as a full-disk index commit does; it was counted as one failed extraction of a scan that read
+  complete.
+- The git cache's disk directories stay within their budget while the daemon runs (#304). They were
+  swept only when a workspace's read stack opened, so a daemon hosting one for days grew `log/`,
+  `blame/` and `commit_files/` without bound. Each write now counts its bytes, and the write that
+  takes a directory past `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` starts a sweep that evicts the oldest
+  payloads down to nine tenths of it. The sweep at open runs in the background too, so opening a
+  stack no longer stats every cached file.
+- `git_log` with a file `path` trusts an empty answer from a git-history index that holds HEAD
+  (#297): a new, untracked or mistyped path answers at index speed instead of walking every commit
+  to return nothing. A lookup that fails is now an error of its own, and only that falls back to the
+  live walk. The live walk, of a file's history and a symbol's, tests at most 10 000 commits per page;
+  a page that runs out first says `truncated_reason: "span_limit"` and its `next_cursor` resumes at
+  the first commit left untested. A path no page matched is still refused on the last page, and a
+  symbol change at the edge of a span is compared with its commit's first parent. A posting list that
+  does not decode is an error, not a short history. A live-walk cursor now counts commits of the whole
+  history, so one an earlier release issued resumes elsewhere: repeat the call without it.
+- The shell status line no longer reads an in-repo `.basemind/` (#321). A repository carrying only the
+  legacy `.basemind/basemind.toml` config showed `scanning…` for good, and a leftover legacy cache showed
+  counts nothing writes any more; every repository now gets the line `basemind statusline --root`
+  renders from the machine-global cache. That call is bounded to 2 seconds on a machine without
+  `timeout` too (stock macOS), where a hung binary stalled the bar. The plugin version and the
+  unread-message segment, which only the legacy branch rendered, now frame that line, so they show for
+  global-cache repositories, the version on the `no index` hint too. The unread count is every unread
+  message (`100+` past one inbox page), not one page of a single message. The legacy branch's per-type
+  call counts and disk and RSS figures are gone with it.
+- The plugin's MCP server starts on Windows (#238). Every generated manifest launched
+  `scripts/mcp-launch.sh` directly, which Windows cannot run, so a Windows install got no `basemind`
+  server. The manifests now launch the polyglot `scripts/mcp-launch.cmd`: cmd.exe finds Git Bash
+  (`CLAUDE_CODE_GIT_BASH_PATH`, the Program Files and per-user installs, then `bash` on `PATH`,
+  skipping the WSL launcher) and runs the launcher through it, or exits naming Git for Windows when
+  none is installed; macOS and Linux run it through its shebang. The plugin's scripts and hooks are
+  checked out with LF line endings on every platform, since bash cannot run a CRLF script.
+- The Codex config `.mcp.json` runs the launcher of the enabled plugin, not the most recently
+  modified `codex-mcp-launch.mjs` in any marketplace's cache (#246). It reads the
+  `[plugins."basemind@<marketplace>"]` tables of `$CODEX_HOME/config.toml`, ignoring table-shaped
+  text inside strings and comments, passes over one with `enabled = false` (bare or quoted key),
+  searches only those marketplaces (only `basemind` when the config names none, and no cache when
+  every table it names is disabled) and runs the highest SemVer version: a release ahead of its
+  prereleases, and prereleases ordered by their identifiers (`rc.10` above `rc.2`). File age breaks
+  only a tie. A stale or foreign copy no longer wins, and the chosen path is logged to stderr.
+- Cursor gets one plugin, the repository root's `.cursor-plugin/` (#320). The generated
+  `plugin/.cursor-plugin/` resolved its hook scripts against `${CURSOR_PLUGIN_ROOT:-.}`, so with the
+  variable unset a hook ran `./hooks/run-hook.cmd` from the opened repository; it also started the
+  MCP server without `--root` and wired `agent-as`, which Cursor does not run. `plugin:verify`
+  (`sync_legacy_plugin_exports.py --check`) fails on a shipped hook whose root falls back to a path.
+- `basemind sessions` (#162): a session that ran in a worktree since removed counts under that
+  worktree's name instead of `other_directories`. A worktree is removed when its gitdir is gone and
+  `git worktree list` no longer lists it; it is recognised in a directory that holds the
+  repository's live worktrees and no other repository. A Codex reply that calls no tool right
+  after a fork point now counts its output tokens: a copied token count is told by its cumulative
+  totals within the thread it descends from, not by the call before it, so unrelated conversations
+  with equal totals each count theirs. A Claude Code project directory whose slug is exactly 200
+  characters is matched whole, as Claude Code keeps it, and a longer one only by its first 200
+  characters followed by `-`. The transcript roots are under the home directory: `HOME` on Unix,
+  else the account's home directory; on Windows `USERPROFILE` when it is set, else the account's
+  profile directory. An empty home is refused rather than read as the current directory.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a
@@ -810,6 +890,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `impl ToSocketAddrs for (Ipv4Addr, u16)`, `impl FromStreamPriv<()> for ()`, a slice, array, pointer
   or `str`) is an implementation: `code_refs` with `relation: "implementations"` lists it, its
   `impl_type` the type as written on one line. They were missing. `EXTRACT_EPOCH` is 6.
+- `git_diff` against the working tree compares the file in the form git stores for it (#295): line
+  endings converted per `core.autocrlf`, `core.eol` and `.gitattributes`, `ident` collapsed, and
+  clean filters such as Git LFS run. An unchanged file in a CRLF checkout showed every line as
+  changed, and an LFS file diffed its pointer against the payload. A filter that fails is an error
+  naming the file instead of a whole-file hunk. A structural `git_diff` takes the working tree's
+  symbols from that form too, so a clean-filtered file no longer lists the payload's symbols as
+  added and the pointer's as removed. A `changed` scope against a revision compares a restored file
+  the same way; one whose filter fails stays in the scope and is logged as a warning.
+- Unshallowing or deepening a clone changes the next `git_blame`, `git_log` and `git hotspots` answer
+  without a cache clear (#298). Answers computed while the clone was shallow (a blame cut at the
+  graft, a walk that ends at the boundary) were cached by commit sha and outlived `git fetch
+  --unshallow`; they are no longer cached, and a daemon re-reads whether the clone is shallow on
+  every call instead of once at open. A git-history index built in a shallow clone is no longer read
+  once the clone's `shallow` file differs from the one it was built under (a boundary other than its
+  oldest commit can be deepened too), though it still indexes HEAD, and is rebuilt with the reason
+  `deepened`. `GIT_CACHE_SCHEMA` and `GIT_HISTORY_SCHEMA` move, so payloads of earlier builds are
+  misses and the history index rebuilds once.
+- A shallow clone's boundary commit is a root commit to both the git-history index and the live
+  walk (#301): it adds every file in its tree, as `git log` shows it. The index listed no files for
+  it while the live walk matched it for every path it holds, so `git_log` with a `path` answered
+  differently depending on which one served it. A merge with a parent the clone lacks is compared
+  against the parents it holds, in both.
 - The watcher no longer discards the OS's "events were dropped" signal (FSEvents `MustScanSubDirs`,
   inotify queue overflow). A signal naming a subdirectory rescans that subtree; one naming the root,
   or none, runs the whole-tree stat-and-hash pass of `index_rescan {}`; a burst of signals is one

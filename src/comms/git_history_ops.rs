@@ -302,7 +302,7 @@ fn run_git_history_op(
             include_files,
         ))),
         GitHistoryOp::CommitsTouching { path, skip, take } => {
-            Ok(GitHistoryReply::Commits(index.commits_touching(&path, skip, take)))
+            index.commits_touching(&path, skip, take).map(GitHistoryReply::Commits)
         }
         GitHistoryOp::WindowCommits { window } => Ok(GitHistoryReply::Commits(index.window_commits(window))),
         GitHistoryOp::SearchCommits {

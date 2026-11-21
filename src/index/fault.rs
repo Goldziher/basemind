@@ -31,15 +31,30 @@ pub struct IndexFault {
     pub(crate) rotations: std::sync::atomic::AtomicU32,
     #[cfg(test)]
     pub(crate) injected_rotate_failures: std::sync::atomic::AtomicU32,
+    /// How many of the next blob writes through a store holding this handle fail with
+    /// `StorageFull`, since a test cannot fill the disk under one blob write alone.
+    #[cfg(test)]
+    injected_blob_full: std::sync::atomic::AtomicU32,
 }
 
 impl IndexFault {
     /// Latch `error` when it is fatal; a non-fatal error is ignored. The first fatal error wins,
     /// because later ones are the same poison observed again.
     pub fn record(&self, error: &IndexError) {
-        let Some(kind) = fatal_kind(error) else {
-            return;
-        };
+        if let Some(kind) = fatal_kind(error) {
+            self.latch(kind, error);
+        }
+    }
+
+    /// Latch a full disk that a write outside the index hit, a blob write: the scan cannot persist
+    /// its work any more than after a failed commit. Any other error is ignored.
+    pub fn record_disk_full(&self, error: &(dyn Error + 'static)) {
+        if is_storage_full(error) {
+            self.latch(STORAGE_FULL, &error);
+        }
+    }
+
+    fn latch(&self, kind: &str, error: &dyn std::fmt::Display) {
         let mut slot = self.slot();
         slot.get_or_insert_with(|| format!("{kind}: {error}"));
         self.tripped.store(true, Ordering::Release);
@@ -85,6 +100,18 @@ impl IndexFault {
             .try_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1))
             .is_ok()
     }
+
+    #[cfg(test)]
+    pub(crate) fn inject_blob_write_full(&self, count: u32) {
+        self.injected_blob_full.store(count, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_injected_blob_full(&self) -> bool {
+        self.injected_blob_full
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(1))
+            .is_ok()
+    }
 }
 
 const POISONED: &str = "index handle poisoned";
@@ -100,17 +127,22 @@ fn fatal_kind(error: &IndexError) -> Option<&'static str> {
     ) {
         return Some(POISONED);
     }
-    let mut cursor: Option<&(dyn Error + 'static)> = Some(error);
+    is_storage_full(error).then_some(STORAGE_FULL)
+}
+
+/// Whether `error`, or any error in its source chain, is an io error of kind `StorageFull`.
+fn is_storage_full(error: &(dyn Error + 'static)) -> bool {
+    let mut cursor = Some(error);
     while let Some(current) = cursor {
         if current
             .downcast_ref::<std::io::Error>()
             .is_some_and(|io| io.kind() == ErrorKind::StorageFull)
         {
-            return Some(STORAGE_FULL);
+            return true;
         }
         cursor = current.source();
     }
-    None
+    false
 }
 
 #[cfg(test)]
@@ -158,6 +190,23 @@ mod tests {
             source: std::io::Error::from(ErrorKind::StorageFull),
         });
         assert!(fault.reason().is_some());
+    }
+
+    #[test]
+    fn a_full_disk_under_a_blob_write_latches_and_other_write_errors_do_not() {
+        let fault = IndexFault::default();
+        fault.record_disk_full(&crate::store::StoreError::Io {
+            path: "blob".into(),
+            source: std::io::Error::from(ErrorKind::PermissionDenied),
+        });
+        assert!(fault.reason().is_none());
+        fault.record_disk_full(&crate::store::StoreError::Io {
+            path: "blob".into(),
+            source: std::io::Error::from(ErrorKind::StorageFull),
+        });
+        let reason = fault.reason().expect("latched");
+        assert!(reason.starts_with(STORAGE_FULL), "{reason}");
+        assert!(!fault.is_poisoned());
     }
 
     #[test]

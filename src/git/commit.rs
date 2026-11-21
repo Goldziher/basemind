@@ -13,6 +13,20 @@ thread_local! {
     /// Commits whose changed files [`build_commit_info`] listed on this thread, so a test can tell a
     /// walk that lists files only where it must from one that lists them for every commit it passes.
     pub(crate) static FILE_LISTINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Commits [`Repo::touching_span`] tested against its path on this thread, so a test can tell a
+    /// call that the git-history index answered from one that walked the history.
+    pub(crate) static TOUCHING_TESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The commits of one span of a newest-first history that changed the entry at one path.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct TouchingSpan {
+    /// The commits that changed the path, newest first, each with its position in the whole
+    /// newest-first history.
+    pub commits: Vec<(usize, CommitInfo)>,
+    /// The position and sha of the first commit left untested when the span ran out before the
+    /// history did and before `take` commits matched; `None` when the walk ended for either of those.
+    pub resume: Option<(usize, String)>,
 }
 
 pub(super) fn build_commit_info(local: &gix::Repository, id: gix::ObjectId, include_files: bool) -> Option<CommitInfo> {
@@ -64,14 +78,15 @@ fn listable(local: &gix::Repository, id: gix::ObjectId) -> bool {
 /// branch's own commits, which the walk lists. Unlike `git log -- <path>`, the walk prunes no side
 /// of a merge, so a commit on the side a merge did not keep is still listed. When a file is reported with
 /// different statuses against different parents, the higher-severity kind wins (Added > Modified ≈
-/// Renamed > Deleted).
+/// Renamed > Deleted). Only the parents this clone holds are compared against
+/// ([`readable_parent_trees`]).
 pub(super) fn commit_files(
     local: &gix::Repository,
     commit_id: gix::ObjectId,
 ) -> Option<Vec<(crate::path::RelPath, ChangeKind)>> {
     let commit = local.find_commit(commit_id).ok()?;
     let tree = commit.tree().ok()?;
-    let parents: Vec<gix::ObjectId> = commit.parent_ids().map(|p| p.detach()).collect();
+    let parents = readable_parent_trees(local, &commit);
     if parents.is_empty() {
         let mut recorder = tree.traverse().breadthfirst.files().ok()?;
         recorder.sort_by(|a, b| a.filepath.cmp(&b.filepath));
@@ -88,13 +103,7 @@ pub(super) fn commit_files(
     // parent (by its 1-based count) it was seen against.
     let mut changed: ahash::AHashMap<crate::path::RelPath, (ChangeKind, usize, usize)> = ahash::AHashMap::new();
     let mut compared = 0usize;
-    for pid in parents {
-        let Ok(parent_commit) = local.find_commit(pid) else {
-            continue;
-        };
-        let Ok(parent_tree) = parent_commit.tree() else {
-            continue;
-        };
+    for parent_tree in parents {
         let mut platform = match parent_tree.changes() {
             Ok(p) => p,
             Err(_) => continue,
@@ -142,6 +151,18 @@ pub(super) fn commit_files(
     Some(out)
 }
 
+/// The trees of `commit`'s parents that this clone holds. A shallow clone lacks the parents of its
+/// boundary commits; [`commit_files`] and [`commit_touches_path`] both compare against only the
+/// parents held, so a commit with none is a root commit to both (every file in its tree added), as
+/// `git log` shows a shallow clone's boundary. The git-history index is built from the first and
+/// the live walk filters on the second, so they agree on a shallow clone.
+fn readable_parent_trees<'repo>(local: &'repo gix::Repository, commit: &gix::Commit<'repo>) -> Vec<gix::Tree<'repo>> {
+    commit
+        .parent_ids()
+        .filter_map(|parent| local.find_commit(parent.detach()).ok()?.tree().ok())
+        .collect()
+}
+
 /// Priority ordering used when the same file shows up with different kinds across multiple
 /// parent diffs. Higher number = takes precedence. Added beats Modified because the file is
 /// genuinely new from at least one merge leg's perspective.
@@ -170,20 +191,15 @@ pub(super) fn commit_touches_path(local: &gix::Repository, commit_id: gix::Objec
     };
     let current = entry_ident_at(&tree, &components);
 
-    let parents: Vec<gix::ObjectId> = commit.parent_ids().map(|p| p.detach()).collect();
+    let parents = readable_parent_trees(local, &commit);
     if parents.is_empty() {
         return current.is_some();
     }
     // A merge touches the path only when it differs there from every parent: one that took the path
     // unchanged from a branch did not change it. No side is pruned, unlike `git log -- <path>`.
-    parents.into_iter().all(|pid| {
-        let parent = local
-            .find_commit(pid)
-            .ok()
-            .and_then(|pc| pc.tree().ok())
-            .and_then(|pt| entry_ident_at(&pt, &components));
-        current != parent
-    })
+    parents
+        .iter()
+        .all(|parent| current != entry_ident_at(parent, &components))
 }
 
 /// `(blob oid, mode)` of the entry at the given path components in `tree`, or `None` when the
@@ -368,59 +384,17 @@ impl Repo {
         take: usize,
         include_files: bool,
     ) -> Result<Vec<CommitInfo>, GitError> {
-        self.window(head, skip, take, include_files, |_, _| true)
-    }
-
-    /// The commits at `skip..skip + take` of [`Repo::log_for_path`]'s list for `head`: those that
-    /// changed the entry at exactly `rel`. The commits before them are only tested against `rel`.
-    pub fn log_window_touching(
-        &self,
-        head: &str,
-        rel: &crate::path::RelPath,
-        skip: usize,
-        take: usize,
-    ) -> Result<Vec<CommitInfo>, GitError> {
-        self.window(head, skip, take, false, |local, id| {
-            commit_touches_path(local, id, rel.as_bytes())
-        })
-    }
-
-    /// The commits at `skip..skip + take` of `head`'s newest-first history that `keep` admits.
-    fn window(
-        &self,
-        head: &str,
-        skip: usize,
-        take: usize,
-        include_files: bool,
-        keep: impl Fn(&gix::Repository, gix::ObjectId) -> bool,
-    ) -> Result<Vec<CommitInfo>, GitError> {
         let local = self.local();
-        let Some(head) = Self::resolve_oid(&local, head) else {
-            return Err(GitError::RevParse {
-                rev: head.to_string(),
-                msg: "does not resolve to a commit".to_string(),
-            });
-        };
-        let walk = local
-            .rev_walk([head])
-            .sorting(gix::revision::walk::Sorting::ByCommitTime(
-                gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
-            ))
-            .all()
-            .map_err(|e| GitError::Read {
-                what: "rev walk".to_string(),
-                msg: e.to_string(),
-            })?;
         let mut kept = 0usize;
         let mut out = Vec::new();
-        for step in walk {
+        for step in Self::newest_first(&local, head)? {
             if out.len() >= take {
                 break;
             }
             let id = walk_step(step)?.id;
             // Offsets count the commits the whole-list walks list: one that does not decode is
             // skipped there, so it is not counted here either.
-            if !keep(&local, id) || !listable(&local, id) {
+            if !listable(&local, id) {
                 continue;
             }
             kept += 1;
@@ -431,6 +405,87 @@ impl Repo {
             }
         }
         Ok(out)
+    }
+
+    /// The commits that changed the entry at exactly `rel`, among at most `span` commits of `head`'s
+    /// newest-first history from position `from` on, stopping once `take` of them matched. The
+    /// commits before `from` are walked without being tested, so a page deep in the history costs one
+    /// walk to it and at most `span` path tests, however rarely the path changed.
+    pub fn touching_span(
+        &self,
+        head: &str,
+        rel: &crate::path::RelPath,
+        from: usize,
+        take: usize,
+        span: usize,
+    ) -> Result<TouchingSpan, GitError> {
+        let local = self.local();
+        let mut found = TouchingSpan::default();
+        let mut tested = 0usize;
+        for (position, step) in Self::newest_first(&local, head)?.enumerate() {
+            let id = walk_step(step)?.id;
+            if position < from {
+                continue;
+            }
+            if tested == span {
+                found.resume = Some((position, id.to_string()));
+                break;
+            }
+            tested += 1;
+            #[cfg(test)]
+            TOUCHING_TESTS.with(|tests| tests.set(tests.get() + 1));
+            if commit_touches_path(&local, id, rel.as_bytes())
+                && let Some(commit) = build_commit_info(&local, id, false)
+            {
+                found.commits.push((position, commit));
+                if found.commits.len() >= take {
+                    break;
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    /// The sha of commit `sha`'s first parent, `None` for a root commit or a parent a shallow clone
+    /// does not hold.
+    pub fn first_parent(&self, sha: &str) -> Result<Option<String>, GitError> {
+        let local = self.local();
+        let Some(id) = Self::resolve_oid(&local, sha) else {
+            return Err(GitError::RevParse {
+                rev: sha.to_string(),
+                msg: "does not resolve to a commit".to_string(),
+            });
+        };
+        let commit = local.find_commit(id).map_err(|e| GitError::Read {
+            what: format!("commit {sha}"),
+            msg: e.to_string(),
+        })?;
+        Ok(commit
+            .parent_ids()
+            .next()
+            .map(|parent| parent.detach())
+            .filter(|parent| local.has_object(parent))
+            .map(|parent| parent.to_string()))
+    }
+
+    /// The walk of `head`'s history, newest commit first.
+    fn newest_first<'repo>(local: &'repo gix::Repository, head: &str) -> Result<gix::revision::Walk<'repo>, GitError> {
+        let Some(head) = Self::resolve_oid(local, head) else {
+            return Err(GitError::RevParse {
+                rev: head.to_string(),
+                msg: "does not resolve to a commit".to_string(),
+            });
+        };
+        local
+            .rev_walk([head])
+            .sorting(gix::revision::walk::Sorting::ByCommitTime(
+                gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+            ))
+            .all()
+            .map_err(|e| GitError::Read {
+                what: "rev walk".to_string(),
+                msg: e.to_string(),
+            })
     }
 
     /// Commit shas reachable from HEAD but **not** from `hidden` (the previously-indexed head),
@@ -464,6 +519,14 @@ impl Repo {
         let local = self.local();
         let id = Self::resolve_oid(&local, sha)?;
         build_commit_info(&local, id, true)
+    }
+
+    /// When the commit `sha` names was made (its committer time, not its author time), in unix
+    /// seconds. `None` when `sha` does not resolve to a commit or the time does not parse.
+    pub fn commit_time(&self, sha: &str) -> Option<i64> {
+        let local = self.local();
+        let id = Self::resolve_oid(&local, sha)?;
+        local.find_commit(id).ok()?.time().ok().map(|time| time.seconds)
     }
 
     /// True when `ancestor` is an ancestor of (or equal to) `descendant`. Uses the commit-graph-

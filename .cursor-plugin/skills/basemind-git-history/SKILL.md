@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:1856eebcf56775b0d7c17a1cdf3bf34682afadfef495a71bbaeced4961fac5ad
-Source-Hash: blake3:d748a02f18a6fbf03f98def377634fb76b352d2fd7155f08dc111a83e11057fc
+Content-Hash: blake3:b0950be911f013ca357e4427590c291b08d620ffc3e80c32ffd0a834df433b7c
+Source-Hash: blake3:4be0ebbfb3bfe78f57b29ac415cf27cedb6d5345b221736140c3656706ae2b0f
 Schema-Version: v1
 -->
 
@@ -55,15 +55,15 @@ The CLI also keeps shorthands: `git recent`, `git touching <path>`, `git search 
 
 ```text
 git_log {"limit":5}
-→ 612df7e chore(release): v0.15.0
-  1779b99 fix(git-history,serve): address code-review findings
-  ...
+→ {"commits":["612df7e3a1c4 chore(release): v0.15.0",
+              "1779b9902d5e fix(git-history,serve): address code-review findings", …],
+   "files":{"612df7e3a1c4":{"Cargo.toml":"modified",…},…}, …}
 
 git_blame {"path":"src/scanner.rs","symbol":"process_file"}
 → per-line authorship of that function's span
 
 git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
-→ + search_history (function)  - old_helper (function)
+→ the symbols in `added` and `removed`, and the count of `common` ones
 ```
 
 ## Notes
@@ -86,13 +86,13 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
   `limit: 0` is refused. A `path` that no commit reachable from HEAD touches and that is not on
   disk is an error, for a file and for a directory.
 - `git_log` with `path` + `symbol` reads one window of the commits touching the file per page.
-  When older commits remain the page returns `next_cursor`, and says `truncated_reason: "window"`
+  When older commits remain the page returns `next_cursor`, and says `truncated_reason: "span_limit"`
   when it is short or empty: follow the cursor until it is absent to reach every change back to
   the introduction. A symbol the working tree no longer defines still has its history read. A
   name no commit inspected so far defines either is named in `unmatched` (with the names the file
   does define) on each empty page, and is an error on the last page.
 - `git_log` with a directory `path` (one ending in `/`) pages the same way, 200 commits per page:
-  an empty page with `truncated_reason: "window"` and a `next_cursor` is not the end of the
+  an empty page with `truncated_reason: "span_limit"` and a `next_cursor` is not the end of the
   history, and `unmatched` says when nothing has touched the directory so far and it is not on
   disk.
 - A `git_log` cursor is refused when the git-history index came up (or stopped answering) since
@@ -135,7 +135,7 @@ git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}
   each on its own field: `{"query":"review","author":"alice"}` is commits by alice that mention a
   review. A search answered before the git-history index is ready covers only the subjects and
   authors of the newest 10,000 commits and says so: `truncated` with
-  `truncated_reason: "live_walk"`; retry shortly.
+  `truncated_reason: "unindexed_scan"`; retry shortly.
 - When several definitions in the file share the name, `symbol` is an error listing each with its
   lines: add `line` (any line inside the one you mean).
 - A binary file reports `binary: true` and no hunks, a file over 4 MiB `too_large: true`. A path

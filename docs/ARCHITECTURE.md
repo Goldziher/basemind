@@ -295,9 +295,10 @@ Key invariants:
   runs inside `scanner_lanes::run_optional_lane` (`catch_unwind`-wrapped), so a
   panic or hang in one lane degrades only that lane (e.g. "no resolved refs")
   and never costs the code map itself. Source: `src/scanner_lanes.rs`.
-- **Code-only code map** — `code_symbols`, `code_outline`, `code_grep` and `code_refs` see code only.
-  Markdown, rst, asciidoc, vimdoc, csv, json, yaml, toml, ini, xml, properties, dotenv, diff,
-  gitignore/gitattributes and fluent files are chunked and searched as documents (gated by
+- **Code-only code map** — `code_symbols`, `code_outline` and `code_refs` see code only; `code_grep`
+  also searches the text documents below as text. Markdown, rst, asciidoc, vimdoc, csv, json, yaml,
+  toml, ini, xml, properties, dotenv, diff, gitignore/gitattributes and fluent files are chunked and
+  searched as documents (gated by
   `[documents] include` / `exclude` and the MIME allowlist). A path that changes tier is moved on the
   next full or incremental scan: the stale code-map rows are purged, and the stale blobs are reclaimed
   by the tier-aware sweep (see [Blob store and GC](#blob-store-and-gc)). A build without the
@@ -738,6 +739,11 @@ Contract of the 15 verb tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
 Commits are immutable, so once a sha-keyed entry is on disk it's valid forever.
 HEAD-keyed entries (`log`) roll off naturally when HEAD moves.
 
+Each disk subdirectory is held to `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` (256 MiB) by an mtime-LRU sweep on
+a background thread (`src/git_cache_disk.rs`): one when the cache opens, and one whenever the bytes
+written since the last sweep take a subdirectory past its budget. A sweep evicts the oldest payloads
+down to nine tenths of the budget.
+
 Drop the disk cache with `basemind cache clear`.
 
 ### Git-history index
@@ -760,7 +766,9 @@ commit walk behind `path` + `symbol`, and full-text `query` / `author` search) a
     serialize on the handle's build lock, so N sessions asking at once cause one walk.
 - A process that can reach neither backend falls back to the live walk (`git_history: None`). The
   index is a pure accelerator: tools use it only when `last_indexed_head == HEAD` and otherwise
-  live-walk and report `truncated_reason: "live_walk"`, so it can never serve stale results.
+  live-walk, so it can never serve stale results. A `git_log {query}` search that falls back reports
+  `truncated_reason: "unindexed_scan"`, as does `basemind git hotspots` when its live walk is cut
+  short; a `git_log {path}` fallback reports `span_limit` or no reason.
 - A linked worktree shares the MAIN worktree's index (keyed on the main worktree root) rather than
   rebuilding its own, since the commit graph is identical across worktrees of one clone.
   The index tracks one head: a linked worktree whose HEAD descends from it appends the new commits,

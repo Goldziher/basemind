@@ -868,6 +868,12 @@ impl IndexDb {
         self.fault.record(error);
     }
 
+    /// Latch a full disk that a write beside the index hit (a blob write), so the scan writing
+    /// through this handle stops as it does after a commit failed for want of space.
+    pub fn record_write_error(&self, error: &(dyn std::error::Error + 'static)) {
+        self.fault.record_disk_full(error);
+    }
+
     /// The other views whose rows this database holds, as `(workspace key, view)`, for a sweep of
     /// content-keyed rows (see [`crate::store_group_live`]). Empty for a database of the view's own.
     pub(crate) fn sibling_views(&self) -> Result<Vec<(String, String)>, IndexError> {

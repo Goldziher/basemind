@@ -394,7 +394,7 @@ pub(crate) struct SearchGitHistoryResponse {
     /// True when the search did not cover the whole history.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// `live_walk`: the git-history index was not ready, so only the subjects and authors of the
+    /// `unindexed_scan`: the git-history index was not ready, so only the subjects and authors of the
     /// newest 10,000 commits were searched, no message bodies; retry shortly. `scan_cap`: an
     /// `author` filter stopped after 20,000 commits matching `query`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -663,7 +663,7 @@ pub(crate) struct FindCommitsByPathResponse {
     /// and `next_cursor` continues with them, even from an empty page.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// `window` whenever `truncated` is true.
+    /// `span_limit` whenever `truncated` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     /// `"<sha> <summary>"` per commit, newest first.
@@ -805,7 +805,7 @@ pub(crate) struct SymbolHistoryResponse {
     /// The history may reach further back than what is listed.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// `window`: this page inspected `commits_inspected` commits touching the file and older ones
+    /// `span_limit`: this page inspected `commits_inspected` commits touching the file and older ones
     /// remain, so the symbol's earlier changes (and its introduction) are on later pages:
     /// `next_cursor` continues with the next window, even from an empty page. `shallow_clone`: the
     /// clone holds no older history.
@@ -853,7 +853,7 @@ pub(crate) enum GitDiffResult {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HotspotsParams {
-    /// Window ending at HEAD's author time: `<N>d`, `<N>w` or `<N>y`; default `90d`.
+    /// Window ending at HEAD's commit time: `<N>d`, `<N>w` or `<N>y`; default `90d`.
     #[serde(default)]
     pub since: Option<String>,
     /// Only files at this path or under this directory.
@@ -907,7 +907,7 @@ pub(crate) struct HotspotRow {
 pub(crate) struct HotspotsResponse {
     /// The window as asked (`90d`).
     pub since: String,
-    /// Unix seconds: the window is `[window_start, window_end]`, ending at HEAD's author time.
+    /// Unix seconds: the window is `[window_start, window_end]`, ending at HEAD's commit time.
     pub window_start: i64,
     pub window_end: i64,
     /// Commits in the window.

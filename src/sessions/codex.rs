@@ -11,13 +11,14 @@
 //! as unsupported and unattributed. Records of a subagent's rollout before its start ordinal are the
 //! parent's history it inherited, and are skipped; a rollout in Legacy history mode writes no
 //! `ordinal`, so there the prefix is the lines before the start ordinal by position. A fork, a
-//! revert and a subagent with forked context copy earlier records with their `call_id`, which
-//! [`super::Seen`] counts once. Then: `response_item` payloads `function_call`
-//! (`name`, `namespace` (`mcp__<server>` for an MCP tool; absent or `functions` for a built-in),
-//! `arguments` as a JSON string, `call_id`), `custom_tool_call` (`name`, `namespace`, `input`,
-//! `call_id`; the code-mode `exec` script is read by [`super::code_mode`]), `local_shell_call`
-//! (`action.command`), `tool_search_call`, and the `*_output` of a call (`call_id`, `output`, a
-//! string or content items whose header carries the exit status); and `event_msg` payloads
+//! revert and a subagent with forked context copy earlier records with their `call_id`, and their
+//! token counts with the same cumulative totals, which [`super::Seen`] counts once. Then:
+//! `response_item` payloads `function_call` (`name`, `namespace` (`mcp__<server>` for an MCP tool;
+//! absent or `functions` for a built-in), `arguments` as a JSON string, `call_id`),
+//! `custom_tool_call` (`name`, `namespace`, `input`, `call_id`; the code-mode `exec` script is read
+//! by [`super::code_mode`]), `local_shell_call` (`action.command`), `tool_search_call`, and the
+//! `*_output` of a call (`call_id`, `output`, a string or content items whose header carries the
+//! exit status); and `event_msg` payloads
 //! `token_count` (the rise of `info.total_token_usage.output_tokens`, else
 //! `info.last_token_usage.output_tokens`). Messages, reasoning and command output are never kept.
 
@@ -73,6 +74,7 @@ struct Payload {
     cli_version: Option<String>,
     id: Option<Value>,
     session_id: Option<Value>,
+    forked_from_id: Option<Value>,
     parent_thread_id: Option<Value>,
     source: Option<Value>,
     thread_source: Option<Value>,
@@ -128,7 +130,7 @@ impl TranscriptParser for Codex {
         let Some(located) = scope.locate(cwd) else {
             return Outcome::OtherDirectory;
         };
-        let checkout = located.checkout;
+        let checkout_path = located.checkout.path.clone();
         let Some(version) = meta.cli_version.as_deref() else {
             return attributed("no cli_version".to_owned());
         };
@@ -138,7 +140,7 @@ impl TranscriptParser for Codex {
         };
         let own_start = meta.subagent_history_start_ordinal;
         let mut session = Parsed {
-            checkout: checkout.label.clone(),
+            checkout: located.checkout.label.clone(),
             thread: text(meta.id.as_ref()),
             parent: parent(&meta),
             format_version: version,
@@ -155,6 +157,7 @@ impl TranscriptParser for Codex {
             seen,
             copied: false,
             output_total: 0,
+            lineage: lineage(&meta),
         };
         // The position of a line after `session_meta` (ordinal 0): a Legacy-mode rollout writes no
         // ordinals, and its inherited prefix is then the lines before the start ordinal.
@@ -191,7 +194,7 @@ impl TranscriptParser for Codex {
                 // A turn records the directory it ran in, which shell paths are relative to.
                 if envelope.kind.as_deref() == Some("turn_context")
                     && let Some(moved) = payload.cwd.as_deref().and_then(|cwd| scope.locate(cwd))
-                    && moved.checkout.path == checkout.path
+                    && moved.checkout.path == checkout_path
                 {
                     session.tally.set_offset(moved.offset);
                 }
@@ -207,11 +210,14 @@ struct State<'a> {
     /// The families of the calls since the last token count.
     turn: Vec<Family>,
     seen: &'a mut Seen,
-    /// The last call was copied from an earlier rollout (a fork or a revert), so the token counts
-    /// that follow it are copied too.
+    /// The last call was copied from an earlier rollout (a fork or a revert), so a token count
+    /// without cumulative totals that follows it is copied too.
     copied: bool,
     /// The last cumulative output-token total.
     output_total: u64,
+    /// The root thread of this rollout's lineage, which forks, reverts and subagents share
+    /// ([`lineage`]): equal totals are a copy only within it.
+    lineage: String,
 }
 
 impl State<'_> {
@@ -235,6 +241,26 @@ impl State<'_> {
             }
         }
     }
+}
+
+/// A token count's `total_token_usage` as written, within `lineage`: the key
+/// [`Seen::first_token_count`] tells a copied count by. `None` without a cumulative output total,
+/// which [`State::output_delta`] then does not use either.
+fn totals_key(info: Option<&Value>, lineage: &str) -> Option<String> {
+    let totals = info?.get("total_token_usage")?;
+    totals
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .map(|_| format!("{lineage}\0{totals}"))
+}
+
+/// The root thread a rollout descends from: its `session_id`, else the thread it was forked from,
+/// else its own `id`. Two unrelated conversations differ in it even when their totals agree.
+fn lineage(meta: &Payload) -> String {
+    [&meta.session_id, &meta.forked_from_id, &meta.id]
+        .into_iter()
+        .find_map(|id| text(id.as_ref()))
+        .unwrap_or_default()
 }
 
 fn text(value: Option<&Value>) -> Option<String> {
@@ -343,8 +369,13 @@ fn record(session: &mut Parsed, kind: Option<&str>, payload: Payload, state: &mu
             return;
         }
         (Some("event_msg"), Some("token_count")) => {
+            // A fork copies the counts before its fork point verbatim, so a count with cumulative
+            // totals is copied when they were seen before; a reply after the fork point that called
+            // no tool carries totals of its own.
+            let copied = totals_key(payload.info.as_ref(), &state.lineage)
+                .map_or(state.copied, |key| !state.seen.first_token_count(&key));
             if let Some(output) = state.output_delta(payload.info.as_ref()) {
-                if !state.copied {
+                if !copied {
                     session.tally.tokens(output, &state.turn);
                 }
                 state.turn.clear();
@@ -630,6 +661,39 @@ mod tests {
         assert_eq!(parent(&fork), None, "a fork is a session of its own");
         let root = meta(serde_json::json!({"session_id": "root", "id": "root", "source": "cli"}));
         assert_eq!(parent(&root), None);
+    }
+
+    #[test]
+    fn a_totals_key_needs_an_output_total_and_is_scoped_to_the_lineage() {
+        let info = serde_json::json!({"total_token_usage": {"output_tokens": 10}});
+        assert_eq!(
+            totals_key(Some(&info), "root").as_deref(),
+            Some("root\0{\"output_tokens\":10}")
+        );
+        assert_ne!(totals_key(Some(&info), "root"), totals_key(Some(&info), "other"));
+        for unusable in [
+            serde_json::json!({"total_token_usage": {}}),
+            serde_json::json!({"total_token_usage": {"output_tokens": "10"}}),
+            serde_json::json!({"last_token_usage": {"output_tokens": 10}}),
+        ] {
+            assert_eq!(totals_key(Some(&unusable), "root"), None, "{unusable}");
+        }
+    }
+
+    #[test]
+    fn a_rollout_s_lineage_is_its_root_thread() {
+        let cases = [
+            (
+                serde_json::json!({"session_id": "root", "id": "fork", "forked_from_id": "mid"}),
+                "root",
+            ),
+            (serde_json::json!({"id": "fork", "forked_from_id": "mid"}), "mid"),
+            (serde_json::json!({"id": "solo"}), "solo"),
+            (serde_json::json!({}), ""),
+        ];
+        for (payload, root) in cases {
+            assert_eq!(lineage(&meta(payload.clone())), root, "{payload}");
+        }
     }
 
     fn failed(output: Value) -> bool {

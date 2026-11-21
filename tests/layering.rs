@@ -71,6 +71,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("extract::doc_tiers", Retrieval),
     ("git", Core),
     ("git_cache", Core),
+    ("git_cache_disk", Core),
     ("git_history", Core),
     ("hashing", Core),
     ("index", Core),

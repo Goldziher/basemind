@@ -667,7 +667,7 @@ jobs:
           const fs = require('node:fs');
           const files = JSON.parse(fs.readFileSync(process.argv[2])).files.map((file) => file.path);
           const skills = files.filter((file) => /^skills\/[^/]+\/SKILL\.md$/.test(file));
-          if (skills.length !== 10 || !files.includes('.pi/extensions/basemind.ts') || !files.includes('basemind.js') || !files.includes('tui.js')) {
+          if (skills.length !== 10 || !files.includes('.pi/extensions/basemind.ts') || !files.includes('basemind.js') || !files.includes('tui.js') || !files.includes('binary-check.js')) {
             throw new Error(`Incomplete agent package: ${skills.length} skills`);
           }
           console.log(`Packed ${skills.length} skills, the Pi extension, and OpenCode adapters`);

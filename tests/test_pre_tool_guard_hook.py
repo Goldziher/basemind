@@ -43,8 +43,9 @@ class PreToolGuardTests(unittest.TestCase):
         # The system commands the guard needs, and no jq: it must not depend on one.
         self.bin = Path(self.tmp) / "bin"
         self.bin.mkdir()
-        for command in ("awk", "cat", "dirname", "grep", "id", "ls", "mkdir", "tr"):
-            (self.bin / command).symlink_to(shutil.which(command))
+        for command in ("awk", "basename", "cat", "dirname", "git", "grep", "id", "ls", "mkdir", "tr"):
+            if shutil.which(command) is not None:
+                (self.bin / command).symlink_to(shutil.which(command))
         # session-start's verdict that the workspace is indexed, for the sessions these tests use.
         self.private = Path(self.tmp) / f"basemind-{os.getuid()}"
         (self.private / "indexed").mkdir(parents=True)
@@ -79,6 +80,10 @@ class PreToolGuardTests(unittest.TestCase):
             "git blame src/lib.rs": 'git_blame {"path":"…"}',
             "git -C repo log --oneline": 'git_log {"path":"…"}',
             "git show HEAD~1": 'git_log {"rev":"…"}',
+            "git diff": 'git_diff {"path":"…"}',
+            "git -C repo diff HEAD~1 -- src/lib.rs": 'git_diff {"path":"…"}',
+            "git status": "git_diff {} (the working-tree status",
+            "cd repo && git status --short": "git_diff {} (the working-tree status",
             "find . -name '*.rs'": 'find_files {"query":"…"}',
         }
         for command, expected in cases.items():
@@ -103,12 +108,14 @@ class PreToolGuardTests(unittest.TestCase):
             "git blame src/lib.rs",
             "git log --oneline",
             "git show HEAD~1",
+            "git diff src/lib.rs",
+            "git status",
             "find . -name '*.rs'",
         )
         suggestions = [self.bash(command, agent_id=f"bash-{index}") for index, command in enumerate(commands)]
         suggestions.append(self.run_guard("Grep", {"pattern": "x"}, agent_id="grep"))
         suggestions.append(self.run_guard("Glob", {"pattern": "**/*.rs"}, agent_id="glob"))
-        self.assertEqual(len(suggestions), 7)
+        self.assertEqual(len(suggestions), 9)
         for out in suggestions:
             decision = json.loads(out)["hookSpecificOutput"]
             with self.subTest(suggestion=decision["additionalContext"]):
@@ -140,13 +147,83 @@ class PreToolGuardTests(unittest.TestCase):
     def test_a_grep_pattern_holding_nul_gets_the_generic_call_rather_than_a_shortened_one(self) -> None:
         out = self.run_guard("Grep", {"pattern": "a\u0000b"}, agent_id="nul-pattern")
         context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn('basemind code_grep {"pattern":"…","regex":true} (indexed code)', context)
+        self.assertIn('basemind code_grep {"pattern":"…","regex":true} (indexed code, markdown', context)
         self.assertNotIn('"pattern":"ab"', context)
 
+    def grep_call(self, tool_input: dict, cwd: Path, agent: str) -> dict:
+        out = self.run_guard("Grep", tool_input, cwd=str(cwd), agent_id=agent)
+        context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        arguments = context[context.index("code_grep {") + len("code_grep ") :]
+        return json.JSONDecoder().raw_decode(arguments)[0]
+
+    def test_grep_tool_path_and_glob_scope_the_suggested_call(self) -> None:
+        repo = Path(self.tmp) / "repo"
+        (repo / "src" / "mcp").mkdir(parents=True)
+        (repo / "src" / "lib.rs").touch()
+        (repo / "Cargo.toml").touch()
+        outside = Path(self.tmp) / "outside"
+        outside.mkdir()
+        cases = (
+            ({"path": "src/mcp"}, "src/mcp/"),
+            ({"path": "./src/"}, "src/"),
+            ({"path": str(repo / "src" / "lib.rs")}, "src/lib.rs"),
+            ({"path": "Cargo.toml"}, "Cargo.toml"),
+            ({"glob": "*.rs"}, "**/*.rs"),
+            ({"path": "src", "glob": "*.{rs,toml}"}, "src/**/*.{rs,toml}"),
+            ({"path": "src", "glob": "mcp/*.rs"}, "src/mcp/*.rs"),
+            ({"path": "src/lib.rs", "glob": "*.rs"}, "src/lib.rs"),
+            ({"path": str(repo)}, None),
+            ({"path": "."}, None),
+            ({"path": str(outside)}, None),
+            ({"path": "missing/"}, None),
+            ({"glob": "!*.lock"}, None),
+        )
+        for index, (scope, path) in enumerate(cases):
+            with self.subTest(scope=scope):
+                expected = {"pattern": "fn open", "regex": True}
+                if path is not None:
+                    expected["path"] = path
+                call = self.grep_call({"pattern": "fn open", **scope}, repo, f"scope-{index}")
+                self.assertEqual(call, expected)
+
+    def test_grep_tool_path_is_relative_to_the_git_top_level(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is required")
+        repo = Path(self.tmp) / "repo"
+        (repo / "src" / "mcp").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        call = self.grep_call({"pattern": "x", "path": "mcp"}, repo / "src", "toplevel")
+        self.assertEqual(call, {"pattern": "x", "regex": True, "path": "src/mcp/"})
+
+    def test_grep_tool_without_a_path_is_scoped_to_its_working_directory(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is required")
+        repo = Path(self.tmp) / "repo"
+        (repo / "package" / "src").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        cases = (
+            ({}, "package/"),
+            ({"glob": "src/*.rs"}, "package/src/*.rs"),
+            ({"glob": "*.rs"}, "package/**/*.rs"),
+        )
+        for index, (scope, path) in enumerate(cases):
+            with self.subTest(scope=scope):
+                call = self.grep_call({"pattern": "x", **scope}, repo / "package", f"cwd-{index}")
+                self.assertEqual(call, {"pattern": "x", "regex": True, "path": path})
+
     def test_other_bash_commands_are_ignored(self) -> None:
-        for command in ("ls -la", "cargo test | grep FAIL", "git status", "echo rg"):
+        commands = (
+            "ls -la",
+            "cargo test | grep FAIL",
+            "echo rg",
+            "git diff --cached",
+            "git diff --staged src/lib.rs",
+            "git diff --no-index a.txt b.txt",
+            "git stash list | git status-report",
+        )
+        for command in commands:
             with self.subTest(command=command):
-                self.assertEqual(self.bash(command), "")
+                self.assertEqual(self.bash(command, agent_id=command), "")
 
     def test_nudge_fires_once_per_agent_and_kind(self) -> None:
         self.assertNotEqual(self.bash("rg a", agent_id="a1"), "")

@@ -18,6 +18,11 @@ Restart OpenCode. You also need the `basemind` binary on your `PATH`:
 pnpm add -g basemind        # or: pip install basemind / cargo install basemind
 ```
 
+Install the same minor version as this package. At startup the plugin runs
+`basemind --version`: with no binary it skips the MCP server, and with another
+minor version it warns; either way it shows one message naming the install
+command.
+
 Then scan your repo once before starting OpenCode:
 
 ```bash
@@ -52,8 +57,8 @@ Pi does not require another registry package.
 
 ## What OpenCode registers
 
-- **MCP server** named `basemind` running `basemind serve` over stdio. Exposes the full
-  code-map, git, documents, and memory toolset.
+- **MCP server** named `basemind` running `basemind serve` over stdio, when a `basemind`
+  binary is on `PATH`. Exposes the full code-map, git, documents, and memory toolset.
 - **Skills** shipped with the package, registered into the skill catalog.
 - **Agent-comms notifications** (terminal plugin): new messages in the basemind agent-comms
   inbox are surfaced as a toast when a session starts and after tool calls.

@@ -154,6 +154,7 @@ fn recent_and_path_history_match_real_git() {
         let git_touch = git_lines(&repo, &["log", &head, "--full-history", "--format=%H", "--", &path]);
         let idx_touch: Vec<String> = index
             .commits_touching(&path.as_bytes().into(), 0, git_touch.len())
+            .expect("index read")
             .into_iter()
             .map(|c| c.sha)
             .collect();

@@ -240,8 +240,16 @@ class AgentHookTests(unittest.TestCase):
         self.assertIn("additionalContext", plain)
 
 
+SEP = "\033[38;5;240m"
+GREEN = "\033[38;5;46m"
+MUTED = "\033[38;5;244m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+DELEGATED = "delegated status"
+
+
 class StatusLineCommsTests(unittest.TestCase):
-    """The status line counts unread agent mail on a machine with no `timeout` binary."""
+    """The status line on a machine with no `timeout` binary: the delegated line and unread agent mail."""
 
     def setUp(self) -> None:
         if shutil.which("jq") is None:
@@ -262,23 +270,29 @@ class StatusLineCommsTests(unittest.TestCase):
                 if os.access(entry.path, os.X_OK) and not entry.is_dir():
                     target.symlink_to(entry.path)
         stubs = {
-            "pgrep": "exit 0",
-            "basemind": """printf '%s\\n' "$@" >> "$HOME/basemind-args"
+            "pgrep": 'exit "${PGREP_EXIT:-0}"',
+            "basemind": f"""printf '%s\\n' "$@" >> "$HOME/basemind-args"
 case "$1 $2 $3" in
 "agent hook name") cat >/dev/null; printf '%s' session-1a2b3c4d ;;
-"agent inbox --peek") printf '%s' '{"messages":[{"id":"t-abcdef.1"},{"id":"t-abcdef.2"}],"more":false}' ;;
+"agent inbox --peek")
+  limit=20 previous="" ids="" more=false
+  for argument in "$@"; do [ "$previous" = --limit ] && limit="$argument"; previous="$argument"; done
+  unread="${{INBOX_UNREAD:-2}}"
+  [ "$unread" -gt "$limit" ] && more=true && unread="$limit"
+  for ((i = 1; i <= unread; i++)); do ids="$ids${{ids:+,}}{{\\"id\\":\\"t-abcdef.$i\\"}}"; done
+  printf '{{"messages":[%s],"more":%s}}' "$ids" "$more" ;;
+"statusline --root "*) sleep "${{STATUSLINE_SLEEP:-0}}"; printf '%s\\n' '{DELEGATED}' ;;
 esac""",
         }
         for name, body in stubs.items():
             (self.bin / name).write_text(f"#!/bin/bash\n{body}\n")
             (self.bin / name).chmod(0o755)
+        # A repository that still carries the legacy in-repo config, which basemind reads as a fallback.
         self.work = self.root / "work"
-        (self.work / ".basemind/blobs").mkdir(parents=True)
-        (self.work / ".basemind/views/working").mkdir(parents=True)
-        (self.work / ".basemind/blobs/0aaaaaaaa.fm.msgpack").touch()
-        (self.work / ".basemind/views/working/index.msgpack").touch()
+        (self.work / ".basemind").mkdir(parents=True)
+        (self.work / ".basemind/basemind.toml").write_text("")
 
-    def status_line(self) -> str:
+    def status_line(self, **extra: str) -> str:
         env = {
             **os.environ,
             "HOME": str(self.root),
@@ -287,6 +301,9 @@ esac""",
             "PATH": str(self.bin),
             "COLUMNS": "200",
         }
+        for variable in ("BASEMIND_AGENT_ID", "BASEMIND_STATUSLINE"):
+            env.pop(variable, None)
+        env.update(extra)
         payload = json.dumps({"session_id": "s1", "workspace": {"current_dir": str(self.work)}})
         return subprocess.run(
             ["/bin/bash", str(ROOT / ".claude-plugin/statusline.sh")],
@@ -306,12 +323,58 @@ esac""",
         self.assertEqual(private.stat().st_mode & 0o777, 0o700)
         self.assertEqual([path.name.startswith("sl-comms-") for path in private.iterdir()], [True])
 
+    def test_the_unread_count_is_every_unread_message_not_one_page(self) -> None:
+        cases = (
+            ("3", "compact", f"  {SEP}\u2502{RESET}  {BOLD}{GREEN}\u2709 3{RESET}"),
+            ("100", "compact", f"  {SEP}\u2502{RESET}  {BOLD}{GREEN}\u2709 100{RESET}"),
+            ("150", "compact", f"  {SEP}\u2502{RESET}  {BOLD}{GREEN}\u2709 100+{RESET}"),
+            ("150", "minimal", f" {SEP}\u00b7{RESET} {BOLD}{GREEN}\u2709100+{RESET}"),
+        )
+        private = self.root / f"basemind-{os.getuid()}"
+        for unread, tier, segment in cases:
+            with self.subTest(unread=unread, tier=tier):
+                for cached in private.glob("sl-comms-*"):
+                    cached.unlink()
+                self.assertEqual(self.status_line(BASEMIND_STATUSLINE=tier, INBOX_UNREAD=unread), DELEGATED + segment)
+        args = (self.root / "basemind-args").read_text().splitlines()
+        self.assertEqual(args[args.index("--limit") + 1], "100")
+
     def test_the_cache_never_follows_a_planted_link(self) -> None:
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
         (self.root / f"basemind-{os.getuid()}").symlink_to(elsewhere)
         self.assertIn("\u2709 2", self.status_line())
         self.assertEqual(list(elsewhere.iterdir()), [], "nothing is written through the link")
+
+    def test_an_in_repo_basemind_directory_renders_the_delegated_line_with_unread_mail(self) -> None:
+        legacy_cache = {
+            "legacy config only": [],
+            "leftover legacy index": [".basemind/blobs/0aaaaaaaa.fm.msgpack", ".basemind/views/working/index.msgpack"],
+        }
+        tiers = {
+            "full": f"  {SEP}\u2502{RESET}  {BOLD}{GREEN}\u2709 2{RESET} {MUTED}@{NAME}{RESET}",
+            "compact": f"  {SEP}\u2502{RESET}  {BOLD}{GREEN}\u2709 2{RESET}",
+            "minimal": f" {SEP}\u00b7{RESET} {BOLD}{GREEN}\u27092{RESET}",
+        }
+        for case, files in legacy_cache.items():
+            for path in files:
+                (self.work / path).parent.mkdir(parents=True, exist_ok=True)
+                (self.work / path).touch()
+            for tier, unread in tiers.items():
+                with self.subTest(case=case, tier=tier):
+                    self.assertEqual(self.status_line(BASEMIND_STATUSLINE=tier), DELEGATED + unread)
+        args = (self.root / "basemind-args").read_text().splitlines()
+        self.assertEqual(args[args.index("statusline") : args.index("statusline") + 3], ["statusline", "--root", str(self.work)])
+
+    def test_without_the_comms_daemon_the_delegated_line_stands_alone(self) -> None:
+        self.assertEqual(self.status_line(PGREP_EXIT="1"), DELEGATED)
+
+    def test_a_hung_binary_does_not_hang_the_bar_without_a_timeout_binary(self) -> None:
+        started = time.monotonic()
+        line = self.status_line(STATUSLINE_SLEEP="30", PGREP_EXIT="1")
+        self.assertLess(time.monotonic() - started, 12)
+        self.assertIn("no index \u2014 run:", line)
+        self.assertNotIn(DELEGATED, line)
 
 
 class AgentAsManifestTests(unittest.TestCase):
@@ -410,6 +473,21 @@ class HookRootTests(unittest.TestCase):
                         result = self.run_command(command, checkout)
                         self.assertNotEqual(result.returncode, 0)
                         self.assertFalse(marker.exists(), "the session's ./hooks/run-hook.cmd ran")
+
+    def tracked(self, pattern: str) -> list[str]:
+        listed = subprocess.run(["git", "ls-files", pattern], cwd=ROOT, capture_output=True, text=True, check=True)
+        return listed.stdout.split()
+
+    def test_no_shipped_hook_manifest_falls_back_to_the_session_directory(self) -> None:
+        manifests = self.tracked("*hooks.json")
+        self.assertIn(".cursor-plugin/hooks/hooks.json", manifests)
+        for manifest in manifests:
+            with self.subTest(manifest=manifest):
+                self.assertNotIn(":-.}", (ROOT / manifest).read_text())
+
+    def test_one_cursor_manifest_ships(self) -> None:
+        self.assertEqual(self.tracked("*.cursor-plugin/plugin.json"), [".cursor-plugin/plugin.json"])
+        self.assertEqual(self.tracked("*.cursor-plugin/hooks/hooks.json"), [".cursor-plugin/hooks/hooks.json"])
 
     def test_the_hosts_plugin_root_runs_the_plugins_script(self) -> None:
         hosts = {

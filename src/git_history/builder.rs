@@ -25,7 +25,10 @@ pub enum RebuildOutcome {
     /// worktree whose HEAD does not descend from the indexed head (`reason` says why). Tools read via
     /// the live walk at this head; the main checkout owns the index.
     Skipped { reason: &'static str },
-    /// Wiped and rebuilt from scratch (`reason` describes why), indexing `commits` commits.
+    /// Wiped and rebuilt from scratch, indexing `commits` commits. `reason` is `"initial"` (nothing
+    /// was indexed), `"interrupted"` (a build did not finish), `"deepened"` (the shallow clone it was
+    /// built in has been deepened or unshallowed) or `"history-rewrite"` (HEAD no longer descends from
+    /// the indexed history).
     FullRebuild { reason: &'static str, commits: u32 },
 }
 
@@ -85,12 +88,14 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, Gi
         Err(_) => return Ok(RebuildOutcome::Fresh),
     };
 
-    if index.last_indexed_head_hex().as_deref() == Some(head.as_str()) {
+    let deepened = root_deepened(index, repo);
+    if !deepened && index.last_indexed_head_hex().as_deref() == Some(head.as_str()) {
         return Ok(RebuildOutcome::Fresh);
     }
 
     // A descendant of the indexed head is always safe to append, from any worktree.
-    if let Some(last_hex) = index.last_indexed_head_hex()
+    if !deepened
+        && let Some(last_hex) = index.last_indexed_head_hex()
         && repo.has_commit(&last_hex)
         && repo.is_ancestor(&last_hex, &head)
         && fingerprint_ok(index, repo, &head)
@@ -124,6 +129,8 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, Gi
         "interrupted"
     } else if index.is_empty() {
         "initial"
+    } else if deepened {
+        "deepened"
     } else {
         "history-rewrite"
     };
@@ -168,6 +175,16 @@ fn fingerprint_ok(index: &GitHistoryIndex, repo: &Repo, head: &str) -> bool {
     }
 }
 
+/// Whether the oldest indexed commit now has a parent: the index was built in a shallow clone that
+/// has since been deepened or unshallowed (`git fetch --unshallow` moves no ref), so it lacks the
+/// history past its old boundary even while it indexes HEAD.
+pub fn root_deepened(index: &GitHistoryIndex, repo: &Repo) -> bool {
+    index
+        .root_sha()
+        .is_some_and(|root_raw| repo.has_readable_parent(&keys::sha_raw_to_hex(&root_raw)))
+        || index.shallow_boundary() != repo.shallow_boundary()
+}
+
 /// Full rebuild over all commits reachable from HEAD.
 fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result<RebuildOutcome, GitHistoryError> {
     let newest_first = repo.all_commit_shas()?;
@@ -187,6 +204,7 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
     let mut term_postings: AHashMap<Vec<u8>, Vec<u32>> = AHashMap::new();
     let mut writer = index.writer()?;
     writer.begin()?;
+    writer.put_shallow_boundary(&repo.shallow_boundary())?;
 
     let written = fold_chunked(
         index,
@@ -446,6 +464,7 @@ mod tests {
     fn touching(index: &GitHistoryIndex, path: &str) -> Vec<String> {
         index
             .commits_touching(&RelPath::from(path.as_bytes()), 0, 100)
+            .expect("read the posting list")
             .into_iter()
             .map(|c| c.sha)
             .collect()

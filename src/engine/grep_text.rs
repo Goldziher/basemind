@@ -74,6 +74,14 @@ pub(crate) fn annotate_symbols(cache: &MapCache, hits: &mut [GrepHit]) {
     }
 }
 
+/// The language of the document at `path` when `code_grep` searches it as text (markdown, JSON,
+/// YAML, TOML, CSV, HTML ...); `None` for a PDF, an Office file or anything else it cannot read as
+/// text.
+pub(crate) fn text_document_language(path: &std::path::Path) -> Option<crate::lang::LangId> {
+    crate::lang::detect(path)
+        .filter(|language| crate::lang::is_non_code(language) || crate::lang::is_document_markup(language, path))
+}
+
 /// The document-tier files `code_grep` searches as text: the ones in a language basemind can read as
 /// text (markdown, JSON, YAML, TOML, CSV ...), not PDFs or Office files, that pass `selected`. Each
 /// carries its size on disk for the byte budget and an empty `hash_hex`, which marks it a document:
@@ -90,9 +98,8 @@ pub(crate) fn text_documents(
         .iter()
         .filter_map(|path| {
             let as_path = std::path::Path::new(path.as_str()?);
-            let language = crate::lang::detect(as_path)?;
-            let text = crate::lang::is_non_code(language) || crate::lang::is_document_markup(language, as_path);
-            if !text || !selected(path, language) {
+            let language = text_document_language(as_path)?;
+            if !selected(path, language) {
                 return None;
             }
             let file = crate::path::lexical_file(root, path).ok()?;

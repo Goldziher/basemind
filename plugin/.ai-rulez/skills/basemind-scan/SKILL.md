@@ -37,8 +37,8 @@ basemind answers code-map questions from an index in a machine-global cache (Lin
 From the repository root:
 
 ```sh
-basemind scan            # full working-tree scan
-basemind scan <path>     # scope to a path (incremental)
+basemind scan                   # full working-tree scan
+basemind rescan <path>          # re-index only these paths (incremental)
 ```
 
 Finding the binary (in order of preference). The plugin runs its own version-matched binary, so
@@ -54,14 +54,15 @@ use it first: a bare `basemind` from `PATH` can be a different version over the 
 
 - The scan writes the content-addressed blob store + Fjall inverted index into the machine-global
   cache (never inside the repo). Seconds for small repos; ~22 s for an ~80k-file TypeScript monorepo.
-- The code map holds code only. Markdown, JSON, YAML, TOML, XML, CSV, INI and similar prose/config/data
-  files go to the document tier instead (chunked, searchable with `docs_search`; they never appear
-  in `code_symbols`, `code_outline` or `code_grep`; `find_files` lists them). Anything that is neither code nor an
+- The code map (outline, symbols, refs) covers code only. Markdown, JSON, YAML, TOML, XML, CSV, INI
+  and similar prose/config/data files go to the document tier instead: chunked for `docs_search`
+  (search by meaning), never in `code_symbols` or `code_outline`, but `code_grep` finds exact text
+  in them and `find_files` lists them. Anything that is neither code nor an
   extractable document is **skipped**, not counted as a failure. Existing indexes migrate on the
   next scan, which also reclaims stale blobs (`cleanup: reclaimed N orphaned blob(s)`).
 - If a daemon is running, `scan` is forwarded to it and prints `scan via daemon`; it never
-  starts one. A flag the daemon cannot apply (`--rebuild-git-history`, `--verify-shared-base`, a
-  `--documents-*` / `--llm-*` override) exits 2 naming it. Another process holding the store lock
+  starts one. A flag the daemon cannot apply (`--rebuild-git-history`, a `--documents-*` /
+  `--llm-*` override) exits 2 naming it. Another process holding the store lock
   (`basemind watch`, another scan) makes `scan` exit 3 and name the holder.
 - **Indexing directories outside the repo** — set `scan.extra_roots` in the repo-root `basemind.toml`
   to a list of absolute paths (e.g. a Bazel external repo cache) to index them alongside the repo.

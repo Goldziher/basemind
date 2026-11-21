@@ -27,7 +27,7 @@ symbol or span you need. Paths are repository-relative with forward slashes.
 
 - `code_outline` lists a code file's symbols (kind, name, signature, `line` / `end_line`) and its
   imports. A Markdown, config or data file is a document, not code: the call says so and points at
-  `docs_search`.
+  `code_grep` for exact text and `docs_search` to search by meaning.
 - `code_symbols` ranks the exact name first, then prefix, then substring; `fuzzy` adds fuzzy
   subsequence matches last. `kind` filters by symbol kind.
 - `code_read` takes `symbol` (plus `line` or `kind` when several definitions share the name) or a

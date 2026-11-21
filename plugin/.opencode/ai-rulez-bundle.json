@@ -4,7 +4,7 @@
     "basemind": {
       "type": "local",
       "command": [
-        "${PLUGIN_ROOT}/scripts/mcp-launch.sh",
+        "${PLUGIN_ROOT}/scripts/mcp-launch.cmd",
         "serve"
       ]
     }

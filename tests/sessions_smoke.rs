@@ -23,6 +23,9 @@ const PLANTED_SYMLINKS: u64 = 6;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sessions");
 
+#[path = "sessions_smoke/worktrees.rs"]
+mod worktrees;
+
 struct Env {
     _dir: tempfile::TempDir,
     home: PathBuf,
@@ -155,6 +158,9 @@ fn setup() -> Env {
     }
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    // Another repository beside the checkouts: the directory holding the worktree holds more than
+    // this repository, so a gone directory there (`repo-sibling`) is no removed worktree.
+    git(&other, &["init", "-q"]);
     git(
         &repo,
         &["worktree", "add", "-q", "-b", "feature", &worktree.to_string_lossy()],
@@ -556,6 +562,81 @@ fn a_fork_counts_only_what_it_did_after_the_fork() {
 }
 
 #[test]
+fn a_reply_without_a_tool_call_after_a_fork_point_counts_once() {
+    let env = setup();
+    let day = env.home.join(".codex/sessions/2026/11/20");
+    place(
+        &env,
+        &env.repo,
+        "codex/fork-reply.jsonl",
+        &day.join("rollout-fork-reply.jsonl"),
+    );
+    let report = report(&env, None);
+    assert_eq!(
+        session(&report, "rollout-fork-reply").counts,
+        Counts {
+            output_tokens: OutputTokens {
+                other: 9,
+                ..OutputTokens::default()
+            },
+            ..Counts::default()
+        },
+        "the copied calls and token count are rollout-f's; the text reply after the fork point is the \
+         fork's, though the record before it was a copied call"
+    );
+    assert_eq!(
+        session(&report, "rollout-f").counts.output_tokens,
+        OutputTokens {
+            read_search: 40,
+            edit: 25,
+            other: 0
+        },
+        "the parent's counts stay its own"
+    );
+}
+
+#[test]
+fn unrelated_conversations_with_equal_totals_each_count_their_tokens() {
+    let env = setup();
+    let day = env.home.join(".codex/sessions/2026/11/20");
+    for stem in ["rollout-twin-a", "rollout-twin-b"] {
+        place(&env, &env.repo, "codex/twin.jsonl", &day.join(format!("{stem}.jsonl")));
+    }
+    let report = report(&env, None);
+    for stem in ["rollout-twin-a", "rollout-twin-b"] {
+        assert_eq!(
+            session(&report, stem).counts.output_tokens,
+            OutputTokens {
+                other: 10,
+                ..OutputTokens::default()
+            },
+            "{stem}: equal totals in another lineage are no copy"
+        );
+    }
+}
+
+#[test]
+fn token_counts_without_an_output_total_each_count_their_last_usage() {
+    let env = setup();
+    let day = env.home.join(".codex/sessions/2026/11/20");
+    place(
+        &env,
+        &env.repo,
+        "codex/empty-totals.jsonl",
+        &day.join("rollout-empty-totals.jsonl"),
+    );
+    let report = report(&env, None);
+    assert_eq!(
+        session(&report, "rollout-empty-totals").counts.output_tokens,
+        OutputTokens {
+            other: 12,
+            ..OutputTokens::default()
+        },
+        "two counts of 5 and 7 whose totals hold no output total"
+    );
+}
+
+#[test]
 fn a_reverted_thread_is_one_session() {
     let env = setup();
     let day = env.home.join(".codex/sessions/2026/11/20");
@@ -622,6 +703,10 @@ fn a_resumed_claude_session_counts_only_its_new_calls() {
         ),
         (0, 1, 0, 6),
         "the message, call and result copied from s1 are s1's"
+    );
+    assert_eq!(
+        s0.counts.output_tokens.other, 3,
+        "the reply right after the copied records called no tool"
     );
     let s1 = session(&report, "s1");
     assert_eq!((s1.counts.basemind, s1.counts.errors), (1, 2));
@@ -746,7 +831,6 @@ fn a_missing_root_is_reported_and_since_filters_by_day() {
 
 /// ADR-0049 rule 5: the repository's `basemind.toml` names other transcript roots, and the command
 /// still reads only the ones under the home directory.
-#[cfg(unix)]
 #[test]
 fn a_repository_configuration_cannot_move_the_roots() {
     let env = setup();
@@ -766,7 +850,7 @@ fn a_repository_configuration_cannot_move_the_roots() {
         &codex.join("2026/11/20/decoy-x.jsonl"),
     );
     let config = format!(
-        "[sessions]\nclaude_projects = \"{}\"\ncodex_sessions = \"{}\"\n",
+        "[sessions]\nclaude_projects = '{}'\ncodex_sessions = '{}'\n",
         claude.display(),
         codex.display()
     );
@@ -792,7 +876,6 @@ fn a_repository_configuration_cannot_move_the_roots() {
 /// Run `basemind --root <repo> sessions [--json]` with the temporary home and fresh data and comms
 /// directories, assert that no transcript text or control character reached stdout or stderr, and
 /// return stdout.
-#[cfg(unix)]
 fn run_sessions(env: &Env, json: bool) -> String {
     let scratch = tempfile::tempdir().expect("tempdir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_basemind"));
@@ -801,6 +884,7 @@ fn run_sessions(env: &Env, json: bool) -> String {
         .arg(&env.repo)
         .arg("sessions")
         .env("HOME", &env.home)
+        .env("USERPROFILE", &env.home)
         .env("BASEMIND_DATA_HOME", scratch.path().join("data"))
         .env("BASEMIND_COMMS_DIR", scratch.path().join("comms"))
         .env_remove("RUST_LOG");
@@ -822,7 +906,6 @@ fn run_sessions(env: &Env, json: bool) -> String {
     stdout
 }
 
-#[cfg(unix)]
 #[test]
 fn transcript_strings_are_printed_only_as_plain_tokens() {
     let env = setup();
@@ -869,7 +952,6 @@ fn transcript_strings_are_printed_only_as_plain_tokens() {
     assert!(text.contains("rollout-hv (unparseable cli_version)"), "{text}");
 }
 
-#[cfg(unix)]
 #[test]
 fn the_command_prints_counts_and_never_transcript_text() {
     let env = setup();
@@ -894,6 +976,7 @@ fn the_command_prints_counts_and_never_transcript_text() {
     );
     assert!(text.contains("subagents:"), "{text}");
     assert!(text.contains("s1/agent-a1"), "{text}");
+    #[cfg(unix)]
     assert!(
         text.contains(&format!("skipped {PLANTED_SYMLINKS} transcripts: refused")),
         "{text}"

@@ -194,7 +194,7 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   blob over `scan.max_file_bytes` is refused: blame a line span instead.
 - **A symbol's history pages past its window.** `git_log {path, symbol}` inspects one window of
   the commits touching the file per page and returns `next_cursor` while older commits remain. A
-  page can be short or empty and still not be the last (`truncated_reason: "window"`): follow the
+  page can be short or empty and still not be the last (`truncated_reason: "span_limit"`): follow the
   cursor until it is absent. A symbol the working tree no longer defines has its history read; a
   name that no inspected commit defines either is named in `unmatched` on each empty page and is an
   error on the last. `git_log` with a directory `path` pages the same way, 200 commits per page.
@@ -259,9 +259,9 @@ lowered), `body_truncated` (`git_log` search: one commit's message was shortened
 | `git_diff {path}` | `truncated`, `total_hunks` | `truncated`, `truncated_reason` (`hunk_cap`, `byte_cap`), `omitted` (hunks) |
 | `git_diff {structural}` | `common` (a list) | `common` (a count) |
 | `git_log {rev}` | none | `budgeted`, `omitted` (files left out of `files`) |
-| `git_log {path, symbol}` | none | `budgeted`, `truncated_reason: "window"`, `next_cursor` past the window, `unmatched` |
-| `git_log {path: "dir/"}` | `truncated` at a fixed 200-commit window | `truncated_reason: "window"`, `next_cursor` past the window, `unmatched` |
-| `git_log {query}` | `partial` | `truncated`, `truncated_reason` (`live_walk`, `scan_cap`) |
+| `git_log {path, symbol}` | none | `budgeted`, `truncated_reason: "span_limit"`, `next_cursor` past the window, `unmatched` |
+| `git_log {path: "dir/"}` | `truncated` at a fixed 200-commit window | `truncated_reason: "span_limit"`, `next_cursor` past the window, `unmatched` |
+| `git_log {query}` | `partial` | `truncated`, `truncated_reason` (`unindexed_scan`, `scan_cap`) |
 
 ### Lean rows
 

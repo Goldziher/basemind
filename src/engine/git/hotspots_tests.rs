@@ -1,5 +1,5 @@
 //! The hotspot ranking: the window walk, the top-slice thresholds, the coincidence rule and the
-//! function length.
+//! function length, and the window of a clone unshallowed while it is served.
 
 use super::*;
 use crate::git::ChangeKind;
@@ -40,8 +40,13 @@ fn since_takes_days_weeks_and_years_only() {
     }
 }
 
+/// A commit's commit time when it is its author time.
+fn committed_when_authored(commit: &CommitInfo) -> Option<i64> {
+    Some(commit.author_time_unix)
+}
+
 #[test]
-fn the_window_ends_at_the_newest_commit_and_counts_commits_and_authors_per_path() {
+fn the_window_ends_at_the_given_end_and_counts_commits_and_authors_per_path() {
     let day = SECS_PER_DAY;
     let history = [
         commit(100 * day, "A@x", &["a.rs", "b.rs"]),
@@ -52,10 +57,12 @@ fn the_window_ends_at_the_newest_commit_and_counts_commits_and_authors_per_path(
     ];
     let window = collect_window(
         |skip, take| history.iter().skip(skip).take(take).cloned().collect(),
+        committed_when_authored,
+        101 * day,
         7 * day,
         INDEXED_COMMIT_CAP,
     );
-    assert_eq!((window.start, window.end), (93 * day, 100 * day));
+    assert_eq!((window.start, window.end), (94 * day, 101 * day));
     assert_eq!(window.commits, 3);
     let (commits, authors) = &window.per_path[&RelPath::from("a.rs")];
     // `A@x` and `a@x` are one author.
@@ -74,6 +81,8 @@ fn one_backdated_commit_does_not_end_the_window_but_a_run_of_them_does() {
     history.push(commit(98 * day, "a@x", &["beyond.rs"]));
     let window = collect_window(
         |skip, take| history.iter().skip(skip).take(take).cloned().collect(),
+        committed_when_authored,
+        100 * day,
         7 * day,
         INDEXED_COMMIT_CAP,
     );
@@ -83,10 +92,64 @@ fn one_backdated_commit_does_not_end_the_window_but_a_run_of_them_does() {
 }
 
 #[test]
+fn a_run_of_commits_authored_before_the_window_but_made_in_it_does_not_end_the_walk() {
+    let day = SECS_PER_DAY;
+    let mut rebased = commit(1, "a@x", &["rebased.rs"]);
+    rebased.sha = "rebased".to_string();
+    let mut history = vec![commit(100 * day, "a@x", &["head.rs"])];
+    history.extend(std::iter::repeat_n(rebased, OUT_OF_WINDOW_RUN + 10));
+    history.push(commit(98 * day, "b@x", &["beyond.rs"]));
+    let window = collect_window(
+        |skip, take| history.iter().skip(skip).take(take).cloned().collect(),
+        |commit: &CommitInfo| {
+            Some(if commit.sha == "rebased" {
+                99 * day
+            } else {
+                commit.author_time_unix
+            })
+        },
+        100 * day,
+        7 * day,
+        INDEXED_COMMIT_CAP,
+    );
+    assert_eq!(window.commits, 2);
+    let mut paths: Vec<&str> = window.per_path.keys().map(|path| path.as_str().unwrap()).collect();
+    paths.sort_unstable();
+    assert_eq!(paths, ["beyond.rs", "head.rs"]);
+    assert_eq!(window.truncated_reason, None);
+}
+
+#[test]
+fn a_commit_authored_after_the_end_is_skipped_and_both_ends_are_inclusive() {
+    let day = SECS_PER_DAY;
+    let history = [
+        // HEAD, authored a day after it was made: after the window's end.
+        commit(101 * day, "a@x", &["future.rs"]),
+        commit(100 * day, "a@x", &["at_end.rs"]),
+        commit(93 * day, "b@x", &["at_start.rs"]),
+        commit(92 * day, "c@x", &["before.rs"]),
+    ];
+    let window = collect_window(
+        |skip, take| history.iter().skip(skip).take(take).cloned().collect(),
+        committed_when_authored,
+        100 * day,
+        7 * day,
+        INDEXED_COMMIT_CAP,
+    );
+    assert_eq!((window.start, window.end), (93 * day, 100 * day));
+    assert_eq!(window.commits, 2);
+    let mut paths: Vec<&str> = window.per_path.keys().map(|path| path.as_str().unwrap()).collect();
+    paths.sort_unstable();
+    assert_eq!(paths, ["at_end.rs", "at_start.rs"]);
+}
+
+#[test]
 fn the_walk_stops_at_its_cap_and_says_so() {
     let history: Vec<CommitInfo> = (0..30).map(|i| commit(1000 - i, "a@x", &["a.rs"])).collect();
     let window = collect_window(
         |skip, take| history.iter().skip(skip).take(take).cloned().collect(),
+        committed_when_authored,
+        1000,
         SECS_PER_DAY,
         10,
     );
@@ -183,4 +246,95 @@ fn the_longest_function_is_measured_in_lines_from_its_byte_span() {
     assert_eq!(&source[b_start..b_end], b"fn b() {\n  x();\n  y();\n}");
     assert_eq!(longest_function(&symbols, source), Some((4, "b:2".to_string())));
     assert_eq!(longest_function(&symbols[2..], source), None);
+}
+
+fn git(root: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@e.x")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@e.x")
+        .status()
+        .expect("git in PATH");
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// A `--depth 1` clone, under `dir`, of an upstream whose three commits each change `a.rs`.
+fn shallow_clone_of_three_commits(dir: &std::path::Path) -> std::path::PathBuf {
+    let upstream = dir.join("upstream");
+    std::fs::create_dir_all(&upstream).expect("mkdir");
+    git(&upstream, &["init", "-q"]);
+    git(&upstream, &["config", "commit.gpgsign", "false"]);
+    for i in 0..3 {
+        std::fs::write(upstream.join("a.rs"), format!("line {i}\n")).expect("write");
+        git(&upstream, &["add", "a.rs"]);
+        git(&upstream, &["commit", "-qm", &format!("rev {i}")]);
+    }
+    let url = format!("file://{}", upstream.display());
+    git(dir, &["clone", "-q", "--depth", "1", &url, "clone"]);
+    dir.join("clone")
+}
+
+fn workspace_over(
+    root: &std::path::Path,
+    cache: &std::path::Path,
+    repo: std::sync::Arc<crate::git::Repo>,
+    history: Option<std::sync::Arc<crate::git_history::GitHistoryIndex>>,
+) -> Workspace {
+    let store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("store");
+    Workspace::new(
+        store,
+        root.to_path_buf(),
+        std::sync::Arc::new(crate::config::Config::with_defaults()),
+        Some(repo),
+        std::sync::Arc::new(crate::git_cache::GitCache::open(cache, 4, true).expect("git cache")),
+        history,
+        crate::engine::workspace::OpenOptions {
+            background: true,
+            read_only: false,
+            forwards_writes: false,
+            lazy_cache: false,
+            history_sync: None,
+            #[cfg(feature = "memory")]
+            memory_owner: |_| "owner".to_string(),
+        },
+    )
+}
+
+/// Run with and without a git-history index built while the clone was shallow: the index indexes
+/// HEAD before and after the unshallow, and the git cache saw the shallow walk first.
+#[test]
+fn hotspots_count_the_history_an_unshallowed_clone_gained() {
+    crate::store::init_isolated_cache();
+    for indexed in [false, true] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let clone = shallow_clone_of_three_commits(dir.path());
+        let cache_dir = tempfile::tempdir().expect("cache dir");
+        let history_dir = tempfile::tempdir().expect("history dir");
+        let repo = std::sync::Arc::new(crate::git::Repo::discover(&clone).expect("repo"));
+        assert!(repo.is_shallow());
+        let history = indexed.then(|| {
+            let index = crate::git_history::GitHistoryIndex::open(history_dir.path()).expect("history index");
+            crate::git_history::builder::sync(&index, &repo, history_dir.path()).expect("sync");
+            assert_eq!(index.commit_count(), 1);
+            std::sync::Arc::new(index)
+        });
+        let ws = workspace_over(&clone, cache_dir.path(), std::sync::Arc::clone(&repo), history);
+        let window_commits = || {
+            ws.git_hotspots(HotspotsParams {
+                since: None,
+                path: None,
+                limit: None,
+            })
+            .expect("hotspots")
+            .commits
+        };
+        assert_eq!(window_commits(), 1, "indexed: {indexed}");
+
+        git(&clone, &["fetch", "-q", "--unshallow"]);
+        assert!(!repo.is_shallow());
+        assert_eq!(window_commits(), 3, "indexed: {indexed}");
+    }
 }
