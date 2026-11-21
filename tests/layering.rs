@@ -1622,7 +1622,8 @@ fn test_variables_are_read_only_under_a_test_gate() {
     );
     let smoke =
         std::fs::read_to_string(root.join(RELEASE_SMOKE)).unwrap_or_else(|e| panic!("read {RELEASE_SMOKE}: {e}"));
-    let unsmoked: Vec<&String> = test_support.difference(&smoke_sets(&smoke)).collect();
+    let smoked = smoke_sets(&smoke);
+    let unsmoked: Vec<&String> = test_support.difference(&smoked).collect();
     assert!(
         unsmoked.is_empty(),
         "test-support variables {RELEASE_SMOKE} does not set on the release binary: {unsmoked:?}"
