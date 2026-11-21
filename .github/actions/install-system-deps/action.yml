@@ -102,3 +102,6 @@ runs:
         }
 
         Write-Host "::endgroup::"
+
+    - name: Install libheif
+      uses: ./.github/actions/install-libheif
