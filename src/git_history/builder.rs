@@ -182,6 +182,7 @@ pub fn root_deepened(index: &GitHistoryIndex, repo: &Repo) -> bool {
     index
         .root_sha()
         .is_some_and(|root_raw| repo.has_readable_parent(&keys::sha_raw_to_hex(&root_raw)))
+        || index.shallow_boundary() != repo.shallow_boundary()
 }
 
 /// Full rebuild over all commits reachable from HEAD.
@@ -203,6 +204,7 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
     let mut term_postings: AHashMap<Vec<u8>, Vec<u32>> = AHashMap::new();
     let mut writer = index.writer()?;
     writer.begin()?;
+    writer.put_shallow_boundary(&repo.shallow_boundary())?;
 
     let written = fold_chunked(
         index,

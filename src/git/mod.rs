@@ -356,6 +356,12 @@ impl Repo {
         std::fs::metadata(&self.shallow_file).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
     }
 
+    /// The clone's `shallow` file: the boundary commits whose parents it lacks, empty when it is
+    /// not shallow. A fetch that deepens the clone changes it, wherever the oldest commit sits.
+    pub fn shallow_boundary(&self) -> Vec<u8> {
+        std::fs::read(&self.shallow_file).unwrap_or_default()
+    }
+
     /// True when the commit `sha` names has a parent this clone holds. False for a root commit, for
     /// a shallow clone's boundary commit, and for a `sha` that is not a commit here.
     pub fn has_readable_parent(&self, sha: &str) -> bool {

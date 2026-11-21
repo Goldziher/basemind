@@ -275,8 +275,7 @@ impl GitCache {
         if shallow {
             return Ok(arc);
         }
-        category(&self.commit_files)
-            .admit(commit_sha.to_string(), Arc::clone(&arc));
+        category(&self.commit_files).admit(commit_sha.to_string(), Arc::clone(&arc));
         self.write_commit_files_disk(commit_sha, &arc);
         Ok(arc)
     }

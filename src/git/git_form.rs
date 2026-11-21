@@ -34,6 +34,13 @@ impl Repo {
             msg,
         };
         let local = self.local();
+        // A comparison only needs the stored form: `core.safecrlf=true` would fail a file `git add`
+        // refuses, where the diff should still say what changed. Clean filters stay fatal.
+        let mut local = local;
+        local
+            .config_snapshot_mut()
+            .set_value(&gix::config::tree::Core::SAFE_CRLF, "false")
+            .map_err(|error| failed(error.to_string()))?;
         let (mut pipeline, index) = local.filter_pipeline(None).map_err(|error| failed(error.to_string()))?;
         let mut converted = pipeline
             .convert_to_git(bytes, rel, &index)
@@ -111,6 +118,19 @@ mod tests {
         std::fs::write(root.join("a.txt"), b"one\r\ntwo\r\nthree\r\n").expect("write");
         assert_eq!(worktree_hunks(root, "a.txt"), Vec::<Row>::new());
 
+        std::fs::write(root.join("a.txt"), b"one\r\nTWO\r\nthree\r\n").expect("write");
+        assert_eq!(worktree_hunks(root, "a.txt"), one_edited_line("two", "TWO"));
+    }
+
+    /// `core.safecrlf=true` makes `git add` refuse a file whose line endings do not round-trip; a
+    /// comparison only needs the stored form, so it must not fail on one.
+    #[test]
+    fn a_crlf_file_under_a_fatal_safecrlf_still_diffs() {
+        let dir = committed(
+            &[("core.autocrlf", "input"), ("core.safecrlf", "true")],
+            &[("a.txt", "one\ntwo\nthree\n")],
+        );
+        let root = dir.path();
         std::fs::write(root.join("a.txt"), b"one\r\nTWO\r\nthree\r\n").expect("write");
         assert_eq!(worktree_hunks(root, "a.txt"), one_edited_line("two", "TWO"));
     }

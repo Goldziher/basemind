@@ -260,3 +260,72 @@ fn the_history_index_and_the_live_walk_agree_on_a_shallow_clones_boundary_commit
         ]
     );
 }
+
+/// Upstream history `R -> A0 -> A1 -> A2` and `R -> B1`, merged at `M`, cloned at `--depth 3`: the
+/// clone holds `M`, `A2`, `B1`, `A1` and `R`, so `R` is a true root while `A1` is the shallow boundary.
+#[test]
+fn a_history_index_is_rebuilt_when_a_boundary_other_than_the_root_is_deepened() {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = dir.path().join("upstream");
+    fs::create_dir_all(&upstream).unwrap();
+    run(&upstream, &["init", "-q", "-b", "main"]);
+    run(&upstream, &["config", "commit.gpgsign", "false"]);
+    let step = |file: &str, day: u32, message: &str| {
+        fs::write(upstream.join(file), message).unwrap();
+        run(&upstream, &["add", "-A"]);
+        commit_on(&upstream, day, message);
+    };
+    step("r.rs", 1, "R");
+    run(&upstream, &["checkout", "-q", "-b", "side"]);
+    step("b.rs", 2, "B1");
+    run(&upstream, &["checkout", "-q", "main"]);
+    step("a0.rs", 3, "A0");
+    step("a1.rs", 4, "A1");
+    step("a2.rs", 5, "A2");
+    let date = "2025-01-06T00:00:00";
+    let status = Command::new("git")
+        .args(["merge", "-q", "--no-ff", "-m", "M", "side"])
+        .current_dir(&upstream)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@e.x")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@e.x")
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
+        .status()
+        .expect("git in PATH");
+    assert!(status.success());
+    let url = format!("file://{}", upstream.display());
+    run(
+        dir.path(),
+        &["clone", "-q", "--depth", "3", "--no-single-branch", &url, "clone"],
+    );
+    let clone = dir.path().join("clone");
+    let basemind_dir = clone.join(".basemind");
+    fs::create_dir_all(&basemind_dir).unwrap();
+    let index = GitHistoryIndex::open(&basemind_dir).unwrap();
+    let repo = Repo::discover(&clone).unwrap();
+
+    let RebuildOutcome::FullRebuild {
+        commits: shallow_commits,
+        ..
+    } = builder::sync(&index, &repo, &basemind_dir).unwrap()
+    else {
+        panic!("the first sync builds");
+    };
+    assert_eq!(shallow_commits, 5, "M, A2, B1, A1 and R");
+    assert_eq!(
+        builder::sync(&index, &repo, &basemind_dir).unwrap(),
+        RebuildOutcome::Fresh
+    );
+
+    run(&clone, &["fetch", "-q", "--unshallow"]);
+    assert_eq!(
+        builder::sync(&index, &repo, &basemind_dir).unwrap(),
+        RebuildOutcome::FullRebuild {
+            reason: "deepened",
+            commits: 6
+        }
+    );
+    assert_eq!(index.commit_count(), 6);
+}

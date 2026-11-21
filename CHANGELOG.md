@@ -850,8 +850,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   graft, a walk that ends at the boundary) were cached by commit sha and outlived `git fetch
   --unshallow`; they are no longer cached, and a daemon re-reads whether the clone is shallow on
   every call instead of once at open. A git-history index built in a shallow clone is no longer read
-  once its oldest commit has a parent, though it still indexes HEAD, and is rebuilt with the reason
-  `deepened`. `GIT_CACHE_SCHEMA` moves, so payloads of earlier builds are misses.
+  once the clone's `shallow` file differs from the one it was built under (a boundary other than its
+  oldest commit can be deepened too), though it still indexes HEAD, and is rebuilt with the reason
+  `deepened`. `GIT_CACHE_SCHEMA` and `GIT_HISTORY_SCHEMA` move, so payloads of earlier builds are
+  misses and the history index rebuilds once.
 - A shallow clone's boundary commit is a root commit to both the git-history index and the live
   walk (#301): it adds every file in its tree, as `git log` shows it. The index listed no files for
   it while the live walk matched it for every path it holds, so `git_log` with a `path` answered

@@ -89,7 +89,10 @@ use crate::path::RelPath;
 ///
 /// `+10` rebuilds the stored authors: a name that is not UTF-8 was stored as `?` and its email as
 /// empty, so every such author was one person. The byte format is unchanged.
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 10;
+///
+/// `+11` rebuilds the file list of a shallow clone's boundary commit, which is now listed as a root
+/// (its tree added), and stores the clone's `shallow` file so a deepened boundary is noticed.
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 11;
 
 /// Memtable ceiling of each keyspace, in bytes. At fjall's 64 MiB default, eight keyspaces with up
 /// to four sealed memtables queued behind each would let one database (the daemon keeps one per
@@ -491,6 +494,16 @@ impl GitHistoryIndex {
         self.db.meta_u32(keys::META_NEXT_PATH_ID)
     }
 
+    /// The clone's `shallow` file contents at build time; empty when it was not shallow.
+    pub fn shallow_boundary(&self) -> Vec<u8> {
+        self.db
+            .meta
+            .get(keys::META_SHALLOW)
+            .ok()
+            .flatten()
+            .map_or_else(Vec::new, |bytes| bytes.to_vec())
+    }
+
     /// Fingerprint: sha of the oldest reachable (root) commit at build time.
     pub fn root_sha(&self) -> Option<[u8; 20]> {
         self.db.meta_sha(keys::META_ROOT_SHA)
@@ -709,6 +722,16 @@ impl GitHistoryWriter {
         mark.insert(&self.db.meta, keys::META_BUILD_IN_PROGRESS, [1u8]);
         mark.remove(&self.db.meta, keys::META_LAST_HEAD);
         mark.commit()?;
+        Ok(())
+    }
+
+    /// Record the `shallow` file this build read, so a later fetch that moves a boundary is seen.
+    pub fn put_shallow_boundary(&mut self, boundary: &[u8]) -> Result<(), GitHistoryError> {
+        if boundary.is_empty() {
+            self.db.meta.remove(keys::META_SHALLOW)?;
+        } else {
+            self.db.meta.insert(keys::META_SHALLOW, boundary)?;
+        }
         Ok(())
     }
 
