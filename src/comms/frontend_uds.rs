@@ -551,7 +551,7 @@ mod tests {
     #[tokio::test]
     async fn a_silent_client_does_not_stall_the_accept_loop() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())));
+        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())).expect("broker"));
 
         let socket = dir.path().join("accept.sock");
         let listener = UnixListener::bind(&socket).expect("bind");
@@ -603,7 +603,7 @@ mod tests {
         );
 
         // Simulate the slow store open finishing.
-        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())));
+        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())).expect("broker"));
         let frontend = early.finish(broker.clone()).await.expect("finish");
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         tokio::spawn(Box::new(frontend).serve(broker, shutdown_rx));

@@ -284,3 +284,31 @@ fn a_refusal_prints_no_backtrace_under_rust_backtrace() {
         "{stderr}"
     );
 }
+
+/// A command run from a directory that was removed under it (a deleted worktree) fails with an
+/// error naming the directory read, not a panic.
+#[cfg(unix)]
+#[test]
+fn a_removed_working_directory_is_an_error_not_a_panic() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gone = dir.path().join("gone");
+    std::fs::create_dir(&gone).expect("create the doomed directory");
+    let output = Command::new("sh")
+        .args(["-c", r#"cd "$1" && rmdir "$1" && exec "$2" status"#, "sh"])
+        .arg(&gone)
+        .arg(bin())
+        .output()
+        .expect("run basemind from a removed directory");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!gone.exists(), "the working directory was not removed");
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(
+        stderr.trim_end().ends_with(
+            "Error: read the current directory (pass --root to name the repository)\n\nCaused by:\n    \
+             No such file or directory (os error 2)"
+        ),
+        "{stderr}"
+    );
+}

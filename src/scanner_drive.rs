@@ -36,7 +36,7 @@ use std::path::Path;
 use crate::backpressure::{AdmitOutcome, FootprintGate};
 use crate::chunk_drive::{ChunkCut, drive_chunks_governed};
 use crate::config::{Config, MaxFootprint};
-use crate::scanner::{FileResult, FileStatus, ScanCancel, ScanSource, ScanStats};
+use crate::scanner::{FileResult, FileStatus, ScanCancel, ScanError, ScanSource, ScanStats};
 use crate::scanner_file::{run_candidates, scanner_pool};
 use crate::scanner_filter::Filters;
 use crate::store::Store;
@@ -297,15 +297,17 @@ struct DriveCtx<'a> {
 ///
 /// Returns once every candidate has been processed, or early when `drive.cancel` trips — the
 /// caller must then skip the stale purge, because the unprocessed candidates are missing from
-/// [`DriveOutcome::seen`] and would be mistaken for deletions.
+/// [`DriveOutcome::seen`] and would be mistaken for deletions. Fails before any candidate is
+/// processed when the scan worker pool cannot be built.
 pub(crate) fn drive_scan(
     drive: &ScanDrive<'_>,
     candidates: &[String],
     store: &mut Store,
     stats: &mut ScanStats,
     observer: &mut dyn ScanObserver,
-) -> DriveOutcome {
-    let pool_threads = scanner_pool(drive.config.resources.scan_threads).current_num_threads();
+) -> Result<DriveOutcome, ScanError> {
+    let pool = scanner_pool(drive.config.resources.scan_threads)?;
+    let pool_threads = pool.current_num_threads();
     let mut governor = DriveGovernor::new(
         drive.config.resources.max_footprint_mb,
         base_chunk_items(pool_threads),
@@ -360,6 +362,7 @@ pub(crate) fn drive_scan(
                 drive.embed,
                 drive.cancel,
                 max_workers,
+                pool,
             )
         },
         |ctx: &mut DriveCtx<'_>, produced| apply_outcomes(ctx, produced),
@@ -380,7 +383,7 @@ pub(crate) fn drive_scan(
             tracing::warn!("{summary}");
         }
     }
-    ctx.out
+    Ok(ctx.out)
 }
 
 /// The single end-of-phase line that replaces a warning per deferred document; `None` when nothing

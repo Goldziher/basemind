@@ -724,7 +724,7 @@ mod tests {
     #[tokio::test]
     async fn a_silent_connection_does_not_pin_the_daemon() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())));
+        let broker = Arc::new(Broker::new(crate::comms::agents_hub::AgentHub::open(dir.path())).expect("broker"));
         let router = Arc::new(HttpRouter {
             broker: Arc::clone(&broker),
             session_manager: Arc::new(NeverSessionManager::default()),
