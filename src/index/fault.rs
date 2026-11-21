@@ -49,7 +49,7 @@ impl IndexFault {
     /// Latch a full disk that a write outside the index hit, a blob write: the scan cannot persist
     /// its work any more than after a failed commit. Any other error is ignored.
     pub fn record_disk_full(&self, error: &(dyn Error + 'static)) {
-        if is_storage_full(error) {
+        if chain_is_storage_full(error) {
             self.latch(STORAGE_FULL, &error);
         }
     }
@@ -133,11 +133,11 @@ fn fatal_kind(error: &IndexError) -> Option<&'static str> {
     ) {
         return Some(POISONED);
     }
-    is_storage_full(error).then_some(STORAGE_FULL)
+    chain_is_storage_full(error).then_some(STORAGE_FULL)
 }
 
 /// Whether `error`, or any error in its source chain, is an io error of kind `StorageFull`.
-fn is_storage_full(error: &(dyn Error + 'static)) -> bool {
+fn chain_is_storage_full(error: &(dyn Error + 'static)) -> bool {
     let mut cursor = Some(error);
     while let Some(current) = cursor {
         if current
