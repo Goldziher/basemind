@@ -6,8 +6,8 @@ name: bm
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:5b7e95344c19c1efbb1164813559745920a36effe1d1d82953c3d9c0f8cd2a47
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:c39c72885e994b746e48b6bfc262b54f5509c7f6bb68be5960d7b7ce447996ed
+Source-Hash: blake3:01442a6227c34b9cd7b138d6aac12ddc327478a9c13627fd6ee56a05f54a4960
 Schema-Version: v1
 -->
 
@@ -46,7 +46,7 @@ Route the question to the tool that answers it directly:
 | "Search PDFs/docs in the repo by meaning?" | `docs_search {"query":"how releases are versioned"}` |
 | "Recall something remembered earlier?" | `memory_search {"query":"token rotation"}`, or `{"key":"…"}` / `{"prefix":"…"}` |
 | "Remember this for later sessions?" | `memory_save {"key":"decision/x","value":"…"}` (delete: `basemind memory delete <key>`) |
-| "Refresh the index after editing code?" | `index_rescan {"paths":["src/scanner.rs"]}` |
+| "A result says stale, or a new file is missing?" | `index_rescan {"paths":["src/scanner.rs"]}` |
 
 ## Notes
 

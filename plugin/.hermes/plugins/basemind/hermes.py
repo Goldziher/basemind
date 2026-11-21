@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:1f79aead172fbb99d893b76628fe63d9a854e84d46604e8ee2415eef542f838c
-# Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+# Content-Hash: blake3:7512917464fd4b02bf29c460b0a9092112cece5938e1b0261602ac9d844feb28
+# Source-Hash: blake3:01442a6227c34b9cd7b138d6aac12ddc327478a9c13627fd6ee56a05f54a4960
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -53,7 +53,10 @@ _DISCIPLINE = (
     'find_files {"query":"readme"} to locate a file; git_log {}, git_blame {"path":"src/store.rs"} '
     "and git_diff {} instead of git log, blame, status and diff; "
     'docs_search {"query":"how releases are versioned"} for markdown, config, data and PDF files '
-    "(the code tools cover code only); index_rescan {} after edits instead of reconnecting. "
+    "(the code tools cover code only). The index follows your edits: if a result says stale or a "
+    'new file is missing, index_rescan {"paths":["src/store.rs"]} for the files you touched, not a '
+    "reconnect; index_rescan {} only when index_status reports an empty index, degraded or "
+    "rescan_needed. "
     "Do not re-read a file basemind already mapped."
 )
 

@@ -224,8 +224,10 @@ pub(super) fn server_config() -> ServerConfig {
          {\"query\":\"how releases are versioned\"}.\n\
          Memory shared across sessions: memory_save {\"key\":\"decision/x\",\"value\":\"…\"}, \
          memory_search {\"query\":\"…\"}.\n\
-         Index: index_status {} when a result is unexpectedly empty; index_rescan {} after edits or \
-         when a tool says the index is empty.\n\
+         Index: it follows your edits. index_status {} when a result is unexpectedly empty; when a \
+         result says stale or a new file is missing, index_rescan {\"paths\":[\"src/store.rs\"]} \
+         for the files you touched; index_rescan {} only when index_status reports an empty \
+         index, degraded or rescan_needed.\n\
          Conventions: paths are repository-relative with forward slashes; line and end_line are \
          1-based and inclusive; lists take limit and cursor, and next_cursor alone says a list \
          goes on (a limit cut is paging, not truncation); a list trimmed to its token budget also \

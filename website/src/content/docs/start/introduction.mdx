@@ -56,8 +56,8 @@ basemind is built on one discipline: **prefer structure over content**.
   Indexed call edges, not text matches.
 - **`git_log`, `git_blame` and `git_diff` instead of
   `git log` / `git blame` / `git diff`.** History at symbol resolution, in tens of microseconds.
-- **`index_rescan` after you edit code**, not a server reconnect.
-  Optionally limit it to the files you touched.
+- **The index follows your edits**, with no rescan or server reconnect.
+  If a result says `stale` or a new file is missing, `index_rescan` the files you touched.
 - **Do not re-read a file basemind already mapped.** If the outline answered the
   question, stop.
 

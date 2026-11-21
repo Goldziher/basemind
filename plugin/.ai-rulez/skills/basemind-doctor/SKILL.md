@@ -59,8 +59,15 @@ directory under the machine-global cache (Linux `~/.local/share/basemind/`, macO
 `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`), keyed by workspace — not
 in the repo.
 
-- If that `pid` is **alive** (`ps -p <pid>`), the server is up — use the MCP tools, and
-  `index_rescan {}` or `basemind rescan` to refresh. Don't run a CLI `scan` (it will contend on the lock and exit 3).
+- If that `pid` is **alive** (`ps -p <pid>`) and is a `basemind serve`, the server is up — use the
+  MCP tools; it keeps the index fresh as you edit. For a file a result calls stale, run
+  `index_rescan {"paths":["src/store.rs"]}` or `basemind rescan src/store.rs`. When `index_status {}`
+  reports an empty index, `degraded` or `rescan_needed`, rebuild it through the server with
+  `index_rescan {}`. Don't run a CLI `scan` (it will contend on the lock and exit 3).
+- If that `pid` is **alive** and is a standalone `basemind watch`, there is no MCP server to take an
+  `index_rescan`, and `basemind rescan` exits 3 on the lock. The watcher re-indexes edits itself; to
+  rescan or rebuild, stop it first, run `basemind rescan src/store.rs` (or `basemind scan` for an
+  empty, `degraded` or `rescan_needed` index), then restart `basemind watch` if you want it.
 - If that `pid` is **dead**, the lock is stale. The OS releases the advisory lock when a process
   dies, so a fresh `basemind scan` / `basemind serve` should just work — retry it. (You may delete
   the stale `.lock.meta` sidecar in that workspace cache dir to clear the advisory holder record.)

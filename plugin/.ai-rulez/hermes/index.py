@@ -48,7 +48,10 @@ _DISCIPLINE = (
     'find_files {"query":"readme"} to locate a file; git_log {}, git_blame {"path":"src/store.rs"} '
     "and git_diff {} instead of git log, blame, status and diff; "
     'docs_search {"query":"how releases are versioned"} for markdown, config, data and PDF files '
-    "(the code tools cover code only); index_rescan {} after edits instead of reconnecting. "
+    "(the code tools cover code only). The index follows your edits: if a result says stale or a "
+    'new file is missing, index_rescan {"paths":["src/store.rs"]} for the files you touched, not a '
+    "reconnect; index_rescan {} only when index_status reports an empty index, degraded or "
+    "rescan_needed. "
     "Do not re-read a file basemind already mapped."
 )
 

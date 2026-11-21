@@ -168,6 +168,15 @@ def test_session_start_context_names_the_deferred_tools_and_counts_unread(monkey
     assert args[:2] == ["agent", "inbox"] and "--peek" in args and "--json" in args
 
 
+def test_discipline_steers_a_rescan_to_the_edited_paths():
+    assert (
+        'if a result says stale or a new file is missing, index_rescan {"paths":["src/store.rs"]} for the '
+        "files you touched, not a reconnect; index_rescan {} only when index_status reports an empty "
+        "index, degraded or rescan_needed."
+    ) in hermes._DISCIPLINE
+    assert "index_rescan {} after" not in hermes._DISCIPLINE
+
+
 def test_session_start_context_without_messages_has_no_count(monkeypatch):
     fake_cli(monkeypatch, {"messages": []})
     text = hermes._session_start_context("/tmp")

@@ -31,7 +31,7 @@ The Basemind tools are always loaded: call them directly, there is no tool searc
 | Search documents by meaning (PDFs, Office, markdown, notebooks) | `docs_search {"query":"how releases are versioned"}` |
 | Find code by what it does, then read the hit | `code_search {"query":"retry a failed upload with backoff"}` |
 
-When a result is unexpectedly empty call `index_status {}`; after edits call `index_rescan {}`.
+When a result is unexpectedly empty call `index_status {}`. The index follows your edits: if a result says `stale` or a new file is missing, call `index_rescan {"paths":["src/store.rs"]}` for the files you touched, and `index_rescan {}` only when `index_status` reports an empty index, `degraded` or `rescan_needed`.
 
 Use a fallback when the capability is unavailable, the index is stale, or the input is outside its coverage. An empty indexed result only describes the indexed scope. For an exhaustive search, verify uncovered paths with an exact file search.
 
