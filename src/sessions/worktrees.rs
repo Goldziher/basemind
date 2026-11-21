@@ -46,7 +46,7 @@ pub fn dirs(linked: &[Checkout], checkouts: &[Checkout], common: &Path) -> Vec<W
             continue;
         };
         let seen = dirs.iter().any(|dir| dir.path == path) || checkouts.iter().any(|c| c.path == path);
-        if seen || !holds_only_this_repository(path, checkouts, common) {
+        if seen || !holds_only_this_repository(path, common) {
             continue;
         }
         let alias = worktree
@@ -69,24 +69,43 @@ pub fn dirs(linked: &[Checkout], checkouts: &[Checkout], common: &Path) -> Vec<W
     dirs
 }
 
-/// Whether every child directory of `dir` that is a git checkout is one of `checkouts` or a
-/// worktree of the repository at `common`.
-fn holds_only_this_repository(dir: &Path, checkouts: &[Checkout], common: &Path) -> bool {
+/// Whether every child directory of `dir` that is a git checkout is the main checkout of the
+/// repository at `common` (its `.git` is that directory) or one of its linked worktrees (its `.git`
+/// file names a gitdir of it). A child that cannot be inspected counts against `dir`: only a
+/// `.git` that is not there at all is no checkout.
+fn holds_only_this_repository(dir: &Path, common: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
-    entries.flatten().all(|entry| {
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
         // `file_type` does not follow a symlink: a symlinked child is not looked into.
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            return true;
+        let Ok(kind) = entry.file_type() else {
+            return false;
+        };
+        if !kind.is_dir() {
+            continue;
         }
         let child = entry.path();
-        if std::fs::symlink_metadata(child.join(".git")).is_err() {
-            return true;
+        let dot_git = child.join(".git");
+        match std::fs::symlink_metadata(&dot_git) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return false,
+            Ok(meta) if meta.is_dir() => {
+                if dot_git.canonicalize().ok().as_deref() != Some(common) {
+                    return false;
+                }
+            }
+            Ok(_) => {
+                if !gitdir(&child).is_some_and(|g| of_repository(&g, common)) {
+                    return false;
+                }
+            }
         }
-        let canonical = child.canonicalize().unwrap_or_else(|_| child.clone());
-        checkouts.iter().any(|c| c.path == canonical) || gitdir(&child).is_some_and(|g| of_repository(&g, common))
-    })
+    }
+    true
 }
 
 /// Whether `dir`, which git lists as no worktree, is a removed worktree of the repository at
@@ -188,5 +207,57 @@ mod tests {
         assert!(!is_removed("live"), "its gitdir is there");
         assert!(!is_removed("foreign"), "another repository's gitdir");
         assert!(!is_removed("plain"), "no `.git` file: no worktree");
+    }
+
+    /// The directories `dirs` admits when `listed` worktrees sit in `base/wts` beside the main checkout.
+    fn admitted_beside(base: &Path, common: &Path, listed: &[&str]) -> Vec<PathBuf> {
+        let wts = base.join("wts");
+        let all = std::iter::once((base.join("repo"), "main".to_owned()))
+            .chain(listed.iter().map(|name| (wts.join(name), (*name).to_owned())));
+        let scope = super::super::Scope::new(all);
+        let checkouts = scope.checkouts();
+        dirs(&checkouts[1..], checkouts, common)
+            .into_iter()
+            .map(|found| found.path)
+            .collect()
+    }
+
+    #[test]
+    fn a_stale_registration_whose_directory_holds_another_clone_does_not_admit_its_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let common = base.join("repo/.git");
+        std::fs::create_dir_all(common.join("worktrees/live")).unwrap();
+        let wts = base.join("wts");
+        write_gitfile(&wts.join("live"), &common.join("worktrees/live"));
+        assert_eq!(admitted_beside(&base, &common, &["live"]), std::slice::from_ref(&wts));
+        std::fs::create_dir_all(wts.join("stale/.git")).unwrap();
+        assert_eq!(
+            admitted_beside(&base, &common, &["live", "stale"]),
+            Vec::<PathBuf>::new(),
+            "`stale` is registered but now holds another clone"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_child_whose_git_entry_cannot_be_inspected_does_not_admit_its_parent() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().canonicalize().unwrap();
+        let common = base.join("repo/.git");
+        std::fs::create_dir_all(common.join("worktrees/live")).unwrap();
+        let wts = base.join("wts");
+        write_gitfile(&wts.join("live"), &common.join("worktrees/live"));
+        let sealed = wts.join("sealed");
+        std::fs::create_dir_all(&sealed).unwrap();
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = std::fs::symlink_metadata(sealed.join(".git"))
+            .is_err_and(|error| error.kind() != std::io::ErrorKind::NotFound);
+        let admitted = admitted_beside(&base, &common, &["live"]);
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if unreadable {
+            assert_eq!(admitted, Vec::<PathBuf>::new());
+        }
     }
 }
