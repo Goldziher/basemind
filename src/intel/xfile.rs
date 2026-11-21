@@ -178,17 +178,19 @@ fn resolve_export_transitively(
     for _ in 0..MAX_REEXPORT_HOPS {
         let current_key = current_rel.as_str().ok_or(Unbound::Absent)?.to_string();
         if !visited.insert((current_key.clone(), wanted.clone())) {
-            return Err(Unbound::Absent);
+            return Err(Unbound::Package(current_rel, wanted));
         }
         if let Some(name_start) = catalog.export_start(&current_key, &wanted) {
             return Ok((current_rel, name_start));
         }
         let facts = catalog.facts(&current_key).ok_or(Unbound::Absent)?;
-        let reexport = facts
+        let Some(reexport) = facts
             .imports
             .iter()
             .find(|import| !import.is_type && !import.module_only && import.local == wanted)
-            .ok_or(Unbound::Absent)?;
+        else {
+            return Err(Unbound::Package(current_rel, wanted));
+        };
         if reexport.imported.is_none() && resolver.default_export_name().is_none() {
             return Err(Unbound::Module);
         }
@@ -203,13 +205,17 @@ fn resolve_export_transitively(
 }
 
 /// Why [`resolve_export_transitively`] found no definition for a name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Unbound {
     /// No file on the chain binds the name to something followable: it is neither exported nor
     /// imported there, its import leads to no indexed file, or the chain came back to a `(file,
     /// name)` it had followed, as `from . import sub` in a package does for its own submodule. The
     /// name may still be a submodule of the package.
     Absent,
+    /// The chain ended at this file, which neither exports nor imports the name, or whose import of
+    /// it came back to the file itself. The name may still be a submodule of this package, which is
+    /// where the fallback looks, not in the package the import began at.
+    Package(crate::path::RelPath, String),
     /// A file on the chain binds the name to a module (`import other.thing as sub`): it names that
     /// module, never a submodule of the package of the same name.
     Module,
@@ -317,11 +323,21 @@ pub fn stitch_cross_file_edges(
             let (def_rel, name_start) = match bound {
                 Ok(bound) => bound,
                 Err(Unbound::Module) => continue,
-                Err(Unbound::Absent) => {
-                    let package = Some(&target_rel);
-                    if let Some(submodule) =
-                        indexed_submodule(root, store, resolver, importer_key, package, import, &mut probes)
-                    {
+                Err(Unbound::Absent) => continue,
+                Err(Unbound::Package(package, name)) => {
+                    let terminal = ImportEdge {
+                        imported: Some(name),
+                        ..import.clone()
+                    };
+                    if let Some(submodule) = indexed_submodule(
+                        root,
+                        store,
+                        resolver,
+                        importer_key,
+                        Some(&package),
+                        &terminal,
+                        &mut probes,
+                    ) {
                         file_edges.hit(submodule, import);
                     }
                     continue;

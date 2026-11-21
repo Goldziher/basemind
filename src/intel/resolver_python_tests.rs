@@ -81,7 +81,7 @@ fn python_from_import_name_resolves_as_a_submodule() {
         (
             &["pkg/inner/__init__.py", "pkg/other.py"],
             "pkg/inner/app.py",
-            Some("pkg/inner/__init__.py"),
+            None,
             "..",
             "other",
             Some("pkg/other.py"),
@@ -93,6 +93,14 @@ fn python_from_import_name_resolves_as_a_submodule() {
             "pkg",
             "sub",
             Some("pkg/sub.py"),
+        ),
+        (
+            &["pkg/__init__.py", "pkg/sub.py", "pkg/sub/__init__.py"],
+            "app.py",
+            Some("pkg/__init__.py"),
+            "pkg",
+            "sub",
+            Some("pkg/sub/__init__.py"),
         ),
         (&["ns/views.py"], "app.py", None, "ns", "views", Some("ns/views.py")),
         (

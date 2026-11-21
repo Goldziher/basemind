@@ -62,7 +62,7 @@ impl PythonResolver {
                 return None;
             }
             let package_dir = root.join(package.as_str()?).parent()?.to_path_buf();
-            return module_file(root, &package_dir, &dotted_to_parts(name)?, probes);
+            return module_file(root, &package_dir, &dotted_to_parts(name)?, true, probes);
         }
         let module = import.specifier.as_str();
         let specifier = if module.ends_with('.') {
@@ -96,7 +96,7 @@ impl PythonResolver {
             if !pkg_root.is_empty() {
                 base.push(pkg_root);
             }
-            if let Some(hit) = module_file(root, &base, &rel_parts, probes) {
+            if let Some(hit) = module_file(root, &base, &rel_parts, false, probes) {
                 return Some(hit);
             }
         }
@@ -127,7 +127,7 @@ impl PythonResolver {
         } else {
             dotted_to_parts(tail)?
         };
-        module_file(root, &base, &parts, probes)
+        module_file(root, &base, &parts, false, probes)
     }
 }
 
@@ -149,13 +149,21 @@ fn dotted_to_parts(dotted: &str) -> Option<Vec<&str>> {
 
 /// Given a package `base` directory and the module `parts` under it, return the repo-relative
 /// path of `<base>/<parts...>.py` or `<base>/<parts...>/__init__.py`, whichever exists. Empty
-/// `parts` (a bare `from . import x`) resolves to the package's own `__init__.py`.
+/// `parts` (a bare `from . import x`) resolves to the package's own `__init__.py`. The module file
+/// wins unless `package_first`, which a submodule looked up in its package's directory sets, as
+/// Python's finder prefers the package.
 ///
 /// Both candidates are recorded in `probes` before either is tested, so a module that appears
 /// later (`pkg/mod.py` shadowing `pkg/mod/__init__.py`, or the first `__init__.py` of a package)
 /// is found by the importers that missed it. A missing directory needs no separate probe: the
 /// files under it do not exist either.
-fn module_file(root: &Path, base: &Path, parts: &[&str], probes: &mut ProbeSet) -> Option<RelPath> {
+fn module_file(
+    root: &Path,
+    base: &Path,
+    parts: &[&str],
+    package_first: bool,
+    probes: &mut ProbeSet,
+) -> Option<RelPath> {
     let mut dir = base.to_path_buf();
     if parts.is_empty() {
         return probe_file(root, &dir.join("__init__.py"), probes);
@@ -165,8 +173,12 @@ fn module_file(root: &Path, base: &Path, parts: &[&str], probes: &mut ProbeSet) 
     }
     let last = parts[parts.len() - 1];
     let module: PathBuf = dir.join(format!("{last}.py"));
-    if let Some(hit) = probe_file(root, &module, probes) {
-        return Some(hit);
+    let package: PathBuf = dir.join(last).join("__init__.py");
+    if package_first {
+        // Both are probed, so a module file that appears beside a package re-stitches its importers.
+        let package_hit = probe_file(root, &package, probes);
+        let module_hit = probe_file(root, &module, probes);
+        return package_hit.or(module_hit);
     }
-    probe_file(root, &dir.join(last).join("__init__.py"), probes)
+    probe_file(root, &module, probes).or_else(|| probe_file(root, &package, probes))
 }

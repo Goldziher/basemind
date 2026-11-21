@@ -555,6 +555,33 @@ async fn python_from_import_of_a_bound_or_plain_module_names_no_submodule() {
     }
 }
 
+/// `pkg/__init__.py` re-exports `sub` from `pkg/inner`, whose own `from . import sub` names
+/// `pkg/inner/sub.py`: `from pkg import sub` reaches that file, never the same-named `pkg/sub.py`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn python_reexported_submodule_resolves_in_the_terminal_package() {
+    let dir = build_repo_with(&[
+        ("pkg/__init__.py", "from .inner import sub\n"),
+        ("pkg/inner/__init__.py", "from . import sub\n"),
+        ("pkg/inner/sub.py", "def f():\n    return 1\n"),
+        ("pkg/sub.py", "def f():\n    return 2\n"),
+        ("app.py", "from pkg import sub\n"),
+    ]);
+    let root = dir.path();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+
+    let inner = importers(&service, "pkg/inner/sub.py").await;
+    assert_eq!(
+        inner["by_depth"]["1"],
+        json!(["app.py", "pkg/__init__.py", "pkg/inner/__init__.py"]),
+        "importers of pkg/inner/sub.py: {inner}"
+    );
+    let outer = importers(&service, "pkg/sub.py").await;
+    assert_eq!(outer["by_depth"], json!({}), "importers of pkg/sub.py: {outer}");
+
+    service.cancel().await.expect("shutdown");
+}
+
 /// Field vs. local: a local `value` inside `fieldVsLocal` shadows the class field of the same
 /// name, while `this.value` inside `readField` must resolve to the field. Java had zero
 /// resolution coverage before this engine landed.
