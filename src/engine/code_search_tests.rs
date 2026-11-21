@@ -71,7 +71,16 @@ fn a_renamed_file_is_cited_at_its_new_path() {
     std::fs::rename(dir.path().join("old.rs"), dir.path().join("new.rs")).unwrap();
     let store = scanned(dir.path());
 
-    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0, &UNFILTERED, None, &|| false).expect("hydrated");
+    let hydrated = hydrate_hits(
+        &store,
+        keyword_seeds(&store, "retry upload"),
+        10,
+        0,
+        &UNFILTERED,
+        None,
+        &|| false,
+    )
+    .expect("hydrated");
 
     assert!(!hydrated.hits.is_empty(), "the keyword lane finds the chunk");
     for hit in &hydrated.hits {
@@ -124,7 +133,16 @@ fn a_filtered_search_cites_the_copies_the_filters_pass() {
             path: Some(&path),
             language,
         };
-        let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0, &filters, None);
+        let hydrated = hydrate_hits(
+            &store,
+            keyword_seeds(&store, "retry upload"),
+            10,
+            0,
+            &filters,
+            None,
+            &|| false,
+        )
+        .expect("hydrated");
         assert_eq!(hydrated.omitted, 0);
         hydrated
             .hits
@@ -246,7 +264,10 @@ fn a_prose_query_reaches_camel_case_identifiers() {
         10,
         0,
         &UNFILTERED,
-        None, &|| false).expect("hydrated");
+        None,
+        &|| false,
+    )
+    .expect("hydrated");
 
     assert!(
         hydrated
@@ -376,7 +397,7 @@ fn hydration_stops_at_the_next_check_once_cancelled() {
         .map(|_| seed(first.chunk_id.clone()))
         .collect();
 
-    let live = hydrate_hits(&store, seeds.clone(), 50, 0, &|| false).expect("hydrated");
+    let live = hydrate_hits(&store, seeds.clone(), 50, 0, &UNFILTERED, None, &|| false).expect("hydrated");
     assert_eq!(live.hits.len(), 1, "copies of one chunk are one hit");
 
     let checks = std::cell::Cell::new(0);
@@ -384,7 +405,7 @@ fn hydration_stops_at_the_next_check_once_cancelled() {
         checks.set(checks.get() + 1);
         checks.get() > 1
     };
-    let outcome = hydrate_hits(&store, seeds, 50, 0, &cancelled);
+    let outcome = hydrate_hits(&store, seeds, 50, 0, &UNFILTERED, None, &cancelled);
     assert!(matches!(outcome, Err(EngineError::Cancelled)));
     assert_eq!(
         checks.get(),
