@@ -45,7 +45,7 @@ classify_bash() {
   local cmd="$1" lead='(^|;|&&|\|\|)[[:space:]]*(sudo[[:space:]]+)?'
   if printf '%s' "${cmd}" | grep -Eq "${lead}(rg|grep|egrep|fgrep|ag|ack)([[:space:]]|\$)"; then
     bash_kind="search"
-    bash_alt='basemind code_grep {"pattern":"…"} (literal text in indexed code; add "regex":true for a regex and "path":"src/" to scope it), code_symbols {"name":"…"} for a definition or code_refs {"name":"…"} for usages; markdown, config and data files: docs_search {"query":"…"}'
+    bash_alt='basemind code_grep {"pattern":"…"} (literal text in indexed code, markdown, config and data files; add "regex":true for a regex and "path":"src/" to scope it; a file the index leaves out still needs rg), code_symbols {"name":"…"} for a definition or code_refs {"name":"…"} for usages; a question by meaning: docs_search {"query":"…"}'
   elif printf '%s' "${cmd}" | grep -Eq "${lead}git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+blame([[:space:]]|\$)"; then
     bash_kind="blame"
     bash_alt='basemind git_blame {"path":"…"} (add "line" and "end_line" for a span, or "symbol" for one symbol)'
@@ -83,7 +83,7 @@ Grep)
       grep_call="code_grep ${grep_args}"
     fi
   fi
-  alt="basemind ${grep_call} (indexed code), code_symbols {\"name\":\"…\"} for a definition or code_refs {\"name\":\"…\"} for usages; markdown, config and data files: docs_search {\"query\":\"…\"}"
+  alt="basemind ${grep_call} (indexed code, markdown, config and data files; a file the index leaves out still needs rg in Bash), code_symbols {\"name\":\"…\"} for a definition or code_refs {\"name\":\"…\"} for usages; a question by meaning: docs_search {\"query\":\"…\"}"
   ;;
 Glob)
   alt='basemind find_files {"query":"…"} (fuzzy file name or path; omit "query" and pass "path_prefix" or "language" to list)'

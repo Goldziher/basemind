@@ -193,14 +193,157 @@ async fn instructions_stay_under_the_client_ceiling() {
     }
     // `code_grep` searches markdown, config and data files as text; routing an exact string in them
     // to the semantic `docs_search` sends the agent to a tool that needs a model, or a feature.
+    let mistakes = grep_steering_mistakes(&instructions);
     assert!(
-        !instructions.contains("cover code only"),
-        "instructions must not send exact text in non-code files away from code_grep: {instructions}"
+        mistakes.is_empty(),
+        "instructions must not send exact text in non-code files away from code_grep: {mistakes:?}"
     );
     assert!(
         instructions.contains("markdown, config and data"),
         "instructions must say code_grep covers markdown, config and data files: {instructions}"
     );
+}
+
+/// The plugin files that steer an agent besides the server instructions: the skill, command and
+/// hook sources, the Hermes plugin, the offline manual and `llms.txt`.
+const STEERING_SOURCES: [&str; 6] = [
+    "plugin/.ai-rulez/skills",
+    "plugin/.ai-rulez/commands",
+    "plugin/.ai-rulez/hooks",
+    "plugin/.ai-rulez/hermes",
+    "docs/manual",
+    "llms.txt",
+];
+
+/// Wording that sends exact text in a markdown, config or data file away from `code_grep`. "Code
+/// only" is not here: the code map covers code only, so it is a mistake only in a clause about
+/// `code_grep` or the code tools as a whole, which [`grep_steering_mistakes`] checks.
+const NOT_GREPPABLE: [&str; 3] = [
+    "code tools do not cover",
+    "search the files directly",
+    "not the code tools",
+];
+
+/// What in `text` sends exact text in a markdown, config or data file away from `code_grep`: a
+/// [`NOT_GREPPABLE`] phrase, a clause saying `code_grep` (or the code tools as a whole) covers code
+/// only or that such files never appear in it, and a clause routing config files to document search
+/// that names neither `code_grep` nor a search by meaning.
+fn grep_steering_mistakes(text: &str) -> Vec<String> {
+    let lower = text.to_lowercase();
+    let mut found: Vec<String> = NOT_GREPPABLE
+        .iter()
+        .filter(|phrase| lower.contains(*phrase))
+        .map(|phrase| (*phrase).to_string())
+        .collect();
+    let clause_end = regex::Regex::new(r"\. |; | \| ").expect("clause separator");
+    for paragraph in text.split("\n\n") {
+        let joined = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");
+        for clause in clause_end.split(&joined) {
+            let lower = clause.to_lowercase();
+            let names_grep = clause.contains("code_grep") || clause.contains("code grep");
+            let restricted = names_grep || lower.contains("code tools");
+            let skips_text = restricted && (lower.contains("code only") || lower.contains("never appear"));
+            let routes_away = !names_grep
+                && (clause.contains("docs_search") || clause.contains("memory documents"))
+                && lower.contains("config")
+                && !lower.contains("meaning");
+            if skips_text || routes_away {
+                found.push(clause.to_string());
+            }
+        }
+    }
+    found
+}
+
+/// Every file under `path`, or `path` itself when it is one.
+fn files_under(path: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    if path.is_file() {
+        out.push(path.to_path_buf());
+        return;
+    }
+    let entries = std::fs::read_dir(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    for entry in entries.flatten() {
+        if entry.file_name() != "__pycache__" {
+            files_under(&entry.path(), out);
+        }
+    }
+}
+
+/// The skills, hooks, manual and `llms.txt` route exact text as the instructions do: an agent told
+/// that `code_grep` skips config files searches a key such as `timeout_ms` by meaning, or not at all.
+#[test]
+fn no_steering_text_sends_exact_text_in_non_code_files_away_from_code_grep() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut mistakes = Vec::new();
+    for source in STEERING_SOURCES {
+        let mut files = Vec::new();
+        files_under(&root.join(source), &mut files);
+        let mut read = 0;
+        for file in &files {
+            let Ok(text) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            read += 1;
+            let shown = file.strip_prefix(root).unwrap_or(file).display().to_string();
+            mistakes.extend(
+                grep_steering_mistakes(&text)
+                    .into_iter()
+                    .map(|clause| format!("{shown}: {clause}")),
+            );
+        }
+        assert!(read > 0, "{source} holds no readable file");
+    }
+    assert!(
+        mistakes.is_empty(),
+        "steering text sends exact text in markdown, config or data files away from code_grep:\n{}",
+        mistakes.join("\n")
+    );
+    for file in [
+        "plugin/.ai-rulez/skills/basemind/SKILL.md",
+        "plugin/.ai-rulez/skills/basemind-code-search/SKILL.md",
+        "plugin/.ai-rulez/hooks/session-start",
+    ] {
+        let text = std::fs::read_to_string(root.join(file)).unwrap_or_else(|error| panic!("read {file}: {error}"));
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            text.contains("markdown, config and data"),
+            "{file} must say code_grep covers markdown, config and data files"
+        );
+    }
+}
+
+#[test]
+fn the_steering_check_reports_each_way_of_sending_text_away_from_code_grep() {
+    for (text, expected) in [
+        (
+            "`code_outline`, `code_symbols` and `code_grep` cover code only.",
+            vec!["`code_outline`, `code_symbols` and `code_grep` cover code only."],
+        ),
+        (
+            "(the code tools cover code only)",
+            vec!["(the code tools cover code only)"],
+        ),
+        (
+            "`code_outline`, `code_symbols` and `code_refs` cover code only.",
+            vec![],
+        ),
+        (
+            "for usages; markdown, config and data files: docs_search {\"query\":\"…\"}",
+            vec!["markdown, config and data files: docs_search {\"query\":\"…\"}"],
+        ),
+        (
+            "they never appear in\n`code_symbols` or `code_grep`",
+            vec!["they never appear in `code_symbols` or `code_grep`"],
+        ),
+        (
+            "`code_grep` also finds exact text in markdown, config and data files; `docs_search` searches \
+             them by meaning.",
+            vec![],
+        ),
+        ("The code map (outline, symbols, refs) covers code only.", vec![]),
+    ] {
+        assert_eq!(grep_steering_mistakes(text), expected, "{text}");
+    }
 }
 
 /// Every advertised tool carries a human-readable `title`, so clients can show a label that is not

@@ -7,8 +7,8 @@ name: bm-init
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:ac36d6125c7a158da959f749a99b1f4bdce989f355576c0ee9ef63c86038a87a
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:85a6038939f73ae3a50da568619bda404ef167ffd1b5395daa4bee77b93606c4
+Source-Hash: blake3:031e3d7e9f1cc8042e21f97a87e7522ea25d0bf8399b13a858fa80116b718265
 Schema-Version: v1
 -->
 
@@ -78,9 +78,8 @@ capabilities (documents/RAG, agent-comms, semantic search). Safe to re-run: it's
   owns governance (then tell the user to run `ai-rulez generate`; do NOT run it for them), otherwise
   to the gitignored `CLAUDE.local.md` (or `AGENTS.local.md` when the repo uses AGENTS). Choosing
   `claude` / `agents` / `ai-rulez` explicitly opts into the corresponding committed file.
-- The block is wrapped in an idempotent `<!-- BEGIN basemind … -->` … `<!-- END basemind -->`
-  block that is replaced in place on re-run, never duplicated. Content outside the markers is
-  never touched.
+- The block sits between HTML-comment markers (`BEGIN basemind` … `END basemind`) and is
+  replaced in place on re-run, never duplicated. Content outside the markers is never touched.
 - **`.gitignore` coverage**: whenever `init` is about to write one of the files that are
   gitignored by convention (`CLAUDE.local.md`, `AGENTS.local.md`, `.claude/settings.local.json`,
   anything under `.ai-rulez/local/`), it checks whether an existing `.gitignore` already covers

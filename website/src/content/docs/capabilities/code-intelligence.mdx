@@ -193,8 +193,8 @@ mtime still match the scan, so edited, added or deleted files are still searched
 with no required 3-byte literal (`.*`, `(?i)k`) sweep every file. Set `BASEMIND_GREP_BLOOM=0` to
 force the full sweep. An existing index gains its filters on the next scan; no wipe is needed.
 
-`code_grep` covers code only. Prose, data and config files (Markdown, JSON, YAML, TOML, ...) live in
-the document tier: search them with `docs_search`.
+`code_grep` also finds exact text in markdown, config and data files (Markdown, JSON, YAML, TOML,
+...). They live in the document tier, so search them by meaning with `docs_search`.
 
 ### `find_files`
 
