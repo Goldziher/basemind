@@ -223,6 +223,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of an existing index deletes their vector rows without re-extracting or re-embedding anything
   (`docs/UPGRADING.md`).
 
+- **BREAKING:** the HTTP front-end refuses a non-loopback `BASEMIND_HTTP_ADDR` unless
+  `BASEMIND_ALLOW_HTTP_REMOTE` is also truthy in the daemon's environment (#241). The transport is
+  plain HTTP, so off loopback the bearer token crosses the network in cleartext; `BASEMIND_ALLOW_HTTP`
+  alone used to bind such an address with only a warning. The refused front-end logs the reason and
+  the rest of the daemon keeps running. The warning on a granted remote bind now says what the
+  bind does: no TLS, basemind's own Host-header check off, rmcp's loopback `Host` allowlist still on;
+  it no longer points to an `allowed_hosts`/`origins` setting basemind does not have.
+
 - **BREAKING:** `path` is the one path filter of `code_grep`, `find_files` and `docs_search` (#252):
   a repo-relative prefix (`src/mcp/`), or a glob over the whole path when it holds `*`
   (`src/**/*.rs`; `*` stays within one segment, `**` crosses `/`). It was a substring on

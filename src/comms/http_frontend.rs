@@ -24,7 +24,9 @@
 //!
 //! ## Address + portfile
 //!
-//! The listener binds a loopback address: [`HTTP_ADDR_ENV`] when set, else `127.0.0.1:51786`. The
+//! The listener binds a loopback address: [`HTTP_ADDR_ENV`] when set, else `127.0.0.1:51786`. A
+//! non-loopback [`HTTP_ADDR_ENV`] is refused unless [`ALLOW_HTTP_REMOTE_ENV`] is also granted: the
+//! transport is plain HTTP, so off loopback the bearer token crosses the network in cleartext. The
 //! default is a preference, not a lock. Daemons of two protocol generations run side by side, and
 //! the second one to start finds the default port taken; it binds a port the OS assigns instead.
 //! An address set through [`HTTP_ADDR_ENV`] is binding: if it is in use, the front-end does not
@@ -69,7 +71,7 @@ use super::http_auth::{self, HttpToken};
 use super::ids::AgentId;
 use crate::mcp::BasemindServer;
 
-pub use super::http_auth::{ALLOW_HTTP_ENV, http_enabled, portfile_path};
+pub use super::http_auth::{ALLOW_HTTP_ENV, ALLOW_HTTP_REMOTE_ENV, http_enabled, portfile_path};
 
 /// Env var overriding the bound loopback address. `host:port`, e.g. `127.0.0.1:0` to let the OS pick
 /// a free port (the actual port is discoverable via the portfile). Empty/unset uses
@@ -124,6 +126,39 @@ async fn bind_http_listener(bind: BindAddr) -> std::io::Result<TcpListener> {
         }
         bound => bound,
     }
+}
+
+/// Why a non-loopback `addr` is refused without [`ALLOW_HTTP_REMOTE_ENV`].
+fn remote_bind_refusal(addr: SocketAddr) -> String {
+    format!(
+        "refuse to bind the streamable-HTTP MCP listener on {addr}: {HTTP_ADDR_ENV} is not a loopback \
+         address, and the transport is plain HTTP, so the bearer token would cross the network in \
+         cleartext. Keep a loopback {HTTP_ADDR_ENV} and reach it through an SSH tunnel or a TLS reverse \
+         proxy, or set {ALLOW_HTTP_REMOTE_ENV}=1 in the daemon's environment to bind it anyway"
+    )
+}
+
+/// Logged when [`ALLOW_HTTP_REMOTE_ENV`] lets a non-loopback address bind.
+const REMOTE_BIND_WARNING: &str = "comms: the streamable-HTTP MCP transport is bound to a non-loopback \
+     address and is reachable off-host. It is plain HTTP with no TLS, so the bearer token crosses the \
+     network in cleartext. basemind's own Host-header check is off for this bind, and rmcp still answers \
+     only a loopback Host (localhost, 127.0.0.1, ::1). Prefer a loopback BASEMIND_HTTP_ADDR reached \
+     through an SSH tunnel or a TLS reverse proxy.";
+
+/// Bind the listener for `bind`, refusing a non-loopback address unless `remote_granted`
+/// ([`ALLOW_HTTP_REMOTE_ENV`]). The grant is a parameter so the decision is testable without
+/// mutating the process environment.
+async fn open_http_listener(bind: BindAddr, remote_granted: bool) -> Result<TcpListener> {
+    let addr = bind.addr;
+    if !addr.ip().is_loopback() {
+        if !remote_granted {
+            anyhow::bail!(remote_bind_refusal(addr));
+        }
+        tracing::warn!(%addr, "{REMOTE_BIND_WARNING}");
+    }
+    bind_http_listener(bind)
+        .await
+        .with_context(|| format!("bind streamable-HTTP MCP listener on {addr} (is another process holding it?)"))
 }
 
 /// Parse `root` (required) and `agent` (optional) from the request query. A blank `agent` is treated
@@ -375,8 +410,8 @@ impl HttpRouter {
         // DNS-rebinding guard: a loopback-bound listener answers only requests whose `Host`/
         // `:authority` is a loopback name. This runs first, before the daemon is pinned or any
         // workspace is read, so a foreign-`Host` page (the rebinding-to-127.0.0.1 attack) cannot even
-        // stamp HTTP recency. Skipped on an explicit non-loopback bind (the remote-access opt-in in
-        // `serve_http`), where the operator owns host/origin policy.
+        // stamp HTTP recency. Skipped on a non-loopback bind, which only `ALLOW_HTTP_REMOTE_ENV`
+        // permits; rmcp's default `allowed_hosts` still admits only a loopback Host there.
         if self.loopback && !host_is_loopback(&request) {
             let forbidden = text_response(
                 StatusCode::FORBIDDEN,
@@ -478,9 +513,9 @@ const HTTP1_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// Returns `Ok(())` immediately, binding nothing, unless the operator granted the front-end via
 /// [`ALLOW_HTTP_ENV`] — see [`http_auth`](super::http_auth) for why it is off by default. When it is
-/// granted, this mints the process's bearer token, binds the loopback listener
-/// ([`bind_http_listener`]), publishes address + token to the portfile, and serves each connection with a hyper auto (h1/h2)
-/// server over the shared router. A bind failure is returned to the caller, which logs it and leaves
+/// granted, this mints the process's bearer token, binds the listener ([`open_http_listener`], which
+/// refuses a non-loopback address without [`ALLOW_HTTP_REMOTE_ENV`]), publishes address + token to
+/// the portfile, and serves each connection with a hyper auto (h1/h2) server over the shared router. A bind failure is returned to the caller, which logs it and leaves
 /// the rest of the daemon (the UDS relay) running — HTTP is additive, never a precondition for comms.
 pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: watch::Receiver<bool>) -> Result<()> {
     if !http_auth::http_enabled() {
@@ -497,16 +532,7 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
     }
     let token = HttpToken::generate()?;
     let bind = resolve_addr(std::env::var(HTTP_ADDR_ENV).ok())?;
-    let addr = bind.addr;
-    if !addr.ip().is_loopback() {
-        tracing::warn!(
-            %addr,
-            "BASEMIND_HTTP_ADDR binds a NON-loopback address: the MCP transport becomes reachable \
-             off-host. rmcp Host-header (DNS-rebinding) validation still applies, but for genuine \
-             remote access you must configure allowed_hosts/origins for the real hostnames."
-        );
-    }
-    let listener = match bind_http_listener(bind).await {
+    let listener = match open_http_listener(bind, http_auth::remote_bind_granted()).await {
         Ok(listener) => listener,
         Err(error) => {
             // A portfile left by an earlier daemon of this generation would otherwise misdirect
@@ -514,9 +540,7 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
             // address. Clear it before bailing so discovery fails cleanly. The portfile is in this
             // generation's directory, which only this generation's one daemon writes.
             http_auth::remove_portfile(&comms_dir);
-            return Err(anyhow::Error::new(error)).with_context(|| {
-                format!("bind streamable-HTTP MCP listener on {addr} (is another process holding it?)")
-            });
+            return Err(error);
         }
     };
     let local = listener.local_addr().context("read the bound HTTP address")?;
@@ -723,6 +747,61 @@ mod tests {
         .await
         .expect_err("a configured address is bound as given or not at all");
         assert_eq!(refused.kind(), std::io::ErrorKind::AddrInUse);
+    }
+
+    fn bind_at(addr: &str) -> BindAddr {
+        BindAddr {
+            addr: addr.parse().expect("socket address"),
+            configured: true,
+        }
+    }
+
+    /// Off loopback the transport is plain HTTP, so enabling the front-end alone must not put the
+    /// bearer token on the network.
+    #[tokio::test]
+    async fn a_non_loopback_address_does_not_bind_without_the_remote_grant() {
+        let error = open_http_listener(bind_at("0.0.0.0:0"), false)
+            .await
+            .expect_err("a non-loopback bind needs the second grant");
+        assert_eq!(
+            format!("{error:#}"),
+            "refuse to bind the streamable-HTTP MCP listener on 0.0.0.0:0: BASEMIND_HTTP_ADDR is not a \
+             loopback address, and the transport is plain HTTP, so the bearer token would cross the \
+             network in cleartext. Keep a loopback BASEMIND_HTTP_ADDR and reach it through an SSH tunnel \
+             or a TLS reverse proxy, or set BASEMIND_ALLOW_HTTP_REMOTE=1 in the daemon's environment to \
+             bind it anyway"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_loopback_address_binds_with_the_remote_grant() {
+        let listener = open_http_listener(bind_at("0.0.0.0:0"), true)
+            .await
+            .expect("the remote grant lets a non-loopback address bind");
+        let bound = listener.local_addr().expect("bound address");
+        assert_eq!(bound.ip(), "0.0.0.0".parse::<std::net::IpAddr>().unwrap());
+        assert_ne!(bound.port(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_loopback_address_binds_without_the_remote_grant() {
+        let listener = open_http_listener(bind_at("127.0.0.1:0"), false)
+            .await
+            .expect("a loopback address needs no second grant");
+        let bound = listener.local_addr().expect("bound address");
+        assert_eq!(bound.ip(), "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn the_remote_bind_warning_states_what_the_bind_does() {
+        assert_eq!(
+            REMOTE_BIND_WARNING,
+            "comms: the streamable-HTTP MCP transport is bound to a non-loopback address and is \
+             reachable off-host. It is plain HTTP with no TLS, so the bearer token crosses the network \
+             in cleartext. basemind's own Host-header check is off for this bind, and rmcp still \
+             answers only a loopback Host (localhost, 127.0.0.1, ::1). Prefer a loopback \
+             BASEMIND_HTTP_ADDR reached through an SSH tunnel or a TLS reverse proxy."
+        );
     }
 
     /// A connection that sends nothing, like an idle keep-alive, must not count as work: counted,

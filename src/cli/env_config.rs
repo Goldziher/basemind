@@ -117,6 +117,7 @@ pub fn engine_config_from(
 fn check_runtime_flags(lookup: &impl Fn(&str) -> Option<OsString>) -> Result<(), EngineError> {
     for name in [
         crate::comms::http_auth::ALLOW_HTTP_ENV,
+        crate::comms::http_auth::ALLOW_HTTP_REMOTE_ENV,
         crate::comms::singleton::NO_AUTOSPAWN_ENV,
     ] {
         flag(lookup, name)?;
@@ -270,6 +271,7 @@ mod tests {
         #[cfg(all(feature = "comms", any(unix, windows)))]
         let comms = [
             crate::comms::http_auth::ALLOW_HTTP_ENV,
+            crate::comms::http_auth::ALLOW_HTTP_REMOTE_ENV,
             crate::comms::singleton::NO_AUTOSPAWN_ENV,
         ];
         #[cfg(not(all(feature = "comms", any(unix, windows))))]

@@ -99,19 +99,20 @@ const INHERITED_IDENTITY_VARS: [&str; 5] = [
 /// with.
 const INHERITED_CWD_VARS: [&str; 2] = ["PWD", "OLDPWD"];
 
-/// Grants that widen what the daemon does for every session on the machine: admit any root or extra
-/// roots, read dependency package roots outside the repository, follow symlinks, index credential
-/// files, open the HTTP transport and where it binds. A daemon serves every session of the
-/// generation, so one that inherited them from whichever shell happened to start it applied that
-/// shell's grants to all of them. They reach the daemon only from an operator's explicit start
-/// (`comms start`, or `daemon ensure` with the HTTP grant set).
-const INHERITED_GRANT_VARS: [&str; 7] = [
+/// Grants that widen what the daemon does for every session on the machine: admit any root, extra
+/// roots or dependency roots, follow symlinks, index credential files, open the HTTP transport and
+/// where it binds. A
+/// daemon serves every session of the generation, so one that inherited them from whichever shell
+/// happened to start it applied that shell's grants to all of them. They reach the daemon only from
+/// an operator's explicit start (`comms start`, or `daemon ensure` with the HTTP grant set).
+const INHERITED_GRANT_VARS: [&str; 8] = [
     crate::config::root_guard::ALLOW_ANY_ROOT_ENV,
     crate::scanner_candidates::ALLOW_EXTRA_ROOTS_ENV,
     crate::config::trust::ALLOW_DEPENDENCY_ROOTS_ENV,
     crate::config::trust::ALLOW_FOLLOW_SYMLINKS_ENV,
     crate::scanner_filter::ALLOW_REPO_CREDENTIALS_ENV,
     crate::comms::http_auth::ALLOW_HTTP_ENV,
+    crate::comms::http_auth::ALLOW_HTTP_REMOTE_ENV,
     crate::comms::http_frontend::HTTP_ADDR_ENV,
 ];
 
@@ -537,6 +538,7 @@ mod tests {
                 "BASEMIND_ALLOW_EXTRA_ROOTS",
                 "BASEMIND_ALLOW_FOLLOW_SYMLINKS",
                 "BASEMIND_ALLOW_HTTP",
+                "BASEMIND_ALLOW_HTTP_REMOTE",
                 "BASEMIND_ALLOW_REPO_CREDENTIALS",
                 "BASEMIND_HTTP_ADDR",
             ]
