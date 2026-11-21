@@ -1396,6 +1396,14 @@ impl<'ast> Visit<'ast> for HookScan {
         self.scoped(&item.attrs, |v| syn::visit::visit_trait_item_fn(v, item));
     }
 
+    fn visit_impl_item_const(&mut self, item: &'ast syn::ImplItemConst) {
+        self.scoped(&item.attrs, |v| syn::visit::visit_impl_item_const(v, item));
+    }
+
+    fn visit_trait_item_const(&mut self, item: &'ast syn::TraitItemConst) {
+        self.scoped(&item.attrs, |v| syn::visit::visit_trait_item_const(v, item));
+    }
+
     fn visit_local(&mut self, local: &'ast syn::Local) {
         self.scoped(&local.attrs, |v| syn::visit::visit_local(v, local));
     }
@@ -1768,7 +1776,9 @@ fn the_test_variable_check_tells_the_gates_apart() {
          #[cfg(all(test, unix))] fn h() { std::env::var(\"BASEMIND_TEST_H\"); }\n\
          #[cfg(feature = \"documents\")] const I: &str = \"BASEMIND_TEST_I\";\n\
          #[cfg(not(feature = \"test-support\"))] const J: &str = \"BASEMIND_TEST_J\";\n\
-         const K: &str = \"BASEMIND_OTHER\";\n",
+         const K: &str = \"BASEMIND_OTHER\";\n\
+         impl Hooks { #[cfg(feature = \"test-support\")] const L: &str = \"BASEMIND_TEST_L\"; const M: &str = \"BASEMIND_TEST_M\"; }\n\
+         trait Named { #[cfg(test)] const N: &str = \"BASEMIND_TEST_N\"; const O: &str = \"BASEMIND_TEST_O\"; }\n",
     )
     .expect("parse");
     let found = test_var_literals(&file.items, false);
@@ -1786,6 +1796,10 @@ fn the_test_variable_check_tells_the_gates_apart() {
             ("BASEMIND_TEST_H", Gate::Test),
             ("BASEMIND_TEST_I", Gate::Open),
             ("BASEMIND_TEST_J", Gate::Open),
+            ("BASEMIND_TEST_L", Gate::TestSupport),
+            ("BASEMIND_TEST_M", Gate::Open),
+            ("BASEMIND_TEST_N", Gate::Test),
+            ("BASEMIND_TEST_O", Gate::Open),
         ]
     );
 }
