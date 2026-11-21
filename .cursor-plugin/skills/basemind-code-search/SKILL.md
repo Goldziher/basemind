@@ -9,17 +9,18 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:3cd1c91c274e209c6a203fdd2a1a15c60fe1a18c5b5aaf19d8eaa5d5d4587014
-Source-Hash: blake3:5b88636c3d55e26d6c34674048b6b54b5aea90815b17b551ab1285686a01d7e8
+Content-Hash: blake3:bb0b60c8f51be1beba672d4cda5f52bb40a63d4568e8f92d400b3df4ce21d56a
+Source-Hash: blake3:c11ff151ea4fd69b473d2434b1d727dae1d417fd337dc99e245dc17d93bc0df1
 Schema-Version: v1
 -->
 
 # basemind-code-search — navigate code without reading it
 
-basemind pre-indexes the repo into a tree-sitter code map across 300+ languages. The map holds
-**code only**. Jupyter notebooks (`.ipynb`), Markdown, JSON, YAML, TOML, XML, CSV, INI and `.env`
-files are documents: `find_files` lists them, `docs_search` searches them by meaning (see
-`basemind-documents`), and a literal or regex file search finds exact matches outside the code map.
+basemind pre-indexes the repo into a tree-sitter code map across 300+ languages. The code map
+(outline, symbols, refs) covers **code only**. `code_grep` also finds exact text in markdown,
+config and data files (Markdown, JSON, YAML, TOML, XML, CSV, INI). `docs_search` is for searching
+by meaning, and for PDFs, Office files, HTML and email (see `basemind-documents`). `find_files`
+lists the indexed files and the other files git tracks, not an untracked file the index leaves out.
 
 Structural questions (where a symbol lives, what calls it, what shape a file has) resolve from the
 index in milliseconds and return **paths, 1-based line numbers, and signatures, not file bodies**.
@@ -34,8 +35,10 @@ no tool covers the question.
 - **`code_symbols` instead of `grep` for a definition.** It matches indexed symbol names and skips
   the comment, string and test-name noise.
 - **`code_refs` instead of grepping call sites.** Indexed call edges, not text matches.
-- **`code_grep` instead of shelling out to ripgrep.** It sweeps every indexed code file (a trigram
-  filter skips files that cannot match) and returns each hit's line and enclosing symbol.
+- **`code_grep` instead of shelling out to ripgrep.** It sweeps every indexed code, markdown,
+  config and data file (a trigram filter skips code files that cannot match) and returns each hit's
+  line and enclosing symbol. A file created since the last scan is not in it until the watcher or
+  an `index_rescan {"paths":[…]}` indexes it, so a miss there is not proof of absence.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
 - **`index_rescan` after you edit code**, not a server reconnect. Pass `paths` to limit it.
 
@@ -67,16 +70,19 @@ no tool covers the question.
 
 ```text
 code_symbols {"name":"MapCache"}
-→ src/mcp/mod.rs:79 MapCache (struct)
-  src/mcp/mod.rs:88 MapCache (impl)
+→ {"results":["src/engine/map_cache.rs:10: pub(crate) struct MapCache",
+              "src/engine/map_cache.rs:39: impl MapCache"], …}
 
 code_refs {"name":"process_file"}
-→ src/scanner.rs:142 process_file
-  src/scanner.rs:201 process_file
+→ {"total":1,"hits":{"src/scanner_file.rs":[{"line":113}]}, …}
 
-code_outline {"path":"src/mcp/tools.rs"}
-→ 31 code_outline (function)
-  52 code_symbols (function)
+code_outline {"path":"src/wire.rs"}
+→ path: src/wire.rs
+  language: rust
+  …
+  symbols[…]{name,kind,line,end_line,signature}:
+    encode,function,31,…
+    toon,function,42,…
 ```
 
 ## Notes
@@ -94,7 +100,8 @@ code_outline {"path":"src/mcp/tools.rs"}
 - `code_outline` omits `imports` when the file has none.
 - `code_grep`: `pattern` is literal text unless `"regex":true`, and a regex anchors `^` / `$` at
   every line. `path` is a substring of the repo-relative path, never a glob; a `path` or `language`
-  that no indexed code file has is an error (it names `docs_search` when only documents match).
+  that no indexed code or text file has is an error (it names `docs_search` when only PDFs, Office
+  files or other binary documents match).
   `skipped_files` counts files that could not be searched. The answer is `key: value` lines, then
   each file as `# <path>` and each innermost enclosing symbol as `## <symbol>` over its rows
   `<line>: <text>` (rows before any symbol header, or under a bare `##`, are outside every

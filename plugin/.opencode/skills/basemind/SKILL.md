@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:963975b86c644b84228ad38dab363b6fdb52d3326d3bab8ba9905d0556674e52
-Source-Hash: blake3:5b88636c3d55e26d6c34674048b6b54b5aea90815b17b551ab1285686a01d7e8
+Content-Hash: blake3:52a96100c8ebce58ad3a9a935d58688c03a72417ba11c8eb6308be3063e69117
+Source-Hash: blake3:c11ff151ea4fd69b473d2434b1d727dae1d417fd337dc99e245dc17d93bc0df1
 Schema-Version: v1
 -->
 
@@ -27,12 +27,13 @@ tool search needed. Agent messaging is the exception: `agent_post`, `agent_inbox
 ## Capabilities
 
 - **Code map across 300+ languages**: tree-sitter outlines, symbol search, call sites, callers,
-  implementations, importers. It holds **code only**: markdown, JSON, YAML, TOML, XML, CSV, INI and
-  similar files are documents, searched with `docs_search`.
-- **Text and meaning search over code**: `code_grep` (literal or regex) and `code_search`.
+  implementations, importers. The code map (outline, symbols, refs) covers code only.
+- **Exact text search**: `code_grep` (literal or regex) over code and markdown, config and data
+  files.
+- **Search by meaning**: `code_search` over code; `docs_search` over documents, including PDFs,
+  Office files, HTML and email (images too, when the build has `documents-ocr`), with cross-encoder
+  reranking. For exact text in an indexed HTML file, `code_grep` reads it as text too.
 - **Git history**: log, blame, and diffs at symbol resolution.
-- **Document search**: PDFs, Office, HTML, email, images (OCR, when the build has `documents-ocr`),
-  markdown and config/data files, with cross-encoder reranking (`docs_search`).
 - **Shared memory**: per-repo notes that persist across sessions (`memory_save`, `memory_search`).
 
 ## Dedicated per-capability skills
@@ -107,7 +108,8 @@ Drop to raw shell, grep, or git only when no basemind tool covers the question.
 | "What's dirty in the working tree?" | `git_diff {}` |
 | "What did I change in file F?" | `git_diff {"path":"src/store.rs"}` |
 | "Diff file F between revisions" | `git_diff {"path":"src/store.rs","from":"HEAD~1","to":"HEAD"}` |
-| "Search PDFs / markdown / config / data files" | `docs_search {"query":"how releases are versioned"}` |
+| "Where is this key in a config, markdown or data file?" | `code_grep {"pattern":"timeout:"}` |
+| "Where is a topic discussed? Search PDFs / Office / HTML / email" | `docs_search {"query":"how releases are versioned"}` |
 | "Remember this for future sessions" | `memory_save {"key":"decision/auth-tokens","value":"Tokens rotate every 24h.","tags":["auth"]}` |
 | "Recall something stored earlier" | `memory_search {"query":"token rotation"}` |
 | "What's indexed? What's HEAD / branch?" | `index_status {}` |
@@ -145,28 +147,38 @@ save. A tool that reports an empty index says so in its result: run `index_resca
 
 ```text
 code_symbols {"name":"MapCache"}
-→ src/mcp/mod.rs:79 MapCache (struct)
-  src/mcp/mod.rs:88 MapCache (impl)
+→ {"results":["src/engine/map_cache.rs:10: pub(crate) struct MapCache",
+              "src/engine/map_cache.rs:39: impl MapCache"], …}
 ```
+
+A row is `"<path>:<line>: <signature>"`, as `git grep -n` prints it.
 
 ### Following call sites
 
 ```text
 code_refs {"name":"process_file"}
-→ src/scanner.rs:142 process_file
-  src/scanner.rs:201 process_file
+→ {"total":1,"hits":{"src/scanner_file.rs":[{"line":113}]}, …}
 ```
+
+`hits` maps each file to its call sites; a row adds `callee` when the name called differs, and
+`resolution` when its grade is not the page's `resolution_default`.
 
 ### Outline a file, then read one body
 
 ```text
-code_outline {"path":"src/mcp/tools.rs"}
-→ 31 code_outline (function)
-  52 code_symbols (function)
-  ...
+code_outline {"path":"src/wire.rs"}
+→ path: src/wire.rs
+  language: rust
+  …
+  symbols[…]{name,kind,line,end_line,signature}:
+    encode,function,31,…
+    toon,function,42,…
+    …
 
-code_read {"path":"src/mcp/tools.rs","symbol":"code_outline"}
+code_read {"path":"src/wire.rs","symbol":"toon"}
 ```
+
+The outline is a TOON table, one row per symbol.
 
 A 1000-line file becomes a 30-line table of contents.
 
@@ -181,13 +193,15 @@ A 1000-line file becomes a 30-line table of contents.
   Defaults: `code_symbols` / `code_grep` / `code_refs` 100, `find_files` 200, `code_outline` 500
   symbols, `code_search` / `docs_search` 10, `git_log` 20.
 - `code_symbols` ranks the exact name first, then prefix, then substring; `"fuzzy":true` adds fuzzy
-  subsequence matches last. Compare a row's `name` with the query to tell which; `total` counts the
-  whole corpus.
+  subsequence matches last. A signature without the name is written `<kind> <name>; <signature>`.
+  `total` appears only beside `next_cursor`.
 - `code_refs {"name":"bar"}` matches the identifier exactly, with no scope resolution: `Foo::bar()`
   and `bar()` are calls to `bar`, `bar_baz()` is not. `"match":"substring"` widens it. Add `path` to
-  pin one definition: the response names that `definition`, and a hit then has `resolved: true`
-  (proven to bind to it), `resolved: false` (checked, not proven) or no `resolved` (not checked);
-  `resolution` says why when no hit could be checked (`unsupported for <language>`,
+  pin one definition: the response names that `definition`, and `resolved_total` counts the hits
+  proven to bind to it. Each row is graded by `resolution` (`same_file`, `imported`,
+  `scope_resolved`, `elsewhere`, `name_only`, `external`, `path_match`); a row leaves it out when it
+  is the page's `resolution_default`, and a page leaves that out when it is `name_only`.
+  `resolution_note` says why no hit could be checked (`unsupported for <language>`,
   `no resolution facts for this file`, `no resolution facts for this definition`). A missing file
   or symbol is an error, and so is a name that several definitions in the file share, until you
   add `line` (any line inside the one you mean). A pinned file edited since it was indexed is an
@@ -200,9 +214,12 @@ A 1000-line file becomes a 30-line table of contents.
   repeat it without `cursor`.
 - A scalar sent as a string (`"limit":"10"`, `"regex":"true"`) is accepted; any other type error
   names the field.
-- `code_outline`, `code_symbols` and `code_grep` cover code only. A markdown or config/data file is
-  a document: `find_files` lists it, `docs_search` searches its contents, `code_read` with a line
-  span reads it.
+- The code map (`code_outline`, `code_symbols`, `code_refs`) covers code only. `code_grep` also
+  finds exact text in markdown, config and data files; `docs_search` is for searching by meaning,
+  and for PDFs, Office files, HTML and email. `find_files` lists the indexed files and, in a git
+  work tree, the other files git tracks; it leaves out an untracked file the index excludes (a local
+  `.env`). `code_read` reads an indexed file only; read one the scan excludes with the host's file
+  tools.
 - A `notice` field means the result is incomplete and says why (empty index, scan in progress).
 - The git tools require `basemind serve` to be running inside a git repository.
 - `code_search` needs the `code-search` Cargo feature, `docs_search` needs `documents`, and the
@@ -211,8 +228,5 @@ A 1000-line file becomes a 30-line table of contents.
 - Memory is scoped by the normalised `origin` remote URL (`git@github.com:Foo/bar.git` and
   `https://github.com/Foo/bar/` collapse to the same scope key): clones of the same repo share
   memory; unrelated repos do not see each other's entries.
-- `docs_search` searches this repo's scope by default. Pages an older version ingested from the web
-  stay under scope `web:<host>` and are no longer refreshed; pass `"scope":"web:<host>"` to search
-  one host's pages.
 - MCP resources are available for hosts that attach them: `basemind://status`,
   `basemind://outline/{path}` and `basemind://memory/{key}`.
