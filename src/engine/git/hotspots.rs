@@ -16,6 +16,7 @@ use crate::engine::files::indexed_file;
 use crate::engine::freshness;
 use crate::engine::import_graph::{Tiers, import_graph};
 use crate::engine::timing::elapsed_us;
+use crate::engine::types::UNINDEXED_SCAN;
 use crate::engine::types::git::{HotspotRow, HotspotThresholds, HotspotsParams, HotspotsResponse};
 use crate::engine::workspace::Workspace;
 use crate::extract::SymbolKind;
@@ -171,7 +172,7 @@ fn window_of(ws: &Workspace, span: i64) -> Result<Window, EngineError> {
         LIVE_COMMIT_CAP,
     );
     if window.truncated_reason.is_some() {
-        window.truncated_reason = Some("live_walk");
+        window.truncated_reason = Some(UNINDEXED_SCAN);
     }
     Ok(window)
 }

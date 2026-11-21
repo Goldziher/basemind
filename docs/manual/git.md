@@ -25,7 +25,7 @@ repository.
 - `git_log` with no arguments is a recency window; `query` (commit message) and `author` (name and
   email) find a commit arbitrarily far back and combine with each other. `symbol` needs `path`.
 - A symbol's history and a directory's history (a `path` ending in `/`) read one window of commits
-  per page: an empty page with `truncated_reason: "window"` and a `next_cursor` is not the end.
+  per page: an empty page with `truncated_reason: "span_limit"` and a `next_cursor` is not the end.
   Follow the cursor until it is absent.
 - `git_blame` locates a `symbol` in the file as it is at `rev` (default HEAD), so a symbol that
   exists only uncommitted is not found. `line` / `end_line` are 1-based and inclusive.

@@ -23,7 +23,7 @@ impl BasemindServer {
         is `\"<sha> <summary>\"`, `[introduced]`/`[removed]` after a symbol's sha; recent and \
         directory lists add `files`: sha to path to change. `rev` shows one commit whole, with \
         author and time. A symbol's or directory's history pages by commit window: follow \
-        `next_cursor`, even from an empty page (`window`). Example: {\"path\":\"src/store.rs\",\"limit\":5}",
+        `next_cursor`, even from an empty page (`span_limit`). Example: {\"path\":\"src/store.rs\",\"limit\":5}",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

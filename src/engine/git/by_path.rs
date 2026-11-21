@@ -6,6 +6,7 @@ use super::common::{commit_to_view, git_history_if_fresh, head_sha, head_snapsho
 use super::show::budget_commits_with_files;
 use crate::engine::cursor::reject_zero_limit;
 use crate::engine::error::EngineError;
+use crate::engine::types::SPAN_LIMIT;
 use crate::engine::types::git::{CommitView, FindCommitsByPathParams, FindCommitsByPathResponse};
 use crate::engine::workspace::Workspace;
 
@@ -142,7 +143,7 @@ pub(super) fn by_path(ws: &Workspace, tool: &str, params: FindCommitsByPathParam
             window_inspected: u32::try_from(commits.len()).unwrap_or(u32::MAX),
             unmatched: None,
             truncated: window_edge,
-            truncated_reason: window_edge.then_some("window"),
+            truncated_reason: window_edge.then_some(SPAN_LIMIT),
             commits: hits,
             files,
             budgeted,

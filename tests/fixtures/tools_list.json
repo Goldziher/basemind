@@ -523,7 +523,7 @@
   {
     "name": "git_log",
     "title": "Commit history",
-    "description": "Use instead of `git log`/`git show` for \"what changed recently\", \"what touched this file\", \"which commit mentions X\" or \"what changed this function\". `{}` lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. A row is `\"<sha> <summary>\"`, `[introduced]`/`[removed]` after a symbol's sha; recent and directory lists add `files`: sha to path to change. `rev` shows one commit whole, with author and time. A symbol's or directory's history pages by commit window: follow `next_cursor`, even from an empty page (`window`). Example: {\"path\":\"src/store.rs\",\"limit\":5}",
+    "description": "Use instead of `git log`/`git show` for \"what changed recently\", \"what touched this file\", \"which commit mentions X\" or \"what changed this function\". `{}` lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. A row is `\"<sha> <summary>\"`, `[introduced]`/`[removed]` after a symbol's sha; recent and directory lists add `files`: sha to path to change. `rev` shows one commit whole, with author and time. A symbol's or directory's history pages by commit window: follow `next_cursor`, even from an empty page (`span_limit`). Example: {\"path\":\"src/store.rs\",\"limit\":5}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
