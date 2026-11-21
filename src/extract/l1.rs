@@ -303,7 +303,7 @@ fn is_function_local(root: Node, node: Node) -> bool {
     }
     let mut cur = root;
     loop {
-        if FUNCTION_SCOPE_KINDS.contains(&cur.kind()) {
+        if FUNCTION_SCOPE_KINDS.contains(&cur.kind()) && !is_declarator_chain(cur, node) {
             return true;
         }
         match cur.child_with_descendant(node) {
@@ -311,6 +311,20 @@ fn is_function_local(root: Node, node: Node) -> bool {
             _ => return false,
         }
     }
+}
+
+/// True when `node` is `function`'s own declarator, reached through `declarator` fields. C and C++
+/// tag a function by its `function_declarator`, a child of the `function_definition`, so the
+/// definition being an ancestor must not make the function look like a local of itself.
+fn is_declarator_chain(function: Node, node: Node) -> bool {
+    let mut declarator = function.child_by_field_name("declarator");
+    while let Some(current) = declarator {
+        if current == node {
+            return true;
+        }
+        declarator = current.child_by_field_name("declarator");
+    }
+    false
 }
 
 /// Longest signature kept for a value-like symbol (variable, constant, field). Their "signature" is
@@ -871,7 +885,7 @@ pub fn locked() {}
 
     #[test]
     fn c_function_locals_are_not_symbols() {
-        let src = b"int top = 1;\nint f(void) { int local = 2; return local; }\n";
+        let src = b"int top = 1;\nint f(void) { int local = 2; return local; }\nchar *g(void) { return 0; }\n";
         let _ = crate::lang::ensure_grammars();
         if !matches!(crate::lang::try_get_combined_l1_query("c"), Ok(Some(_))) {
             crate::testing::unavailable(
@@ -882,7 +896,7 @@ pub fn locked() {}
         }
         let map = extract_l1("c", src).expect("extract");
         let names = names_of(&map);
-        assert!(names.contains(&"f"), "{names:?}");
+        assert!(names.contains(&"f") && names.contains(&"g"), "{names:?}");
         assert!(!names.contains(&"local"), "{names:?}");
     }
 
