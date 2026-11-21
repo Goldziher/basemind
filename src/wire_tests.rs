@@ -320,9 +320,35 @@ proptest! {
         reads_back("find_files", &Value::Object(body))?;
     }
 
+    /// The dispatch keys (`files`, `hits`) holding any value at all, under every tool: the shapes
+    /// the list and row encodings cannot carry fall back to the generic encoding.
+    #[test]
+    fn any_value_under_a_dispatch_key_reads_back_under_every_tool(mut body in answer(), any_value in value()) {
+        body.insert("files".into(), any_value.clone());
+        body.insert(HITS.into(), any_value);
+        let answer = Value::Object(body);
+        for tool in ["code_symbols", "code_outline", "git_diff", "find_files", "code_grep"] {
+            reads_back(tool, &answer)?;
+        }
+    }
+
     #[test]
     fn every_grep_answer_reads_back(mut body in answer(), grep_hits in hits()) {
         body.insert(HITS.into(), grep_hits);
         reads_back("code_grep", &Value::Object(body))?;
+    }
+}
+
+/// A `files` or `hits` of the wrong shape falls back to the generic encoding and still reads back.
+#[test]
+fn a_malformed_list_or_hits_shape_reads_back() {
+    for (tool, root) in [
+        ("find_files", serde_json::json!({ "files": null })),
+        ("find_files", serde_json::json!({ "files": 3 })),
+        ("code_grep", serde_json::json!({ "hits": 3 })),
+        ("code_grep", serde_json::json!({ "hits": null })),
+        ("code_grep", serde_json::json!({ "hits": { "a.rs": 3 } })),
+    ] {
+        reads_back(tool, &root).unwrap_or_else(|error| panic!("{error}"));
     }
 }
