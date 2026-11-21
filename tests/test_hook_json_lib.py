@@ -53,7 +53,8 @@ class HookJsonLibraryTests(unittest.TestCase):
             ("list.2", "boolean", "true"),
             ("list.3", "null", ""),
             ("list.4.deep", "", "yes"),
-            ("nul", "", "ab"),
+            ("nul", "", ""),
+            ("nul", "string", ""),
             ("tool_input.command", "number", ""),
             ("missing", "", ""),
         )
@@ -65,6 +66,28 @@ class HookJsonLibraryTests(unittest.TestCase):
         document = '{"statusLine.command":"echo ready","statusLine":{"command":"basemind statusline"}}'
         self.assertEqual(self.get(document, "statusLine.command"), "basemind statusline")
         self.assertEqual(self.shell("json_fields", document).splitlines()[1], "statusLine\\.command\tstring\techo ready")
+
+    def test_a_string_holding_nul_is_unrepresentable_rather_than_shortened(self) -> None:
+        document = json.dumps({"nul": "a\u0000b", "a\u0000b": "key", "ab": "other"})
+        self.assertEqual(
+            self.shell("json_fields", document).splitlines()[1:3], ["nul\tunrepresentable\t", "a\\0b\tstring\tkey"]
+        )
+        self.assertEqual(self.get(document, "a\\0b"), "key")
+        self.assertEqual(self.get(document, "ab"), "other")
+
+    def test_an_empty_key_at_the_root_is_not_the_root(self) -> None:
+        document = '{"":{"name":"inner"},"name":"outer"}'
+        self.assertEqual(self.get(document, "name"), "outer")
+        self.assertEqual(self.get(document, "..name"), "inner")
+        self.assertEqual(self.shell("json_fields", document).splitlines()[1], ".\tobject\t")
+
+    def test_a_listed_path_with_backslashes_finds_its_value(self) -> None:
+        document = '{"a\\\\b":[1],"c.d":{"e":"dotted"}}'
+        path = self.shell("json_fields", document).splitlines()[1].split("\t")[0]
+        self.assertEqual(path, "a\\\\b")
+        self.assertEqual(self.length(document, path), "1")
+        self.assertEqual(self.get(document, f"{path}.0", "number"), "1")
+        self.assertEqual(self.get(document, "c\\.d.e"), "dotted")
 
     def test_a_pretty_document_reads_like_a_compact_one(self) -> None:
         document = {"messages": [{"id": "t-1"}, {"id": "t-2"}], "more": False}
@@ -83,6 +106,11 @@ class HookJsonLibraryTests(unittest.TestCase):
         for text, expected in cases.items():
             with self.subTest(text=text):
                 self.assertEqual(self.length(text, "messages"), expected)
+
+    def test_length_counts_the_members_of_a_root_array(self) -> None:
+        for text, expected in {"[7,8]": "2", "[]": "0", '[[1,2,3],{"0":1}]': "2", '{"0":[1]}': ""}.items():
+            with self.subTest(text=text):
+                self.assertEqual(self.length(text, ""), expected)
 
     def test_a_document_that_does_not_parse_lists_nothing(self) -> None:
         raw_controls = tuple(f'{{"a":"raw{chr(code)}byte"}}' for code in range(1, 32))

@@ -8,11 +8,14 @@
 #   <path> TAB <type> TAB <value>
 #
 # A path joins object keys and array indices with dots (`tool_input.command`, `messages.0.id`; the
-# root is the empty path). A dot inside a key is written `\.`, so a key named `a.b` never reads as
-# the member `b` of `a`. The type is object, array, string, number, boolean or null. A string's
-# value is decoded and then encoded for the line: a backslash as `\\`, a line feed, tab or carriage
-# return as `\n`, `\t` or `\r`, so json_get can turn it back with printf %b. A container's value is
-# empty and its line comes before its members'. A document that does not parse lists nothing.
+# root is the empty path, and its member with the empty key is `.`). A dot inside a key is written
+# `\.`, so a key named `a.b` never reads as the member `b` of `a`. The type is object, array,
+# string, number, boolean or null. A string's value is decoded and then encoded for the line: a
+# backslash as `\\`, a line feed, tab or carriage return as `\n`, `\t` or `\r`, so json_get can turn
+# it back with printf %b. No shell string can hold U+0000, so a string value that has one is listed
+# with the type unrepresentable and an empty value, and one inside a key is written `\0`. A
+# container's value is empty and its line comes before its members'. A document that does not parse
+# lists nothing.
 
 # shellcheck disable=SC2016 # an awk program: its $0 is awk's, not the shell's.
 JSON_FIELDS_AWK='
@@ -27,7 +30,7 @@ function member(path, key,    k, at) {
     key = substr(key, at + 1)
   }
   k = k key
-  return path == "" ? k : (path "." k)
+  return (path == "" && k != "") ? k : (path "." k)
 }
 function hex4(at,    i, d, v) {
   v = 0
@@ -44,7 +47,7 @@ function codepoint(c) {
   if (c == 9) return "\\t"
   if (c == 13) return "\\r"
   if (c == 92) return "\\\\"
-  if (c == 0) return ""
+  if (c == 0) { nul = 1; return "\\0" }
   if (c >= 55296 && c < 57344) c = 65533
   if (c < 128) return sprintf("%c", c)
   if (c < 2048) return sprintf("%c%c", 192 + int(c / 64), 128 + c % 64)
@@ -74,6 +77,7 @@ function escaped(e,    code, low) {
 }
 function str(    s, start, c) {
   pos++
+  nul = 0
   s = ""
   start = pos
   while (pos <= n) {
@@ -145,7 +149,7 @@ function value(path,    s) {
   else if (ch[pos] == "[") array(path)
   else if (ch[pos] == "\"") {
     s = str()
-    if (!failed) put(path, "string", s)
+    if (!failed) put(path, nul ? "unrepresentable" : "string", nul ? "" : s)
   } else scalar(path)
 }
 { text = text $0 "\n" }
@@ -169,17 +173,19 @@ json_fields() {
 # type $3, of that type.
 json_get() {
   local raw
-  raw="$(printf '%s\n' "$1" | LC_ALL=C awk -F '\t' -v want="$2" -v type="${3:-}" \
-    '!done && $1 == want && (type == "" || $2 == type) { print $3; done = 1 }')"
+  raw="$(printf '%s\n' "$1" | JSON_PATH="$2" JSON_TYPE="${3:-}" LC_ALL=C awk -F '\t' '
+    BEGIN { want = ENVIRON["JSON_PATH"]; type = ENVIRON["JSON_TYPE"] }
+    !done && $1 == want && (type == "" || $2 == type) { print $3; done = 1 }')"
   printf '%b' "${raw}"
 }
 
 # Print how many members the array at path $2 of the json_fields listing $1 has; nothing when that
 # path is not an array.
 json_length() {
-  printf '%s\n' "$1" | LC_ALL=C awk -F '\t' -v want="$2" '
+  printf '%s\n' "$1" | JSON_PATH="$2" LC_ALL=C awk -F '\t' '
+    BEGIN { want = ENVIRON["JSON_PATH"]; prefix = (want == "") ? "" : (want ".") }
     $1 == want { found = ($2 == "array") }
-    found && index($1, want ".") == 1 && substr($1, length(want) + 2) ~ /^[0-9]+$/ { count++ }
+    found && (prefix == "" || index($1, prefix) == 1) && substr($1, length(prefix) + 1) ~ /^[0-9]+$/ { count++ }
     END { if (found) print count + 0 }'
 }
 

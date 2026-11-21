@@ -137,6 +137,12 @@ class PreToolGuardTests(unittest.TestCase):
                 )
                 self.assertIn(expected, context)
 
+    def test_a_grep_pattern_holding_nul_gets_the_generic_call_rather_than_a_shortened_one(self) -> None:
+        out = self.run_guard("Grep", {"pattern": "a\u0000b"}, agent_id="nul-pattern")
+        context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn('basemind code_grep {"pattern":"…","regex":true} (indexed code)', context)
+        self.assertNotIn('"pattern":"ab"', context)
+
     def test_other_bash_commands_are_ignored(self) -> None:
         for command in ("ls -la", "cargo test | grep FAIL", "git status", "echo rg"):
             with self.subTest(command=command):
