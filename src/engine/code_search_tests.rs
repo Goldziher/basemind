@@ -143,7 +143,14 @@ fn a_change_scope_keeps_only_the_hits_and_copies_in_its_files() {
     let mut scope = ChangeScope::default();
     scope.extend([RelPath::from("vendor_copy.rs"), RelPath::from("b.rs")]);
 
-    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0, &UNFILTERED, Some(&scope));
+    let hydrated = hydrate_hits(
+        &store,
+        keyword_seeds(&store, "retry upload"),
+        10,
+        0,
+        &UNFILTERED,
+        Some(&scope),
+    );
 
     assert!(!hydrated.hits.is_empty(), "the copies in the scope are found");
     for hit in &hydrated.hits {
@@ -155,7 +162,14 @@ fn a_change_scope_keeps_only_the_hits_and_copies_in_its_files() {
 
     let mut elsewhere = ChangeScope::default();
     elsewhere.extend([RelPath::from("other.rs")]);
-    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "retry upload"), 10, 0, &UNFILTERED, Some(&elsewhere));
+    let hydrated = hydrate_hits(
+        &store,
+        keyword_seeds(&store, "retry upload"),
+        10,
+        0,
+        &UNFILTERED,
+        Some(&elsewhere),
+    );
     assert!(hydrated.hits.is_empty(), "{:?}", hydrated.hits);
     assert_eq!(hydrated.omitted, 0, "a hit outside the scope is not a stale chunk");
 }
@@ -204,7 +218,14 @@ fn a_prose_query_reaches_camel_case_identifiers() {
     .unwrap();
     let store = scanned(dir.path());
 
-    let hydrated = hydrate_hits(&store, keyword_seeds(&store, "find references"), 10, 0, &UNFILTERED, None);
+    let hydrated = hydrate_hits(
+        &store,
+        keyword_seeds(&store, "find references"),
+        10,
+        0,
+        &UNFILTERED,
+        None,
+    );
 
     assert!(
         hydrated
