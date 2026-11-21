@@ -239,6 +239,7 @@ fn the_history_index_and_the_live_walk_agree_on_a_shallow_clones_boundary_commit
             .collect();
         let indexed: Vec<String> = index
             .commits_touching(&RelPath::from(path), 0, 10)
+            .unwrap()
             .into_iter()
             .map(|commit| commit.sha)
             .collect();
