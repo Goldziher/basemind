@@ -23,9 +23,13 @@ PUBLISH_WORKFLOWS = [
     ".github/workflows/plugin-artifacts.yaml",
 ]
 USES = re.compile(
-    r"""(?:^|[\s{,])(?P<quote>["']?)uses(?P=quote)\s*:\s*(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s#,}]+))"""
+    r"""(?:^|[\s{,])(?P<key>(?P<quote>["']?)uses(?P=quote))\s*:\s*"""
+    r"""(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)'|(?P<bare>[^\s#,}]+))"""
 )
-COMMENT = re.compile(r"(?:^|\s)(?P<comment>#.*)$")
+QUOTED = re.compile(r""""(?:\\.|[^"\\])*"|'(?:''|[^'])*'""")
+SCALAR_START = " \t[{,:"
+BLOCK_SCALAR = re.compile(r"(?:^|:\s|-\s)\s*[|>][1-9+-]{0,2}$")
+NODE_START = re.compile(r"^(?:\s*-(?=\s))*\s*")
 PINNED = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 TAG_COMMENT = re.compile(r"^#\s*v?\d[\w.-]*$")
 
@@ -52,28 +56,72 @@ def problems(root: Path, files: list[str]) -> list[str]:
             continue
         seen.add(path)
         rel = path.relative_to(root).as_posix()
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            for ref, comment in references(line):
-                problem = check_reference(root, ref, comment, queue)
-                if problem:
-                    found.append(f"{rel}:{number}: {problem}")
+        for number, ref, comment in references(path.read_text(encoding="utf-8")):
+            problem = check_reference(root, ref, comment, queue)
+            if problem:
+                found.append(f"{rel}:{number}: {problem}")
     return found
 
 
-def references(line: str) -> list[tuple[str, str]]:
-    """Return each ``uses`` value on ``line``, unquoted, with the line's trailing comment.
+def references(text: str) -> list[tuple[int, str, str]]:
+    """Return each ``uses`` value in ``text``, unquoted, with its line number and trailing comment.
 
-    Block (``- uses: x``), flow (``- {uses: x}``) and quoted-key (``"uses": x``) forms are read; a
-    whole-line comment holds none.
+    Block (``- uses: x``), flow (``- {uses: x}``) and quoted-key (``"uses": x``) forms are read.
+    Only a mapping key counts: ``uses:`` in a comment, a quoted scalar or a block scalar
+    (``run: |``) is text.
     """
-    if line.lstrip().startswith("#"):
-        return []
     found = []
-    for match in USES.finditer(line):
-        ref = next(value for value in (match["dq"], match["sq"], match["bare"]) if value is not None)
-        comment = COMMENT.search(line[match.end() :])
-        found.append((ref, comment["comment"].strip() if comment else ""))
+    scalar_indent: int | None = None
+    for number, line in enumerate(text.splitlines(), start=1):
+        if scalar_indent is not None:
+            if not line.strip() or len(line) - len(line.lstrip()) > scalar_indent:
+                continue
+            scalar_indent = None
+        code, comment, quoted = split_comment(line)
+        found.extend((number, ref, comment) for ref in mapping_uses(code, quoted))
+        if BLOCK_SCALAR.search(code.rstrip()):
+            scalar_indent = block_parent_indent(line, code)
     return found
+
+
+def split_comment(line: str) -> tuple[str, str, list[tuple[int, int]]]:
+    """Return ``line``'s code, its trailing comment (``""`` for none) and the spans of its quoted scalars."""
+    quoted: list[tuple[int, int]] = []
+    pos = 0
+    while pos < len(line):
+        before = line[pos - 1] if pos else " "
+        if line[pos] == "#" and before.isspace():
+            return line[:pos], line[pos:].strip(), quoted
+        match = QUOTED.match(line, pos) if line[pos] in "\"'" and before in SCALAR_START else None
+        if match:
+            quoted.append(match.span())
+            pos = match.end()
+        else:
+            pos += 1
+    return line, "", quoted
+
+
+def mapping_uses(code: str, quoted: list[tuple[int, int]]) -> list[str]:
+    """Return the value of each ``uses`` key in ``code`` that is not inside a quoted scalar."""
+    refs = []
+    for match in USES.finditer(code):
+        start, end = match.span("key")
+        if any(lo < start < hi or (lo == start and hi != end) for lo, hi in quoted):
+            continue
+        refs.append(next(value for value in (match["dq"], match["sq"], match["bare"]) if value is not None))
+    return refs
+
+
+def block_parent_indent(line: str, code: str) -> int:
+    """Return the indent a line must exceed to belong to the block scalar ``line`` opens.
+
+    That is the column of the key that holds it (``- run: |``), or of the dash for a sequence entry
+    that is itself the scalar (``- |``).
+    """
+    node = NODE_START.match(code)
+    if code[node.end() :].startswith(("|", ">")):
+        return len(line) - len(line.lstrip())
+    return node.end()
 
 
 def check_reference(root: Path, ref: str, comment: str, queue: list[Path]) -> str:
