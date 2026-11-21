@@ -237,19 +237,17 @@ fn files(path: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Every `BASEMIND_*` name in `text`; with `quoted`, only one that is a whole string literal. A name
-/// ending in `_` is a prefix, not a variable.
-fn variable_names(text: &str, quoted: bool) -> BTreeSet<String> {
+/// Every `BASEMIND_*` name in `text`. A name ending in `_` is a prefix, not a variable.
+fn variable_names(text: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     let mut rest = text;
     while let Some(at) = rest.find("BASEMIND_") {
-        let opens = rest[..at].ends_with('"');
         let tail = &rest[at..];
         let end = tail
             .find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
             .unwrap_or(tail.len());
         let name = &tail[..end];
-        if !name.ends_with('_') && (!quoted || (opens && tail[end..].starts_with('"'))) {
+        if !name.ends_with('_') {
             names.insert(name.to_string());
         }
         rest = &tail[end..];
@@ -257,33 +255,189 @@ fn variable_names(text: &str, quoted: bool) -> BTreeSet<String> {
     names
 }
 
+/// Every `BASEMIND_*` name in Rust `source` that is a whole string literal outside a comment.
+fn literal_variables(source: &str) -> BTreeSet<String> {
+    string_literals(source)
+        .into_iter()
+        .filter(|literal| variable_names(literal).contains(*literal))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The contents of the string literals in Rust `source`, raw strings included, skipping line and
+/// block comments and telling a char literal from a lifetime.
+fn string_literals(source: &str) -> Vec<&str> {
+    let bytes = source.as_bytes();
+    let mut literals = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        let rest = &bytes[at..];
+        if rest.starts_with(b"//") {
+            at += rest.iter().position(|&byte| byte == b'\n').unwrap_or(rest.len());
+        } else if rest.starts_with(b"/*") {
+            at += block_comment_len(rest);
+        } else if let Some(hashes) = raw_string_hashes(bytes, at) {
+            let open = at + 2 + hashes;
+            let close = format!("\"{}", "#".repeat(hashes));
+            let len = find(&bytes[open..], close.as_bytes()).unwrap_or(bytes.len() - open);
+            literals.push(&source[open..open + len]);
+            at = (open + len + close.len()).min(bytes.len());
+        } else if rest[0] == b'"' {
+            let len = string_len(&rest[1..]);
+            literals.push(&source[at + 1..at + 1 + len]);
+            at += len + 2;
+        } else if rest[0] == b'\'' {
+            at += char_literal_len(&source[at..]);
+        } else {
+            at += 1;
+        }
+    }
+    literals
+}
+
+/// The length of the block comment `rest` opens, nested comments included.
+fn block_comment_len(rest: &[u8]) -> usize {
+    let mut depth = 0;
+    let mut at = 0;
+    while at < rest.len() {
+        if rest[at..].starts_with(b"/*") {
+            depth += 1;
+            at += 2;
+        } else if rest[at..].starts_with(b"*/") {
+            depth -= 1;
+            at += 2;
+            if depth == 0 {
+                return at;
+            }
+        } else {
+            at += 1;
+        }
+    }
+    rest.len()
+}
+
+/// The `#` count of the raw string `r"`, `r#"`… that starts at `at`, when one does.
+fn raw_string_hashes(bytes: &[u8], at: usize) -> Option<usize> {
+    let identifier = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let prefix = at.checked_sub(1).map(|before| bytes[before]);
+    let starts_word = prefix.is_none_or(|byte| byte == b'b' || !identifier(byte));
+    if bytes[at] != b'r' || !starts_word {
+        return None;
+    }
+    let hashes = bytes[at + 1..].iter().take_while(|&&byte| byte == b'#').count();
+    (bytes.get(at + 1 + hashes) == Some(&b'"')).then_some(hashes)
+}
+
+/// The length of a string literal's contents, `rest` starting just past its opening quote.
+fn string_len(rest: &[u8]) -> usize {
+    let mut at = 0;
+    while at < rest.len() {
+        match rest[at] {
+            b'\\' => at += 2,
+            b'"' => return at,
+            _ => at += 1,
+        }
+    }
+    rest.len()
+}
+
+/// The length of the char literal `rest` opens, or 1 when its quote starts a lifetime.
+fn char_literal_len(rest: &str) -> usize {
+    let after = &rest[1..];
+    if after.starts_with('\\') {
+        return after
+            .get(2..)
+            .and_then(|tail| tail.find('\''))
+            .map_or(rest.len(), |close| close + 4);
+    }
+    let width = after.chars().next().map_or(0, char::len_utf8);
+    if width > 0 && after[width..].starts_with('\'') {
+        width + 2
+    } else {
+        1
+    }
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|window| window == needle)
+}
+
 /// The variables the shipped code reads, outside `*_tests.rs` files.
 fn read_variables() -> BTreeSet<String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut names = BTreeSet::new();
-    for (sources, quoted) in [(RUST_SOURCES, true), (SCRIPT_SOURCES, false)] {
+    for (sources, rust) in [(RUST_SOURCES, true), (SCRIPT_SOURCES, false)] {
         let mut paths = Vec::new();
         for source in sources {
             files(&root.join(source), &mut paths);
         }
         for path in paths {
             let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-            if quoted && (!name.ends_with(".rs") || name.ends_with("_tests.rs")) {
+            if rust && (!name.ends_with(".rs") || name.ends_with("_tests.rs")) {
                 continue;
             }
             let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-            names.extend(variable_names(&String::from_utf8_lossy(&bytes), quoted));
+            let text = String::from_utf8_lossy(&bytes);
+            names.extend(if rust {
+                literal_variables(&text)
+            } else {
+                variable_names(&text)
+            });
         }
     }
     names
 }
 
+/// The variables the environment page documents: the first column of its tables, and the names its
+/// `## Removed` section lists.
+fn documented_variables(page: &str) -> BTreeSet<String> {
+    let rows = page
+        .lines()
+        .filter_map(|line| line.strip_prefix('|'))
+        .filter_map(|row| row.split('|').next());
+    let removed = page
+        .split_once("\n## Removed\n")
+        .map_or("", |(_, rest)| rest.split("\n## ").next().unwrap_or_default());
+    rows.chain([removed]).flat_map(variable_names).collect()
+}
+
 #[test]
 fn a_variable_is_a_whole_name_and_in_rust_a_whole_literal() {
     let text = r#"let a = "BASEMIND_ONE"; "BASEMIND_TWO is set"; "BASEMIND_DOCUMENTS_"; BASEMIND_THREE"#;
-    let names = |quoted| variable_names(text, quoted).into_iter().collect::<Vec<_>>();
-    assert_eq!(names(true), ["BASEMIND_ONE"]);
-    assert_eq!(names(false), ["BASEMIND_ONE", "BASEMIND_THREE", "BASEMIND_TWO"]);
+    assert_eq!(
+        literal_variables(text).into_iter().collect::<Vec<_>>(),
+        ["BASEMIND_ONE"]
+    );
+    assert_eq!(
+        variable_names(text).into_iter().collect::<Vec<_>>(),
+        ["BASEMIND_ONE", "BASEMIND_THREE", "BASEMIND_TWO"]
+    );
+}
+
+#[test]
+fn a_rust_literal_inside_a_comment_is_not_read() {
+    let source = r##"// "BASEMIND_LINE"
+/* "BASEMIND_BLOCK" /* "BASEMIND_NESTED" */ "BASEMIND_STILL_BLOCK" */
+let raw = r#"BASEMIND_RAW"#;
+let url = "http://x"; // "BASEMIND_AFTER_URL"
+let quote = '"'; let name: &'static str = "BASEMIND_AFTER_CHAR";
+let escaped = "a \" // BASEMIND_IN_STRING"; let kept = "BASEMIND_KEPT";
+"##;
+    assert_eq!(
+        literal_variables(source).into_iter().collect::<Vec<_>>(),
+        ["BASEMIND_AFTER_CHAR", "BASEMIND_KEPT", "BASEMIND_RAW"]
+    );
+}
+
+#[test]
+fn the_environment_table_documents_its_first_column_and_the_removed_settings() {
+    let page = "| Variable | Default | Scope | Effect |\n|---|---|---|---|\n\
+                | `BASEMIND_ONE` | off | daemon | Needs `BASEMIND_TWO`. |\n\n\
+                ## Removed\n\n`BASEMIND_OLD` is ignored.\n\n## Logging\n\n`BASEMIND_PROSE` is no row.\n";
+    assert_eq!(
+        documented_variables(page).into_iter().collect::<Vec<_>>(),
+        ["BASEMIND_OLD", "BASEMIND_ONE"]
+    );
 }
 
 #[test]
@@ -301,10 +455,7 @@ fn variable_names_skips_a_wildcard_family() {
 #[test]
 fn every_environment_variable_the_manual_names_is_read_by_the_source() {
     let read = read_variables();
-    let names: BTreeSet<String> = pages()
-        .into_iter()
-        .flat_map(|(_, text)| variable_names(text, false))
-        .collect();
+    let names: BTreeSet<String> = pages().into_iter().flat_map(|(_, text)| variable_names(text)).collect();
     let unknown: Vec<&String> = names.difference(&read).collect();
     assert!(
         names.len() >= 80,
@@ -324,7 +475,7 @@ fn every_variable_the_source_reads_is_in_the_environment_table() {
         .iter()
         .find(|page| page.topic == "environment")
         .expect("environment page");
-    let table = variable_names(page.text, false);
+    let table = documented_variables(page.text);
     let missing: Vec<&String> = read
         .difference(&table)
         .filter(|name| !name.starts_with("BASEMIND_TEST_") && !TEST_ONLY.contains(&name.as_str()))
