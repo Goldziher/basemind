@@ -8,7 +8,7 @@
  * never starts. This module has no OpenCode imports, so either half can load it.
  */
 
-import { execFile } from "child_process";
+import { execFile, spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -54,7 +54,10 @@ export function isNotFound(error, shell) {
  * How a probe that outlived its timeout is stopped on `platform`: the
  * `taskkill` command for its process tree on Windows, where the probe is
  * `cmd.exe` running the `basemind.cmd` shim and killing `cmd.exe` alone leaves
- * the CLI it started running; `null` elsewhere, where the probe is the binary.
+ * the CLI it started running; `null` elsewhere, where the probe leads its own
+ * process group and the whole group is killed: the npm wrapper waits on a
+ * native child that inherits the output pipes, and killing the wrapper alone
+ * would leave `execFile` waiting for them to close.
  */
 export function treeKillInvocation(platform, pid) {
   return platform === "win32" ? { file: "taskkill", args: ["/pid", String(pid), "/T", "/F"] } : null;
@@ -64,7 +67,11 @@ export function treeKillInvocation(platform, pid) {
 function stopProbe(child, platform, env) {
   const tree = treeKillInvocation(platform, child.pid);
   if (tree === null) {
-    child.kill("SIGKILL");
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      child.kill("SIGKILL");
+    }
     return;
   }
   execFile(tree.file, tree.args, { env }, (error) => {
@@ -74,13 +81,30 @@ function stopProbe(child, platform, env) {
   });
 }
 
+// `execFile` does not pass `detached` on, so the probe is spawned directly and reports what
+// `execFile` would: an error whose `code` is the spawn error code or the non-zero exit status.
 function runVersion(env, timeoutMs, platform) {
   const { file, args, shell } = versionInvocation(platform);
   return new Promise((resolve) => {
     let timedOut = false;
-    const child = execFile(file, args, { env, shell }, (error, stdout) => {
+    let stdout = "";
+    let spawnError = null;
+    const child = spawn(file, args, { env, shell, detached: platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.on("data", (chunk) => {
+      if (stdout.length < 4096) {
+        stdout += chunk;
+      }
+    });
+    child.stderr.resume();
+    child.on("error", (error) => {
+      spawnError = error;
+    });
+    child.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ error, timedOut, notFound: isNotFound(error, shell), stdout: String(stdout ?? "") });
+      const error =
+        spawnError ??
+        (code === 0 ? null : Object.assign(new Error(`Command failed: ${[file, ...args].join(" ")}`), { code }));
+      resolve({ error, timedOut, notFound: isNotFound(error, shell), stdout });
     });
     const timer = setTimeout(() => {
       timedOut = true;

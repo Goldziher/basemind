@@ -102,6 +102,13 @@ test("a binary that ignores SIGTERM is killed at the timeout and not registered"
   });
 });
 
+test("a hung wrapper whose child keeps the output pipes open is stopped at the timeout", posix, async () => {
+  const started = Date.now();
+  const result = await check("/bin/sleep 10 &\nwait", { timeoutMs: 200 });
+  assert.equal(result.status, "missing");
+  assert.ok(Date.now() - started < 3000, `the probe took ${Date.now() - started} ms`);
+});
+
 test("a hung binary behind the Windows shell is stopped with its whole process tree", posix, async () => {
   const calls = path.join(os.tmpdir(), `basemind-opencode-taskkill-${process.pid}.log`);
   // Stands in for `taskkill /pid N /T /F`: records its arguments, then kills N and its descendants.
@@ -125,7 +132,7 @@ for (const [platform, kill] of [
   ["linux", null],
   ["darwin", null],
 ]) {
-  test(`on ${platform} a timed-out probe is stopped ${kill ? "with its process tree" : "by killing it"}`, () => {
+  test(`on ${platform} a timed-out probe is stopped ${kill ? "with taskkill" : "through its process group"}`, () => {
     assert.deepEqual(treeKillInvocation(platform, 4242), kill);
   });
 }
