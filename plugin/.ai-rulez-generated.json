@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:294351834780be80269e97225ea5ba77aab16626cedbcfe07b8e5ce14a748c57",
+  "source_hash": "blake3:d748a02f18a6fbf03f98def377634fb76b352d2fd7155f08dc111a83e11057fc",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:e0959043330c123c0439c4a8a33ada325ba6857c086592be6d3b32067a2e9681",
@@ -663,11 +663,15 @@
       "mode": "0644"
     },
     "hooks/inbox-notify": {
-      "content_hash": "blake3:c73ef79361774d20ac3e2b47a2ba78a76a928fbc79e3b1c222140f4563ca919c",
+      "content_hash": "blake3:d653a024528a2f668d071f6dbe19b6e8dd7e262299beb35637cd90aebcbf600e",
       "mode": "0755"
     },
+    "hooks/json-lib.sh": {
+      "content_hash": "blake3:e82ffa4408547122b8ec1ba124e69c554d2466167ac21f6b078df90558ff1b0f",
+      "mode": "0644"
+    },
     "hooks/pre-tool-guard": {
-      "content_hash": "blake3:2ae62b81ac9475b7f2fdb95915ffc7b7b7f6de76eb1ca197cbd5930ede246563",
+      "content_hash": "blake3:1ccf4a56e0752a91d8ce8b451f252bddf033d97cfb733c93d0bbe88663a5c744",
       "mode": "0755"
     },
     "hooks/run-hook.cmd": {
@@ -675,7 +679,7 @@
       "mode": "0755"
     },
     "hooks/session-start": {
-      "content_hash": "blake3:9343e1efbc37b7ad46b6a78020b95cd801f293d0ad3fca352bae6e3aeedcebda",
+      "content_hash": "blake3:a5b13fcfe8dbfa8fc752c5014f8b2afd376416d5a06a24efbf7c8ddd1144b5dd",
       "mode": "0755"
     },
     "kimi.plugin.json": {
@@ -790,6 +794,7 @@
     "assets/basemind-logo.png",
     "hooks/agent-as",
     "hooks/inbox-notify",
+    "hooks/json-lib.sh",
     "hooks/pre-tool-guard",
     "hooks/run-hook.cmd",
     "hooks/session-start",

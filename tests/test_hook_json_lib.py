@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 LIBRARY = ROOT / "plugin/.ai-rulez/hooks/json-lib.sh"
 
 
+@unittest.skipIf(os.name == "nt", "the harness symlinks awk and launches /bin/bash, neither of which Windows provides")
 class HookJsonLibraryTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -21,7 +22,7 @@ class HookJsonLibraryTests(unittest.TestCase):
 
     def shell(self, script: str, stdin: str = "", *args: str) -> str:
         return subprocess.run(
-            ["/bin/bash", "-c", f'. "{LIBRARY}"; {script}', "json-lib", *args],
+            ["/bin/bash", "-c", f'. "$1" || exit 1; shift; {script}', "json-lib", str(LIBRARY), *args],
             input=stdin,
             env={**os.environ, "PATH": str(self.bin)},
             capture_output=True,
@@ -35,6 +36,13 @@ class HookJsonLibraryTests(unittest.TestCase):
 
     def length(self, document: str, path: str) -> str:
         return self.shell('printf %s "$(json_length "$(json_fields)" "$1")"', document, path)
+
+    def test_a_leading_byte_order_mark_is_skipped(self) -> None:
+        self.assertEqual(self.get("\ufeff" + json.dumps({"a": {"b": "x"}}), "a.b", "string"), "x")
+
+    def test_numeric_looking_keys_are_compared_as_text(self) -> None:
+        self.assertEqual(self.get('{"01":"first","1":"second"}', "1", "string"), "second")
+        self.assertEqual(self.length('{"1":[7],"01":false}', "1"), "1")
 
     def test_values_are_decoded_at_their_path(self) -> None:
         document = json.dumps(
@@ -65,7 +73,9 @@ class HookJsonLibraryTests(unittest.TestCase):
     def test_a_dot_inside_a_key_is_not_a_path_separator(self) -> None:
         document = '{"statusLine.command":"echo ready","statusLine":{"command":"basemind statusline"}}'
         self.assertEqual(self.get(document, "statusLine.command"), "basemind statusline")
-        self.assertEqual(self.shell("json_fields", document).splitlines()[1], "statusLine\\.command\tstring\techo ready")
+        self.assertEqual(
+            self.shell("json_fields", document).splitlines()[1], "statusLine\\.command\tstring\techo ready"
+        )
 
     def test_a_string_holding_nul_is_unrepresentable_rather_than_shortened(self) -> None:
         document = json.dumps({"nul": "a\u0000b", "a\u0000b": "key", "ab": "other"})

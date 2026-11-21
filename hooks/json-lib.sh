@@ -155,7 +155,7 @@ function value(path,    s) {
 { text = text $0 "\n" }
 END {
   n = split(text, ch, "")
-  pos = 1
+  pos = (substr(text, 1, 3) == "\357\273\277") ? 4 : 1
   skip_ws()
   value("")
   skip_ws()
@@ -175,7 +175,7 @@ json_get() {
   local raw
   raw="$(printf '%s\n' "$1" | JSON_PATH="$2" JSON_TYPE="${3:-}" LC_ALL=C awk -F '\t' '
     BEGIN { want = ENVIRON["JSON_PATH"]; type = ENVIRON["JSON_TYPE"] }
-    !done && $1 == want && (type == "" || $2 == type) { print $3; done = 1 }')"
+    !done && ($1 "") == (want "") && (type == "" || $2 == type) { print $3; done = 1 }')"
   printf '%b' "${raw}"
 }
 
@@ -184,7 +184,7 @@ json_get() {
 json_length() {
   printf '%s\n' "$1" | JSON_PATH="$2" LC_ALL=C awk -F '\t' '
     BEGIN { want = ENVIRON["JSON_PATH"]; prefix = (want == "") ? "" : (want ".") }
-    $1 == want { found = ($2 == "array") }
+    ($1 "") == (want "") { found = ($2 == "array") }
     found && (prefix == "" || index($1, prefix) == 1) && substr($1, length(prefix) + 1) ~ /^[0-9]+$/ { count++ }
     END { if (found) print count + 0 }'
 }
