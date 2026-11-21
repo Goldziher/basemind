@@ -81,6 +81,10 @@ const RESULT_VOCABULARY: &[(&str, &str)] = &[
     ),
     ("chunk_idx", "docs_search hits (src/mcp/types_documents.rs)"),
     ("lanes_ran", "code_search (src/mcp/types_code.rs)"),
+    (
+        "rescan_needed",
+        "index_status on an index only a scan can rebuild (src/engine/types/index.rs)",
+    ),
 ];
 
 /// Identifiers that appear on a line naming a tool but are not part of any tool's vocabulary: shell
