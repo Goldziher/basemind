@@ -256,7 +256,9 @@ pub(super) fn cmd_scan(
     if report.cancelled {
         return interrupted(&mut out, &report, verbosity, "scan");
     }
-    output.summary(&mut out, root, &report, started)?;
+    // A failed write of the summary (stdout closed under `--json`) must not skip the maintenance
+    // below, which the index just written is owed; it is returned once that has run.
+    let summary = output.summary(&mut out, root, &report, started);
     render::render_deps_unavailable(&mut out, &report.deps_unavailable, verbosity);
     // This process exits next: flushed, the rows open as tables instead of a journal the next
     // writer (usually the daemon) replays into memtables and holds in its heap until they fill.
@@ -265,7 +267,7 @@ pub(super) fn cmd_scan(
     }
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
-    Ok(())
+    summary
 }
 
 /// Give a one-shot scan's ONNX sessions the cores of its scan pool (`[resources] scan_threads`, else

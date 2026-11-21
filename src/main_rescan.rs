@@ -63,11 +63,12 @@ pub(super) fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, output: Scan
     if report.cancelled {
         return interrupted(&mut out, &report, verbosity, "rescan");
     }
-    output.summary(&mut out, root, &report, started)?;
+    // As in `cmd_scan`: the maintenance below runs even when the summary cannot be written.
+    let summary = output.summary(&mut out, root, &report, started);
     render::render_deps_unavailable(&mut out, &report.deps_unavailable, verbosity);
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
-    Ok(())
+    summary
 }
 
 /// Print the counts a daemon reported for a forwarded `scan` or `rescan` (`what`).

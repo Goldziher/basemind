@@ -56,13 +56,31 @@ pub fn respell(error: anyhow::Error, root: &Command, matches: &ArgMatches) -> an
         .chain(path)
         .collect::<Vec<_>>()
         .join(" ");
-    CliExit::usage(respelled(usage, &name, command))
+    CliExit::usage(respelled(usage, &name, command, &supplied(matches, command)))
+}
+
+/// Every value the person typed for the command `matches` selected. A backquoted token equal to one
+/// of them is read as that value, not as the field of the same name. Argument groups, which clap
+/// reports with their members' names, are skipped.
+fn supplied(matches: &ArgMatches, command: &Command) -> Vec<String> {
+    let mut matches = matches;
+    while let Some((_, sub_matches)) = matches.subcommand() {
+        matches = sub_matches;
+    }
+    matches
+        .ids()
+        .filter(|id| command.get_arguments().any(|arg| arg.get_id() == id.as_str()))
+        .filter(|id| matches.value_source(id.as_str()) == Some(clap::parser::ValueSource::CommandLine))
+        .filter_map(|id| matches.get_raw(id.as_str()))
+        .flatten()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// `usage` with its tool prefix replaced by `` `name` `` and every backquoted field of `command`
 /// in its command-line spelling. The tool is spelled as on the wire (`code_deadcode`) or, by an
 /// operation with no MCP tool, as the command group words it (`code deadcode`).
-fn respelled(usage: &ToolUsage, name: &str, command: &Command) -> String {
+fn respelled(usage: &ToolUsage, name: &str, command: &Command, values: &[String]) -> String {
     let spaced = usage.tool.replace('_', " ");
     let is_tool = |quoted: &str| quoted == usage.tool || quoted == spaced;
     let body = [&usage.tool, &spaced]
@@ -77,7 +95,7 @@ fn respelled(usage: &ToolUsage, name: &str, command: &Command) -> String {
     let mut quoted = true;
     for part in parts {
         out.push('`');
-        if quoted {
+        if quoted && !values.iter().any(|value| value == part) {
             match spelled(command, part) {
                 Some(cli) => out.push_str(&cli),
                 None if is_tool(part) => out.push_str(name),
@@ -163,6 +181,19 @@ mod tests {
                 "unknown `match` `fuzzy`; see `code_grep` and `docs_search`"
             ),
             "`basemind code grep`: unknown `--match` `fuzzy`; see `basemind code grep` and `docs_search`"
+        );
+    }
+
+    #[test]
+    fn a_quoted_value_the_person_typed_keeps_its_text_though_it_names_a_field() {
+        let argv = ["basemind", "code", "grep", "limit", "--max-tokens", "0"];
+        assert_eq!(
+            respell_for(&argv, "code_grep", "`code_grep`: cannot resolve revision `limit`"),
+            "`basemind code grep`: cannot resolve revision `limit`"
+        );
+        assert_eq!(
+            respell_for(&argv, "code_grep", "`code_grep`: `max_tokens` is below the floor"),
+            "`basemind code grep`: `--max-tokens` is below the floor"
         );
     }
 
