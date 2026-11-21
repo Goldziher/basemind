@@ -237,6 +237,7 @@ fn memory_clear_demands_yes_off_a_terminal_and_removes_every_note() {
         return;
     }
     let env = Env::new();
+    assert_eq!(code(&env.run(&["scan", "--quiet"])), 0);
     assert_eq!(code(&env.run(&["memory", "put", "k1", "a note"])), 0);
     assert_eq!(code(&env.run(&["memory", "put", "k2", "another", "--individual"])), 0);
 
