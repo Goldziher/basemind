@@ -16,6 +16,7 @@ use crate::engine::budget::{apply_budget, budget};
 use crate::engine::changed::admits;
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
+use crate::engine::filters::{Filters, grep_selects_no_file, parse_path};
 use crate::engine::scope::ChangeScope;
 use crate::engine::types::SCAN_CAP;
 use crate::engine::types::code::{
@@ -63,12 +64,15 @@ impl Workspace {
                 "`code_symbols`: `name` is empty; pass the name of the definition to find.",
             ));
         }
+        let path = parse_path("code_symbols", p.path.as_deref())?;
         let scope = crate::engine::changed::resolve(self, "code_symbols", p.changed.as_deref())?;
         let mut response = search_symbols(
             self,
             SearchSymbolsParams {
                 needle: p.name,
                 kind: p.kind,
+                path,
+                language: p.language,
                 fuzzy: p.fuzzy.unwrap_or(false),
                 limit: p.limit,
                 max_tokens: budget(p.max_tokens),
@@ -124,12 +128,21 @@ fn search_symbols(
     let finder = memchr::memmem::Finder::new(needle);
     let want = skip.saturating_add(limit);
     let cache = ws.cache.load_full();
+    let filters = Filters {
+        tool: "code_symbols",
+        path: params.path.as_ref(),
+        language: params.language.as_deref(),
+    };
+    let selected = |path: &RelPath| {
+        admits(scope, path)
+            && (filters.is_empty() || filters.passes(path.as_bytes(), cache.language_of(path).unwrap_or_default()))
+    };
 
     // The sweep walks every symbol name of the corpus: off the reactor.
     let (page, offsets, window_end, total, total_is_partial) = {
         let mut literal: [Vec<Candidate<'_>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut literal_total = 0usize;
-        for (path, terms) in cache.terms().iter().filter(|(path, _)| admits(scope, path)) {
+        for (path, terms) in cache.terms().iter().filter(|&(path, _)| selected(path)) {
             for symbol in terms.matching_symbols(&finder, kind) {
                 let rank = literal_rank(terms.name(symbol), needle);
                 literal_total += 1;
@@ -145,7 +158,7 @@ fn search_symbols(
             let pattern = Pattern::parse(&params.needle, CaseMatching::Ignore, Normalization::Smart);
             let mut matcher = Matcher::new(Config::DEFAULT);
             let mut utf32: Vec<char> = Vec::new();
-            'sweep: for (path, terms) in cache.terms().iter().filter(|(path, _)| admits(scope, path)) {
+            'sweep: for (path, terms) in cache.terms().iter().filter(|&(path, _)| selected(path)) {
                 for (symbol, name, symbol_kind) in terms.symbols() {
                     if kind.is_some_and(|k| symbol_kind != k) || finder.find(name).is_some() {
                         continue;
@@ -207,6 +220,11 @@ fn search_symbols(
         (page, offsets, window_end, total, total_is_partial)
     };
 
+    if total == 0
+        && let Some(refusal) = grep_selects_no_file(ws, &cache, &filters)
+    {
+        return Err(refusal);
+    }
     let mut page = page;
     crate::engine::stale::follow_symbols(ws, &cache, &mut page);
     let budget = apply_budget(page, params.max_tokens);

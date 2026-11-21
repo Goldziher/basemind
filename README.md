@@ -1208,16 +1208,16 @@ degrading to a truncated in-memory view.
 | Command | Purpose |
 |---|---|
 | `outline <path>` | A file's structure: symbols, 1-based lines, signatures, imports (`code_outline`). |
-| `symbols <name> [--kind --changed]` | Find a definition by name, optionally filtered by kind (`code_symbols`). |
+| `symbols <name> [--kind --path --language --changed]` | Find a definition by name, optionally filtered by kind, path and language (`code_symbols`). |
 | `read <path> --symbol <name> [--kind]` / `read <path> --line <n> [--end-line <m>]` | One symbol's source body, or an inclusive line span (`code_read`; alias `expand`). |
-| `grep <pattern> [--regex --path --language --context N --changed]` | Text search; the pattern is literal unless `--regex`. `--path` is a substring of the repo-relative path; `--context N` (0-10) adds the N lines around each match (`code_grep`). |
-| `search <query> [--lane hybrid\|semantic\|keyword]` | Search code by meaning; returns pointers. Needs `--features code-search` (`code_search`; alias `semantic`). |
+| `grep <pattern> [--regex --path --language --context N --changed]` | Text search; the pattern is literal unless `--regex`. `--path` is a repo-relative prefix, or a glob when it holds `*`; `--context N` (0-10) adds the N lines around each match (`code_grep`). |
+| `search <query> [--lane hybrid\|semantic\|keyword --path --language]` | Search code by meaning; returns pointers. Needs `--features code-search` (`code_search`; alias `semantic`). |
 | `refs <name> [--relation --path --line --column --depth]` | Usages of a name: call sites by default, or `--relation implementations\|importers\|definition` (`code_refs`; alias `references`). `refs --relation importers --path <file> [--depth]` lists the files importing a file and `refs --relation cycles [--path]` the import cycles; neither takes a name. |
 | `callers <path> <name>` | Shorthand for `refs <name> --path <path>`: callers of one specific definition. |
 | `implementations <name>` | Shorthand for `refs <name> --relation implementations`. |
 | `dependents <module>` | Shorthand for `refs <module> --relation importers`. |
 | `definition <path> <line> <name> [--column]` | Shorthand for `refs <name> --relation definition`: the definition a reference binds to. |
-| `find [query] [--path-prefix --language --min-lines --changed]` / `files [--path-prefix --language]` | Locate a file by a fuzzy fragment of its name or path, or list indexed files (`find_files`); `--min-lines N` lists code files of at least N lines, largest first, with line and byte counts. |
+| `find [query] [--path --language --min-lines --changed]` / `files [--path --language]` | Locate a file by a fuzzy fragment of its name or path, or list indexed files (`find_files`); `--min-lines N` lists code files of at least N lines, largest first, with line and byte counts. |
 | `chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (CLI only). |
 | `impact <path\|symbol> [--depth]` / `impact --diff <rev\|A..B>` / `impact --changed` | Files that import a file, a symbol's defining files or a change's files, transitively through the file-level import graph, each with its depth and whether it is in a cycle (CLI only). |
 | `cycles [--path --max-size]` / `cycles --check <from> <to>` | Import cycles, smallest first, each with an import chain that closes it; or whether `from` importing `to` would close one. Type-only imports and Rust `mod` declarations count only with `--include-type-imports` / `--include-module-decls` (CLI only). |
@@ -1243,9 +1243,9 @@ degrading to a truncated in-memory view.
 | Command | Purpose |
 |---|---|
 | `put <key> <value> [--tag]... [--individual]` | Store a note (`memory_save`). |
-| `get <key>` / `list [--prefix --tag]` / `search <query> [--tag]` | Read one note, list by key prefix, or search by meaning (`memory_search`). |
+| `get <key>` / `list [--prefix --tag]...` / `search <query> [--tag]...` | Read one note, list by key prefix, or search by meaning (`memory_search`). |
 | `delete <key>` | Remove a note (CLI only). |
-| `documents <query> [--mime-type --kind --path --keywords --entity]` | Search indexed PDFs / Office / HTML / email / notebooks / Markdown / text, config and data files by meaning and by words, with citations (`docs_search`). |
+| `documents <query> [--mime-type --format --path --keywords --entity]` | Search indexed PDFs / Office / HTML / email / notebooks / Markdown / text, config and data files by meaning and by words, with citations (`docs_search`). |
 **Admin (`basemind admin`)**
 
 | Command | Purpose |

@@ -88,19 +88,19 @@ needs no tool-search round trip, so call them directly. `tools/list` for them is
 
 | Old | New | Where |
 | --- | --- | --- |
-| `path_contains` | `path` | `code_grep` (still a literal substring of the repo-relative path, never a glob) |
-| `path_contains` | `path_prefix` | `find_files` (now a prefix) |
+| `path_contains` | `path` | `code_grep`, `find_files` (a prefix, or a glob when it holds `*`; no longer a substring) |
 | `include_context` | `context` | `code_grep` (default off) |
 | `line_start` / `line_end` | `line` / `end_line` | `git_blame` |
 | `rev_old` / `rev_new` | `from` / `to` | `git_diff` |
 | `entity_category` | `entity` | `docs_search` |
 | `keywords_contains` | `keywords` | `docs_search` |
+| `tag` | `tags` | `memory_search` (a list, like `memory_save`'s; a note carrying any of them passes) |
 | `start_row` (responses) | `line` / `end_line` | every tool that reports a position |
 
 ### Removed arguments
 
 - `mode`, on all 15 tools.
-- `format` (`"toon"`): responses are JSON.
+- `format` (`"toon"`): responses are JSON. `docs_search`'s `format` is the document format.
 - The undocumented aliases (`q`, `needle`, `token_budget` and similar). Only the names in a tool's
   schema are accepted.
 - `field` on commit search: pass `query` for messages or `author` for authors to `git_log`.
@@ -122,7 +122,7 @@ JSON.
 | `code expand <path> <name>` | `code read <path> --symbol <name>` (`expand` stays as an alias of `read`), or `code read <path> --line <n> --end-line <m>` |
 | `code grep <regex>` | `code grep <pattern>` is literal; add `--regex` |
 | `code grep --path-contains <s>` | `code grep --path <s>` |
-| `code files --path-contains <s>` | `code files --path-prefix <s>` / `code find [query] --path-prefix <s>` |
+| `code files --path-contains <s>` | `code files --path <s>` / `code find [query] --path <s>` |
 | `code references <name>` | `code refs <name>` (`references` stays as an alias) |
 | `code semantic <query>` | `code search <query>` (`semantic` stays as an alias) |
 | `code definition <path> <line> [--column]` | `code definition <path> <line> <name> [--column]` |
@@ -144,6 +144,11 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
 
 ### Behaviour changes
 
+- **`path` is a prefix, or a glob when it holds `*`.** `code_grep`, `find_files`, `docs_search`,
+  `code_symbols` and `code_search` read their `path` filter one way: a repo-relative prefix (`src/mcp/`), or a glob over the whole
+  path when the value holds `*` (`src/**/*.rs`; `*` stays within one segment, `**` crosses `/`).
+  `path_contains` was a substring, so `mcp` matched `src/mcp/tools.rs`; pass `src/mcp/` or
+  `**/mcp/**`. A `docs_search` `path` without `*` is now a prefix: `docs/` where it was `docs/**`.
 - **`code_grep` is literal by default.** The pattern is plain text unless `regex: true` (`--regex`).
   A script that passed a regex must add the flag, or it searches for the regex source text.
 - **Lines are 1-based everywhere**, in arguments and in responses (`line`, `end_line`, `column`).
@@ -172,8 +177,8 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
 - **`limit: 0` is refused** by every tool that takes `limit`. It returned an empty page, with a
   cursor back to the same position where one was issued.
 - **A filter that selects no file is an error.** `code_grep` with a `path` or `language`, and
-  `find_files` with a `path_prefix` or `language`, that no indexed file passes return an error
-  saying what would match (the indexed languages, or that `path` is literal text and not a glob;
+  `find_files` with a `path` or `language`, that no indexed file passes return an error
+  saying what would match (the indexed languages, or the rule `path` was read by;
   `code_grep` names `docs_search` when only documents match). While the index is still being built
   the empty page is returned with its `notice` instead. `git_log {path}` refuses a path that no
   commit reachable from HEAD touches and that is not on disk, for a file and for a directory.
@@ -254,7 +259,7 @@ lowered), `body_truncated` (`git_log` search: one commit's message was shortened
 | `find_files` | `truncated` | removed: `next_cursor` says a listing goes on |
 | `memory_search` listing | `truncated` on a `limit` cut | `next_cursor` alone on a `limit` cut; `truncated`, `truncated_reason: "scan_cap"` when `total` stopped counting (a lower bound) |
 | `code_search` | none | `also_at` on a hit (other paths with the same content; `path` is the live one); `truncated`, `truncated_reason: "stale_chunks"`, `omitted` when ranked chunks no indexed file holds were dropped; a reranker that could not run is a `rerank` entry of `lanes_unavailable` |
-| `docs_search` | `chunk_idx`, `distance`, `byte_start` / `byte_end`, per-hit `keywords` / `entities` / `summary` | `chunk`, `cite` (pages, section, headings inside the hit, lines, bytes), `context`, `also_at`, `title`, `lanes`, `score`; on the response `lanes_ran`, `lanes_unavailable`, `lexical_fuzzy`, `vector_mode`, `rerank`; `truncated_reason` (`depth`, `liveness_depth`). `scope` is gone; `kind` and `path` filter before ranking (ADR-0029, ADR-0037) |
+| `docs_search` | `chunk_idx`, `distance`, `byte_start` / `byte_end`, per-hit `keywords` / `entities` / `summary` | `chunk`, `cite` (pages, section, headings inside the hit, lines, bytes), `context`, `also_at`, `title`, `lanes`, `score`; on the response `lanes_ran`, `lanes_unavailable`, `lexical_fuzzy`, `vector_mode`, `rerank`; `truncated_reason` (`depth`, `liveness_depth`). `scope` is gone; `format` and `path` filter before ranking (ADR-0029, ADR-0037) |
 | `git_diff {}` | none | `truncated`, `truncated_reason: "path_cap"`, `omitted` (paths), `path` |
 | `git_diff {path}` | `truncated`, `total_hunks` | `truncated`, `truncated_reason` (`hunk_cap`, `byte_cap`), `omitted` (hunks) |
 | `git_diff {structural}` | `common` (a list) | `common` (a count) |

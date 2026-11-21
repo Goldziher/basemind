@@ -178,7 +178,7 @@ impl BasemindServer {
         description = "Use instead of `find`/`fd`/`ls -R` to locate a file by a fuzzy fragment of \
         its name or path, or to list files when `query` is omitted; `files` holds paths. Covers \
         code, documents and every other file git tracks; a query with one typo still finds its \
-        file. A `path_prefix` or `language` no listed file has is an error. \
+        file. A `path` or `language` no listed file has is an error. \
         Example: {\"query\":\"readme\"}",
         annotations(
             read_only_hint = true,

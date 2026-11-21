@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `path` and `language` on `code_symbols` and `code_search` (#252), with the meaning they have on
+  `code_grep` and `find_files`: `code_symbols {"name":"Config","path":"services/payments/"}` finds the
+  definitions under that directory only. `code_search` keeps the hits in files the filters pass
+  among the 1,000 best candidates of each lane, and cites only the copies of a file that pass.
+  A filter no indexed file passes is refused. `basemind code symbols|search` take `--path` and
+  `--language`.
+
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
   lists the files importing that file `by_depth`, up to `depth` hops (default 1, max 5), names those
   in an import cycle with it and says when the walk was cut; `relation: "cycles"` lists the import
@@ -142,6 +149,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are not counted.
 
 ### Changed
+
+- **BREAKING:** `path` is the one path filter of `code_grep`, `find_files` and `docs_search` (#252):
+  a repo-relative prefix (`src/mcp/`), or a glob over the whole path when it holds `*`
+  (`src/**/*.rs`; `*` stays within one segment, `**` crosses `/`). It was a substring on
+  `code_grep`, a prefix named `path_prefix` on `find_files` and always a glob on `docs_search`, so
+  `mcp/` no longer selects `src/mcp/tools.rs` in `code_grep`: pass `src/mcp/` or `**/mcp/**`.
+  `find_files`' `path_prefix` and `basemind code find|files --path-prefix` are renamed `path` /
+  `--path`. A `path` no indexed file passes is refused with the rule it was read by, and a value
+  holding `*` that is not a glob is refused with an example.
+- **BREAKING:** `memory_search` takes `tags`, a list, where it took one `tag` (#252), as
+  `memory_save` does: a search or a listing keeps the notes carrying any of them.
+  `basemind memory search|list --tag` is repeatable.
 
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields as
@@ -275,7 +294,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `also_at` and `title`; the response reports `lanes_ran`, `lanes_unavailable`, `lexical_fuzzy`,
     `vector_mode` and `rerank`. Per-hit `keywords`, `entities` and `summary`, `chunk_idx`, `distance`
     and `byte_start` / `byte_end` are gone.
-  - `scope` is removed. `kind` and `path` are new filters, `keywords` matches whole keywords, and every
+  - `scope` is removed. `format` and `path` are new filters, `keywords` matches whole keywords, and every
     filter runs before ranking.
   - A vector lane and a full-text lane are fused; a search works without the embedder, on the full-text
     lane, and says so.
@@ -376,8 +395,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     reported in one message. An integer written as a float (`10.0`) is accepted. The
     hidden aliases (`q`, `needle`, `token_budget`) and the `format` argument (`"toon"`) are gone, and
     `[documents.output] format = "toon"` no longer applies to these tools.
-  - `code_grep` treats `pattern` as literal text unless `regex: true`; `path` replaces `path_contains`
-    and is always a literal substring, and `context` (default off) replaces `include_context`. A hit on
+  - `code_grep` treats `pattern` as literal text unless `regex: true`; `path` replaces `path_contains`,
+    and `context` (default off) replaces `include_context`. A hit on
     a line over 400 bytes shows a window around the match.
   - A path argument is read from the working tree only when it is indexed and stays inside the
     repository: an absolute path, a `..` component and a symlink pointing outside are refused. With
@@ -457,7 +476,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `git_diff {}`: each status list is cut at 200 paths, in path order; `omitted` counts the rest and the
     cut sets `truncated` with `truncated_reason: "path_cap"`. A directory `path` narrows the status and
     lists every untracked file under it, whatever `status.showUntrackedFiles` collapses.
-  - `code_grep`, `find_files`: a `path` / `path_prefix` / `language` filter that no indexed file passes is
+  - `code_grep`, `find_files`: a `path` / `language` filter that no indexed file passes is
     an error saying what would match; `code_grep` names `docs_search` when the filter matches only
     documents. While the index is still being built the empty page is returned with its `notice` instead.
   - `git_log {path}`: a path that no commit reachable from HEAD touches and that is not on disk is an

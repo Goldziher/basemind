@@ -36,7 +36,7 @@ mod enabled {
 
     /// The argument shapes `memory_search` accepts, quoted in every shape error.
     const SEARCH_SHAPES: &str = "pass at most one of `query` (search by meaning), `key` (read one note) or `prefix` \
-         (list notes by key prefix); with none of them every note is listed. `tag` filters a search or a listing; \
+         (list notes by key prefix); with none of them every note is listed. `tags` filters a search or a listing; \
          `cursor` pages a listing";
 
     impl Workspace {
@@ -66,15 +66,15 @@ mod enabled {
                     let params = MemorySearchParams {
                         query,
                         limit: p.limit,
-                        tag: p.tag,
+                        tags: p.tags.unwrap_or_default(),
                         visibility,
                     };
                     crate::engine::memory::vectors::search(self, params).map(MemorySearchAnswer::Search)
                 }
                 (None, Some(key), None) => {
-                    if p.tag.is_some() || p.limit.is_some() || p.cursor.is_some() {
+                    if p.tags.is_some() || p.limit.is_some() || p.cursor.is_some() {
                         return Err(shape_error(
-                            "a `key` read returns one note and takes no `tag`, `limit` or `cursor`",
+                            "a `key` read returns one note and takes no `tags`, `limit` or `cursor`",
                         ));
                     }
                     let missing = MemoryMissing {
@@ -88,7 +88,7 @@ mod enabled {
                 (None, None, prefix) => self
                     .memory_list(MemoryListParams {
                         prefix,
-                        tag: p.tag,
+                        tags: p.tags.unwrap_or_default(),
                         limit: p.limit,
                         cursor: p.cursor,
                         visibility,

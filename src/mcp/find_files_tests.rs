@@ -71,7 +71,7 @@ fn json_of(result: &CallToolResult) -> Value {
 fn listing(query: Option<&str>, language: Option<&str>) -> FindFilesToolParams {
     FindFilesToolParams {
         query: query.map(str::to_string),
-        path_prefix: None,
+        path: None,
         language: language.map(str::to_string),
         limit: None,
         cursor: None,

@@ -8,6 +8,7 @@ symbol or span you need. Paths are repository-relative with forward slashes.
 |---|---|---|
 | What is in this file? | `code_outline {"path":"src/store.rs"}` | `basemind code outline src/store.rs` |
 | Where is X defined? | `code_symbols {"name":"open_store"}` | `basemind code symbols open_store` |
+| Where is X defined under a directory? | `code_symbols {"name":"Config","path":"src/mcp/"}` | `basemind code symbols Config --path src/mcp/` |
 | Show one symbol's body | `code_read {"path":"src/store.rs","symbol":"open"}` | `basemind code read src/store.rs --symbol open` |
 | Show a line span | `code_read {"path":"src/store.rs","line":120,"end_line":160}` | `basemind code read src/store.rs --line 120 --end-line 160` |
 | Where does this text appear? | `code_grep {"pattern":"cache_root("}` | `basemind code grep "cache_root("` |
@@ -21,10 +22,17 @@ symbol or span you need. Paths are repository-relative with forward slashes.
 | Which definition does this bind to? | `code_refs {"name":"open","relation":"definition","path":"src/main.rs","line":42}` | `basemind code definition src/main.rs 42 open` |
 | Which HTTP calls reach this route? | `code_refs {"name":"GET /users/:param"}` | `basemind code refs "GET /users/:param"` |
 | Which file is named like X? | `find_files {"query":"readme"}` | `basemind code find readme` |
-| List files under a directory | `find_files {"path_prefix":"src/mcp/"}` | `basemind code files --path-prefix src/mcp/` |
+| List files under a directory | `find_files {"path":"src/mcp/"}` | `basemind code files --path src/mcp/` |
+| List files matching a glob | `find_files {"path":"src/**/*.rs"}` | `basemind code files --path "src/**/*.rs"` |
 
 ## Contracts
 
+- `path` filters `code_grep`, `find_files`, `code_symbols` and `code_search` one way: a repository-relative prefix (`src/mcp/`
+  keeps `src/mcp/tools.rs`, and `src/mc` also keeps `src/mcp_types.rs`), or a glob over the whole
+  path when it holds `*` (`src/**/*.rs`; `*` stays within one segment, `**` crosses `/`). Without
+  a `*`, `?`, `[` and `{` are literal, so `app/[id]/` is a prefix. `language` takes the language
+  `find_files` lists a file under (`rust`, `python`). `code_search` applies both to the 1,000 best
+  candidates of each lane.
 - `code_outline` lists a code file's symbols (kind, name, signature, `line` / `end_line`) and its
   imports. A Markdown, config or data file is a document, not code: the call says so and points at
   `docs_search`.
@@ -35,8 +43,7 @@ symbol or span you need. Paths are repository-relative with forward slashes.
   `truncated`: read on from `end_line` + 1. `stale` means the file changed since it was indexed
   and was parsed as it is now.
 - `code_grep` matches `pattern` literally unless `regex` is true; a regex anchors `^` and `$` at
-  every line. `path` is a literal substring of the path, never a glob. A `path` or `language` that
-  no indexed file has is an error, not an empty result. Each hit is a row `<line>: <text>` under
+  every line. A `path` or `language` that no indexed file has is an error, not an empty result. Each hit is a row `<line>: <text>` under
   its `# <path>` and its enclosing `## <symbol>` header, as `rg --heading` groups them.
   `context: N` (0-10) adds the N lines before and after each hit as rows `<line>- <text>`,
   overlapping windows written once, as `rg -C N` prints them. In JSON (`structuredContent`,

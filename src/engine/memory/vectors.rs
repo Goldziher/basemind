@@ -417,7 +417,7 @@ fn backfill(ws: &Workspace, visibility: Visibility, vis_byte: u8, owner: &str) -
     let mut behind = Vec::new();
     let mut cursor = None;
     loop {
-        let page = ws.memory_list_page(vis_byte, owner, "", None, BACKFILL_PAGE, cursor)?;
+        let page = ws.memory_list_page(vis_byte, owner, "", &[], BACKFILL_PAGE, cursor)?;
         // A note without text has no row to have: one left from when it had text is an orphan.
         let with_text = page.entries.iter().filter(|note| !note.value.is_empty());
         live.extend(with_text.map(|note| note.key.clone()));
@@ -567,18 +567,18 @@ fn embed_notes(ws: &Workspace, notes: Vec<WireMemoryEntry>) -> Vec<(WireMemoryEn
 /// The hits a search serves, and how many rows the join refused.
 pub(crate) struct Joined {
     pub hits: Vec<MemorySearchHit>,
-    /// Rows whose note is gone or rewritten, and second rows of a key. Rows the `tag` filter
+    /// Rows whose note is gone or rewritten, and second rows of a key. Rows the `tags` filter
     /// excluded are not counted: they are current.
     pub dropped: usize,
 }
 
 /// Join vector hits against the notes read for their keys. A hit is served once per key, from the
 /// note, and only when the note exists, carries the `updated_at` the row was embedded from and has
-/// `tag` when one is asked for.
+/// one of `tags` when they are asked for.
 pub(crate) fn truth_join(
     hits: Vec<MemoryHit>,
     notes: &AHashMap<String, Option<WireMemoryEntry>>,
-    tag: Option<&str>,
+    tags: &[String],
     limit: usize,
 ) -> Joined {
     let mut served: AHashSet<String> = AHashSet::new();
@@ -599,7 +599,7 @@ pub(crate) fn truth_join(
             joined.dropped += 1;
             continue;
         }
-        if tag.is_some_and(|tag| !note.tags.iter().any(|t| t == tag)) {
+        if !super::ops::carries_any(&note.tags, tags) {
             continue;
         }
         if joined.hits.len() < limit {
@@ -666,14 +666,7 @@ pub(crate) fn search(ws: &Workspace, params: MemorySearchParams) -> Result<Memor
     let mut notes: AHashMap<String, Option<WireMemoryEntry>> = AHashMap::new();
     let joined = loop {
         let raw = on_store(&lance, "search_memory", |lance| {
-            lance.search_memory(
-                &ws.scope,
-                lance_vis,
-                owner,
-                embedding.clone(),
-                fetch,
-                params.tag.as_deref(),
-            )
+            lance.search_memory(&ws.scope, lance_vis, owner, embedding.clone(), fetch, &params.tags)
         })?;
         let exhausted = raw.len() < fetch;
         let mut unstamped: Vec<String> = Vec::new();
@@ -685,7 +678,7 @@ pub(crate) fn search(ws: &Workspace, params: MemorySearchParams) -> Result<Memor
         let read = ws.memory_stamps_wire(vis_byte, owner, &unstamped)?;
         stamps.extend(unstamped.into_iter().zip(read));
         let current = current_keys(&raw, &stamps);
-        // A note read whole may lack the tag asked for: read further down only while short.
+        // A note read whole may lack the tags asked for: read further down only while short.
         let mut wanted = limit;
         let joined = loop {
             let unread: Vec<String> = current
@@ -696,7 +689,7 @@ pub(crate) fn search(ws: &Workspace, params: MemorySearchParams) -> Result<Memor
                 .collect();
             let read = ws.memory_get_many_wire(vis_byte, owner, unread.clone())?;
             notes.extend(unread.into_iter().zip(read));
-            let joined = truth_join(decidable(&raw, &stamps, &notes), &notes, params.tag.as_deref(), limit);
+            let joined = truth_join(decidable(&raw, &stamps, &notes), &notes, &params.tags, limit);
             if joined.hits.len() >= limit || wanted >= current.len() {
                 break joined;
             }

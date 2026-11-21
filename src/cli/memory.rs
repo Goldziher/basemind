@@ -43,8 +43,9 @@ pub enum MemoryCmd {
         query: String,
         #[arg(long)]
         limit: Option<u32>,
-        #[arg(long)]
-        tag: Option<String>,
+        /// Keep notes carrying any of these tags (repeatable).
+        #[arg(long = "tag")]
+        tags: Vec<String>,
         #[arg(long)]
         individual: bool,
     },
@@ -54,12 +55,13 @@ pub enum MemoryCmd {
         #[arg(long)]
         individual: bool,
     },
-    /// List memory entries by key prefix and/or tag. Shorthand for one shape of `memory_search`.
+    /// List memory entries by key prefix and/or tags. Shorthand for one shape of `memory_search`.
     List {
         #[arg(long)]
         prefix: Option<String>,
-        #[arg(long)]
-        tag: Option<String>,
+        /// Keep notes carrying any of these tags (repeatable).
+        #[arg(long = "tag")]
+        tags: Vec<String>,
         #[arg(long)]
         limit: Option<u32>,
         #[arg(long)]
@@ -82,8 +84,8 @@ pub enum MemoryCmd {
         mime_type: Option<String>,
         /// Format family: pdf, office, html, markdown, email, notebook, text, other.
         #[arg(long)]
-        kind: Option<String>,
-        /// Glob over document paths, e.g. `docs/**/*.md`.
+        format: Option<String>,
+        /// Repository-relative prefix, or a glob when it holds `*` (`docs/`, `docs/**/*.md`).
         #[arg(long)]
         path: Option<String>,
         /// Keep documents with any of these whole keywords (comma-separated).
@@ -109,7 +111,7 @@ fn recall(individual: bool) -> MemorySearchToolParams {
         query: None,
         key: None,
         prefix: None,
-        tag: None,
+        tags: None,
         visibility: visibility(individual),
         limit: None,
         cursor: None,
@@ -141,13 +143,13 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
         MemoryCmd::Search {
             query,
             limit,
-            tag,
+            tags,
             individual,
         } => {
             let p = MemorySearchToolParams {
                 query: Some(query),
                 limit,
-                tag,
+                tags: (!tags.is_empty()).then_some(tags),
                 ..recall(individual)
             };
             (
@@ -171,14 +173,14 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
         }
         MemoryCmd::List {
             prefix,
-            tag,
+            tags,
             limit,
             individual,
             cursor,
         } => {
             let p = MemorySearchToolParams {
                 prefix,
-                tag,
+                tags: (!tags.is_empty()).then_some(tags),
                 limit,
                 cursor: cursor.map(Cursor),
                 ..recall(individual)
@@ -205,7 +207,7 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
         MemoryCmd::Documents {
             query,
             mime_type,
-            kind,
+            format,
             path,
             keywords,
             entity,
@@ -216,7 +218,7 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
             let p = DocsSearchParams {
                 query,
                 mime_type,
-                kind,
+                format,
                 path,
                 keywords,
                 entity,

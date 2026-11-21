@@ -466,8 +466,8 @@ Daemon-side knobs that are not config keys (`BASEMIND_WARM_READ_STACKS`, `BASEMI
 The `documents.*` overrides are CLI flags and environment variables only; the MCP tools
 do not accept them (they used to inflate every session's tool schema). Set those keys in
 `basemind.toml`. The per-call knobs MCP does expose are the ones that change a single query:
-`docs_search` takes `max_tokens`, `mime_type`, `scope`, `entity` (needs the `documents-ner`
-feature) and `keywords`, and `code_search` takes `lane`.
+`docs_search` takes `max_tokens`, `mime_type`, `format`, `path`, `entity` (needs the `documents-ner`
+feature) and `keywords`, and `code_search` takes `lane`, `path` and `language`.
 
 ## Cargo Features
 

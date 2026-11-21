@@ -13,7 +13,7 @@ use crate::engine::budget::{apply_budget_grep_rows, budget};
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
 use crate::engine::files::{IndexedFiles, Sweep};
-use crate::engine::filters::{Filters, PathFilter};
+use crate::engine::filters::{Filters, parse_path};
 use crate::engine::grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
 use crate::engine::types::grep::{
     CodeGrepParams, GREP_CONTEXT_MAX, GrepHit, GrepHits, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse,
@@ -66,7 +66,7 @@ impl Workspace {
             WorkspaceGrepParams {
                 pattern: p.pattern,
                 language: p.language,
-                path_contains: p.path,
+                path: p.path,
                 limit: p.limit,
                 max_tokens: budget(p.max_tokens),
                 context,
@@ -83,7 +83,7 @@ impl Workspace {
 
 /// Body of `code_grep`.
 ///
-/// Scans every indexed file that passes the `path_contains` / `language` filters — the full corpus,
+/// Scans every indexed file that passes the `path` / `language` filters — the full corpus,
 /// in parallel — reads each as UTF-8 (non-UTF-8 and unreadable files are skipped and counted in
 /// `skipped_files`), and applies the compiled regex. `limit` caps returned HITS, never files
 /// scanned, so `total` is exact for the scanned window. Supports
@@ -143,9 +143,10 @@ fn workspace_grep(
     let literal = (params.literal || regex::escape(&params.pattern) == params.pattern)
         .then(|| Finder::new(params.pattern.as_bytes()).into_owned());
 
+    let path = parse_path("code_grep", params.path.as_deref())?;
     let filters = Filters {
         tool: "code_grep",
-        path: params.path_contains.as_deref().map(PathFilter::contains),
+        path: path.as_ref(),
         language: params.language.as_deref(),
     };
 

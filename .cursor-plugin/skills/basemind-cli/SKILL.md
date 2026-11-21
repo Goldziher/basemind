@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:fe427a1bf267bc1c8811e278c57d6ec884b738c881289fa7c7892ecb530267c3
-Source-Hash: blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d
+Content-Hash: blake3:2519281e221a9eb4efd0ea8bd608687796bf2c45f9fa9ffef7b1001ff80c8a52
+Source-Hash: blake3:238fb582debcc852606abc2d10662439f49c7bdbd83384d5708f9e9064afe4a0
 Schema-Version: v1
 -->
 
@@ -63,17 +63,17 @@ command covers the question.
 | Question | Command | Notes |
 |---|---|---|
 | "What's the shape of file F?" | `basemind code outline path/F` | Symbols with 1-based line spans, plus imports. |
-| "Where is X defined?" | `basemind code symbols "X" [--kind K --fuzzy]` | Ranked exact, prefix, substring; `--fuzzy` adds fuzzy matches last. |
+| "Where is X defined?" | `basemind code symbols "X" [--kind K --path P --language L --fuzzy]` | Ranked exact, prefix, substring; `--fuzzy` adds fuzzy matches last. |
 | "One symbol's body, or a line span?" | `basemind code read path --symbol name` / `--line N --end-line M` | Alias `expand`. One form, not both. |
-| "Where does this text appear?" | `basemind code grep "pattern" [--regex --path P --language L --context N]` | Literal unless `--regex`; `--path` is a substring. |
-| "Find code by meaning?" | `basemind code search "query" [--lane hybrid\|semantic\|keyword]` | Alias `semantic`. Needs `code-search`. |
+| "Where does this text appear?" | `basemind code grep "pattern" [--regex --path P --language L --context N]` | Literal unless `--regex`; `--path`: a prefix, or a glob with `*`. |
+| "Find code by meaning?" | `basemind code search "query" [--lane hybrid\|semantic\|keyword --path P --language L]` | Alias `semantic`. Needs `code-search`. |
 | "What calls X?" (any name) | `basemind code refs "X" [--match substring]` | Alias `references`. Exact identifier match by default, no scope resolution. |
 | "What calls this specific definition?" | `basemind code callers path name` | Shorthand for `refs name --path path`. |
 | "What implements / extends X?" | `basemind code implementations "X"` | Shorthand for `refs X --relation implementations`. |
 | "What imports module M?" | `basemind code dependents "M"` | Shorthand for `refs M --relation importers`. |
 | "Which definition does this reference bind to?" | `basemind code definition path line name [--column C]` | Shorthand for `refs name --relation definition`. |
-| "Which file is named like X?" | `basemind code find "X" [--path-prefix P --language L]` | Fuzzy; code and documents. |
-| "What files are indexed?" | `basemind code files [--path-prefix P --language L]` | `find` with no query. |
+| "Which file is named like X?" | `basemind code find "X" [--path P --language L]` | Fuzzy; code and documents. `P`: a prefix, or a glob with `*`. |
+| "What files are indexed?" | `basemind code files [--path P --language L]` | `find` with no query. |
 | "What changed recently?" | `basemind git log [--limit N]` | Shorthand `git recent`. |
 | "Which commits touched a path?" | `basemind git log --path P` | Shorthand `git touching P`; a trailing `/` means a directory. |
 | "Which commit mentions X?" | `basemind git log --query "X" [--author A]` | Shorthand `git search`. |
@@ -85,9 +85,9 @@ command covers the question.
 | "Where's the churn?" | `basemind git churn [--window N --top-k K]` | CLI only. |
 | "Commits whose paths match a regex?" | `basemind git by-path "regex"` | CLI only. |
 | "What's indexed? What's HEAD / branch?" | `basemind status` | File count, languages, cache dir, branch, HEAD. `admin repo` prints the same. |
-| "Search markdown / config / PDFs?" | `basemind memory documents "query" [--mime-type --keywords --entity --scope]` | Needs `documents` feature. |
-| "Recall something stored earlier?" | `basemind memory search "q"` / `get "key"` / `list [--prefix P --tag T]` | By meaning / one note / a listing. |
-| "Remember this for future sessions?" | `basemind memory put "key" "value" [--tag T]` | Delete with `memory delete "key"` (CLI only). |
+| "Search markdown / config / PDFs?" | `basemind memory documents "query" [--mime-type --keywords --entity --format --path]` | Needs `documents` feature. |
+| "Recall something stored earlier?" | `basemind memory search "q"` / `get "key"` / `list [--prefix P] [--tag T]...` | By meaning / one note / a listing. |
+| "Remember this for future sessions?" | `basemind memory put "key" "value" [--tag T]...` | Delete with `memory delete "key"` (CLI only). |
 | "Cache size?" | `basemind cache stats` | On-disk size + orphan accounting. CLI only, like the other cache commands. |
 | "What cache space is reclaimable?" | `basemind cache gc --dry-run` | Report orphaned blobs without deleting them. |
 | "Reclaim orphaned blobs?" | `basemind cache gc` | Cross-workspace sweep (blobs under 6 h old are kept). |
@@ -216,7 +216,8 @@ the caller can fix is a tool result with `isError` whose text names the fix.
   `git log --symbol` take `--line` to pick one of several same-named definitions.
 - `outline` on a markdown/config/data file reports that it is a document; use `memory documents`.
 - An unknown flag is a usage error (exit 2). `--format toon`, `--l2`, `--path-contains`,
-  `--no-context` and `--line-start` / `--line-end` no longer exist.
+  `--path-prefix`, `--no-context` and `--line-start` / `--line-end` no longer exist; `memory documents`
+  takes `--format` (the document format) where it took `--kind`.
 - Git commands require basemind to be running inside a git repository.
 - `code search` needs the `code-search` Cargo feature and the `memory` commands need `documents` /
   `memory` (all in `--features full` and in the release binary).

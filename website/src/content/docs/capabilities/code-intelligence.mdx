@@ -167,7 +167,7 @@ implementations as busy, naming `basemind comms start`.
 ### `code_grep`
 
 Text search over the contents of indexed code files. `pattern` is literal text unless `regex: true`
-(Rust `regex` syntax). `path` is a substring of the repo-relative path; a glob is rejected. Each
+(Rust `regex` syntax). `path` is a repo-relative prefix, or a glob when it holds `*`. Each
 hit has the path, line, the full line `text` and the enclosing `symbol` (`name`, `kind`);
 `context: N` (0-10) adds the N lines before and after each hit, overlapping windows written once.
 
@@ -199,7 +199,7 @@ the document tier: search them with `docs_search`.
 ### `find_files`
 
 Locate a file by a fuzzy fragment of its name or path, or list indexed files when `query` is
-omitted. Filter by `language` or `path_prefix`. Covers code and documents (markdown, config, PDFs).
+omitted. Filter by `language` or `path` (a prefix, or a glob when it holds `*`). Covers code and documents (markdown, config, PDFs).
 
 ```json
 {
