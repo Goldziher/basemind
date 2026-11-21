@@ -739,6 +739,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current limit (`limit`) and a `note` naming the sysctl to raise. The daemon log warns once per
   pass that leaves more directories unwatched instead of once per directory. A refused directory is
   retried whenever its subtree is armed again.
+- A daemon started implicitly by a session or a CLI call now drops `BASEMIND_ALLOW_DEPENDENCY_ROOTS`
+  with the other operator grants; it kept it, so the shell that happened to start the daemon granted
+  dependency roots outside the repository to every workspace it served. `basemind comms start`
+  still passes it on.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

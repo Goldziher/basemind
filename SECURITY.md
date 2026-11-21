@@ -47,9 +47,10 @@ user did not grant.
   operator's environment grants it (`TrustPolicy`, `src/config/engine.rs`). Without the grant the
   setting is ignored with a warning.
 - **A daemon started implicitly drops the grants.** When a session or a CLI call starts the
-  daemon, `BASEMIND_ALLOW_ANY_ROOT`, `BASEMIND_ALLOW_EXTRA_ROOTS`, `BASEMIND_ALLOW_FOLLOW_SYMLINKS`,
-  `BASEMIND_ALLOW_REPO_CREDENTIALS`, `BASEMIND_ALLOW_HTTP` and `BASEMIND_HTTP_ADDR` are removed from
-  its environment; only `basemind comms start` passes them on (`src/comms/singleton_spawn.rs`).
+  daemon, `BASEMIND_ALLOW_ANY_ROOT`, `BASEMIND_ALLOW_EXTRA_ROOTS`, `BASEMIND_ALLOW_DEPENDENCY_ROOTS`,
+  `BASEMIND_ALLOW_FOLLOW_SYMLINKS`, `BASEMIND_ALLOW_REPO_CREDENTIALS`, `BASEMIND_ALLOW_HTTP` and
+  `BASEMIND_HTTP_ADDR` are removed from its environment; only `basemind comms start` passes them on
+  (`src/comms/singleton_spawn.rs`).
 - **Tool paths stay in the workspace.** A path from a tool call is refused when it is absolute,
   climbs out with `..`, or resolves through a symlink to a target outside the workspace
   (`contained_file`, `src/path.rs`).
