@@ -54,6 +54,14 @@ pub struct ScanInflight {
     /// extraction finishes its first chunk.
     #[serde(default)]
     pub files_done: Option<usize>,
+    /// The scanning process's [`crate::boot_identity::process_start`], which tells it from a later
+    /// process given its pid. Absent in a record from an older build, or where the platform gives none.
+    #[serde(default)]
+    pub process_start: Option<u64>,
+    /// The boot the scan ran in ([`crate::boot_identity::current`]), without which a Linux start
+    /// from an earlier boot could repeat. Absent as `process_start` is.
+    #[serde(default)]
+    pub boot: Option<String>,
 }
 
 /// A running scan's progress, as counts from its breadcrumb.
@@ -103,21 +111,27 @@ fn eta_from_rate(elapsed_ms: u64, done: usize, total: usize) -> Option<u64> {
 }
 
 /// The progress of the scan running now for the workspace in `cache_dir`. `None` when no scan is
-/// running there: no breadcrumb, or one whose process is gone.
+/// running there: no breadcrumb, or one whose process is gone or whose pid another process now holds.
 pub fn live_progress(cache_dir: &Path) -> Option<ScanProgress> {
     read(cache_dir)
-        .filter(|record| scan_process_is_running(record.pid))
+        .filter(scan_process_is_running)
         .map(|record| record.progress(now_unix_ms()))
 }
 
 #[cfg(any(unix, windows))]
-fn scan_process_is_running(pid: u32) -> bool {
-    crate::daemon_lock::pid_is_live(pid)
+fn scan_process_is_running(record: &ScanInflight) -> bool {
+    crate::daemon_lock::pid_is_live(record.pid)
+        && crate::boot_identity::is_recorded_process(
+            record.pid,
+            record.process_start,
+            record.boot.as_deref(),
+            crate::boot_identity::current().as_deref(),
+        ) != Some(false)
 }
 
 /// A platform that cannot tell a live pid from a dead one takes every breadcrumb for a running scan.
 #[cfg(not(any(unix, windows)))]
-fn scan_process_is_running(_pid: u32) -> bool {
+fn scan_process_is_running(_record: &ScanInflight) -> bool {
     true
 }
 
@@ -196,6 +210,8 @@ impl ScanBreadcrumb {
             candidates: None,
             phase_started_unix_ms: Some(now_unix_ms()),
             files_done: None,
+            process_start: crate::boot_identity::process_start(std::process::id()),
+            boot: crate::boot_identity::current(),
         };
         let breadcrumb = Self {
             path: inflight_path(cache_dir),
@@ -755,9 +771,46 @@ mod tests {
             candidates: Some(9),
             phase_started_unix_ms: Some(1_000),
             files_done: Some(4),
+            process_start: None,
+            boot: None,
         };
         std::fs::write(inflight_path(dir.path()), serde_json::to_vec(&corpse).expect("encode")).expect("write");
         assert_eq!(live_progress(dir.path()), None);
+    }
+
+    /// A scan's pid reused by another process is not the scan: a live pid whose recorded start is
+    /// not the one it now has reports no progress, while the record of this very process does.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn the_breadcrumb_of_a_scan_whose_pid_another_process_holds_is_not_progress() {
+        let start = crate::boot_identity::process_start(std::process::id()).expect("this process has a start");
+        let record = |process_start| ScanInflight {
+            started_unix: 1,
+            pid: std::process::id(),
+            version: "0.0.0".to_string(),
+            root: PathBuf::from("/repo"),
+            phase: PHASE_EXTRACT.to_string(),
+            candidates: Some(9),
+            phase_started_unix_ms: Some(1_000),
+            files_done: Some(4),
+            process_start,
+            boot: crate::boot_identity::current(),
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let write = |record: &ScanInflight| {
+            std::fs::write(inflight_path(dir.path()), serde_json::to_vec(record).expect("encode")).expect("write");
+        };
+        write(&record(Some(start.wrapping_add(1))));
+        assert_eq!(
+            live_progress(dir.path()),
+            None,
+            "another process started at another time"
+        );
+        write(&record(Some(start)));
+        assert!(live_progress(dir.path()).is_some(), "the recorded process itself");
+        write(&record(None));
+        assert!(live_progress(dir.path()).is_some(), "an older record names no start");
     }
 
     /// The whole point of the breadcrumb. `mem::forget` is a faithful stand-in for `SIGKILL`: no
@@ -796,6 +849,8 @@ mod tests {
             candidates: Some(9),
             phase_started_unix_ms: None,
             files_done: None,
+            process_start: None,
+            boot: None,
         };
         std::fs::write(
             inflight_path(&dead),
