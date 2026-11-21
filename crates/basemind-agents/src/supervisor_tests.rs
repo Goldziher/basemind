@@ -896,16 +896,32 @@ pub(super) fn recorded_pid(path: &Path) -> i32 {
     }
 }
 
+/// Lets the stand-in that wrote `pidfile` end its session once its server `pid` leads a POSIX
+/// session of its own and `ready` holds: ended earlier, the session's group kill could still
+/// reach a server that had not left it yet.
+fn release_once_detached(pidfile: &Path, pid: i32, ready: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !(crate::procinfo::info(pid).is_some_and(|now| now.sid == pid) && ready()) {
+        assert!(
+            Instant::now() < deadline,
+            "the stand-in's server never left its session or was never recorded"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::fs::write(format!("{}.release", pidfile.display()), "").unwrap();
+}
+
 #[test]
 fn an_opencode_server_that_left_the_group_is_killed_once_the_session_ends() {
     let Some(own_session) = own_session_prefix() else {
         return;
     };
     let scratch = Scratch::new();
+    // Each stand-in runs until its server's release file appears.
     let body = |pidfile: &Path| {
         format!(
-            "{own_session} sleep 300 &\necho $! > '{}'\n{HANDSHAKE}sleep 1\n{RESULT}cat > /dev/null\n",
-            pidfile.display()
+            "{own_session} sleep 300 &\necho $! > '{pid}'\n{HANDSHAKE}while [ ! -e '{pid}.release' ]; do sleep 0.05; done\n{RESULT}cat > /dev/null\n",
+            pid = pidfile.display()
         )
     };
     let opencode_pid = scratch.path.join("opencode-server.pid");
@@ -921,7 +937,13 @@ fn an_opencode_server_that_left_the_group_is_killed_once_the_session_ends() {
     let launched = supervisor.launch(&lead(), OPENCODE, &request()).unwrap();
     assert_eq!(launched.caveats, &[Caveat::DetachedServer, Caveat::UserMcpServers]);
     let server = recorded_pid(&opencode_pid);
+    let recorded = || {
+        let table = supervisor.inner.table();
+        let detached = &table.sessions[&launched.id.0].detached;
+        crate::procinfo::info(server).is_some_and(|now| detached.contains(now.id()))
+    };
     assert!(alive(server));
+    release_once_detached(&opencode_pid, server, recorded);
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Completed);
     // The session reports finished once its detached server was killed; init reaps it shortly.
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -940,6 +962,7 @@ fn an_opencode_server_that_left_the_group_is_killed_once_the_session_ends() {
     // shows the kill above was the supervisor's.
     let launched = supervisor.launch(&lead(), HarnessKind::ClaudeCode, &request()).unwrap();
     let server = recorded_pid(&claude_pid);
+    release_once_detached(&claude_pid, server, || true);
     assert_eq!(finished(&supervisor, launched.id), FinishStatus::Completed);
     let survived = alive(server);
     // SAFETY: the test started this process; it is killed whatever the assertion says.

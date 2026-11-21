@@ -219,7 +219,9 @@ println!("{} runs as {}", launched.id, launched.agent);
   member is the session's and the group is neither init's nor the launcher's, else each process
   alone, each checked again right before the signal (through a pidfd on Linux 5.3 and later;
   before that, and on macOS, a pid reused in that instant could be signalled). Nothing is killed
-  without a listing, and the session is reported finished only then. `UserMcpServers` (OpenCode): the harness loads the user's
+  without a listing, and the session is reported finished only then. Its exit record carries
+  `detached_server` when a listing showed one of the session's processes still running after the
+  session ended, whether it then exited by itself or was killed. `UserMcpServers` (OpenCode): the harness loads the user's
   plugins, and the MCP servers of a managed or organisation configuration and the permission
   rules of a managed one, which nothing here can switch off or override. The servers of its user configuration files are switched off by name, as are all of
   Codex's (ADR-0044).

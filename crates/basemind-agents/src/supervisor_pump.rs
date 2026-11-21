@@ -96,8 +96,9 @@ impl Drop for Finish<'_> {
 /// The thread that owns one session: it reads every event, hands it to the observer, audits
 /// each settled approval, records the harness's detached processes for a flavor that makes
 /// them, and once the session has finished, reaps those processes, marks the session finished
-/// and writes its exit record. An observer that panics is dropped for the session and the
-/// session is stopped; the events are still read to the end.
+/// and writes its exit record, with the detached-server caveat when one of them outlived the
+/// session. An observer that panics is dropped for the session and the session is stopped; the
+/// events are still read to the end.
 pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc<Detached>, flavor: HarnessKind) {
     let tracks = crate::policy::caveats(flavor).contains(&Caveat::DetachedServer);
     let mut finish = Finish {
@@ -201,7 +202,7 @@ pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc
     if let Some(tracker) = tracker {
         let _ = tracker.join();
     }
-    let killed = if tracks { detached.reap(detached::EXIT_GRACE) } else { 0 };
+    let outlived = tracks && detached.reap(detached::EXIT_GRACE);
     drop(session);
     let mut table = inner.table();
     let record = table.sessions.get_mut(&id).map(|entry| {
@@ -213,7 +214,7 @@ pub(crate) fn supervise(inner: &Inner, id: u64, session: Session, detached: &Arc
             agent: Some(entry.agent.clone()),
             flavor: Some(flavor.id()),
             depth: Some(entry.depth),
-            caveats: if killed > 0 {
+            caveats: if outlived {
                 vec![Caveat::DetachedServer.id()]
             } else {
                 Vec::new()
