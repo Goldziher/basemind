@@ -37,11 +37,14 @@ REMOVED_SPELLING = re.compile(r"\bmode\b|\b(?:code|git|memory|admin) (?:tool|mod
 
 class PreToolGuardTests(unittest.TestCase):
     def setUp(self) -> None:
-        if shutil.which("jq") is None:
-            self.skipTest("jq is required")
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.tmp = temporary.name
+        # The system commands the guard needs, and no jq: it must not depend on one.
+        self.bin = Path(self.tmp) / "bin"
+        self.bin.mkdir()
+        for command in ("awk", "cat", "dirname", "grep", "id", "ls", "mkdir", "tr"):
+            (self.bin / command).symlink_to(shutil.which(command))
         # session-start's verdict that the workspace is indexed, for the sessions these tests use.
         self.private = Path(self.tmp) / f"basemind-{os.getuid()}"
         (self.private / "indexed").mkdir(parents=True)
@@ -49,12 +52,15 @@ class PreToolGuardTests(unittest.TestCase):
         for session in ("s", "s1"):
             (self.private / "indexed" / session).touch()
 
+    def env(self, mode: str) -> dict[str, str]:
+        return {**os.environ, "PATH": str(self.bin), "TMPDIR": self.tmp, "XDG_RUNTIME_DIR": "", "BASEMIND_GUARD": mode}
+
     def run_guard(self, tool: str, tool_input: dict, **extra: str) -> str:
         payload = {"session_id": "s1", "tool_name": tool, "tool_input": tool_input, **extra}
         output = subprocess.run(
             ["/bin/bash", str(HOOK)],
             input=json.dumps(payload),
-            env={**os.environ, "TMPDIR": self.tmp, "XDG_RUNTIME_DIR": "", "BASEMIND_GUARD": "nudge"},
+            env=self.env("nudge"),
             capture_output=True,
             text=True,
             timeout=15,
@@ -69,6 +75,7 @@ class PreToolGuardTests(unittest.TestCase):
         cases = {
             "rg foo src/": 'code_grep {"pattern":"…"}',
             "cd src && grep -rn foo .": 'code_grep {"pattern":"…"}',
+            "cd src\ngrep -rn foo .": 'code_grep {"pattern":"…"}',
             "git blame src/lib.rs": 'git_blame {"path":"…"}',
             "git -C repo log --oneline": 'git_log {"path":"…"}',
             "git show HEAD~1": 'git_log {"rev":"…"}',
@@ -108,7 +115,7 @@ class PreToolGuardTests(unittest.TestCase):
                 self.assert_names_only_verb_tools(decision["additionalContext"])
 
     def test_redirect_reason_is_a_verb_tool_call(self) -> None:
-        env = {**os.environ, "TMPDIR": self.tmp, "XDG_RUNTIME_DIR": "", "BASEMIND_GUARD": "redirect"}
+        env = self.env("redirect")
         for tool, tool_input in (("Grep", {"pattern": "x"}), ("Glob", {"pattern": "**/*.rs"})):
             payload = json.dumps({"session_id": "s", "tool_name": tool, "tool_input": tool_input})
             out = subprocess.run(
@@ -120,11 +127,21 @@ class PreToolGuardTests(unittest.TestCase):
                 self.assert_names_only_verb_tools(decision["permissionDecisionReason"])
 
     def test_grep_tool_pattern_is_carried_into_the_suggested_call(self) -> None:
-        pattern = 'fn \\w+_call\\("x"'
-        out = self.run_guard("Grep", {"pattern": pattern})
+        patterns = ('fn \\w+_call\\("x"', "caf\u00e9 \U0001f600\ttab", "bell \u0007 / slash", "end\n\n", "\n")
+        for index, pattern in enumerate(patterns):
+            with self.subTest(pattern=pattern):
+                out = self.run_guard("Grep", {"pattern": pattern}, agent_id=f"pattern-{index}")
+                context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+                expected = "code_grep " + json.dumps(
+                    {"pattern": pattern, "regex": True}, separators=(",", ":"), ensure_ascii=False
+                )
+                self.assertIn(expected, context)
+
+    def test_a_grep_pattern_holding_nul_gets_the_generic_call_rather_than_a_shortened_one(self) -> None:
+        out = self.run_guard("Grep", {"pattern": "a\u0000b"}, agent_id="nul-pattern")
         context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-        expected = "code_grep " + json.dumps({"pattern": pattern, "regex": True}, separators=(",", ":"))
-        self.assertIn(expected, context)
+        self.assertIn('basemind code_grep {"pattern":"…","regex":true} (indexed code)', context)
+        self.assertNotIn('"pattern":"ab"', context)
 
     def test_other_bash_commands_are_ignored(self) -> None:
         for command in ("ls -la", "cargo test | grep FAIL", "git status", "echo rg"):
@@ -156,7 +173,7 @@ class PreToolGuardTests(unittest.TestCase):
         (self.private / "indexed" / "s1").unlink()
         self.assertEqual(self.bash("rg a"), "")
         self.assertEqual(self.run_guard("Grep", {"pattern": "x"}), "")
-        env = {**os.environ, "TMPDIR": self.tmp, "XDG_RUNTIME_DIR": "", "BASEMIND_GUARD": "redirect"}
+        env = self.env("redirect")
         payload = json.dumps({"session_id": "unscanned", "tool_name": "Grep", "tool_input": {"pattern": "x"}})
         out = subprocess.run(
             ["/bin/bash", str(HOOK)], input=payload, env=env, capture_output=True, text=True, check=True
@@ -164,7 +181,7 @@ class PreToolGuardTests(unittest.TestCase):
         self.assertEqual(out, "", "redirect does not deny a search the index cannot answer")
 
     def test_redirect_mode_never_denies_bash(self) -> None:
-        env = {**os.environ, "TMPDIR": self.tmp, "XDG_RUNTIME_DIR": "", "BASEMIND_GUARD": "redirect"}
+        env = self.env("redirect")
         payload = json.dumps({"session_id": "s", "tool_name": "Bash", "tool_input": {"command": "rg x"}})
         out = subprocess.run(
             ["/bin/bash", str(HOOK)], input=payload, env=env, capture_output=True, text=True, check=True
