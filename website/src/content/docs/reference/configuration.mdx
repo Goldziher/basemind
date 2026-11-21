@@ -144,6 +144,9 @@ transport = "stdio"
 | `cache.file_map_lru` | integer | `256` | Reserved: parsed but has no effect yet (a warning is logged when set). See `[resources] max_map_cache_mb` for the outline cache. |
 | `mcp.transport` | string | `stdio` | Reserved: `stdio` is the only transport and nothing reads this key. |
 
+The cache budget is not a `basemind.toml` key: it belongs to the machine, in the
+[user settings file](#user-settings).
+
 ### `[documents]` Section
 
 Document indexing (PDFs, Office, HTML, etc.) and full-text + semantic search. Requires
@@ -460,6 +463,29 @@ Read directly rather than mapped from a config key:
 Daemon-side knobs that are not config keys (`BASEMIND_WARM_READ_STACKS`, `BASEMIND_CACHE_BUDGET_MB`,
 `BASEMIND_CACHE_GRACE_MINUTES`, `BASEMIND_INDEX_CACHE_BYTES`, `BASEMIND_MAX_DAEMONS`, `BASEMIND_NO_AUTOSPAWN`) are listed in
 [Memory and resources](/reference/memory/#operator-variables).
+
+## User Settings
+
+Machine-wide settings that belong to the operator, not to a repository, can also live in
+`settings.toml` in basemind's user configuration directory: `~/.config/basemind/` on Linux,
+`~/Library/Application Support/basemind/` on macOS, under the account's home directory as the user
+database names it (not `HOME` or `XDG_CONFIG_HOME`). Unlike a variable, the file reaches every
+basemind process, the daemon an MCP host spawns included. A repository's `basemind.toml` cannot set
+these keys.
+
+```toml
+[cache]
+budget_mb = 8192   # cache budget in MiB; 0 disables enforcement
+```
+
+| Key | Variable | Effect |
+|---|---|---|
+| `[cache] budget_mb` | `BASEMIND_CACHE_BUDGET_MB` | Size budget for the machine-global cache, enforced by eviction. Unset in both, the budget is `min(20 GiB, (cache size + free space) / 2)`. |
+
+A set variable wins over the file. A file that does not parse, or holds an unknown key, is ignored with
+a warning. Each process reads the file when it starts, so restart the daemon (`basemind comms stop`)
+after an edit. `basemind cache stats` reports `budget_warning` when a set budget is larger than the
+cache plus the free space on its volume: the disk would fill before eviction starts.
 
 ## Per-Request Overrides
 

@@ -1122,12 +1122,26 @@ A cap variable must be a positive integer; anything else falls back to the defau
 | Variable | Effect |
 |---|---|
 | `BASEMIND_DATA_HOME` | Root of the machine-global cache (default: the XDG data directory). |
+| `BASEMIND_CACHE_BUDGET_MB` | Size budget for the machine-global cache in MiB (`0`: unlimited); wins over `[cache] budget_mb` in the user settings file below. Unset in both: `min(20 GiB, (cache size + free space) / 2)`. |
 | `BASEMIND_GREP_BLOOM=0` | Force `code grep` to sweep every file instead of using the per-file trigram bloom prefilter. |
 | `BASEMIND_BLOB_GC_GRACE_SECS` | Age (seconds) below which the blob sweep keeps a blob; default 6 hours. |
 | `BASEMIND_WARM_READ_STACKS` | Daemon-hosted read stacks kept warm at once; default 3. |
 | `BASEMIND_NO_AUTOSPAWN=1` | Connect to a running daemon but never start one. |
 | `BASEMIND_MAX_DAEMONS` | Ceiling on live daemons per machine before a spawn is refused; default 8. |
 | `BASEMIND_BIN`, `BASEMIND_FORCE_VERSION` | Plugin launcher: run a local build / pin a release (see [Installation](#1-as-a-plugin-recommended)). |
+
+**User settings.** Machine-wide settings can also live in `settings.toml` in basemind's user
+configuration directory (`~/.config/basemind/` on Linux, `~/Library/Application Support/basemind/` on
+macOS), which every basemind process reads at start, the daemon an MCP host spawns included. A set
+variable wins over the file; a repository's `basemind.toml` cannot set these keys.
+
+```toml
+[cache]
+budget_mb = 8192   # as BASEMIND_CACHE_BUDGET_MB; 0 disables enforcement
+```
+
+`basemind cache stats` reports `budget_warning` when a set budget is larger than the cache plus the
+free space on its volume, so the disk would fill before eviction starts.
 
 **Reload.** The daemon re-reads a workspace's `basemind.toml` on the next request after it changes
 (size or modification time) and logs `config changed`. A file that no longer parses keeps the last

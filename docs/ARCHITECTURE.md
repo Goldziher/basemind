@@ -562,7 +562,8 @@ runs after any scan that migrated, refreshed or reset something (the daemon does
 hourly in the daemon, and on `basemind cache gc`. There is no MCP tool for it: a session cannot sweep
 without racing its own rescans. The size-budget enforcer and the last
 sweep's health (`gc-state.json`, shown as `last_gc` by `cache stats`) are in `src/store_gc_budget.rs`.
-Unless `BASEMIND_CACHE_BUDGET_MB` sets it, each sweep resolves the budget from the disk: half of the
+Unless `BASEMIND_CACHE_BUDGET_MB` or `[cache] budget_mb` in the user settings file
+(`src/config/user_settings.rs`) sets it, each sweep resolves the budget from the disk: half of the
 cache's footprint (workspaces with their git caches, groups and blobs) plus the free space on its
 volume, at most 20 GiB, so the cache stops growing where it is as large as the free space it leaves.
 Budget eviction never touches a locked, most-recently-used or recently built workspace (even over

@@ -108,12 +108,13 @@ bounds Fjall worker threads and journal size, and runs git-history sync on a ded
 
 ## Operator variables
 
-Machine-global daemon knobs read from the environment rather than from `basemind.toml`:
+Machine-global daemon knobs read from the environment rather than from `basemind.toml` (the cache
+budget can also be set in the [user settings file](/reference/configuration/#user-settings)):
 
 | Variable | Effect | Default |
 |---|---|---|
 | `BASEMIND_WARM_READ_STACKS` | Read stacks kept warm at once. Zero or unparseable falls back to the default. | 3 |
-| `BASEMIND_CACHE_BUDGET_MB` | Size budget for the whole cache in MiB, each workspace's git cache included. `0` disables enforcement. Unset, each sweep resolves it from the disk as `min(20 GiB, (cache size + free space) / 2)`, the free space being that of the cache's volume: the target is a cache no larger than the free space it leaves. Eviction never removes a protected workspace to meet it: one whose `.lock` a live writer (`serve`, `watch`, the daemon, a scan) holds, the most recently used one on the machine (newest `workspace.json`, `status.json` or view index mtime), one built or rescanned within `BASEMIND_CACHE_GRACE_MINUTES`, one holding a view a newer basemind wrote, or one holding pre-0.30 memory notes that could not be moved. Protected workspaces can keep the cache over budget, and `cache_stats.last_gc` and `basemind doctor` say so. | `min(20 GiB, (cache size + free space) / 2)` |
+| `BASEMIND_CACHE_BUDGET_MB` | Size budget for the whole cache in MiB, each workspace's git cache included. `0` disables enforcement. Unset, `[cache] budget_mb` in the [user settings file](/reference/configuration/#user-settings) applies; with neither set, each sweep resolves it from the disk as `min(20 GiB, (cache size + free space) / 2)`, the free space being that of the cache's volume: the target is a cache no larger than the free space it leaves. Eviction never removes a protected workspace to meet it: one whose `.lock` a live writer (`serve`, `watch`, the daemon, a scan) holds, the most recently used one on the machine (newest `workspace.json`, `status.json` or view index mtime), one built or rescanned within `BASEMIND_CACHE_GRACE_MINUTES`, one holding a view a newer basemind wrote, or one holding pre-0.30 memory notes that could not be moved. Protected workspaces can keep the cache over budget, and `cache_stats.last_gc` and `basemind doctor` say so. A set budget larger than the cache plus the free space on its volume never evicts before the disk fills; `basemind cache stats` says so in `budget_warning`. | `min(20 GiB, (cache size + free space) / 2)` |
 | `BASEMIND_CACHE_GRACE_MINUTES` | Budget eviction never touches a workspace built or rescanned this recently. The locked and most recently used workspaces are always kept, even over budget. `0` disables only the window. | 360 (6 h) |
 | `BASEMIND_INDEX_CACHE_BYTES` | Overrides the computed Fjall block cache size, in bytes. | computed |
 | `BASEMIND_MAX_DAEMONS` | Ceiling on concurrently live daemons before a spawn is refused. | 8 |

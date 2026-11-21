@@ -174,6 +174,11 @@ pub struct CacheStats {
     /// Outcome and health of the most recent destructive GC attempt (persisted to
     /// `gc-state.json` by the daemon). `None` means no attempt has been recorded on this machine.
     pub last_gc: Option<crate::store_gc_budget::GcState>,
+    /// Set when the configured cache budget is larger than the cache plus the free space on its
+    /// volume, so the disk fills before eviction starts ([`crate::store_gc_budget::budget_disk_warning`]).
+    /// Absent for a budget the disk can hold, the disk-aware default, or disabled enforcement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_warning: Option<String>,
     /// Recursive byte size of every repository group directory on the machine (`cache/repos/`:
     /// memory notes, their vector stores, shared base generations). Not part of
     /// [`Self::total_bytes`], not counted against the cache budget, and never collected.
@@ -313,9 +318,12 @@ pub fn clear_single_view(basemind_dir: &Path, name: &str) -> Result<(), GcError>
 }
 
 /// Gather per-component sizes and blob accounting without mutating anything. The orphan
-/// count reuses [`collect_referenced_hashes`] but never deletes.
+/// count reuses [`collect_referenced_hashes`] but never deletes. The configured budget is checked
+/// against the disk ([`CacheStats::budget_warning`]).
 pub fn cache_stats(data: &crate::data_root::DataRoot, basemind_dir: &Path) -> Result<CacheStats, GcError> {
-    cache_stats_in(basemind_dir, &BlobStorePaths::global(data))
+    let mut stats = cache_stats_in(basemind_dir, &BlobStorePaths::global(data))?;
+    stats.budget_warning = crate::store_gc_budget::cache_budget_warning(data, crate::store_gc_budget::cache_budget())?;
+    Ok(stats)
 }
 
 /// [`cache_stats`] against an explicit blob store. Production passes the global store; unit
@@ -419,6 +427,7 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
         rss_bytes: rss.current_bytes,
         peak_rss_bytes: rss.peak_bytes,
         last_gc: crate::store_gc_budget::read_gc_state_at(&blobs.gc_state),
+        budget_warning: None,
         repo_groups_bytes: groups.bytes,
         repo_groups: groups.count,
         repo_groups_unnamed: groups.unnamed,
