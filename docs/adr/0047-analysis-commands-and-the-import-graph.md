@@ -174,8 +174,8 @@ refused.
   | `imported` | binds through an import to a definition in another file |
   | `scope_resolved` | binds in its own file to no indexed definition: a local, a parameter, or an import whose target is not indexed |
   | `elsewhere` | checked; binds to another definition than the one asked for |
-  | `name_only` | no binding found for the site: matched by name alone |
-  | `external` | no definition of the name in the index |
+  | `name_only` | no binding found for the site, and the index defines the name (or the page passed its cap of 256 name lookups): matched by name alone |
+  | `external` | no binding found for the site, and no definition of the name in the index |
 
   ADR-0048 adds `path_match`. `elsewhere` and `name_only` stay apart: one is a checked negative,
   the other an absence of evidence.
