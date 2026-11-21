@@ -11,11 +11,11 @@ is cleaned up.
 0.34 bumps the release minor, replaces the MCP tools and the agent messaging protocol. In order:
 
 1. Before anything else, check every boolean `BASEMIND_*` variable you set reads `1`, `true`,
-   `yes`, `on` or `0`, `false`, `no`, `off` ([Environment variables](manual/environment.md)). Any
-   other value now stops every command below with an error naming the variable
-   (`BASEMIND_ALLOW_EXTRA_ROOTS` and `BASEMIND_ALLOW_DEPENDENCY_ROOTS` read it as a path list
-   instead), and `false` now means false where it used to mean true (`BASEMIND_GRAMMAR_OFFLINE`,
-   `BASEMIND_GIT_DISCOVER_PARENTS`).
+   `yes`, `on` or `0`, `false`, `no`, `off` ([Environment variables](manual/environment.md)). An
+   empty or blank value counts as unset and needs no change. Any other value now stops every
+   command below with an error naming the variable (`BASEMIND_ALLOW_EXTRA_ROOTS` and
+   `BASEMIND_ALLOW_DEPENDENCY_ROOTS` read it as a path list instead), and `false` now means false
+   where it used to mean true (`BASEMIND_GRAMMAR_OFFLINE`, `BASEMIND_GIT_DISCOVER_PARENTS`).
 2. Update the plugin and the binary together, then restart every session. The marketplace plugins,
    npm and pip run the binary their manifest pins. OpenCode's `basemind-opencode` package, Hermes and
    the status line run `basemind` from `PATH`, so update that binary too.
