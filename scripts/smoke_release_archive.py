@@ -17,7 +17,8 @@ DLL beside the Windows binary), and the binary in it must:
 Every run also sets the test hooks a ``test-support`` build reads (``TEST_HOOKS``, which
 ``tests/layering.rs`` keeps complete), each to a value a binary that read it trips on: the fault
 lane aborts the scan, and the store-open delay holds the agent store at ``opening`` past step 4's
-deadline. The account home is read only by ``serve --lead``, which this smoke does not start.
+deadline; the scan gate names an existing file, which holds every scan of a binary that read it.
+The account home is read only by ``serve --lead``, which this smoke does not start.
 
 Every run gets its own ``BASEMIND_DATA_HOME``, ``BASEMIND_COMMS_DIR``, ``HOME`` (with the Windows
 ``AppData`` folders a real profile has) and cache directory, so nothing reaches a real session's index
@@ -109,6 +110,9 @@ def sandbox_env(root: Path) -> dict[str, str]:
     )
     env.update(TEST_HOOKS)
     env["BASEMIND_TEST_ACCOUNT_HOME"] = str(root / "test-account-home")
+    scan_gate = root / "hold-scan-gate"
+    scan_gate.write_text("", encoding="utf-8")
+    env["BASEMIND_TEST_HOLD_SCAN"] = str(scan_gate)
     return env
 
 
