@@ -6,7 +6,7 @@ name: bm-doctor
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:ba948a4477edcb08beeb6416e450db654cc64a68779f5a0d38361b36576ccb4d
-Source-Hash: blake3:83aebac7e9caea9244843068759509d59f083bbba4e869c75f942ee3b82c6b59
+Source-Hash: blake3:a6c68a481d542a53e505749532735ddcb726e4d2c29eaac7fffe232cf5cf94fc
 Schema-Version: v1
 -->
 

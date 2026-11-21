@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:c7d51c63cbd63418f0d50fea92aa16ff4773c8647bef7d7a6394d39c4c31b56c
-Source-Hash: blake3:83aebac7e9caea9244843068759509d59f083bbba4e869c75f942ee3b82c6b59
+Content-Hash: blake3:ab649bb0f8bf728c8a0392b8b5c9b61df1cd7dc9c0a855d243d051b339dcb5d6
+Source-Hash: blake3:a6c68a481d542a53e505749532735ddcb726e4d2c29eaac7fffe232cf5cf94fc
 Schema-Version: v1
 -->
 
@@ -50,7 +50,7 @@ different version there shares the same cache. Examples below write `basemind` f
 - Controlling tool routing explicitly (no agent routing decisions).
 - Clearing or sweeping caches destructively (only the offline `basemind cache clear` accepts
   `views` / `all`, it needs `--yes` off a terminal, and `blobs` wipes the machine-global store; only
-  `basemind cache gc` deletes orphaned blobs).
+  `basemind cache gc` deletes orphaned blobs and the caches of removed worktrees).
 
 **basemind first, shell/grep/git fallback.** Prefer `basemind code` over reading files, over
 `grep`/`rg`, and over naked `git`: use it for code parsing (outlines, usages, callers), git
@@ -90,7 +90,7 @@ command covers the question.
 | "Remember this for future sessions?" | `basemind memory put "key" "value" [--tag T]` | Delete with `memory delete "key"` (CLI only). |
 | "Cache size?" | `basemind cache stats` | On-disk size + orphan accounting. CLI only, like the other cache commands. |
 | "What cache space is reclaimable?" | `basemind cache gc --dry-run` | Report orphaned blobs without deleting them. |
-| "Reclaim orphaned blobs?" | `basemind cache gc` | Cross-workspace sweep (blobs under 6 h old are kept). |
+| "Reclaim orphaned blobs and the caches of deleted worktrees?" | `basemind cache gc` | Reaps the caches of removed worktrees and groups no workspace names, then sweeps blobs across workspaces (blobs under 6 h old are kept). |
 | "Score retrieval quality?" | `basemind admin eval --tasks tasks.jsonl` | CLI-only; see `benchmarks/eval/README.md`. |
 | "Clear caches?" | `basemind cache clear --component blobs --yes` | Destructive; `--yes` is required off a terminal. `views` / `all` need the offline CLI. |
 | "Keep index fresh?" | `basemind watch` | Live re-index watcher; no MCP server (that's `serve`). |
