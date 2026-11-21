@@ -392,6 +392,25 @@ fn cap_archive_notice_names_the_archived_thread() {
 }
 
 #[test]
+fn cap_archived_member_notice_counts_the_unread_and_says_how_to_read_them() {
+    let notice = cap_archived_member_notice(&thread("t-abcdef"), 3);
+    assert!(notice.starts_with("thread t-abcdef was archived"), "{notice}");
+    assert!(notice.contains("limit of 256 active threads"), "{notice}");
+    assert!(notice.contains("3 of its messages are unread by you"), "{notice}");
+    assert!(notice.contains("agent_inbox `thread`"), "{notice}");
+}
+
+#[test]
+fn swept_notice_counts_the_messages_and_names_the_retention() {
+    let notice = swept_notice(&thread("t-abcdef"), 5);
+    assert!(
+        notice.starts_with("5 messages of thread t-abcdef past your read position were removed"),
+        "{notice}"
+    );
+    assert!(notice.contains("kept 30 days, the newest 1000 per thread"), "{notice}");
+}
+
+#[test]
 fn rejected_id_notice_names_both_ids_and_bounds_the_rejected_one() {
     let notice = rejected_id_notice("bad id", "host-repo-1a2b3c");
     assert!(notice.contains("\"bad id\""), "{notice}");

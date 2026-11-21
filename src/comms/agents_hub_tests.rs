@@ -6,7 +6,9 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use super::*;
-use crate::comms::v2::api::{InboxSelect, PostTarget, ReplayKey, ThreadId};
+use crate::comms::v2::api::{
+    InboxSelect, MAX_ACTIVE_THREADS_PER_REPO, PostTarget, ReplayKey, ThreadId, cap_archived_member_notice,
+};
 use crate::comms::v2::conformance::{Repo, default_caller};
 
 fn hub() -> (Arc<AgentHub>, tempfile::TempDir) {
@@ -96,6 +98,37 @@ async fn a_wait_ends_when_another_agent_posts_and_marks_what_it_returns() {
         .await
         .expect("read");
     assert!(again.messages.is_empty(), "the waited read marked what it returned");
+}
+
+#[tokio::test]
+async fn a_wait_returns_at_once_with_what_the_store_tells_and_tells_it_once() {
+    let (hub, _dir) = hub();
+    let lost = hub
+        .post(caller("a"), new_thread(&["b"]), &live())
+        .await
+        .expect("start")
+        .thread;
+    for _ in 0..MAX_ACTIVE_THREADS_PER_REPO {
+        hub.post(caller("c"), new_thread(&[]), &live()).await.expect("start");
+    }
+
+    let told = tokio::time::timeout(
+        Duration::from_secs(5),
+        hub.read(caller("b"), InboxBody::default(), Duration::from_secs(30), &live()),
+    )
+    .await
+    .expect("the wait did not hold the notice back")
+    .expect("read");
+    assert_eq!(told.notices, [cap_archived_member_notice(&lost, 1)]);
+    assert_eq!(told.messages, Vec::new());
+    assert_eq!(told.wait, WaitOutcome::NotWaited);
+
+    let again = hub
+        .read(caller("b"), InboxBody::default(), Duration::from_millis(50), &live())
+        .await
+        .expect("read");
+    assert_eq!(again.notices, Vec::<String>::new());
+    assert_eq!(again.wait, WaitOutcome::TimedOut);
 }
 
 #[tokio::test]

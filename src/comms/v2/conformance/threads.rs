@@ -597,8 +597,9 @@ pub fn archived_thread_is_read_by_naming_it_and_closed_to_posts_joins_and_invita
 }
 
 /// A repository holds [`MAX_ACTIVE_THREADS_PER_REPO`] active threads. Creating one more archives
-/// the one whose newest post is the oldest and tells the poster, and only the poster. Another
-/// repository has its own count.
+/// the one whose newest post is the oldest and tells the poster; a reply into it is refused as
+/// archived by the cap. Another repository has its own count. What its members are told is
+/// [`members_of_a_thread_the_cap_archived_are_told_on_their_next_read`](super::lost).
 pub fn creating_a_thread_at_the_cap_archives_the_least_recently_active(h: &impl ConformanceHarness) {
     let first = start(h, "a", "topic", &["b"]);
     let second = start(h, "a", "topic", &["b"]);
@@ -621,11 +622,14 @@ pub fn creating_a_thread_at_the_cap_archives_the_least_recently_active(h: &impl 
     assert_eq!(
         bodies(&read(h, "b")),
         ["first", "still in use"],
-        "no notice, and no mail of it"
+        "no mail of it in a read over all threads"
     );
     assert_eq!(
         say(h, "b", &second.thread, "late"),
-        Err(CommsError::ThreadArchived { thread: second.thread })
+        Err(CommsError::ThreadArchivedByCap {
+            thread: second.thread,
+            cap: MAX_ACTIVE_THREADS_PER_REPO,
+        })
     );
 }
 

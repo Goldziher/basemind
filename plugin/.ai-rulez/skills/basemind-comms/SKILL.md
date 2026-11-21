@@ -82,7 +82,9 @@ messages). Add one of `join`, `leave`, `invite` (agent ids) or `archive` to chan
 - Any member may `invite`; nobody can remove another member.
 - Only the creator archives through the tool; an archived thread cannot be posted to or reopened.
   When the last member leaves, it archives.
-- At 256 active threads per repository, creating one archives the least recently active.
+- At 256 active threads per repository, creating one archives the least recently active. Its
+  members get a notice on their next all-threads read that marks, or the first page of an
+  all-threads `peek`; a read by `id` or by `thread` carries none. Read what is left with `{thread}`.
 
 ## Workflow
 

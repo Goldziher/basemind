@@ -457,7 +457,20 @@ impl AgentHub {
         joined(tokio::task::spawn_blocking(move || hub.ops().threads_update(&caller, update)).await)
     }
 
+    /// One read, on the blocking pool, with the daemon's notices added.
     async fn inbox_now(
+        self: &Arc<Self>,
+        caller: &Caller,
+        body: InboxBody,
+        gone: &CancellationToken,
+    ) -> Result<InboxReply, CommsError> {
+        let reply = self.store_inbox_now(caller, body, gone).await?;
+        Ok(self.with_notices(caller, reply))
+    }
+
+    /// One read of the store, on the blocking pool, carrying only the store's notices: what a wait
+    /// looks at to tell whether a read has news.
+    async fn store_inbox_now(
         self: &Arc<Self>,
         caller: &Caller,
         body: InboxBody,
@@ -466,7 +479,13 @@ impl AgentHub {
         let writes = body.kind().is_ok_and(|kind| kind.writes());
         self.ready(writes.then_some(gone)).await?;
         let (hub, caller) = (Arc::clone(self), caller.clone());
-        joined(tokio::task::spawn_blocking(move || hub.ops().inbox(&caller, body)).await)
+        joined(tokio::task::spawn_blocking(move || hub.store().and_then(|store| store.inbox(&caller, body))).await)
+    }
+
+    /// `reply` with the daemon's notices for `caller` appended.
+    fn with_notices(&self, caller: &Caller, mut reply: InboxReply) -> InboxReply {
+        reply.notices.extend(self.notices_for(&caller.actor));
+        reply
     }
 
     /// Read the inbox, waiting up to `wait` while nothing is unread. `gone` is cancelled when the
@@ -605,31 +624,33 @@ impl AgentHub {
             arrivals.borrow_and_update();
             let reply = if kind == ReadKind::Marking {
                 let found = if probe_first {
-                    Some(self.inbox_now(caller, probe.clone(), gone).await?)
+                    Some(self.store_inbox_now(caller, probe.clone(), gone).await?)
                 } else {
                     None
                 };
                 probe_first = true;
                 match found {
-                    Some(found) if found.messages.is_empty() && !found.more => found,
+                    Some(found) if found.messages.is_empty() && found.notices.is_empty() && !found.more => found,
                     _ if gone.is_cancelled() => return Ok(None),
-                    _ => self.inbox_now(caller, body.clone(), gone).await?,
+                    _ => self.store_inbox_now(caller, body.clone(), gone).await?,
                 }
             } else {
-                self.inbox_now(caller, body.clone(), gone).await?
+                self.store_inbox_now(caller, body.clone(), gone).await?
             };
             let outcome = if waited {
                 WaitOutcome::Arrived
             } else {
                 WaitOutcome::NotWaited
             };
-            if !reply.messages.is_empty() {
-                return Ok(Some(InboxReply { wait: outcome, ..reply }));
+            // ~keep The store's notices are news as much as messages are: a read that carries
+            // them returns, or a wait would hold them back until a message came.
+            if !reply.messages.is_empty() || !reply.notices.is_empty() {
+                return Ok(Some(self.with_notices(caller, InboxReply { wait: outcome, ..reply })));
             }
             // A peek that stopped at its scan budget hands back a cursor past what it walked;
             // reading again from the same place would walk the same rows, so the caller continues.
             if kind != ReadKind::Marking && reply.more {
-                return Ok(Some(InboxReply { wait: outcome, ..reply }));
+                return Ok(Some(self.with_notices(caller, InboxReply { wait: outcome, ..reply })));
             }
             reads += 1;
             if kind == ReadKind::Marking && reply.more && reads < MAX_READS_WITHOUT_WAITING {

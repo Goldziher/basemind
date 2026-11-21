@@ -8,7 +8,7 @@ name: bm-stats
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:647686ffcb7a122d5f75c01acd89868c2a88a87a879d99d70086031abd79259b
-Source-Hash: blake3:af86ee48bbc012fa865e3b106449e49b6122356c772ddf080e951fdece51097e
+Source-Hash: blake3:8a1b4c27c72c1dfd5dc8bbc39f88e7ae981bd15664dc19aa0d40461ce744820f
 Schema-Version: v1
 -->
 

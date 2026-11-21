@@ -763,6 +763,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Agent comms: a read says how many messages a sweep removed before the reader read them (#306).
+  The sweep keeps the newest 1,000 messages of a thread and 30 days of them whatever each member
+  has read, and the inbox used to step over the gap without a word. A marking read, a hook's
+  announcing read and the first page of a peek now carry a notice for each thread whose first stored
+  message lies past the reader's position, with the count, until a read takes the reader past it;
+  a waiting read returns at once with it. History reads and reads by id carry none.
 - `basemind comms cleanup [--dry-run] [--older-than <days>]` removes the rendezvous files no daemon
   uses any more: the directories of other protocol generations under the comms directory, and the
   files releases up to 0.33 keep directly in it (`comms.sock`, `daemon.lock`, `daemon.pid`,
@@ -906,6 +912,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   characters followed by `-`. The transcript roots are under the home directory: `HOME` on Unix,
   else the account's home directory; on Windows `USERPROFILE` when it is set, else the account's
   profile directory. An empty home is refused rather than read as the current directory.
+
+- Agent comms: a thread the per-repository cap of 256 active threads archives no longer hides its
+  unread messages from its members without a word (#300). A member's next `agent_inbox` read over
+  all its threads, a marking read or a peek, carries a notice naming the thread and how many of its
+  messages the member has not read, and says to read them with `agent_inbox {thread}`; a marking
+  read tells each actor once, and a replay of it tells again. A waiting read returns at once with
+  such a notice. A post, join or invitation into the thread is refused with the new code
+  `thread_archived_by_cap`, which says the cap archived it and to continue in a new thread by
+  posting with `subject` and `to`. A thread archived by its creator, or by its last member leaving,
+  is unchanged.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

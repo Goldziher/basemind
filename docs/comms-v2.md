@@ -27,8 +27,10 @@ code follows this document. Where the document leaves a point open, the code doe
   `wait_secs` above 0.
 - A message in a reply carries `body_bytes`, the size of its whole body. In an announcing read
   `body` is empty.
-- The store puts the thread-cap notice into the reply of the post. The other notices are the
-  daemon's; `shared_identity_notice` returns none for a call that carries `as`.
+- The store puts the thread-cap notices in: the poster's into the reply of the post, and each
+  member's into its reads over all threads until a marking read has told it. The store also puts
+  in the count of messages a sweep removed before the reader read them (*Sweep*). The other
+  notices are the daemon's; `shared_identity_notice` returns none for a call that carries `as`.
 - `basemind agent cleanup [--archive <thread>]...` archives each named thread, whoever created it,
   then runs one retention sweep. The `archive` change of `agent_threads` stays creator-only.
 - `BASEMIND_HOST` is set identically for `serve` and the hooks by the plugin launcher
@@ -211,8 +213,16 @@ take a thread past 256 members is refused whole.
 
 When a repository already holds 256 active threads, creating another archives the least recently
 active one: the thread whose newest post has the lowest position in the store-wide post order. The
-post that caused it succeeds, and its reply carries a notice naming the archived thread. The other
-members of the archived thread get no notice.
+post that caused it succeeds, and its reply carries a notice naming the archived thread.
+
+Each actor of every member of the archived thread is told too. A marking read or a peek over all
+threads leaves the thread's messages out, as for any archived thread, and carries a notice naming
+the thread, how many of its stored messages from other agents the actor has not read, and that
+they are read by naming the thread. A peek tells again; the first marking read that tells records
+it in the actor's marks, so later reads do not, and a replay of that read tells again. A sibling
+actor without marks, or an actor whose marks a sweep removed, is told afresh. A post, join or
+invitation into the thread is refused with `thread_archived_by_cap`, which says to continue in a new
+thread. A thread archived by its creator or by its last member leaving tells nobody.
 
 ## Membership and read positions
 
@@ -270,7 +280,8 @@ carries the message id, the thread id, `created`, `pending` and `notices`.
 - A marking read (`unread: true`, `peek: false`) returns the oldest unread messages in store-wide
   post order and advances `read_seq` and `notified_seq` to the last message returned per thread.
 - A read over all threads covers active threads only. An archived thread's messages are returned
-  only by a read that names the thread, or by `id`, until retention removes them.
+  only by a read that names the thread, or by `id`, until retention removes them. A thread the
+  thread cap archived is named in a notice instead (*Thread cap*).
 - A body over 4 KiB is returned cut with `truncated: true` and counts as read. A read by `id`
   returns the whole body, up to the 16 KiB post limit, outside the response budget.
 - The budget counts, per message, the bytes of the body as returned, the subject, the sender and
@@ -333,6 +344,7 @@ waiting read is exempt from the 10-second request bound of ADR-0013.
 - A daemon drain ends every wait at once, with the reply `wait: timed_out`.
 - A peek that stops at its scan budget with nothing to return answers at once with `more: true`
   and `next_cursor` instead of waiting.
+- A read that carries a notice of the store's answers at once instead of waiting.
 - A wait that times out carries the last read's `more` and `next_cursor`.
 
 ## Cursors
@@ -347,9 +359,9 @@ or for another read, is refused as invalid.
   it replays the request after a daemon restart. No tool has an idempotency field.
 - A post into a thread is deduplicated on (actor, thread, key); a post that creates a thread on
   (actor, key), so a replay returns the thread already created.
-- A marking read stores the ranges it delivered, one per thread, against the key, in the same
-  batch as the position change, so a replay returns those ranges again. A read that moves nothing
-  stores nothing.
+- A marking read stores the ranges it delivered, one per thread, and its notices against the key,
+  in the same batch as the position change, so a replay returns those ranges and notices again. A
+  read that delivers and tells nothing stores nothing.
 - A relayed waiting marking read goes to the store first, so a replay that arrives after the first
   finished (same daemon or a restarted one) returns the remembered ranges. A replay that joined a
   first request whose client left keeps waiting on its own.
@@ -391,6 +403,16 @@ the wall clock at the moment it runs:
 
 A thread's last activity is the latest timestamp of any post made to it. No read hides a record
 that the sweep has not removed.
+
+The sweep removes messages whatever their readers have read. A marking read, an announcing read
+and the first page of a peek that find a thread's first stored message past the reader's position
+plus one, or no message where the head says there are some, carry a notice for that thread with
+how many sequence numbers in between hold no message. The sweep keeps no authors, so the count
+includes any of the reader's own posts among them. The notice is repeated by every such read until
+one takes the reader past the gap; a history read, which starts at the oldest message kept, and a
+read by `id` carry none. The gap is seen from the first row the read walks in the thread, so a read
+that stops at its scan budget before it reaches a thread says nothing of it until a later read
+does.
 
 - **Seen records.** The 31 days are `SEEN_TTL` (30 days) plus `SEEN_REFRESH_INTERVAL` (one day, the
   most a record trails its actor's last call) on the branch. An actor is therefore seen for at
@@ -450,7 +472,10 @@ Every reply has `notices`, a list of sentences about something other than the re
 - more than one live `serve` session for the principal, with the advice to pass `as` or set
   `BASEMIND_AGENT_ID`. One-shot CLI and hook connections are not counted, and the notice is left
   out when the call carries `as`;
-- a thread archived by the thread cap, on the reply of the post that caused it.
+- a thread archived by the thread cap: on the reply of the post that caused it, and on each
+  member's reads over all threads until a marking read has told it (*Thread cap*);
+- messages of a thread a sweep removed before the reader read them, with their count, on its
+  unread reads until one takes it past them (*Sweep*).
 
 ## Errors
 
@@ -466,6 +491,7 @@ shows the message, so a new code needs no protocol bump.
 | `thread_closed` | joining or describing an invitation-only or foreign-repository thread |
 | `not_creator` | archiving a thread the caller did not create |
 | `thread_archived` | posting, joining or inviting into an archived thread |
+| `thread_archived_by_cap` | the same, into a thread the thread cap archived |
 | `multiple_updates` | more than one of `join`, `leave`, `invite`, `archive` |
 | `invalid_post_target` | not exactly one of `thread`, `reply_to`, `subject` |
 | `creation_only` | `to` or `paths` without `subject` |

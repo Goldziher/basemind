@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:ebbcf320e227b2a6f38a67ed8c7e536392aaf23dbb93a49a31e8fd8cd820b609
-Source-Hash: blake3:af86ee48bbc012fa865e3b106449e49b6122356c772ddf080e951fdece51097e
+Content-Hash: blake3:65dd8c04e03993a1085f9d867ad7c87e4dfed8a760705cc296f8ceb09082732a
+Source-Hash: blake3:8a1b4c27c72c1dfd5dc8bbc39f88e7ae981bd15664dc19aa0d40461ce744820f
 Schema-Version: v1
 -->
 
@@ -79,7 +79,9 @@ messages). Add one of `join`, `leave`, `invite` (agent ids) or `archive` to chan
 - Any member may `invite`; nobody can remove another member.
 - Only the creator archives through the tool; an archived thread cannot be posted to or reopened.
   When the last member leaves, it archives.
-- At 256 active threads per repository, creating one archives the least recently active.
+- At 256 active threads per repository, creating one archives the least recently active. Its
+  members get a notice on their next all-threads read that marks, or the first page of an
+  all-threads `peek`; a read by `id` or by `thread` carries none. Read what is left with `{thread}`.
 
 ## Workflow
 

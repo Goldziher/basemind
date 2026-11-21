@@ -28,11 +28,13 @@ use super::api::{
 use crate::path::RelPath;
 
 pub mod inbox;
+pub mod lost;
 pub mod post;
 pub mod retention;
 pub mod threads;
 
 pub use inbox::*;
+pub use lost::*;
 pub use post::*;
 pub use retention::*;
 pub use threads::*;
@@ -102,7 +104,8 @@ const WAIT_POLL: Duration = Duration::from_millis(1);
 ///
 /// It probes with a read that marks nothing; while that finds nothing and `timeout` has not run
 /// out, it waits for [`AgentOps::arrivals`] to change and probes again; then it makes the real
-/// read once and reports how the wait ended. `while_waiting` runs once, after the first probe
+/// read once and reports how the wait ended. A probe that comes back with notices ends the wait
+/// as one with messages does, since the notices are news too. `while_waiting` runs once, after the first probe
 /// came back empty, so a test can post "during" the wait without a second thread. Only a read
 /// that marks as read and a `peek` wait; any other kind is read at once.
 ///
@@ -118,6 +121,18 @@ pub fn wait_then_read<O: AgentOps + ?Sized>(
     if !matches!(body.kind()?, ReadKind::Marking | ReadKind::Peek) {
         return ops.inbox(caller, body);
     }
+    // As the daemon does, a relayed marking read goes to the store at once: the store answers a
+    // replay of a read that already delivered with what it delivered, which the peek below, run
+    // without the key, would not see, and the wait would time out on news already told.
+    if caller.replay_key.is_some() && body.kind()? == ReadKind::Marking {
+        let reply = ops.inbox(caller, body.clone())?;
+        if !reply.messages.is_empty() || !reply.notices.is_empty() {
+            return Ok(InboxReply {
+                wait: WaitOutcome::NotWaited,
+                ..reply
+            });
+        }
+    }
     let probe_caller = Caller::new(caller.actor.clone(), caller.repo.clone());
     let probe = InboxBody {
         mark: Mark::Peek,
@@ -130,7 +145,8 @@ pub fn wait_then_read<O: AgentOps + ?Sized>(
     let mut waited = false;
     let outcome = loop {
         let arrivals = ops.arrivals();
-        if !ops.inbox(&probe_caller, probe.clone())?.messages.is_empty() {
+        let found = ops.inbox(&probe_caller, probe.clone())?;
+        if !found.messages.is_empty() || !found.notices.is_empty() {
             break if waited {
                 WaitOutcome::Arrived
             } else {
@@ -164,6 +180,7 @@ const SCENARIO_SIGNATURE: &str = "(h: &impl ConformanceHarness)";
 pub fn scenario_count() -> usize {
     [
         include_str!("conformance/inbox.rs"),
+        include_str!("conformance/lost.rs"),
         include_str!("conformance/post.rs"),
         include_str!("conformance/retention.rs"),
         include_str!("conformance/threads.rs"),
@@ -233,6 +250,7 @@ macro_rules! conformance_tests {
             wait_returns_when_a_message_arrives,
             wait_times_out_when_nothing_arrives,
             wait_ignores_the_callers_own_posts,
+            wait_replays_a_relayed_read_that_already_delivered,
             wait_is_skipped_when_something_is_unread,
             no_arguments_lists_the_callers_threads_and_their_peers,
             summary_counts_unread_messages_from_others,
@@ -260,6 +278,8 @@ macro_rules! conformance_tests {
             archived_thread_is_read_by_naming_it_and_closed_to_posts_joins_and_invitations,
             creating_a_thread_at_the_cap_archives_the_least_recently_active,
             members_are_capped_per_thread,
+            members_of_a_thread_the_cap_archived_are_told_on_their_next_read,
+            messages_a_sweep_removed_before_a_member_read_them_are_counted,
             sweep_drops_messages_outside_the_newest_of_their_thread,
             record_past_its_retention_is_returned_until_a_sweep_removes_it,
             sweep_removes_old_messages_inside_a_live_thread,
