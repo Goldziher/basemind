@@ -40,6 +40,10 @@ for var in BASEMIND_DATA_HOME BASEMIND_COMMS_DIR; do
 done
 export BASEMIND_DATA_HOME BASEMIND_COMMS_DIR
 export RUST_LOG="${RUST_LOG:-error}"
+# The clones, the scans and every baseline command run without the host's system or global git
+# configuration and in the C locale: a `core.autocrlf` or `color.ui` there changes what is checked
+# out and what `git` prints, and so the baseline token counts.
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null LC_ALL=C
 
 stop_daemon() {
   # A build with `comms` may have started a daemon on this cache; stop it, never another one.

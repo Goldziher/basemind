@@ -811,6 +811,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `Debug` output leaves out the MCP server's arguments.
 - On Windows, `admin eval` baselines run their shell commands with Git for Windows' path
   conversion off, so an argument such as `-L '/fn alpha/,/^}/'` reaches git as written.
+- `admin eval` baselines and `benchmarks/eval/run_gate.sh` run with `GIT_CONFIG_NOSYSTEM=1`,
+  `GIT_CONFIG_GLOBAL=/dev/null` and `LC_ALL=C` (#292), so a host's `color.ui`, `core.autocrlf` or
+  locale no longer changes the baseline token counts.
 - `basemind scan` next to a running daemon is forwarded to it as a full rescan (ADR-0024 rule 5)
   instead of stopping with "already running against this repo" (exit 3). It prints `scan via daemon`
   with the daemon's counts, then syncs the git-history index through the daemon unless
