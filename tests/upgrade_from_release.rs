@@ -76,8 +76,8 @@ fn current_minor() -> u32 {
 
 /// A command running `bin`. A Linux release loads the libraries bundled in its `lib/` through its
 /// RUNPATH, which `LD_LIBRARY_PATH` outranks: under a job that exports one for this build's own
-/// libraries (CI's libheif in `/usr/local/lib`), the loader mixes the two sets and refuses to start
-/// it. So a release runs without the variable; this build, which may need it, keeps it.
+/// libraries, the loader mixes the two sets and refuses to start it. So a release runs without the
+/// variable; this build, which may need it, keeps it.
 fn command(bin: &Path) -> Command {
     let mut cmd = Command::new(bin);
     if bin != Path::new(NEW_BIN) {

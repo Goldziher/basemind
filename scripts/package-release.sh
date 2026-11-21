@@ -30,6 +30,7 @@ x86_64-pc-windows-msvc)
 esac
 
 RELEASE_DIR="target/${TRIPLE}/release"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The archive ships the code-map/MCP server alone.
 BINARIES=(basemind)
@@ -80,6 +81,7 @@ linux)
       cp -L "$lib" "$STAGING_DIR/lib/" 2>/dev/null || true
     done
   fi
+  bash "$SCRIPT_DIR/check-bundled-libs.sh" linux "$STAGING_DIR"
 
   for bin_in_staging in "${BINS_IN_STAGING[@]}"; do
     # shellcheck disable=SC2016  # literal $ORIGIN is intended — patchelf/ld expands it at load time
@@ -128,6 +130,7 @@ macos)
     done </tmp/_otool_$$
     rm -f /tmp/_otool_$$
   done
+  bash "$SCRIPT_DIR/check-bundled-libs.sh" macos "$STAGING_DIR"
 
   idx=0
   while [ "$idx" -lt ${#copied_bases[@]} ]; do
@@ -180,6 +183,7 @@ windows)
       cp -L "$dll" "$STAGING_DIR/" 2>/dev/null || true
     done
   done
+  bash "$SCRIPT_DIR/check-bundled-libs.sh" windows "$STAGING_DIR"
 
   (cd "$STAGING_DIR" && {
     7z a -tzip "../basemind-${TRIPLE}.zip" . >/dev/null 2>&1 ||

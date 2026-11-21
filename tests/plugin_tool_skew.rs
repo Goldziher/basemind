@@ -633,8 +633,9 @@ impl Fixture {
             .env("NO_COLOR", "1")
             .env_remove("BASEMIND_NO_AUTOSPAWN");
         // ~keep A Linux release loads its bundled lib/ through RUNPATH, which LD_LIBRARY_PATH
-        // ~keep outranks: under CI's /usr/local/lib libheif the loader mixes the two sets and the
-        // ~keep release cannot start. The build under test, which may need the variable, keeps it.
+        // ~keep outranks: under a job that exports one for its own build the loader mixes the two
+        // ~keep sets and the release cannot start. The build under test, which may need the
+        // ~keep variable, keeps it.
         if program != Path::new(BIN) && self.daemon_bins.iter().any(|bin| bin == program) {
             cmd.env_remove("LD_LIBRARY_PATH");
         }
