@@ -157,7 +157,7 @@ fn the_plan_of_an_older_minor_home_names_each_rebuild_and_its_bytes() {
 
     let expected = format!(
         "upgrade plan for schema {SCHEMA_VER} (data home {home})
-group g1: index 3.0MB replaced, frees 3.0MB, needs 516.5MB
+group g1: index 3.0MB replaced or kept (some of its worktrees are already upgraded), frees {two_maps}B, needs 516.5MB
   workspace {app}: frees {two_maps}B, 10000 files, code map scan about 3s
     view staged: rebuilt (written under schema {older}), frees {map}B
     view working: rebuilt (written under schema {older}), frees {map}B
@@ -173,7 +173,7 @@ no known group: frees {map}B, needs 512.0MB
 blobs: frees 2.0MB once past the blob grace period, needs 2.0MB in v{SCHEMA_VER}
   v{older}: 2.0MB
   un-namespaced: 1.0KB
-total: frees 5.0MB, needs 518.5MB, 40.0GB free
+total: frees 2.0MB, needs 518.5MB, 40.0GB free
 ",
         home = fixture.data.path().display(),
         app = fixture.app.display(),
@@ -205,8 +205,8 @@ fn the_json_plan_carries_every_verdict_and_byte_count() {
                 {
                     "group": GROUP,
                     "index_bytes": 3 * MIB,
-                    "index_replaced": true,
-                    "bytes_freed": 3 * MIB + 2 * map,
+                    "index_replaced": null,
+                    "bytes_freed": 2 * map,
                     "bytes_needed": 3 * MIB / 2 * 3 + HEADROOM,
                     "workspaces": [
                         {
@@ -262,7 +262,7 @@ fn the_json_plan_carries_every_verdict_and_byte_count() {
                 "bytes_freed": 2 * MIB + KIB,
                 "bytes_needed": 2 * MIB,
             },
-            "bytes_freed": 3 * MIB + 3 * map + 2 * MIB + KIB,
+            "bytes_freed": 3 * map + 2 * MIB + KIB,
             "bytes_needed": 3 * MIB / 2 * 3 + HEADROOM + 2 * MIB,
             "free_bytes": FREE,
         })
@@ -390,4 +390,133 @@ fn a_scan_estimate_rounds_up_to_whole_seconds() {
     assert_eq!(format_secs(125), "2m05s");
     assert_eq!(10_000_u64.div_ceil(CODE_MAP_FILES_PER_SEC), 3);
     assert_eq!(4_000_u64.div_ceil(CODE_MAP_FILES_PER_SEC), 1);
+}
+
+/// A group whose every map is older has not been opened since the bump: its index is replaced, and
+/// counted as freed. Beside a current map the group open keeps a current index, so none is claimed.
+#[test]
+fn the_group_index_is_replaced_only_when_no_worktree_of_the_group_is_upgraded() {
+    let older = || map_of_schema(SCHEMA_VER - 1);
+    let cases = [
+        ("all older", vec![older(), older()], Some(true), 3 * MIB),
+        ("older beside current", vec![older(), current_map()], None, 0),
+        ("none older", vec![current_map()], Some(false), 0),
+    ];
+    for (case, maps, replaced, index_freed) in cases {
+        let home = tempfile::tempdir().expect("tempdir");
+        let data = DataRoot::new(home.path());
+        for (n, map) in maps.iter().enumerate() {
+            let root = home.path().join(format!("repo{n}"));
+            std::fs::create_dir_all(&root).expect("mkdir");
+            plant_workspace(
+                &data,
+                &format!("w{n}"),
+                &root,
+                Some(GROUP),
+                None,
+                &[("working", map.clone())],
+            );
+        }
+        write(
+            &data
+                .cache_dir()
+                .join(GROUPS_DIR)
+                .join(GROUP)
+                .join(crate::index::INDEX_DIR)
+                .join("00"),
+            &vec![0; (3 * MIB) as usize],
+        );
+
+        let planned = plan(&data, HEADROOM).expect("plan");
+
+        let group = &planned.groups[0];
+        assert_eq!(group.index_replaced, replaced, "{case}");
+        let maps_freed: u64 = group.workspaces.iter().map(|workspace| workspace.bytes_freed).sum();
+        assert_eq!(group.bytes_freed, maps_freed + index_freed, "{case}");
+    }
+}
+
+/// A map an earlier rebuild emptied and left pending is kept by the open, which a full scan then
+/// owes: the plan says so and estimates it, where it would have said `kept` and needed nothing.
+#[test]
+fn a_current_map_with_a_rebuild_pending_is_planned_as_a_rebuild() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let data = DataRoot::new(home.path());
+    let root = home.path().join("repo");
+    std::fs::create_dir_all(&root).expect("mkdir");
+    let pending = rmp_serde::to_vec_named(&Index {
+        rebuild_pending: true,
+        ..Index::empty()
+    })
+    .expect("encode file map");
+    plant_workspace(&data, "w", &root, Some(GROUP), Some(100), &[("working", pending)]);
+
+    let planned = plan(&data, HEADROOM).expect("plan");
+
+    let workspace = &planned.groups[0].workspaces[0];
+    assert_eq!(workspace.views[0].action, ViewAction::Pending);
+    assert_eq!(workspace.views[0].bytes_freed, 0, "the map is not deleted");
+    assert!(workspace.rebuilds());
+    assert!(planned.groups[0].bytes_needed >= HEADROOM);
+    let mut out = Vec::new();
+    render_human(&planned, &mut out).expect("render");
+    let text = String::from_utf8(out).expect("utf-8");
+    assert!(text.contains("view working: kept, rebuild pending"), "{text}");
+    assert!(text.contains("basemind scan --root"), "{text}");
+}
+
+/// The first writer open deletes a view's per-view index database, which the plan counts as freed.
+#[test]
+fn a_per_view_index_database_is_counted_as_freed() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let data = DataRoot::new(home.path());
+    let root = home.path().join("repo");
+    std::fs::create_dir_all(&root).expect("mkdir");
+    plant_workspace(&data, "w", &root, Some(GROUP), None, &[("working", current_map())]);
+    let view = data.workspaces_dir().join("w").join(VIEWS_DIR).join("working");
+    write(
+        &view.join(crate::index::INDEX_DIR).join("00"),
+        &vec![0; (2 * MIB) as usize],
+    );
+
+    let planned = plan(&data, HEADROOM).expect("plan");
+
+    let working = &planned.groups[0].workspaces[0].views[0];
+    assert_eq!(working.bytes_freed, 2 * MIB);
+    assert_eq!(planned.bytes_freed, 2 * MIB);
+}
+
+#[test]
+fn the_rebuild_command_quotes_the_root_and_a_missing_root_is_told_from_an_unrecorded_one() {
+    assert_eq!(shell_quote("/home/user/repo"), "/home/user/repo");
+    assert_eq!(shell_quote("/home/user/My Repo"), "'/home/user/My Repo'");
+    assert_eq!(shell_quote("/home/o'neil/repo"), "'/home/o'\\''neil/repo'");
+
+    let home = tempfile::tempdir().expect("tempdir");
+    let data = DataRoot::new(home.path());
+    let spaced = home.path().join("My Repo");
+    std::fs::create_dir_all(&spaced).expect("mkdir");
+    let older = map_of_schema(SCHEMA_VER - 1);
+    plant_workspace(
+        &data,
+        "a-spaced",
+        &spaced,
+        Some(GROUP),
+        None,
+        &[("working", older.clone())],
+    );
+    let unmarked = data.workspaces_dir().join("b-unmarked");
+    write(&unmarked.join(VIEWS_DIR).join("working").join(INDEX_FILE), &older);
+
+    let planned = plan(&data, HEADROOM).expect("plan");
+    let mut out = Vec::new();
+    render_human(&planned, &mut out).expect("render");
+    let text = String::from_utf8(out).expect("utf-8");
+
+    assert!(
+        text.contains(&format!("basemind scan --root '{}'", spaced.display())),
+        "{text}"
+    );
+    assert!(text.contains("its root is not recorded"), "{text}");
+    assert!(!text.contains("its root is gone"), "{text}");
 }

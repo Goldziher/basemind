@@ -5,7 +5,8 @@
 //! a view's from `store::view_on_open`, the decision the writer open of [`crate::store::Store`]
 //! takes; the blob namespaces' from `store_gc_namespaces::superseded`, the predicate of the sweep
 //! that reaps them; the disk a group's rebuild needs from
-//! [`crate::disk_space::required_bytes`], the estimate the scan's free-space check refuses on. The
+//! [`SpaceEstimate::required_bytes`], the estimate the scan's free-space check refuses on, here over
+//! the existing index alone: the plan reads no source. The
 //! group index has no verdict of its own that can be read without opening it, and opening a Fjall
 //! database writes; its schema and the file maps' both follow [`crate::version::RELEASE_MINOR`],
 //! so it is replaced exactly when one of the group's file maps is of an older schema.
@@ -19,7 +20,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::data_root::DataRoot;
-use crate::disk_space::{available_bytes, dir_bytes, required_bytes};
+use crate::disk_space::{SpaceEstimate, available_bytes, dir_bytes};
 use crate::render::human_bytes;
 use crate::store::{INDEX_FILE, VIEWS_DIR, ViewOnOpen, read_workspace_marker, sets_aside, view_on_open};
 use crate::store_gc::{GcError, read_dir};
@@ -38,6 +39,9 @@ const SECS_PER_MIN: u64 = 60;
 pub enum ViewAction {
     /// The map is current and kept.
     Keep,
+    /// The map is current and kept, but an earlier rebuild stopped after emptying it: a full scan
+    /// still owes the view's files.
+    Pending,
     /// The view has no file map yet.
     Absent,
     /// The map is removed and the view rebuilt by a full scan.
@@ -51,12 +55,13 @@ pub enum ViewAction {
 impl ViewAction {
     /// Whether the view is rebuilt from a full scan.
     pub fn rebuilds(self) -> bool {
-        matches!(self, ViewAction::Rebuild | ViewAction::SetAside)
+        matches!(self, ViewAction::Pending | ViewAction::Rebuild | ViewAction::SetAside)
     }
 
     fn label(self) -> &'static str {
         match self {
             ViewAction::Keep => "kept",
+            ViewAction::Pending => "kept, rebuild pending",
             ViewAction::Absent => "no file map",
             ViewAction::Rebuild => "rebuilt",
             ViewAction::SetAside => "set aside and rebuilt",
@@ -76,7 +81,8 @@ pub struct ViewPlan {
     pub reason: Option<String>,
     /// The schema the map was written under, when that is older than this binary's.
     pub older_schema: Option<u16>,
-    /// Bytes of the file map the open removes.
+    /// Bytes the open removes: the file map, and the view's per-view index database of a release up
+    /// to 0.33, which the writer open deletes.
     pub bytes_freed: u64,
 }
 
@@ -114,9 +120,12 @@ pub struct GroupPlan {
     pub group: Option<String>,
     /// Bytes of the group index (`cache/groups/<group>/index.fjall`).
     pub index_bytes: u64,
-    /// Whether the group index is replaced: one of its file maps is of an older schema.
-    pub index_replaced: bool,
-    /// Bytes the rebuild frees: the replaced index and the removed file maps.
+    /// Whether the group index is replaced. `Some(true)` when every file map of the group is of an
+    /// older schema, so no worktree has opened it since the bump; `Some(false)` when none is; `None`
+    /// when some worktrees are upgraded and others are not, which read-only evidence cannot settle:
+    /// the group open keeps a current index.
+    pub index_replaced: Option<bool>,
+    /// Bytes the rebuild frees: the replaced index and the removed file maps and per-view indexes.
     pub bytes_freed: u64,
     /// Free bytes the rebuild's free-space check asks for, when any view of the group is rebuilt.
     pub bytes_needed: u64,
@@ -195,7 +204,7 @@ pub fn plan(data: &DataRoot, headroom_bytes: u64) -> Result<UpgradePlan, GcError
         .sum();
     let any_rebuild = groups.iter().any(|group| group.bytes_needed > 0);
     let index_needed = if any_rebuild {
-        required_bytes(rebuilt_index_bytes, headroom_bytes)
+        rebuild_required_bytes(rebuilt_index_bytes, headroom_bytes)
     } else {
         0
     };
@@ -208,6 +217,17 @@ pub fn plan(data: &DataRoot, headroom_bytes: u64) -> Result<UpgradePlan, GcError
         blobs,
         free_bytes: available_bytes(data.path()),
     })
+}
+
+/// The free-space check's estimate for a rebuilt group index of `index_bytes`, with `headroom` on top.
+fn rebuild_required_bytes(index_bytes: u64, headroom: u64) -> u64 {
+    SpaceEstimate {
+        index_bytes,
+        source_bytes: 0,
+        vectors: false,
+        headroom_bytes: headroom,
+    }
+    .required_bytes()
 }
 
 /// The plan for the workspace cache directory `basemind_dir`.
@@ -240,6 +260,12 @@ pub(crate) fn workspace_plan(basemind_dir: &Path) -> Result<WorkspacePlan, GcErr
 fn view_plan(view_dir: &Path) -> ViewPlan {
     let map_bytes = || std::fs::metadata(view_dir.join(INDEX_FILE)).map_or(0, |meta| meta.len());
     let (action, reason, older_schema, bytes_freed) = match view_on_open(view_dir) {
+        ViewOnOpen::Keep(index) if index.rebuild_pending => (
+            ViewAction::Pending,
+            Some("an earlier rebuild did not finish".to_string()),
+            None,
+            0,
+        ),
         ViewOnOpen::Keep(_) => (ViewAction::Keep, None, None, 0),
         ViewOnOpen::Absent => (ViewAction::Absent, None, None, 0),
         ViewOnOpen::OlderSchema { found } => (
@@ -252,12 +278,19 @@ fn view_plan(view_dir: &Path) -> ViewPlan {
         ViewOnOpen::Discard(why) => (ViewAction::Rebuild, Some(why.to_string()), None, map_bytes()),
         ViewOnOpen::Refuse(why) => (ViewAction::Refuse, Some(why.to_string()), None, 0),
     };
+    // The writer open deletes a per-view index database of a release up to 0.33 in any view it
+    // opens; a refused open touches nothing.
+    let per_view_index = if action == ViewAction::Refuse {
+        0
+    } else {
+        dir_bytes(&view_dir.join(crate::index::INDEX_DIR))
+    };
     ViewPlan {
         view: file_name(view_dir),
         action,
         reason,
         older_schema,
-        bytes_freed,
+        bytes_freed: bytes_freed + per_view_index,
     }
 }
 
@@ -272,24 +305,41 @@ fn group_plan(data: &DataRoot, group: Option<String>, mut workspaces: Vec<Worksp
                 .join(crate::index::INDEX_DIR),
         )
     });
-    let index_replaced = group.is_some()
-        && workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.views)
-            .any(|view| view.older_schema.is_some());
+    let index_replaced = group.as_ref().map_or(Some(false), |_| index_replacement(&workspaces));
     let bytes_needed = if workspaces.iter().any(WorkspacePlan::rebuilds) {
-        required_bytes(index_bytes, headroom)
+        rebuild_required_bytes(index_bytes, headroom)
     } else {
         0
     };
     let maps_freed: u64 = workspaces.iter().map(|workspace| workspace.bytes_freed).sum();
     GroupPlan {
-        bytes_freed: maps_freed + if index_replaced { index_bytes } else { 0 },
+        bytes_freed: maps_freed + if index_replaced == Some(true) { index_bytes } else { 0 },
         group,
         index_bytes,
         index_replaced,
         bytes_needed,
         workspaces,
+    }
+}
+
+/// Whether the group index of `workspaces` is replaced by the upgrade, from their file maps alone.
+/// Every map older: no worktree has opened the group since the bump, so its index is the old one.
+/// None older: nothing replaces it. Both kinds: a worktree already opened the group, and the group
+/// open keeps a current index, so the old maps beside it do not say.
+fn index_replacement(workspaces: &[WorkspacePlan]) -> Option<bool> {
+    let mut older = false;
+    let mut current = false;
+    for view in workspaces.iter().flat_map(|workspace| &workspace.views) {
+        match view.action {
+            ViewAction::Keep | ViewAction::Pending => current = true,
+            _ if view.older_schema.is_some() => older = true,
+            _ => {}
+        }
+    }
+    match (older, current) {
+        (true, false) => Some(true),
+        (false, _) => Some(false),
+        (true, true) => None,
     }
 }
 
@@ -397,7 +447,11 @@ pub fn render_human(plan: &UpgradePlan, out: &mut impl Write) -> std::io::Result
 }
 
 fn render_group(group: &GroupPlan, out: &mut impl Write) -> std::io::Result<()> {
-    let state = if group.index_replaced { "replaced" } else { "kept" };
+    let state = match group.index_replaced {
+        Some(true) => "replaced",
+        Some(false) => "kept",
+        None => "replaced or kept (some of its worktrees are already upgraded)",
+    };
     match &group.group {
         Some(key) => writeln!(
             out,
@@ -448,8 +502,30 @@ fn render_workspace(workspace: &WorkspacePlan, out: &mut impl Write) -> std::io:
         return Ok(());
     }
     match (&workspace.root, workspace.root_exists) {
-        (Some(root), true) => writeln!(out, "    rebuild it alone: basemind scan --root {}", root.display()),
-        _ => writeln!(out, "    its root is gone: the orphan sweep removes this cache"),
+        (Some(root), true) => writeln!(
+            out,
+            "    rebuild it alone: basemind scan --root {}",
+            shell_quote(&root.display().to_string())
+        ),
+        (Some(_), false) => writeln!(out, "    its root is gone: the orphan sweep removes this cache"),
+        (None, _) => writeln!(
+            out,
+            "    its root is not recorded: scan its worktree to rebuild it; the orphan sweep keeps a cache it cannot place"
+        ),
+    }
+}
+
+/// `text` as one POSIX shell word: unchanged when it holds only characters the shell leaves alone,
+/// else single-quoted with each embedded quote closed, escaped and reopened.
+fn shell_quote(text: &str) -> String {
+    let plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '+' | '=' | ':' | '@' | ','));
+    if plain {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
     }
 }
 
