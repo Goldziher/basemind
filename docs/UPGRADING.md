@@ -583,7 +583,8 @@ token in the `Authorization` header only: `?token=` is refused.
 The `documents` cargo feature was split into tiers. `documents` is document search without OCR or
 named-entity recognition; `documents-ocr` adds Tesseract OCR (raster images and PDFs with no text
 layer) and `documents-ner` adds ONNX named-entity recognition (`[documents.ner]` and the
-`entity` filter of `docs_search`). `full` includes all three, so the published binaries are unchanged except
+`entity` filter of `docs_search`); `documents-heic` adds HEIC/HEIF photos (through libheif) to that OCR.
+`full` includes all four, so the published binaries are unchanged except
 that they no longer contain PaddleOCR, which is the source-only `documents-ocr-paddle` feature. A
 source build that used `--features documents` needs
 `--features "documents documents-ocr documents-ner"` (or `full`) to keep OCR and NER. Without
@@ -595,7 +596,7 @@ missing a tier extracts every document again on its first scan, and so does the 
 switching to a binary with a different set of tiers.
 
 Archive extraction, LLM-backed (abstractive) summarization and the LLM NER backend were removed, with
-HEIC/HEIF, SQLite, WordPerfect, HWP/HWPX and Apple iWork extraction and SVG rasterisation (SVG text
+SQLite, WordPerfect, HWP/HWPX and Apple iWork extraction and SVG rasterisation (SVG text
 is still read as XML); they have no replacement. These settings are still accepted and ignored, each
 with a one-time warning: `[documents] extract_archives = true` (archives are always skipped, and
 `BASEMIND_DAEMON_ALLOW_EXTRACT_ARCHIVES` has no effect),

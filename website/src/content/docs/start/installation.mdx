@@ -227,8 +227,8 @@ documents, OCR, named-entity recognition, search, shared memory, and agent comms
 builds the code-map and git tools only.
 
 In a source build, `--features documents` covers document search without OCR or named-entity
-recognition. Add `documents-ocr` (raster images and scanned PDFs) and `documents-ner` (the
-`entity_category` filter), or build with `full`, which has both. See
+recognition. Add `documents-ocr` (raster images and scanned PDFs), `documents-heic` (HEIC/HEIF photos, through
+libheif) and `documents-ner` (the `entity_category` filter), or build with `full`, which has all three. See
 [Cargo Features](/reference/configuration/#cargo-features).
 
 ### Using a local build with the plugin

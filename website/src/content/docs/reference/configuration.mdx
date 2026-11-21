@@ -510,20 +510,22 @@ ONNX Runtime). Opt into the rest:
 |---|---|---|
 | `documents` | Document search over local files (xberg): PDF (text layer), Office formats, spreadsheets, email, HTML, XML (SVG text is read as XML), Markdown/MDX and Jupyter notebooks, with chunking, language detection, quality scoring, keywords (YAKE/RAKE), extractive (TextRank) summaries, the cross-encoder reranker and embeddings. No OCR, no NER. | yes |
 | `documents-ocr` | `documents` plus Tesseract OCR: raster images and scanned PDFs (no text layer). Runs implicitly, no configuration. | yes |
+| `documents-heic` | `documents-ocr` plus HEIC/HEIF photos, decoded through libheif with the libde265 HEVC decoder (LGPL-3.0, linked dynamically; no x265 encoder) and then OCR'd like any raster image. Needs libheif 1.19 or newer as a shared library. | yes |
 | `documents-ner` | `documents` plus ONNX named-entity recognition (GLiNER): `[documents.ner]` and the `docs_search` `entity` filter. | yes |
 | `documents-ocr-paddle` | `documents-ocr` plus PaddleOCR as an optional fallback stage. Source builds only; not in the published binaries. | no |
 | `memory` | LanceDB-backed shared memory (`memory_save`, `memory_search`). | yes |
 | `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`code_search`). | yes |
 | `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (the `agent_post`, `agent_inbox` and `agent_threads` tools, the `basemind agent` CLI and the `workspace` CLI listings; Unix domain sockets + Windows named pipes). | yes |
 | `code-intel` | Scope- and import-resolved JS/TS `code_refs` resolution (oxc). | yes |
-| `full` | `documents` + `documents-ocr` + `documents-ner` + `memory` + `code-search` + `comms` + `code-intel`. | — |
+| `full` | `documents` + `documents-ocr` + `documents-heic` + `documents-ner` + `memory` + `code-search` + `comms` + `code-intel`. | — |
 
 `--features documents` alone no longer includes OCR or NER. A source build that wants both uses
 `--features "documents documents-ocr documents-ner"` (or `full`). Without `documents-ocr`, raster
 images are not indexed as documents and a PDF with no text layer is indexed with no text, with a
 warning naming the file and the feature. Without `documents-ner`, a `docs_search` call with
 `entity` returns an error naming the feature. Archive extraction, LLM-backed summarization
-and HEIC/HEIF, SQLite, WordPerfect, HWP/HWPX and Apple iWork extraction are not in any build.
+and SQLite, WordPerfect, HWP/HWPX and Apple iWork extraction are not in any build. HEIC/HEIF
+photos need `documents-heic`.
 
 ### Installation Examples
 
