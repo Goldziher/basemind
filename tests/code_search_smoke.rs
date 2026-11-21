@@ -610,7 +610,8 @@ fn search_code_changed_keeps_the_hits_of_the_branch_since_its_merge_base() {
     basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
-    git(root, &["init", "-q"]);
+    // Neither `trunk` nor `feature`, so a configured `init.defaultBranch` cannot collide with them.
+    git(root, &["init", "-q", "-b", "fixture-base"]);
     git(root, &["config", "commit.gpgsign", "false"]);
     std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
     std::fs::write(
@@ -650,7 +651,7 @@ fn search_code_changed_keeps_the_hits_of_the_branch_since_its_merge_base() {
         String::from_utf8_lossy(&scan.stderr)
     );
 
-    let search = |changed: &str| -> serde_json::Value {
+    let search = |lane: &str, changed: &str| -> serde_json::Value {
         let out = Command::new(bin())
             .current_dir(root)
             .args([
@@ -658,7 +659,7 @@ fn search_code_changed_keeps_the_hits_of_the_branch_since_its_merge_base() {
                 "code",
                 "search",
                 "--lane",
-                "keyword",
+                lane,
                 "config",
                 "--changed",
                 changed,
@@ -672,8 +673,19 @@ fn search_code_changed_keeps_the_hits_of_the_branch_since_its_merge_base() {
         );
         serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("code search emits JSON")
     };
+    // The default lane ranks as deep as a scoped search over-fetches; it once panicked on that depth.
+    let hybrid = search("hybrid", "trunk");
+    assert_eq!(hybrid["scope_files"], 1, "{hybrid}");
+    assert!(
+        hybrid["hits"]
+            .as_array()
+            .expect("a hits array")
+            .iter()
+            .all(|hit| hit["path"] == "mine.rs"),
+        "{hybrid}"
+    );
     for (changed, scope_files) in [("trunk", 1), ("trunk...HEAD", 1), ("trunk..HEAD", 2)] {
-        let value = search(changed);
+        let value = search("keyword", changed);
         let paths: Vec<&str> = value["hits"]
             .as_array()
             .expect("a hits array")

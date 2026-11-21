@@ -38,7 +38,7 @@
           "type": "integer"
         },
         "changed": {
-          "description": "Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.",
+          "description": "Files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
           "type": "string"
         }
       },
@@ -204,7 +204,7 @@
           "type": "string"
         },
         "changed": {
-          "description": "`callers` only: files changed since rev (empty: HEAD) or in A..B; +importers adds importers.",
+          "description": "`callers` only: files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
           "type": "string"
         }
       }
@@ -257,6 +257,10 @@
         "max_tokens": {
           "description": "Default 6000.",
           "type": "integer"
+        },
+        "changed": {
+          "description": "Files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
+          "type": "string"
         }
       },
       "required": [
@@ -314,7 +318,7 @@
           "type": "integer"
         },
         "changed": {
-          "description": "Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.",
+          "description": "Files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
           "type": "string"
         }
       },
@@ -430,7 +434,7 @@
           "type": "integer"
         },
         "changed": {
-          "description": "Only files changed since rev (empty: HEAD) or in A..B; +importers adds importers.",
+          "description": "Files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
           "type": "string"
         }
       }

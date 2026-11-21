@@ -123,7 +123,8 @@ pub(super) fn is_cacheable(ranking: &CodeSearchRanking) -> bool {
 /// read-only index) or that a non-identifier query doesn't trigger simply contributes nothing; the
 /// query never fails on a single lane. The returned hits carry the fused RRF score in `score`.
 fn hybrid_hits(ws: &Workspace, query: &str, limit: usize) -> Result<(Vec<CodeSearchHit>, LaneReport), EngineError> {
-    let fuse_limit = (limit * 4).min(200).max(limit);
+    // A scoped search ranks deeper than 200, so the cap must not fall below `limit`.
+    let fuse_limit = limit.saturating_mul(4).min(200).max(limit);
 
     let mut report = LaneReport::default();
 
