@@ -147,10 +147,11 @@ pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig) -> String 
         format!("doc/4/cutover={},{}", cutovers.0, cutovers.1)
     };
     // `extract::doc_tiers` is compiled only with `documents`, and this function is not.
-    tag.push_str(missing_tier_suffix(
+    tag.push_str(&missing_tier_suffix(
         cfg!(feature = "documents"),
         cfg!(feature = "documents-ocr"),
         cfg!(feature = "documents-ner"),
+        cfg!(feature = "documents-heic"),
     ));
     digest_of(
         &tag,
@@ -182,17 +183,19 @@ pub fn doc_digest(cfg: &DocumentsConfig, resources: &ResourcesConfig) -> String 
     )
 }
 
-/// Digest-tag suffix naming the document tiers this binary lacks. A document extracted without OCR or
-/// NER is missing text or entities that a build with the tier produces, so the two builds must not
-/// share a digest: swapping binaries then re-extracts. Empty when both tiers are compiled in, which
-/// keeps the digest of a full build what it was before the tiers existed.
-fn missing_tier_suffix(documents: bool, ocr: bool, ner: bool) -> &'static str {
-    match (documents, ocr, ner) {
-        (false, _, _) | (true, true, true) => "",
-        (true, false, true) => "/no-ocr",
-        (true, true, false) => "/no-ner",
-        (true, false, false) => "/no-ocr/no-ner",
+/// Digest-tag suffix naming the document tiers this binary lacks. A document extracted without OCR,
+/// NER or HEIC decoding is missing text or entities that a build with the tier produces, so the two
+/// builds must not share a digest: swapping binaries then re-extracts. Empty when every tier is
+/// compiled in, which keeps the digest of a full build what it was before the tiers existed. HEIC
+/// decoding needs OCR, so a build without OCR is tagged `/no-ocr` alone for it.
+fn missing_tier_suffix(documents: bool, ocr: bool, ner: bool, heic: bool) -> String {
+    if !documents {
+        return String::new();
     }
+    [(ocr, "/no-ocr"), (ner, "/no-ner"), (heic || !ocr, "/no-heic")]
+        .into_iter()
+        .filter_map(|(present, tag)| (!present).then_some(tag))
+        .collect()
 }
 
 /// Fingerprint of the limits a document's extraction ran under, for its timeout tombstone (see
@@ -276,13 +279,22 @@ mod tests {
 
     #[test]
     fn the_digest_tag_names_only_the_tiers_a_documents_build_lacks() {
-        assert_eq!(missing_tier_suffix(true, true, true), "");
-        assert_eq!(missing_tier_suffix(true, false, true), "/no-ocr");
-        assert_eq!(missing_tier_suffix(true, true, false), "/no-ner");
-        assert_eq!(missing_tier_suffix(true, false, false), "/no-ocr/no-ner");
-        for (ocr, ner) in [(false, false), (false, true), (true, false), (true, true)] {
+        let cases = [
+            ((true, true, true), ""),
+            ((true, true, false), "/no-heic"),
+            ((false, true, false), "/no-ocr"),
+            ((true, false, true), "/no-ner"),
+            ((true, false, false), "/no-ner/no-heic"),
+            ((false, false, false), "/no-ocr/no-ner"),
+        ];
+        for ((ocr, ner, heic), suffix) in cases {
             assert_eq!(
-                missing_tier_suffix(false, ocr, ner),
+                missing_tier_suffix(true, ocr, ner, heic),
+                suffix,
+                "ocr={ocr} ner={ner} heic={heic}"
+            );
+            assert_eq!(
+                missing_tier_suffix(false, ocr, ner, heic),
                 "",
                 "no documents feature, no suffix"
             );
