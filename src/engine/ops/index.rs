@@ -7,7 +7,9 @@ use std::sync::atomic::Ordering;
 use crate::engine::error::EngineError;
 use crate::engine::timing::elapsed_us;
 use crate::engine::types::files::SizedFile;
-use crate::engine::types::index::{IndexRescanParams, IndexStatusParams, LargeFiles, RescanResponse, StatusResponse};
+use crate::engine::types::index::{
+    IndexRescanParams, IndexStatusParams, LargeFiles, RescanResponse, StatusResponse, WatchStatus,
+};
 use crate::engine::workspace::Workspace;
 use crate::scanner::{EmbedMode, ScanStats};
 
@@ -111,6 +113,7 @@ impl Workspace {
             (ms > 0).then_some(ms)
         };
         let notice = self.lifecycle_notice();
+        let watches = watch_status(&self.watch_health, crate::watch_health::max_user_watches);
         let identity = self.repo_identity();
         let submodules = self.repo.as_ref().map(|r| r.submodule_paths()).unwrap_or_default();
         let Ok(store) = self.try_store_read() else {
@@ -132,6 +135,7 @@ impl Workspace {
                 warm_ms,
                 history_syncing,
                 notice,
+                watches,
                 total_size_bytes: 0,
                 languages: BTreeMap::new(),
                 large_files: None,
@@ -182,6 +186,7 @@ impl Workspace {
             warm_ms,
             history_syncing,
             notice,
+            watches,
             total_size_bytes: total_size,
             languages: by_lang,
             large_files: Some(large_files),
@@ -279,6 +284,22 @@ fn grammar_dir() -> Option<String> {
     crate::lang::grammar_cache_dir().map(|dir| dir.display().to_string())
 }
 
+/// The `watches` block of `index_status`: absent until the watcher published per-directory watches.
+/// `limit` reads the current watch limit.
+fn watch_status(health: &crate::watch_health::WatchHealth, limit: impl FnOnce() -> Option<u64>) -> Option<WatchStatus> {
+    let (held, unwatched) = (health.held(), health.unwatched());
+    if held == 0 && unwatched == 0 {
+        return None;
+    }
+    let limit = limit();
+    Some(WatchStatus {
+        held,
+        unwatched,
+        limit,
+        note: (unwatched > 0).then(|| crate::watch_health::exhaustion_note(unwatched, limit)),
+    })
+}
+
 /// Count content-addressed blobs in the GLOBAL blob store by tallying `.fm.msgpack` files
 /// (one combined L1 + L2 filemap per indexed content hash; the `.doc` sibling shares the same
 /// stem so it is not double-counted). A single directory read — cheaper than
@@ -322,6 +343,51 @@ fn blob_divergence_note(file_count: usize, blob_count: usize) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watch_status_is_absent_until_the_watcher_publishes() {
+        let health = crate::watch_health::WatchHealth::default();
+        assert_eq!(watch_status(&health, || Some(8192)), None);
+    }
+
+    #[test]
+    fn watch_status_reports_held_watches_without_a_note_under_the_limit() {
+        let health = crate::watch_health::WatchHealth::default();
+        health.record(12, 0);
+        assert_eq!(
+            watch_status(&health, || Some(8192)),
+            Some(WatchStatus {
+                held: 12,
+                unwatched: 0,
+                limit: Some(8192),
+                note: None,
+            })
+        );
+    }
+
+    #[test]
+    fn watch_status_reports_exhaustion_with_the_sysctl_and_the_limit() {
+        let health = crate::watch_health::WatchHealth::default();
+        health.record(8192, 40);
+        assert_eq!(
+            watch_status(&health, || Some(8192)),
+            Some(WatchStatus {
+                held: 8192,
+                unwatched: 40,
+                limit: Some(8192),
+                note: Some(crate::watch_health::exhaustion_note(40, Some(8192))),
+            })
+        );
+        let json = serde_json::to_value(watch_status(&health, || None)).expect("serialize");
+        assert_eq!(json["unwatched"], 40);
+        assert!(json.get("limit").is_none(), "{json}");
+        assert!(
+            json["note"]
+                .as_str()
+                .is_some_and(|note| note.contains("fs.inotify.max_user_watches (currently unknown)")),
+            "{json}"
+        );
+    }
 
     #[test]
     fn status_note_absent_when_index_and_blobs_agree() {

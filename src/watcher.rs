@@ -14,6 +14,7 @@ use tracing::{debug, info, warn};
 use crate::config::Config;
 use crate::scanner::{CollectObserver, FileResult, ScanError, ScanReport};
 use crate::store::Store;
+use crate::watch_health::WatchHealth;
 
 #[derive(Debug, Error)]
 pub enum WatchError {
@@ -249,13 +250,17 @@ fn forward_shutdown(
 /// Blocks until `shutdown` fires or the debouncer channel disconnects. No
 /// initial signal is emitted: each caller already owns its own initial-scan
 /// path, so the callback only ever sees `BatchKind::Incremental` batches.
+///
+/// On Linux the watches held, and the directories the inotify watch limit left unwatched, are
+/// published to `health` after every change to the watch set.
 pub fn watch_paths(
     root: &Path,
     config: &Config,
+    health: &WatchHealth,
     shutdown: tokio::sync::oneshot::Receiver<()>,
     on_change: impl FnMut(Vec<PathBuf>, BatchKind),
 ) -> Result<(), WatchError> {
-    watch_paths_reloading(root, config, || None, shutdown, on_change)
+    watch_paths_reloading(root, config, || None, health, shutdown, on_change)
 }
 
 /// [`watch_paths`] whose indexability filter follows config changes: before each batch is filtered,
@@ -267,10 +272,11 @@ pub fn watch_paths_reloading(
     root: &Path,
     config: &Config,
     reload: impl FnMut() -> Option<Arc<Config>>,
+    health: &WatchHealth,
     shutdown: tokio::sync::oneshot::Receiver<()>,
     on_change: impl FnMut(Vec<PathBuf>, BatchKind),
 ) -> Result<(), WatchError> {
-    watch_with::<RecommendedWatcher>(root, config, reload, shutdown, on_change)
+    watch_with::<RecommendedWatcher>(root, config, reload, health, shutdown, on_change)
 }
 
 /// [`watch_paths_reloading`] over the notify backend `W`: the platform's in production, one whose
@@ -280,6 +286,7 @@ fn watch_with<W: notify::Watcher>(
     root: &Path,
     config: &Config,
     mut reload: impl FnMut() -> Option<Arc<Config>>,
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] health: &WatchHealth,
     shutdown: tokio::sync::oneshot::Receiver<()>,
     mut on_change: impl FnMut(Vec<PathBuf>, BatchKind),
 ) -> Result<(), WatchError> {
@@ -349,17 +356,9 @@ fn watch_with<W: notify::Watcher>(
             if !filters.allows_dir(rel.to_string_lossy().as_ref()) {
                 continue;
             }
-            // Registering a watch can still fail (the directory was removed between the walk and
-            // the watch, or inotify limits were hit). Make it non-fatal: warn and continue.
-            match debouncer.watch(entry.path(), RecursiveMode::NonRecursive) {
-                Ok(()) => {
-                    dir_watches.watched.insert(entry.path().to_path_buf());
-                }
-                Err(e) => {
-                    warn!(path = %entry.path().display(), error = %e, "inotify watch registration failed; continuing");
-                }
-            }
+            dir_watches.register(&mut debouncer, entry.path().to_path_buf());
         }
+        dir_watches.publish(health);
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -447,7 +446,10 @@ fn watch_with<W: notify::Watcher>(
             Some(None) => {
                 info!("the OS dropped watch events under the root; rescanning the whole tree");
                 #[cfg(target_os = "linux")]
-                dir_watches.resync(&mut debouncer, &filter, root);
+                {
+                    dir_watches.resync(&mut debouncer, &filter, root);
+                    dir_watches.publish(health);
+                }
                 on_change(Vec::new(), BatchKind::FullRescan);
                 continue;
             }
@@ -475,7 +477,10 @@ fn watch_with<W: notify::Watcher>(
         // appeared, with its whole subtree: a directory renamed or moved in, or one filled before
         // its own create event was handled, has subdirectories no event named.
         #[cfg(target_os = "linux")]
-        dir_watches.sync(&mut debouncer, &filter, &candidates);
+        {
+            dir_watches.sync(&mut debouncer, &filter, &candidates);
+            dir_watches.publish(health);
+        }
         let touched: Vec<PathBuf> = candidates
             .into_iter()
             .filter(|p| keep_event_path(&filter, root, p, dir_events.contains(p)))
@@ -550,6 +555,7 @@ fn watch_store_with<W: notify::Watcher>(
             *reload_current.lock().expect("config poisoned") = Arc::clone(&fresh);
             Some(fresh)
         },
+        &WatchHealth::default(),
         shutdown,
         |touched, kind| {
             let config = Arc::clone(&current.lock().expect("config poisoned"));
@@ -649,6 +655,9 @@ impl<W: notify::Watcher> DirRegistry for notify_debouncer_full::Debouncer<W, NoC
 #[derive(Default)]
 struct DirWatches {
     watched: BTreeSet<PathBuf>,
+    /// Directories the inotify watch limit refused a watch, so their edits go unseen. Retried
+    /// whenever their subtree is armed again.
+    refused: BTreeSet<PathBuf>,
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -687,20 +696,20 @@ impl DirWatches {
             registry.unwatch_dir(&dir);
             self.watched.remove(&dir);
         }
+        let refused_gone: Vec<PathBuf> = self
+            .refused
+            .range(dir.to_path_buf()..)
+            .take_while(|p| p.starts_with(dir))
+            .filter(|p| !std::fs::symlink_metadata(p).is_ok_and(|meta| meta.is_dir()))
+            .cloned()
+            .collect();
+        for path in refused_gone {
+            self.refused.remove(&path);
+        }
         if !self.watched.contains(dir) && !filter.is_watchable_dir(dir) {
             return;
         }
-        for sub in filter.subtree_dirs(dir) {
-            if self.watched.contains(&sub) {
-                continue;
-            }
-            match registry.watch_dir(&sub) {
-                Ok(()) => {
-                    self.watched.insert(sub);
-                }
-                Err(e) => warn!(path = %sub.display(), error = %e, "inotify re-arm failed"),
-            }
-        }
+        self.register_subtree(registry, filter, dir);
     }
 
     /// Release the watch on `gone` and on every watched directory beneath it.
@@ -715,6 +724,15 @@ impl DirWatches {
             registry.unwatch_dir(&dir);
             self.watched.remove(&dir);
         }
+        let refused: Vec<PathBuf> = self
+            .refused
+            .range(gone.to_path_buf()..)
+            .take_while(|p| p.starts_with(gone))
+            .cloned()
+            .collect();
+        for dir in refused {
+            self.refused.remove(&dir);
+        }
     }
 
     /// Arm `dir` and every watchable directory beneath it, unless `dir` is already armed.
@@ -722,17 +740,43 @@ impl DirWatches {
         if self.watched.contains(dir) || !filter.is_watchable_dir(dir) {
             return;
         }
+        self.register_subtree(registry, filter, dir);
+    }
+
+    /// Register every watchable directory at or under `dir` not yet watched.
+    fn register_subtree(
+        &mut self,
+        registry: &mut impl DirRegistry,
+        filter: &crate::scanner_filter::IndexFilter,
+        dir: &Path,
+    ) {
         for sub in filter.subtree_dirs(dir) {
-            if self.watched.contains(&sub) {
-                continue;
-            }
-            match registry.watch_dir(&sub) {
-                Ok(()) => {
-                    self.watched.insert(sub);
-                }
-                Err(e) => warn!(path = %sub.display(), error = %e, "inotify re-arm failed"),
+            if !self.watched.contains(&sub) {
+                self.register(registry, sub);
             }
         }
+    }
+
+    /// Register a watch on `dir`. A failure is not fatal: the directory may be gone since the walk
+    /// found it, or the inotify watch limit refused it, which is recorded in `refused` and reported
+    /// once per pass through [`publish`](Self::publish) rather than once per directory.
+    fn register(&mut self, registry: &mut impl DirRegistry, dir: PathBuf) {
+        match registry.watch_dir(&dir) {
+            Ok(()) => {
+                self.refused.remove(&dir);
+                self.watched.insert(dir);
+            }
+            Err(e) if crate::watch_health::is_watch_limit(&e) => {
+                debug!(path = %dir.display(), "inotify watch limit reached; directory not watched");
+                self.refused.insert(dir);
+            }
+            Err(e) => warn!(path = %dir.display(), error = %e, "inotify watch registration failed"),
+        }
+    }
+
+    /// Publish the watches held and the directories refused to `health`.
+    fn publish(&self, health: &WatchHealth) {
+        health.record(self.watched.len(), self.refused.len());
     }
 }
 

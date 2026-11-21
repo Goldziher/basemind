@@ -132,6 +132,12 @@ Performance is stable across project size:
 - **Scan time** scales roughly linearly with file count (tree-sitter parsing dominates).
 - **Git query latency** stays flat in history depth: the newest-first posting lists decode only the commits a query returns.
 - **Git-history index** costs **6–22 % of `.git`** on disk (the one index size that is measured).
+- **Watches** on Linux are one inotify watch per directory per workspace, capped per user by
+  `fs.inotify.max_user_watches`. Many worktrees of a large repository can exhaust it; `index_status`
+  then reports `watches.unwatched`, the current `watches.limit` and a note, and the daemon log warns.
+  Raise it with `sudo sysctl -w fs.inotify.max_user_watches=1048576` (persist it in
+  `/etc/sysctl.d/`), then run `basemind comms stop` so the next call starts a daemon that watches
+  every directory.
 
 Eager L2 (call-site extraction) is on by default and adds to scan time. Set `eager_l2 = false` to
 skip it for faster scans, at the cost of disabling reference search.

@@ -84,6 +84,11 @@ pub(crate) struct StatusResponse {
     /// when the server is fully ready. Mirrors the `notice` on every read-tool response.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
+    /// The Linux working-tree watcher's inotify watches, and the directories the watch limit left
+    /// unwatched. Absent where no per-directory watcher runs: macOS and Windows watch the tree with
+    /// one recursive watch, and a read-only serve or the CLI watches nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watches: Option<WatchStatus>,
     pub total_size_bytes: u64,
     pub languages: BTreeMap<String, usize>,
     /// Code files too long to read whole. Absent while a writer holds the store.
@@ -129,6 +134,24 @@ pub(crate) struct StatusResponse {
     pub head_short_sha: Option<String>,
     #[serde(default)]
     pub elapsed_us: u64,
+}
+
+/// The `watches` block of `index_status`.
+#[derive(Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub(crate) struct WatchStatus {
+    /// Watches the watcher holds, one per watched directory.
+    pub held: usize,
+    /// Directories the inotify watch limit refused a watch: their edits are not indexed until a
+    /// rescan. Absent (0) when every directory is watched.
+    #[serde(default, skip_serializing_if = "crate::engine::types::is_zero")]
+    pub unwatched: usize,
+    /// The current `fs.inotify.max_user_watches`, the limit across all of the user's processes.
+    /// Absent when it cannot be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    /// What to raise and how, present only when directories are unwatched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// The code files of at least `threshold_lines` lines: how many there are and the largest of them.

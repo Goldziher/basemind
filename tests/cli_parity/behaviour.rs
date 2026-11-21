@@ -52,8 +52,9 @@ impl Case {
 }
 
 /// Fields of `index_status` that describe the process answering, not the index: how long its map
-/// took to warm, and the root as that process spelled it (`/var/…` against `/private/var/…`).
-const STATUS_VOLATILE: &[&str] = &["warm_ms", "root"];
+/// took to warm, the root as that process spelled it (`/var/…` against `/private/var/…`), and the
+/// watches its watcher holds, which a one-shot CLI call has none of.
+const STATUS_VOLATILE: &[&str] = &["warm_ms", "root", "watches"];
 
 /// Whether a commit search was answered by the live walk: the server has the git-history index
 /// warm, a one-shot CLI call may not.

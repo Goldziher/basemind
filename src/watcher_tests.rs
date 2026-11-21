@@ -127,6 +127,7 @@ impl ScriptedWatch {
                 &root_for_thread,
                 &config,
                 || None,
+                &WatchHealth::default(),
                 shutdown_rx,
                 |paths, kind| {
                     assert!(matches!(kind, BatchKind::Incremental { .. }));
@@ -178,10 +179,16 @@ fn should_emit_changed_path_when_file_is_modified() {
 
     let root_for_thread = root.clone();
     let handle = std::thread::spawn(move || {
-        watch_paths(&root_for_thread, &config, shutdown_rx, |paths, kind| {
-            assert!(matches!(kind, BatchKind::Incremental { .. }));
-            let _ = path_tx.send(paths);
-        })
+        watch_paths(
+            &root_for_thread,
+            &config,
+            &WatchHealth::default(),
+            shutdown_rx,
+            |paths, kind| {
+                assert!(matches!(kind, BatchKind::Incremental { .. }));
+                let _ = path_tx.send(paths);
+            },
+        )
     });
 
     let target = root.join("hello.rs");
@@ -235,6 +242,7 @@ fn reloaded_config_rebuilds_the_watcher_filter() {
                     .swap(false, Ordering::SeqCst)
                     .then(|| Arc::clone(&reloaded))
             },
+            &WatchHealth::default(),
             shutdown_rx,
             |paths, _| {
                 let _ = path_tx.send(paths);
@@ -317,6 +325,7 @@ fn shutdown_interrupts_sustained_event_batches() {
             &root_for_thread,
             &config,
             || None,
+            &WatchHealth::default(),
             shutdown_rx,
             |_paths, _kind| {
                 generation += 1;
@@ -460,6 +469,7 @@ fn should_deliver_events_produced_while_the_consumer_is_busy() {
             &root_for_thread,
             &config,
             || None,
+            &WatchHealth::default(),
             shutdown_rx,
             |paths, _kind| {
                 let _ = busy_tx.send(());
@@ -624,7 +634,13 @@ fn should_not_fail_startup_on_unreadable_directory() {
     let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<(), WatchError>>();
     let root_for_thread = root.clone();
     let handle = std::thread::spawn(move || {
-        let result = watch_paths(&root_for_thread, &config, shutdown_rx, |_paths, _kind| {});
+        let result = watch_paths(
+            &root_for_thread,
+            &config,
+            &WatchHealth::default(),
+            shutdown_rx,
+            |_paths, _kind| {},
+        );
         let _ = done_tx.send(result);
     });
 
@@ -740,3 +756,6 @@ fn dir_watches_follow_a_renamed_directory_subtree() {
 
 #[path = "watcher_rescan_tests.rs"]
 mod rescan;
+
+#[path = "watcher_limit_tests.rs"]
+mod limit;

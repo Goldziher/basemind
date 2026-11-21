@@ -69,6 +69,36 @@ async fn shedding_releases_every_stack_and_its_watcher() {
     drop(conn);
 }
 
+/// A watcher that exits drops its watch counts: `index_status` stops reporting watches nobody holds
+/// and directories nobody is failing to watch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_exited_watcher_leaves_no_watches_in_index_status() {
+    crate::store::init_isolated_cache();
+    let pool = Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let workspace = workspace_with_sources();
+    pool.rescan(
+        workspace.path(),
+        None,
+        false,
+        false,
+        &crate::scanner::ScanCancel::default(),
+    )
+    .expect("scan workspace");
+    let shared = hosted_stack(&pool, workspace.path()).await;
+    let served = Arc::clone(&shared.workspace);
+    served.watch_health.record(5, 2);
+    let watcher_exited = only_watcher_exited(&pool);
+    drop(shared);
+
+    assert_eq!(pool.shed_read_stacks().await, 1);
+    watcher_exited.await;
+    assert_eq!((served.watch_health.held(), served.watch_health.unwatched()), (0, 0));
+    let status = served
+        .index_status(crate::engine::types::index::IndexStatusParams {})
+        .expect("index_status");
+    assert_eq!(status.watches, None);
+}
+
 /// The group database behind `root`'s writer handle, held weakly: the allocation outlives the
 /// database, so a later handle can be told apart from it by address.
 fn writer_group(pool: &WorkspacePool, root: &std::path::Path) -> std::sync::Weak<crate::index::group::GroupDb> {
