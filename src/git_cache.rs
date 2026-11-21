@@ -22,7 +22,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
@@ -196,6 +196,19 @@ impl<K: std::hash::Hash + Eq, V> Charged<K, V> {
     }
 }
 
+/// The guard of one category's lock. A panic while the lock was held may have left the byte charge
+/// out of step with the entries, so a poisoned category is emptied and its poison cleared: every
+/// entry is recomputable, and one panicking query must not fail every later one for the process's
+/// life.
+fn category<K: std::hash::Hash + Eq, V>(mutex: &Mutex<Charged<K, V>>) -> MutexGuard<'_, Charged<K, V>> {
+    mutex.lock().unwrap_or_else(|poisoned| {
+        let mut guard = poisoned.into_inner();
+        guard.clear();
+        mutex.clear_poison();
+        guard
+    })
+}
+
 pub struct GitCache {
     commit_files: Mutex<Charged<String, Arc<Vec<CommitFileChange>>>>,
     log: Mutex<Charged<LogKey, Arc<Vec<CommitInfo>>>>,
@@ -245,23 +258,17 @@ impl GitCache {
     /// Look up (or compute) the per-file change list for a commit. Sha-keyed: result is
     /// immutable, so any hit is correct forever.
     pub fn commit_files(&self, repo: &Repo, commit_sha: &str) -> Result<Arc<Vec<CommitFileChange>>, CacheError> {
-        if let Some(hit) = self.commit_files.lock().unwrap().lru.get(commit_sha).cloned() {
+        if let Some(hit) = category(&self.commit_files).lru.get(commit_sha).cloned() {
             return Ok(hit);
         }
         if let Some(disk) = self.read_commit_files_disk(commit_sha) {
             let arc = Arc::new(disk);
-            self.commit_files
-                .lock()
-                .unwrap()
-                .admit(commit_sha.to_string(), Arc::clone(&arc));
+            category(&self.commit_files).admit(commit_sha.to_string(), Arc::clone(&arc));
             return Ok(arc);
         }
         let computed = repo.commit_files_uncached(commit_sha)?;
         let arc = Arc::new(computed);
-        self.commit_files
-            .lock()
-            .unwrap()
-            .admit(commit_sha.to_string(), Arc::clone(&arc));
+        category(&self.commit_files).admit(commit_sha.to_string(), Arc::clone(&arc));
         self.write_commit_files_disk(commit_sha, &arc);
         Ok(arc)
     }
@@ -282,12 +289,12 @@ impl GitCache {
             limit,
             include_files,
         };
-        if let Some(hit) = self.log.lock().unwrap().lru.get(&key).cloned() {
+        if let Some(hit) = category(&self.log).lru.get(&key).cloned() {
             return Ok(hit);
         }
         if let Some(disk) = self.read_log_disk(&key) {
             let arc = Arc::new(disk);
-            self.log.lock().unwrap().admit(key.clone(), Arc::clone(&arc));
+            category(&self.log).admit(key.clone(), Arc::clone(&arc));
             return Ok(arc);
         }
         let commits = match path {
@@ -295,7 +302,7 @@ impl GitCache {
             None => repo.log_paths(limit as usize, include_files)?,
         };
         let arc = Arc::new(commits);
-        self.log.lock().unwrap().admit(key.clone(), Arc::clone(&arc));
+        category(&self.log).admit(key.clone(), Arc::clone(&arc));
         self.write_log_disk(&key, &arc);
         Ok(arc)
     }
@@ -314,17 +321,17 @@ impl GitCache {
             path: path.clone(),
             range,
         };
-        if let Some(hit) = self.blame.lock().unwrap().lru.get(&key).cloned() {
+        if let Some(hit) = category(&self.blame).lru.get(&key).cloned() {
             return Ok(hit);
         }
         if let Some(disk) = self.read_blame_disk(&key) {
             let arc = Arc::new(disk);
-            self.blame.lock().unwrap().admit(key.clone(), Arc::clone(&arc));
+            category(&self.blame).admit(key.clone(), Arc::clone(&arc));
             return Ok(arc);
         }
         let computed = repo.blame_file(suspect_sha, path, range)?;
         let arc = Arc::new(computed);
-        self.blame.lock().unwrap().admit(key.clone(), Arc::clone(&arc));
+        category(&self.blame).admit(key.clone(), Arc::clone(&arc));
         self.write_blame_disk(&key, &arc);
         Ok(arc)
     }
@@ -345,9 +352,9 @@ impl GitCache {
                 source,
             })?;
         }
-        self.commit_files.lock().unwrap().clear();
-        self.log.lock().unwrap().clear();
-        self.blame.lock().unwrap().clear();
+        category(&self.commit_files).clear();
+        category(&self.log).clear();
+        category(&self.blame).clear();
         Ok(removed)
     }
 
@@ -794,6 +801,52 @@ mod tests {
             "charge must describe the two live entries only, got {}",
             guard.charged
         );
+    }
+
+    /// Panic while holding `mutex`, as a query that panics under a category's lock does.
+    fn poison<T>(mutex: &Mutex<T>) {
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = mutex.lock();
+            panic!("a query panics under the category lock");
+        }));
+        assert!(panicked.is_err());
+        assert!(mutex.is_poisoned());
+    }
+
+    /// The panic may have left the charge out of step with the entries, so the next caller gets the
+    /// category back empty and no longer poisoned.
+    #[test]
+    fn a_poisoned_category_is_emptied_for_the_next_caller() {
+        let cache = GitCache::with_budget(None, 64, 1024 * 1024);
+        let key = log_key("head");
+        category(&cache.log).admit(key.clone(), commits("sha", 4096));
+        poison(&cache.log);
+
+        let mut guard = category(&cache.log);
+        assert_eq!(guard.lru.len(), 0);
+        assert_eq!(guard.charged, 0);
+        assert!(guard.lru.get(&key).is_none());
+        drop(guard);
+        assert!(!cache.log.is_poisoned(), "the recovery clears the poison");
+        category(&cache.log).admit(key.clone(), commits("sha", 4096));
+        assert!(
+            category(&cache.log).lru.get(&key).is_some(),
+            "the category caches again"
+        );
+    }
+
+    /// A panic under every category's lock must not fail the next call for the process's life.
+    #[test]
+    fn clear_succeeds_after_a_panic_under_every_category_lock() {
+        let cache = GitCache::with_budget(None, 64, 1024 * 1024);
+        poison(&cache.commit_files);
+        poison(&cache.log);
+        poison(&cache.blame);
+
+        assert_eq!(cache.clear().expect("clear"), 0);
+        assert!(!cache.commit_files.is_poisoned());
+        assert!(!cache.log.is_poisoned());
+        assert!(!cache.blame.is_poisoned());
     }
 
     /// Concurrent same-process writers to the *same* destination key must not clobber each

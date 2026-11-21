@@ -2,18 +2,19 @@
 //! the group.
 //!
 //! A process holds at most one handle per group directory: [`GroupDb::shared`] hands out the live
-//! one, and only opens the database when no handle is alive. Each view of the group reads and writes
-//! its own rows under a 4-byte view id ([`super::scoped`]); the rows the group shares by content
-//! (symbols, calls, BM25 postings, the grep bloom) carry no prefix. The group's own rows live in
-//! `meta` under [`GROUP_META`], which no view prefix can start with: view ids are allocated upward
-//! from 1 and never reach `0xFF000000`.
+//! one, and only opens the database when no handle is alive. Concurrent opens of one group open it
+//! once and share the handle; opens of different groups run concurrently. Each view of the group
+//! reads and writes its own rows under a 4-byte view id ([`super::scoped`]); the rows the group
+//! shares by content (symbols, calls, BM25 postings, the grep bloom) carry no prefix. The group's
+//! own rows live in `meta` under [`GROUP_META`], which no view prefix can start with: view ids are
+//! allocated upward from 1 and never reach `0xFF000000`.
 //!
 //! Durability per view: the view's seal generation is a row under its prefix, so a lost journal
 //! tail is detected per view and never discards the group. A database that was wiped or replaced
 //! gets a new [`GroupDb::incarnation`]; a file map naming another one describes rows that are gone.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use ahash::AHashMap;
 use fjall::{Database, Keyspace, PersistMode};
@@ -110,10 +111,37 @@ impl ViewClaim {
     }
 }
 
+/// A group's registry entry: its handle while one is alive. The slot's lock is held across the
+/// group's open, so a second open of the group waits for the first and gets its handle, while the
+/// registry's own lock is held only to find the slot.
+type Slot = Mutex<Weak<GroupDb>>;
+
 /// Every group database this process holds, by directory.
-fn registry() -> &'static Mutex<AHashMap<PathBuf, Weak<GroupDb>>> {
-    static REGISTRY: std::sync::OnceLock<Mutex<AHashMap<PathBuf, Weak<GroupDb>>>> = std::sync::OnceLock::new();
+fn registry() -> &'static Mutex<AHashMap<PathBuf, Arc<Slot>>> {
+    static REGISTRY: std::sync::OnceLock<Mutex<AHashMap<PathBuf, Arc<Slot>>>> = std::sync::OnceLock::new();
     REGISTRY.get_or_init(Mutex::default)
+}
+
+/// The guard of `mutex`, poisoned or not: a panic under the registry's or a slot's lock leaves a
+/// valid map or a dead handle, so the next caller proceeds instead of failing for the process's
+/// life.
+fn lock_recovering<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The slot of `dir`, made when the registry has none. Slots no caller holds and no live handle
+/// fills are dropped here, so the registry does not keep every group the process ever opened.
+fn slot(dir: &Path) -> Arc<Slot> {
+    let mut registry = lock_recovering(registry());
+    if let Some(slot) = registry.get(dir) {
+        return Arc::clone(slot);
+    }
+    // Only the registry holds a slot whose strong count is 1, so no open is in flight on it and its
+    // lock is free. ~keep
+    registry.retain(|_, slot| Arc::strong_count(slot) > 1 || lock_recovering(slot).strong_count() > 0);
+    let slot: Arc<Slot> = Arc::default();
+    registry.insert(dir.to_path_buf(), Arc::clone(&slot));
+    slot
 }
 
 /// A view's record key in group `meta`.
@@ -163,28 +191,27 @@ fn new_incarnation(dir: &Path) -> u64 {
 }
 
 impl GroupDb {
-    /// The handle this process already holds for `dir`, if any.
+    /// The handle this process already holds for `dir`, if any. An open of the group in flight is
+    /// waited for.
     pub(crate) fn shared(dir: &Path) -> Option<Arc<Self>> {
-        registry()
-            .lock()
-            .expect("group registry")
-            .get(dir)
-            .and_then(Weak::upgrade)
+        let slot = lock_recovering(registry()).get(dir).map(Arc::clone)?;
+        lock_recovering(&slot).upgrade()
     }
 
     /// The handle for `dir`: the one this process holds, or a new open made under `lock`, which the
-    /// caller took for the group. A held handle makes `lock` redundant, and it is dropped.
+    /// caller took for the group. A held handle makes `lock` redundant, and it is dropped. Only the
+    /// group's slot is locked across the open, so opens of other groups do not wait for it.
     pub(crate) fn open_shared(
         dir: &Path,
         lock: impl FnOnce() -> Result<GroupLock, IndexError>,
     ) -> Result<Arc<Self>, IndexError> {
-        let mut registry = registry().lock().expect("group registry");
-        if let Some(held) = registry.get(dir).and_then(Weak::upgrade) {
+        let slot = slot(dir);
+        let mut entry = lock_recovering(&slot);
+        if let Some(held) = entry.upgrade() {
             return Ok(held);
         }
         let opened = Arc::new(Self::open(dir, lock()?)?);
-        registry.retain(|_, handle| handle.strong_count() > 0);
-        registry.insert(dir.to_path_buf(), Arc::downgrade(&opened));
+        *entry = Arc::downgrade(&opened);
         Ok(opened)
     }
 
@@ -192,8 +219,9 @@ impl GroupDb {
     /// this process holds, or a new open that writes nothing. `None` when the database holds no
     /// incarnation yet (no writer has opened it, so no view's rows are in it).
     pub(crate) fn open_shared_for_reading(dir: &Path, lock: GroupLock) -> Result<Option<Arc<Self>>, IndexError> {
-        let mut registry = registry().lock().expect("group registry");
-        if let Some(held) = registry.get(dir).and_then(Weak::upgrade) {
+        let slot = slot(dir);
+        let mut entry = lock_recovering(&slot);
+        if let Some(held) = entry.upgrade() {
             return Ok(Some(held));
         }
         let fresh = super::IndexDb::open_group_for_reading(dir)?;
@@ -206,8 +234,7 @@ impl GroupDb {
             return Ok(None);
         }
         let opened = Arc::new(Self::from_open(dir, fresh, incarnation, lock));
-        registry.retain(|_, handle| handle.strong_count() > 0);
-        registry.insert(dir.to_path_buf(), Arc::downgrade(&opened));
+        *entry = Arc::downgrade(&opened);
         Ok(Some(opened))
     }
 
