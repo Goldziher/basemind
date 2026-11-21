@@ -1,6 +1,6 @@
 # Pre-release hardening
 
-Four scripts under `scripts/hardening/` prove a release build has no memory, CPU, descriptor,
+Scripts under `scripts/hardening/` prove a release build has no memory, CPU, descriptor,
 thread or process leaks, and that every MCP tool and its CLI command works, document RAG included.
 They need Python 3.10+ and nothing outside the standard library.
 
@@ -10,6 +10,7 @@ They need Python 3.10+ and nothing outside the standard library.
 | `functional_sweep.py` | every verb tool and its CLI command answers with the expected structure; RAG finds planted facts, with filters | 1-3 min (`comms` build); 5-15 min first time on a `full` build (model downloads) |
 | `leak_check.py` | no leaks in one-shot `basemind scan` (macOS `leaks`); no definitely-lost blocks (Linux valgrind); on a `system-allocator` build | 1-2 min for the fixtures (`leaks`); several under valgrind; longer with `--repo` |
 | `selftest_analyze.py` | `analyze.py`'s rules fire on known-bad input and pass known-good input | seconds |
+| `selftest_sweep.py` | the sweep's matchers read the shipped answer shapes, and its verdict fails a skip in a `full` build | seconds |
 
 Build first, outside the repository's `target/` if you like:
 
@@ -153,21 +154,25 @@ real run proves R7 fires.
 ## Functional sweep
 
 ```bash
-python3 scripts/hardening/functional_sweep.py --binary "$CARGO_TARGET_DIR/release/basemind"
+python3 scripts/hardening/functional_sweep.py --binary "$CARGO_TARGET_DIR/release/basemind" --features full
 ```
 
 Builds a fixture repository (Rust + Python, two commits, an uncommitted edit) with five documents,
 each carrying one invented fact: Markdown, HTML, a hand-written text-layer PDF, an `.eml` and an
 `.ipynb`. It scans, waits (up to `--docs-timeout`) for documents to become searchable, then makes
 one call per case over MCP and runs the matching CLI command with `--json`, asserting structural
-fields: the outline lists `compute_total` with a 1-based line, `code_refs` finds callers,
-implementations, importers and a definition, `git_log` / `git_blame` / `git_diff` show the fixture's
-history and edit, `memory_*` round-trips a note. For each planted question `docs_search` must return
+fields of the JSON answer (MCP `structuredContent` and the CLI's `--json`; the MCP text block is
+encoded per tool, ADR-0053): the outline lists `compute_total` with a 1-based line, `code_refs`
+finds callers, implementations, importers and a definition, `git_log` / `git_blame` / `git_diff`
+show the fixture's history and edit, `memory_*` round-trips a note. For each planted question `docs_search` must return
 the planted document among the top five with the answer in its text; a `mime_type` filter must keep
 the PDF fact and an excluding filter must drop it.
 
 A case answering that its Cargo feature is not compiled in is a counted skip. The run fails when any
-case fails, when nothing passed, or when the server advertises a verb tool the sweep did not call.
+case fails, when nothing passed, when the server advertises a verb tool the sweep did not call, or
+when `--features full` (every feature compiled in) skipped a case. `selftest_sweep.py` runs the
+matchers on answers in the shipped shapes (`code_grep` hits grouped by file and symbol, `code_refs`
+hits by file) and the verdict on synthetic outcomes.
 
 ## One-shot leak check (macOS, Linux)
 

@@ -190,20 +190,42 @@ fn canary_body(result: &CallToolResult) -> Option<Value> {
     (result.is_error != Some(true)).then(|| decode_text(result))
 }
 
-fn decode_text(result: &CallToolResult) -> Value {
+fn text_of(result: &CallToolResult) -> String {
     use rmcp::model::ContentBlock;
-    let raw = result
+    result
         .content
         .iter()
         .find_map(|c| match c {
             ContentBlock::Text(t) => Some(t.text.clone()),
             _ => None,
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+fn decode_text(result: &CallToolResult) -> Value {
+    let raw = text_of(result);
     if raw.is_empty() {
         return Value::Null;
     }
     basemind::wire::decode(&raw).unwrap_or(Value::String(raw))
+}
+
+/// The detail a failed call is recorded with. Its message is plain text, in none of the encodings
+/// `wire::decode` reads (ADR-0053), so it is kept as sent: decoded, `server_busy: …` would read as a
+/// TOON object.
+fn error_detail(result: &CallToolResult) -> String {
+    format!("is_error: {}", text_of(result))
+}
+
+/// The rows of a listing: a list (`code_symbols` results), or one grouped by file (`code_refs` hits:
+/// `{"<path>": [row, ...]}`), by file and enclosing symbol (`code_grep` hits:
+/// `{"<path>": {"<symbol>": [row, ...]}}`), or by depth (`code_refs` importers' `by_depth`).
+fn rows_in(value: &Value) -> u64 {
+    match value {
+        Value::Array(rows) => rows.len() as u64,
+        Value::Object(groups) => groups.values().map(rows_in).sum(),
+        _ => 0,
+    }
 }
 
 /// The label a call is recorded under: `tool:mode` for a mode-dispatched tool, `tool:relation` for
@@ -235,7 +257,7 @@ fn record_label(tool: &'static str, args: &Value) -> String {
 }
 
 /// Call a tool and record the result. Returns the decoded JSON body if successful
-/// so per-tool drivers can chain assertions on it. Records the call either way.
+/// so per-tool drivers can chain assertions on it, `None` otherwise. Records the call either way.
 async fn call(
     svc: &ServiceHandle,
     records: &mut Vec<ToolCallRecord>,
@@ -268,23 +290,19 @@ async fn call(
             None
         }
         Ok(Ok(result)) => {
-            let body = decode_text(&result);
-            let is_error = result.is_error.unwrap_or(false);
+            let body = canary_body(&result);
             records.push(ToolCallRecord {
                 tool: label,
-                ok: !is_error,
+                ok: body.is_some(),
                 elapsed_ms: elapsed.as_millis(),
                 elapsed_us: elapsed.as_micros(),
-                detail: if is_error {
-                    match &body {
-                        Value::String(message) => format!("is_error: {message}"),
-                        other => format!("is_error: {other}"),
-                    }
-                } else {
+                detail: if body.is_some() {
                     "ok".to_string()
+                } else {
+                    error_detail(&result)
                 },
             });
-            Some(body)
+            body
         }
     }
 }
@@ -868,16 +886,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
 
     // Canaries count rows, so each asks for a budget far above its page instead of the default.
     const WHOLE_PAGE: u32 = 1_000_000;
-    // A list (`code_symbols` results), or one grouped by file (`code_refs` hits:
-    // `{"<path>": [row, ...]}`), or by file and enclosing symbol (`code_grep` hits:
-    // `{"<path>": {"<symbol>": [row, ...]}}`), or by depth (`code_refs` importers' `by_depth`).
-    fn rows_in(value: &Value) -> u64 {
-        match value {
-            Value::Array(rows) => rows.len() as u64,
-            Value::Object(groups) => groups.values().map(rows_in).sum(),
-            _ => 0,
-        }
-    }
     let count = |body: &Value, key: &str| body.get(key).map_or(0, rows_in);
 
     match repo_name {
@@ -1499,4 +1507,32 @@ fn tolerates_only_the_expected_refusals() {
         "code_grep",
         "is_error: needs the `documents` Cargo feature"
     ));
+}
+
+#[test]
+fn records_a_failed_call_with_its_message_as_sent() {
+    let busy = CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+        "server_busy: retry the same call in about 500 ms",
+    )]);
+    assert_eq!(
+        error_detail(&busy),
+        "is_error: server_busy: retry the same call in about 500 ms"
+    );
+    assert_eq!(canary_body(&busy), None);
+}
+
+#[test]
+fn counts_code_grep_rows_read_back_from_the_text_block() {
+    let answer = json!({
+        "hits": {
+            "src/a.rs": { "spawn": ["3: pub fn spawn() {"], "": ["9: // fn spawn"] },
+            "src/b.rs": { "run": ["1: fn spawn_blocking() {", "4: fn spawn_local() {"] },
+        },
+        "next_cursor": "c1",
+    });
+    let text = basemind::wire::encode("code_grep", &answer);
+    assert!(text.contains("# src/a.rs\n"), "not the row block: {text}");
+    let body = basemind::wire::decode(&text).expect("decode the code_grep text");
+    assert_eq!(body, answer);
+    assert_eq!(rows_in(&body["hits"]), 4);
 }

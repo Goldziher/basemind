@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render one CI leg's hardening results as a markdown table (rule, value, threshold, verdict).
 
-Reads what the other scripts leave in their `--out` directories: the selftest log, `sweep.json`,
+Reads what the other scripts leave in their `--out` directories: the selftest logs, `sweep.json`,
 the soak verdict JSON written by `analyze.py --json`, and `leaks.json`. A missing input is a
 `not run` row, never a silent omission. Appends to `$GITHUB_STEP_SUMMARY` when it is set.
 
@@ -37,16 +37,26 @@ def read_json(path: Path) -> Any:  # noqa: ANN401 - parsed JSON
         return None
 
 
-def selftest_rows(reports: Path) -> list[Row]:
+SELFTESTS = (
+    ("selftest: analyze.py rules fire", "selftest.log"),
+    ("selftest: sweep matchers read the shipped shapes", "selftest-sweep.log"),
+)
+
+
+def selftest_row(reports: Path, label: str, log_name: str) -> Row:
     try:
-        text = (reports / "selftest.log").read_text(encoding="utf-8")
+        text = (reports / log_name).read_text(encoding="utf-8")
     except OSError:
-        return [("selftest: analyze.py rules fire", "-", "every case as expected", verdict(None))]
+        return (label, "-", "every case as expected", verdict(None))
     m = re.search(r"(\d+)/(\d+) cases behaved as expected", text)
     if not m:
-        return [("selftest: analyze.py rules fire", "no tally in the log", "every case as expected", verdict(False))]
+        return (label, "no tally in the log", "every case as expected", verdict(False))
     good, total = int(m.group(1)), int(m.group(2))
-    return [("selftest: analyze.py rules fire", f"{good}/{total} cases", f"{total}/{total}", verdict(good == total))]
+    return (label, f"{good}/{total} cases", f"{total}/{total}", verdict(good == total))
+
+
+def selftest_rows(reports: Path) -> list[Row]:
+    return [selftest_row(reports, label, log_name) for label, log_name in SELFTESTS]
 
 
 def sweep_rows(reports: Path) -> list[Row]:
