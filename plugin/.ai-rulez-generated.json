@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:0b993653d3a71cbd5c2da09c751f7da2ae7c560184bddcd33d96a2f758ab8b94",
+  "source_hash": "blake3:5b88636c3d55e26d6c34674048b6b54b5aea90815b17b551ab1285686a01d7e8",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:e0959043330c123c0439c4a8a33ada325ba6857c086592be6d3b32067a2e9681",
@@ -667,7 +667,7 @@
       "mode": "0755"
     },
     "hooks/pre-tool-guard": {
-      "content_hash": "blake3:2ae62b81ac9475b7f2fdb95915ffc7b7b7f6de76eb1ca197cbd5930ede246563",
+      "content_hash": "blake3:24810ebebb8d8b57b24d8360937fe0ee80e56cbe3b3b381081ce8d3430a07e6a",
       "mode": "0755"
     },
     "hooks/run-hook.cmd": {
