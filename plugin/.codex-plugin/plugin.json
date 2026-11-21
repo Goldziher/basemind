@@ -36,6 +36,8 @@
       "What changed in this file in the last 20 commits?"
     ],
     "websiteURL": "https://github.com/Goldziher/basemind",
-    "brandColor": "#F97316"
+    "brandColor": "#F97316",
+    "composerIcon": "assets/basemind-icon.svg",
+    "logo": "assets/basemind-logo.png"
   }
 }

@@ -27,6 +27,7 @@
           "Read"
         ],
         "category": "Developer Tools",
+        "composerIcon": "assets/basemind-icon.svg",
         "defaultPrompt": [
           "Outline this file.",
           "What calls `<symbol>` in this repo?",
@@ -35,6 +36,7 @@
         ],
         "developerName": "Na'aman Hirschfeld",
         "displayName": "basemind",
+        "logo": "assets/basemind-logo.png",
         "longDescription": "basemind indexes a repository with tree-sitter and exposes a structured code map — outlines, references, callers, history, blame, diff — over MCP. Designed for AI agents to navigate unfamiliar code without reading every file.",
         "shortDescription": "Code-map MCP server for navigating large codebases",
         "websiteURL": "https://github.com/Goldziher/basemind"

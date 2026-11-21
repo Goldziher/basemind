@@ -1,13 +1,13 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:2fe644190fd12103b98d64ffa593e8972dff378f1e31a430d49f3c931281216d",
+  "source_hash": "blake3:bc0fe3ab733a68f3b1da1dc3bffc0d8c4cf5af67f4a80846993ea72b2eb7b625",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:36f4c5d42de76b97fcdd6b403dbf02672a487f20ded1da4874805a58e3a4d019",
       "mode": "0644"
     },
     ".codex-plugin/plugin.json": {
-      "content_hash": "blake3:ef49480a7785508ad54bb1c3b94eee4a3c16c29deda7dec48ef29030079271dd",
+      "content_hash": "blake3:df6c2afd2dd628f7ca7c1f3dfcc74da06473481e7de53c5167477d6e95140002",
       "mode": "0644"
     },
     ".cursor-plugin/commands/bm-doctor.md": {
@@ -123,7 +123,7 @@
       "mode": "0644"
     },
     ".factory-plugin/plugin.json": {
-      "content_hash": "blake3:358dd5cdebd9f771107aa31cbcb8900263fa242059f2035080b0564e2cc6bedc",
+      "content_hash": "blake3:57102f359b02a9fa5602bb6dbc3ec9a5e7cf431247a087c2cff0f2d3efbe91e9",
       "mode": "0644"
     },
     ".hermes/package/pyproject.toml": {
@@ -594,6 +594,14 @@
       "content_hash": "blake3:88ee6abf950716cd45ec834b02850ad33d2673621d64dc4a02e4d365377f311d",
       "mode": "0644"
     },
+    "assets/basemind-icon.svg": {
+      "content_hash": "blake3:fc7016c15ba153a20e4f1a244761333b48fe31efc63d5a5d8fc012b0e6f35d36",
+      "mode": "0644"
+    },
+    "assets/basemind-logo.png": {
+      "content_hash": "blake3:884724a9f4d3defa70d1144eb7b1750ff4b8bd7df58c8dc8441777aca539c67b",
+      "mode": "0644"
+    },
     "commands/bm-doctor.md": {
       "content_hash": "blake3:88406afe89ac9298a0c591b114e9b32e7177c787382c0101abe6d13287ef23ae",
       "mode": "0644"
@@ -671,7 +679,7 @@
       "mode": "0755"
     },
     "kimi.plugin.json": {
-      "content_hash": "blake3:461b6bd6f9ccad85c5c428b5fb06747e2aa22f2a26da81d44b4e119f87bff9b8",
+      "content_hash": "blake3:76e92f23f97daddb6ae088c81d956d6dc6a72857b04b5a848da5a1f74879d348",
       "mode": "0644"
     },
     "mcp.json": {
@@ -683,7 +691,7 @@
       "mode": "0644"
     },
     "plugin.json": {
-      "content_hash": "blake3:974982f5172682c0f6db1a1eb36dcb688ecf50149258629328af05e6c5580617",
+      "content_hash": "blake3:1b9e3e5787f275d295ff5d8f9a9fbb6e2a6a26fcedec5a3d2e063f00463f5467",
       "mode": "0644"
     },
     "scripts/mcp-launch.sh": {
@@ -778,6 +786,8 @@
   "includes": [
     "LICENSE",
     "assets/GEMINI.md",
+    "assets/basemind-icon.svg",
+    "assets/basemind-logo.png",
     "hooks/agent-as",
     "hooks/inbox-notify",
     "hooks/pre-tool-guard",
