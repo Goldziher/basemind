@@ -18,6 +18,12 @@ pub struct CodeSearchParams {
     #[serde(default)]
     #[schemars(extend("enum" = ["hybrid", "semantic", "keyword"]))]
     pub lane: Option<String>,
+    /// Prefix, or a glob when it has `*`, e.g. `src/`.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Language, e.g. `rust`.
+    #[serde(default)]
+    pub language: Option<String>,
     /// Default 10.
     #[serde(default)]
     pub limit: Option<u32>,
@@ -38,10 +44,10 @@ pub struct DocsSearchParams {
     /// Exact MIME filter, e.g. `application/pdf`.
     #[serde(default)]
     pub mime_type: Option<String>,
-    /// Format: pdf, office, html, markdown, email, notebook, text or other.
+    /// pdf, office, html, markdown, email, notebook, text or other.
     #[serde(default)]
-    pub kind: Option<String>,
-    /// Glob over document paths (`docs/**/*.md`).
+    pub format: Option<String>,
+    /// Prefix, or a glob when it has `*`, e.g. `src/`.
     #[serde(default)]
     pub path: Option<String>,
     /// Whole keywords, comma-separated; any one matches.

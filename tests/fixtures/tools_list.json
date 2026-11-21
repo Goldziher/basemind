@@ -14,7 +14,7 @@
           "type": "boolean"
         },
         "path": {
-          "description": "Literal substring of the repo-relative path, e.g. `src/mcp/`; not a glob.",
+          "description": "Prefix, or a glob when it has `*`, e.g. `src/`.",
           "type": "string"
         },
         "language": {
@@ -238,6 +238,14 @@
             "keyword"
           ]
         },
+        "path": {
+          "description": "Prefix, or a glob when it has `*`, e.g. `src/`.",
+          "type": "string"
+        },
+        "language": {
+          "description": "Language, e.g. `rust`.",
+          "type": "string"
+        },
         "limit": {
           "description": "Default 10.",
           "type": "integer"
@@ -279,6 +287,14 @@
         },
         "kind": {
           "description": "function, method, struct, enum, class, interface, trait, type, const, module, macro, route.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Prefix, or a glob when it has `*`, e.g. `src/`.",
+          "type": "string"
+        },
+        "language": {
+          "description": "Language, e.g. `rust`.",
           "type": "string"
         },
         "fuzzy": {
@@ -332,12 +348,12 @@
           "description": "Exact MIME filter, e.g. `application/pdf`.",
           "type": "string"
         },
-        "kind": {
-          "description": "Format: pdf, office, html, markdown, email, notebook, text or other.",
+        "format": {
+          "description": "pdf, office, html, markdown, email, notebook, text or other.",
           "type": "string"
         },
         "path": {
-          "description": "Glob over document paths (`docs/**/*.md`).",
+          "description": "Prefix, or a glob when it has `*`, e.g. `src/`.",
           "type": "string"
         },
         "keywords": {
@@ -380,7 +396,7 @@
   {
     "name": "find_files",
     "title": "Find files",
-    "description": "Use instead of `find`/`fd`/`ls -R` to locate a file by a fuzzy fragment of its name or path (one typo allowed), or to list files without `query`. Covers every file git tracks. A `path_prefix` or `language` no listed file has is an error. Example: {\"query\":\"readme\"}",
+    "description": "Use instead of `find`/`fd`/`ls -R` to locate a file by a fuzzy fragment of its name or path (one typo allowed), or to list files without `query`. Covers every file git tracks. A `path` or `language` no listed file has is an error. Example: {\"query\":\"readme\"}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -389,8 +405,8 @@
           "description": "Fuzzy fragment of a file name or path; omit to list.",
           "type": "string"
         },
-        "path_prefix": {
-          "description": "Only paths starting with this, e.g. `src/mcp/`.",
+        "path": {
+          "description": "Prefix, or a glob when it has `*`, e.g. `src/`.",
           "type": "string"
         },
         "language": {
@@ -688,9 +704,12 @@
           "description": "List notes whose key starts with this.",
           "type": "string"
         },
-        "tag": {
-          "description": "Only notes carrying this tag. Not with `key`.",
-          "type": "string"
+        "tags": {
+          "description": "Notes carrying any of these. Not with `key`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "visibility": {
           "description": "`group` (default, cross-agent) or `individual` (the workspace owner's).",

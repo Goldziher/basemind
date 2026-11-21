@@ -25,11 +25,14 @@
 //! - a second rescan is a no-op and the blob set stops changing;
 //! - the git history, a memory note and an agents thread the old release wrote are still answered;
 //! - opening the upgraded data with the old binary again fails safe: it holds exactly the paths it
-//!   held before, and a re-upgrade converges (a second scan updates nothing, blob accounting holds).
+//!   held before and still answers `code symbols` from its blobs, and a re-upgrade converges (a
+//!   second scan updates nothing, blob accounting holds).
 //!
 //! A second test leaves the newest old release's daemon running through the upgrade, as a plugin
-//! update does. `BASEMIND_UPGRADE_REQUIRE_CROSS_MINOR` (set by the CI job that bumps the tree to the
-//! next minor first) requires every release upgraded from to be of an older minor.
+//! update does, and checks that the new build's blob GC leaves the blobs that release reads while
+//! it runs and reaps them once it stops. `BASEMIND_UPGRADE_REQUIRE_CROSS_MINOR` (set by the CI job
+//! that bumps the tree to the next minor first) requires every release upgraded from to be of an
+//! older minor.
 
 #![cfg(feature = "documents")]
 
@@ -54,6 +57,17 @@ const NON_CODE: &[&str] = &[
 /// Env var naming the old release binaries to upgrade from (a path list), instead of the
 /// launcher's cache.
 const PIN_ENV: &str = "BASEMIND_UPGRADE_FROM_BIN";
+
+/// The blob GC with no safety margin: an unreferenced blob goes at once
+/// (`BASEMIND_BLOB_GC_GRACE_SECS`), and so does an older release's blob namespace as soon as no
+/// process of that release runs (`BASEMIND_PRUNE_AFTER_DAYS`), as once the launcher's retention of
+/// that release has passed.
+const NO_MARGIN: [(&str, &str); 2] = [("BASEMIND_BLOB_GC_GRACE_SECS", "0"), ("BASEMIND_PRUNE_AFTER_DAYS", "0")];
+
+/// Last release minor that keeps its blobs directly in the blobs root; later ones keep them in a
+/// namespace of their own, `v<minor>/`.
+#[cfg(feature = "comms")]
+const LAST_UNNAMESPACED_MINOR: u32 = 33;
 
 /// Set by the CI job that bumps the tree to the next minor before building: every release upgraded
 /// from must then be of an older minor, so the wipe-and-rebuild of a minor bump is what ran.
@@ -89,7 +103,7 @@ fn command(bin: &Path) -> Command {
 /// `basemind --version` prints `basemind X.Y.Z`; this is Y. Run in `env`'s sandbox, so not even
 /// `--version` of an old release can reach a real data home or daemon.
 fn release_minor(env: &Env, bin: &Path) -> u32 {
-    let out = env.run(bin, &["--version"], None);
+    let out = env.run(bin, &["--version"], &[]);
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.split_whitespace()
         .nth(1)
@@ -155,13 +169,14 @@ struct Env {
 impl Drop for Env {
     fn drop(&mut self) {
         for bin in &self.daemon_bins {
-            let _ = self.run(bin, &["comms", "stop"], None);
+            let _ = self.run(bin, &["comms", "stop"], &[]);
         }
     }
 }
 
 impl Env {
-    fn run(&self, bin: &Path, args: &[&str], grace_secs: Option<&str>) -> Output {
+    /// Run `bin` against the sandbox with `vars` added to its environment.
+    fn run(&self, bin: &Path, args: &[&str], vars: &[(&str, &str)]) -> Output {
         let mut cmd = command(bin);
         cmd.args(["--root"])
             .arg(&self.repo)
@@ -169,15 +184,13 @@ impl Env {
             .args(args)
             .env("BASEMIND_DATA_HOME", &self.data)
             .env("BASEMIND_COMMS_DIR", &self.comms)
-            .env("NO_COLOR", "1");
-        if let Some(grace) = grace_secs {
-            cmd.env("BASEMIND_BLOB_GC_GRACE_SECS", grace);
-        }
+            .env("NO_COLOR", "1")
+            .envs(vars.iter().copied());
         cmd.output().expect("spawn basemind")
     }
 
-    fn ok(&self, bin: &Path, args: &[&str], grace_secs: Option<&str>) -> String {
-        let out = self.run(bin, args, grace_secs);
+    fn ok(&self, bin: &Path, args: &[&str], vars: &[(&str, &str)]) -> String {
+        let out = self.run(bin, args, vars);
         assert!(
             out.status.success(),
             "{} {args:?} failed:\n{}",
@@ -190,7 +203,7 @@ impl Env {
     fn json(&self, bin: &Path, args: &[&str]) -> Value {
         let mut full = vec!["--json"];
         full.extend_from_slice(args);
-        let out = self.run(bin, &full, None);
+        let out = self.run(bin, &full, &[]);
         assert!(
             out.status.success(),
             "{args:?} failed: {}",
@@ -204,16 +217,16 @@ impl Env {
 
     /// A new `scan` refuses to run next to a writer (exit 3), and any command of an old release may
     /// have auto-spawned a daemon that holds the lock, so stop every daemon first, as a real
-    /// upgrade does.
+    /// upgrade does. The scan's blob GC runs with [`NO_MARGIN`]: nothing of the old release runs.
     fn scan_after_stopping_daemons(&self, old: &Path, new: &Path) -> String {
         for bin in [old, new] {
-            let _ = self.run(bin, &["comms", "stop"], None);
+            let _ = self.run(bin, &["comms", "stop"], &[]);
         }
         // A writer can outlive the stop for a moment: a daemon still draining, or a rescan an old
         // release started in the background. `scan` names that writer and exits; wait it out.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
-            let out = self.run(new, &["scan"], Some("0"));
+            let out = self.run(new, &["scan"], &NO_MARGIN);
             let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
             if out.status.success() {
                 return String::from_utf8_lossy(&out.stdout).into_owned();
@@ -224,6 +237,51 @@ impl Env {
             );
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
+    }
+
+    /// The `(path, name)` of each hit an old release's `code symbols <name>` reports under exactly
+    /// that name. Releases up to 0.33 list `{"path", "name", ...}` objects.
+    fn old_symbol_hits(&self, old: &Path, name: &str) -> Vec<(String, String)> {
+        self.json(old, &["code", "symbols", name])["results"]
+            .as_array()
+            .map(|hits| {
+                hits.iter()
+                    .filter(|hit| hit["name"] == name)
+                    .map(|hit| (hit["path"].as_str().unwrap_or_default().to_string(), name.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The symbol names an old release's outline of `path` lists, read from the file's blob.
+    #[cfg(feature = "comms")]
+    fn old_outline_names(&self, old: &Path, path: &str) -> Vec<String> {
+        self.json(old, &["code", "outline", path])["symbols"]
+            .as_array()
+            .map(|symbols| {
+                symbols
+                    .iter()
+                    .filter_map(|symbol| symbol["name"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether the blob store holds blobs where a release of `minor` keeps them: directly in the
+    /// blobs root up to [`LAST_UNNAMESPACED_MINOR`], in `v<minor>/` after it.
+    #[cfg(feature = "comms")]
+    fn holds_blobs_of(&self, minor: u32) -> bool {
+        let root = self.data.join("cache").join("blobs");
+        let dir = if minor <= LAST_UNNAMESPACED_MINOR {
+            root
+        } else {
+            root.join(format!("v{minor}"))
+        };
+        fs::read_dir(dir).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().ends_with(".msgpack"))
+        })
     }
 
     fn blob_names(&self) -> Vec<String> {
@@ -255,12 +313,24 @@ impl Env {
         listed
             .into_iter()
             .filter(|path| {
-                self.run(bin, &["--json", "code", "outline", path], None)
+                self.run(bin, &["--json", "code", "outline", path], &[])
                     .status
                     .success()
             })
             .collect()
     }
+}
+
+/// Run `git` in `repo` as the fixture's committer.
+fn git(repo: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args(["-c", "user.name=upgrade", "-c", "user.email=upgrade@example.invalid"])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(repo)
+        .status()
+        .expect("git in PATH");
+    assert!(status.success(), "git {args:?} failed");
 }
 
 fn fixture(tmp: &Path, daemon_bins: &[&Path]) -> Env {
@@ -292,24 +362,14 @@ fn fixture(tmp: &Path, daemon_bins: &[&Path]) -> Env {
     // Keeps the new build from loading an embedding model: the test is about index shape, not vectors.
     write("basemind.toml", "\"$schema\" = \"v1\"\n\n[documents]\nembed = false\n");
     // Two real commits, so the git history every version indexes has something to carry over.
-    let git = |args: &[&str]| {
-        let status = Command::new("git")
-            .args(["-c", "user.name=upgrade", "-c", "user.email=upgrade@example.invalid"])
-            .args(["-c", "commit.gpgsign=false"])
-            .args(args)
-            .current_dir(&repo)
-            .status()
-            .expect("git in PATH");
-        assert!(status.success(), "git {args:?} failed");
-    };
-    git(&["init", "-q"]);
-    git(&["add", "-A"]);
-    git(&["commit", "-qm", "first upgrade fixture commit"]);
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "first upgrade fixture commit"]);
     write(
         "src/lib.rs",
         "pub fn alpha(x: u32) -> u32 {\n    let y = x + 2;\n    y * 2\n}\n",
     );
-    git(&["commit", "-qam", "second upgrade fixture commit"]);
+    git(&repo, &["commit", "-qam", "second upgrade fixture commit"]);
     let data = tmp.join("data");
     let comms = tmp.join("comms");
     fs::create_dir_all(&data).unwrap();
@@ -326,7 +386,7 @@ fn fixture(tmp: &Path, daemon_bins: &[&Path]) -> Env {
 /// an agents thread. The git history is in the fixture already.
 fn populate_old_stores(env: &Env, old: &Path) {
     if cfg!(feature = "memory") {
-        env.ok(old, &["memory", "put", "upgrade/probe", "kept across upgrades"], None);
+        env.ok(old, &["memory", "put", "upgrade/probe", "kept across upgrades"], &[]);
     }
     if cfg!(feature = "comms") {
         env.ok(
@@ -339,7 +399,7 @@ fn populate_old_stores(env: &Env, old: &Path) {
                 "--path",
                 "src/**",
             ],
-            None,
+            &[],
         );
     }
 }
@@ -397,7 +457,7 @@ fn upgrade_from(old: &Path) -> (bool, u32) {
     let minor = release_minor(&env, old);
     let maps_prose = minor < FIRST_CODE_ONLY_MINOR;
 
-    env.ok(old, &["scan"], None);
+    env.ok(old, &["scan"], &[]);
     populate_old_stores(&env, old);
     let before = env.code_paths(old);
     for name in NON_CODE {
@@ -487,9 +547,9 @@ fn upgrade_from(old: &Path) -> (bool, u32) {
 
     // --- downgrade fails safe: the old release reads the upgraded data back to its own shape -----
     for bin in [old, new] {
-        let _ = env.run(bin, &["comms", "stop"], None);
+        let _ = env.run(bin, &["comms", "stop"], &[]);
     }
-    env.ok(old, &["scan"], None);
+    env.ok(old, &["scan"], &[]);
     let mut downgraded = env.code_paths(old);
     let mut expected = before.clone();
     downgraded.sort();
@@ -498,6 +558,12 @@ fn upgrade_from(old: &Path) -> (bool, u32) {
         downgraded,
         expected,
         "{}: after a downgrade the old release must hold exactly the paths it held before the upgrade",
+        old.display()
+    );
+    assert_eq!(
+        env.old_symbol_hits(old, "alpha"),
+        [("src/lib.rs".to_string(), "alpha".to_string())],
+        "{}: after a downgrade the old release still answers from its blobs",
         old.display()
     );
 
@@ -574,7 +640,9 @@ fn upgrading_from_cached_releases_migrates_cleans_and_converges() {
 }
 
 /// A real plugin update does not stop the daemon an older release left running: the new build's
-/// first scan and reads meet it. The newest release given runs its daemon throughout.
+/// first scan and reads meet it. The newest release given runs its daemon throughout, serving a
+/// second repository the new build never scans. The new build's blob GC, with no grace and no
+/// hold, must leave the blobs that daemon reads, and reap them once it is gone.
 #[cfg(feature = "comms")]
 #[test]
 fn upgrading_while_the_old_release_s_daemon_still_runs() {
@@ -593,15 +661,32 @@ fn upgrading_while_the_old_release_s_daemon_still_runs() {
     let tmp = tempfile::tempdir().unwrap();
     let new = Path::new(NEW_BIN);
     let env = fixture(tmp.path(), &[old.as_path(), new]);
-    env.ok(old, &["scan"], None);
-    env.ok(old, &["comms", "start"], None);
-    env.ok(old, &["comms", "status"], None);
+    let other = Env {
+        repo: tmp.path().join("other"),
+        data: env.data.clone(),
+        comms: env.comms.clone(),
+        daemon_bins: Vec::new(),
+    };
+    fs::create_dir_all(other.repo.join("src")).unwrap();
+    fs::write(
+        other.repo.join("src/lib.rs"),
+        "pub fn beta(x: u32) -> u32 {\n    x * 3\n}\n",
+    )
+    .unwrap();
+    fs::copy(env.repo.join("basemind.toml"), other.repo.join("basemind.toml")).unwrap();
+    git(&other.repo, &["init", "-q"]);
+    git(&other.repo, &["add", "-A"]);
+    git(&other.repo, &["commit", "-qm", "the other repository"]);
+    env.ok(old, &["scan"], &[]);
+    other.ok(old, &["scan"], &[]);
+    env.ok(old, &["comms", "start"], &[]);
+    env.ok(old, &["comms", "status"], &[]);
 
     // The old daemon is never stopped. A writer it runs may hold the workspace for a moment; the
     // new scan names it and exits 3, and is retried, but it must get through.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
     loop {
-        let out = env.run(new, &["scan"], Some("0"));
+        let out = env.run(new, &["scan"], &NO_MARGIN);
         if out.status.success() {
             break;
         }
@@ -613,6 +698,8 @@ fn upgrading_while_the_old_release_s_daemon_still_runs() {
         );
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
+    let gc = env.run(new, &["cache", "gc"], &NO_MARGIN);
+    assert!(gc.status.success(), "cache gc: {}", String::from_utf8_lossy(&gc.stderr));
     let mut code = env.code_paths(new);
     code.sort();
     assert_eq!(
@@ -625,5 +712,43 @@ fn upgrading_while_the_old_release_s_daemon_still_runs() {
     assert!(
         log.to_string().contains("second upgrade fixture commit"),
         "git history next to the old daemon: {log}"
+    );
+
+    // The old release, its daemon still up, answers for the repository the new build never saw.
+    // A release of this build's minor shares its namespace, which the superseded sweep never takes.
+    let minor = release_minor(&env, old);
+    let superseded = minor <= LAST_UNNAMESPACED_MINOR || minor < current_minor();
+    assert!(
+        env.holds_blobs_of(minor),
+        "{}: the GC reaped the blobs of a running release",
+        old.display()
+    );
+    assert_eq!(
+        other.old_outline_names(old, "src/lib.rs"),
+        ["beta"],
+        "{}: the old release outlines from its blobs after the new build's GC",
+        old.display()
+    );
+    assert_eq!(
+        other.old_symbol_hits(old, "beta"),
+        [("src/lib.rs".to_string(), "beta".to_string())],
+        "{}: the old release finds its symbols after the new build's GC",
+        old.display()
+    );
+
+    // Once no process of that release runs, the same GC reaps what it left.
+    if !superseded {
+        return;
+    }
+    let _ = env.run(old, &["comms", "stop"], &[]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while env.holds_blobs_of(minor) && std::time::Instant::now() < deadline {
+        let _ = env.run(new, &["cache", "gc"], &NO_MARGIN);
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(
+        !env.holds_blobs_of(minor),
+        "{}: the GC kept the blobs of a release that is no longer running",
+        old.display()
     );
 }

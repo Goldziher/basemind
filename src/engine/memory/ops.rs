@@ -388,6 +388,12 @@ pub(crate) fn preview(value: &str) -> String {
     }
 }
 
+/// Whether a note's `tags` pass a `tags` filter: it carries any of `wanted`, and an empty filter
+/// passes every note.
+pub(crate) fn carries_any(tags: &[String], wanted: &[String]) -> bool {
+    wanted.is_empty() || wanted.iter().any(|tag| tags.contains(tag))
+}
+
 /// Range-scan parameters for [`list_core`]. Bundled into one struct so the core stays under the
 /// clippy argument-count cap and the two callers (local serve + daemon dispatch) construct it
 /// identically.
@@ -398,8 +404,8 @@ pub(crate) struct ListQuery<'a> {
     pub owner: &'a str,
     /// Key-prefix filter (`""` = no filter).
     pub key_prefix: &'a str,
-    /// Optional exact-tag filter.
-    pub tag: Option<&'a str>,
+    /// Tags a listed note carries one of (empty = no filter).
+    pub tags: &'a [String],
     /// Page size.
     pub limit: usize,
     /// Raw Fjall resume-key bytes from a previous page.
@@ -465,9 +471,7 @@ pub(crate) fn list_core(idx: &IndexDb, scope: &str, query: &ListQuery<'_>) -> Re
         let Ok(record): Result<MemoryRecord, _> = rmp_serde::from_slice(&raw_val) else {
             continue;
         };
-        if let Some(tag) = query.tag
-            && !record.tags.iter().any(|t| t == tag)
-        {
+        if !carries_any(&record.tags, query.tags) {
             continue;
         }
         total += 1;
@@ -514,6 +518,42 @@ mod tests {
 
         assert!(delete_core(&idx, "scope", 0, "", "k").unwrap());
         assert_eq!(syncs(), before + 2, "a delete must fsync the memory store");
+    }
+
+    /// A listing by `tags` keeps the notes carrying any of them; no tags lists every note.
+    #[test]
+    fn a_listing_by_tags_keeps_the_notes_carrying_any_of_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let idx = IndexDb::open(dir.path()).unwrap();
+        let tags = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        for (key, carried) in [
+            ("a", tags(&["auth"])),
+            ("b", tags(&["db", "perf"])),
+            ("c", tags(&["ui"])),
+            ("d", Vec::new()),
+        ] {
+            put_core(&idx, "scope", 0, "", key, "v", &carried).unwrap();
+        }
+        let listed = |wanted: &[&str]| -> Vec<String> {
+            let wanted = tags(wanted);
+            let query = ListQuery {
+                vis_byte: 0,
+                owner: "",
+                key_prefix: "",
+                tags: &wanted,
+                limit: 10,
+                cursor: None,
+            };
+            let page = list_core(&idx, "scope", &query).unwrap();
+            assert_eq!(page.total as usize, page.entries.len());
+            page.entries.into_iter().map(|entry| entry.key).collect()
+        };
+
+        assert_eq!(listed(&[]), ["a", "b", "c", "d"]);
+        assert_eq!(listed(&["auth"]), ["a"]);
+        assert_eq!(listed(&["auth", "perf"]), ["a", "b"]);
+        assert!(listed(&["absent"]).is_empty());
+        assert!(listed(&["Auth"]).is_empty(), "a tag matches exactly");
     }
 
     /// One slot per requested key, in the order asked, `None` where no note exists.

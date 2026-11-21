@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry) and lists the keys that table allows instead of the raw JSON-schema message, preceded by the
   closest known key when one is within two edits (#249):
   ``unknown key `folow_symlinks` in [scan]; did you mean `follow_symlinks`? allowed keys: ...``.
+
+- `path` and `language` on `code_symbols` and `code_search` (#252), with the meaning they have on
+  `code_grep` and `find_files`: `code_symbols {"name":"Config","path":"services/payments/"}` finds the
+  definitions under that directory only. `code_search` keeps the hits in files the filters pass
+  among the 1,000 best candidates of each lane, and cites only the copies of a file that pass.
+  A filter no indexed file passes is refused. `basemind code symbols|search` take `--path` and
+  `--language`.
+
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
   lists the files importing that file `by_depth`, up to `depth` hops (default 1, max 5), names those
   in an import cycle with it and says when the walk was cut; `relation: "cycles"` lists the import
@@ -116,7 +124,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index incarnation and its view id; one that does not match is emptied and its view rebuilt, leaving every other
   view in place. A process that does not hold the group's index answers what the blobs hold from the blob store
   and refuses `code_refs` scans (see Changed). Every workspace
-  rebuilds its index on the first scan, and its per-view `index.fjall` is deleted.
+  rebuilds its index on the first scan. A view's per-view `index.fjall` is deleted at its first writer open,
+  and the daemon's cache sweep deletes it in every workspace whose repository's group index exists, opened since
+  the upgrade or not, unless a 0.33 daemon is registered (ADR-0054, amending ADR-0028 rule 11, whose 30-day rule
+  is dropped); `legacy_indexes_reaped` and `legacy_index_bytes_freed` in the sweep's report count them. With the
+  cache over its budget, budget enforcement deletes every per-view index left, adopted or not, before it evicts
+  any workspace, under the same 0.33 check, and `cache stats` reports how many are left on the machine and their
+  size (`legacy_indexes`, `legacy_index_bytes`).
 - The group sweep (ADR-0041): at the end of a full pass that owes it, the group index deletes the symbol and call
   rows of contents no view's file map names, and the rows of views whose view directory is gone. A view's BM25
   postings are shared by key and written once; a holder row per path names who holds a key, so retiring a
@@ -164,6 +178,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disk filled. The footprint counts each workspace's git cache, which eviction already removed. A
   set `BASEMIND_CACHE_BUDGET_MB` is enforced as given; `0` still disables enforcement.
   `cache_stats.last_gc.cache_budget_bytes` reports the budget the sweep applied.
+
+- **BREAKING:** `path` is the one path filter of `code_grep`, `find_files` and `docs_search` (#252):
+  a repo-relative prefix (`src/mcp/`), or a glob over the whole path when it holds `*`
+  (`src/**/*.rs`; `*` stays within one segment, `**` crosses `/`). It was a substring on
+  `code_grep`, a prefix named `path_prefix` on `find_files` and always a glob on `docs_search`, so
+  `mcp/` no longer selects `src/mcp/tools.rs` in `code_grep`: pass `src/mcp/` or `**/mcp/**`.
+  `find_files`' `path_prefix` and `basemind code find|files --path-prefix` are renamed `path` /
+  `--path`. On `code_grep` and `find_files` a `path` no indexed file passes is refused with the rule it
+  was read by (`docs_search` returns no hits), and a value holding `*` that is not a glob is
+  refused with an example.
+- **BREAKING:** `memory_search` takes `tags`, a list, where it took one `tag` (#252), as
+  `memory_save` does: a search or a listing keeps the notes carrying any of them.
+  `basemind memory search|list --tag` is repeatable.
 
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields
@@ -299,7 +326,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `also_at` and `title`; the response reports `lanes_ran`, `lanes_unavailable`, `lexical_fuzzy`,
     `vector_mode` and `rerank`. Per-hit `keywords`, `entities` and `summary`, `chunk_idx`, `distance`
     and `byte_start` / `byte_end` are gone.
-  - `scope` is removed. `kind` and `path` are new filters, `keywords` matches whole keywords, and every
+  - `scope` is removed. `format` and `path` are new filters, `keywords` matches whole keywords, and every
     filter runs before ranking.
   - A vector lane and a full-text lane are fused; a search works without the embedder, on the full-text
     lane, and says so.
@@ -400,8 +427,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     reported in one message. An integer written as a float (`10.0`) is accepted. The
     hidden aliases (`q`, `needle`, `token_budget`) and the `format` argument (`"toon"`) are gone, and
     `[documents.output] format = "toon"` no longer applies to these tools.
-  - `code_grep` treats `pattern` as literal text unless `regex: true`; `path` replaces `path_contains`
-    and is always a literal substring, and `context` (default off) replaces `include_context`. A hit on
+  - `code_grep` treats `pattern` as literal text unless `regex: true`; `path` replaces `path_contains`,
+    and `context` (default off) replaces `include_context`. A hit on
     a line over 400 bytes shows a window around the match.
   - A path argument is read from the working tree only when it is indexed and stays inside the
     repository: an absolute path, a `..` component and a symlink pointing outside are refused. With
@@ -481,7 +508,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `git_diff {}`: each status list is cut at 200 paths, in path order; `omitted` counts the rest and the
     cut sets `truncated` with `truncated_reason: "path_cap"`. A directory `path` narrows the status and
     lists every untracked file under it, whatever `status.showUntrackedFiles` collapses.
-  - `code_grep`, `find_files`: a `path` / `path_prefix` / `language` filter that no indexed file passes is
+  - `code_grep`, `find_files`: a `path` / `language` filter that no indexed file passes is
     an error saying what would match; `code_grep` names `docs_search` when the filter matches only
     documents. While the index is still being built the empty page is returned with its `notice` instead.
   - `git_log {path}`: a path that no commit reachable from HEAD touches and that is not on disk is an
@@ -1127,19 +1154,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [`docs/UPGRADING.md`](docs/UPGRADING.md)).
   - The blob store is namespaced by blob schema (`cache/blobs/v<schema>/`): two installed versions
     no longer overwrite each other's blobs. This ships with the 0.34 release-minor bump: the sweep
-    removes the un-namespaced blobs older builds wrote, so an older basemind left installed
-    re-extracts on its next scan. A file map records the blob layout it was written for, and one
-    from before the namespaces is discarded with its index at the first open, without relying on
-    that bump. A file whose blob is missing or damaged says so instead of "not
-    indexed", and the `index_rescan` it names rebuilds the blob: a rescan of named paths
+    removes the un-namespaced blobs older builds wrote and the namespaces of older schemas, but
+    never while a process of that version is registered under the data home (a daemon in
+    `daemons/` of any generation, or a host in `hosting/<pid>`; both now record the blob schema
+    they read, and a 0.33 record is read by its version; while a live one's namespace cannot be
+    told, as from a hosting marker that names no build, or a daemon record cannot be read, no
+    older namespace is reaped), and
+    only once nothing has been written into them for `BASEMIND_PRUNE_AFTER_DAYS` days (default 14,
+    the launcher's retention of an unused version; `0` leaves only the running-process check). A
+    0.33 daemon still serving another repository through the upgrade keeps answering; an older
+    basemind whose blobs were reaped re-extracts on its next scan. A file map records the blob
+    layout it was written for, and one from before the namespaces is discarded with its index at
+    the first open, without relying on that bump. A file whose blob is missing or damaged says so
+    instead of "not indexed", and the `index_rescan` it names rebuilds the blob: a rescan of named paths
     (`index_rescan paths`, `basemind rescan <paths>`) validates the blob of a named file it would
     otherwise skip as unchanged. A watcher batch does not pay that read.
   - An older basemind sharing the cache with a newer one leaves the newer one's data alone: a blob
     namespace of a newer schema is not counted towards the cache budget and is never swept, a
     workspace whose view a newer version wrote is never evicted (reason `newer_version`) and does
     not stop the sweep, and a newer file map this version cannot decode is read as newer, not as
-    damaged. Namespaces older than the current one are reaped even when the current one cannot
-    be swept.
+    damaged. Namespaces older than the current one that are past their hold are reaped even when
+    the current one cannot be swept.
   - `cache stats` measures the whole blob store (every namespace, and un-namespaced blobs), reports
     the current namespace beside it (`blobs_current_bytes`), reports the memory vector stores
     (`memory_vectors_bytes`) and finds the last sweep again (`last_gc`). `cache clear blobs` clears

@@ -56,34 +56,34 @@ Prebuilt downloads (Homebrew, npm, pip, GitHub releases) ship the build with `co
 
 ```bash
 basemind code outline <path> [--limit --cursor --max-tokens]
-basemind code symbols <name> [--kind --fuzzy --limit --cursor --max-tokens]
+basemind code symbols <name> [--kind --path --language --fuzzy --limit --cursor --max-tokens]
 basemind code read <path> [--symbol <name> [--kind] | --line <n> [--end-line <m>]]
 basemind code grep <pattern> [--regex --path --language --context N --limit --cursor --max-tokens]
-basemind code search <query> [--lane --limit --cursor --max-tokens]
+basemind code search <query> [--lane --path --language --limit --cursor --max-tokens]
 basemind code refs <name> [--relation --path --line --column --match --limit --cursor --max-tokens]
 basemind code callers <path> <name> [--limit --cursor --max-tokens]
 basemind code implementations <name> [--limit --cursor --max-tokens]
 basemind code dependents <module> [--limit --cursor]
 basemind code definition <path> <line> <name> [--column]
-basemind code find [query] [--path-prefix --language --limit --cursor --max-tokens]
-basemind code files [--path-prefix --language --limit --cursor --max-tokens]
+basemind code find [query] [--path --language --limit --cursor --max-tokens]
+basemind code files [--path --language --limit --cursor --max-tokens]
 basemind code chunk <path> [--chunk-id --byte-start]
 ```
 
 | Command | Purpose |
 |---|---|
 | `outline <path>` | A file's structure: symbols with kind, signature and 1-based lines, plus imports. Read this instead of the file. Code files only; documents are searched with `memory documents`. |
-| `symbols <name> [--kind --fuzzy]` | Find a definition by name across every indexed file. Ranked: exact, prefix, substring, then (with `--fuzzy`) fuzzy subsequence. |
+| `symbols <name> [--kind --path --language --fuzzy]` | Find a definition by name across every indexed file. Ranked: exact, prefix, substring, then (with `--fuzzy`) fuzzy subsequence. |
 | `read <path> --symbol <name> [--kind]` / `read <path> --line <n> [--end-line <m>]` | One symbol's source body, or a 1-based inclusive line span. Alias `expand`. |
-| `grep <pattern> [--regex --path --language --context N]` | Text search over the indexed code. The pattern is literal unless `--regex`. `--path` is a substring of the repo-relative path, not a glob. `--context N` (0-10) adds the N lines before and after each hit. |
-| `search <query> [--lane hybrid\|semantic\|keyword]` | Search code by meaning; returns pointers, read a hit with `code read`. Alias `semantic`. Needs `--features code-search`. |
+| `grep <pattern> [--regex --path --language --context N]` | Text search over the indexed code. The pattern is literal unless `--regex`. `--path` is a repo-relative prefix, or a glob when it holds `*`. `--context N` (0-10) adds the N lines before and after each hit. |
+| `search <query> [--lane hybrid\|semantic\|keyword --path --language]` | Search code by meaning; returns pointers, read a hit with `code read`. Alias `semantic`. Needs `--features code-search`. |
 | `refs <name> [--relation callers\|implementations\|importers\|definition --path --line --column --match exact\|substring]` | Usages of a name. Without `--path`, every call site of the exact identifier; with `--path`, callers of the definition in that file. Alias `references`. |
 | `callers <path> <name>` | Shorthand for `refs <name> --path <path>`. |
 | `implementations <name>` | Shorthand for `refs <name> --relation implementations`. |
 | `dependents <module>` | Shorthand for `refs <module> --relation importers`. |
 | `definition <path> <line> <name> [--column]` | Shorthand for `refs <name> --relation definition --path <path> --line <line>`: the definition the reference binds to. |
-| `find [query] [--path-prefix --language]` | Fuzzy file-name or path search, ranked by score; a listing when the query is omitted. Covers documents as well as code. |
-| `files [--path-prefix --language]` | List indexed files, code and documents alike. |
+| `find [query] [--path --language]` | Fuzzy file-name or path search, ranked by score; a listing when the query is omitted. Covers documents as well as code. |
+| `files [--path --language]` | List indexed files, code and documents alike. |
 | `chunk <path> [--chunk-id --byte-start]` | Fetch one code-search chunk body. CLI only. Needs `--features code-search`. |
 
 ## `git` — git history
@@ -126,21 +126,21 @@ basemind git by-path <pattern> [--window --limit --cursor --max-tokens]
 
 ```bash
 basemind memory put <key> <value> [--tag <t>]... [--individual]
-basemind memory search <query> [--limit --tag --individual]
+basemind memory search <query> [--limit --individual] [--tag <t>]...
 basemind memory get <key> [--individual]
-basemind memory list [--prefix --tag --limit --individual --cursor]
+basemind memory list [--prefix --limit --individual --cursor] [--tag <t>]...
 basemind memory delete <key> [--individual]
-basemind memory documents <query> [--mime-type --keywords --entity --scope --limit --cursor --max-tokens]
+basemind memory documents <query> [--mime-type --keywords --entity --format --path --limit --cursor --max-tokens]
 ```
 
 | Command | Purpose |
 |---|---|
 | `put <key> <value> [--tag --individual]` | Write a durable note (`memory_save`). `--individual` uses the per-agent tier instead of shared (group). |
-| `search <query> [--limit --tag --individual]` | Search stored notes by meaning. |
+| `search <query> [--limit --tag --individual]` | Search stored notes by meaning; `--tag` (repeatable) keeps notes carrying any of them. |
 | `get <key> [--individual]` | Read one note by key. |
-| `list [--prefix --tag --limit --individual]` | List notes, optionally by key prefix or tag. |
+| `list [--prefix --tag --limit --individual]` | List notes, optionally by key prefix or tags (any of them). |
 | `delete <key> [--individual]` | Remove a note by key. CLI only. |
-| `documents <query> [--mime-type --keywords --entity --scope]` | Semantic search over indexed documents (`docs_search`) instead of opening them. |
+| `documents <query> [--mime-type --keywords --entity --format --path]` | Semantic search over indexed documents (`docs_search`) instead of opening them. |
 
 ## `admin` — administration
 

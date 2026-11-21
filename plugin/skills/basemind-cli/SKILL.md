@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:a13ef9932c4700c4eabbdc9d4caf635c66dc13d2175a9e9b63c85c89d8d97cf7
-Source-Hash: blake3:4be0ebbfb3bfe78f57b29ac415cf27cedb6d5345b221736140c3656706ae2b0f
+Content-Hash: blake3:81a03cf76b38413742f68547883b150acff47a18165f1473c2b0b20c2c566ec4
+Source-Hash: blake3:af86ee48bbc012fa865e3b106449e49b6122356c772ddf080e951fdece51097e
 Schema-Version: v1
 -->
 
@@ -63,7 +63,7 @@ command covers the question.
 | Question | Command | Notes |
 |---|---|---|
 | "What's the shape of file F?" | `basemind code outline path/F` | Symbols with 1-based line spans, plus imports. |
-| "Where is X defined?" | `basemind code symbols "X" [--kind K --fuzzy]` | Ranked exact, prefix, substring; `--fuzzy` adds fuzzy matches last. |
+| "Where is X defined?" | `basemind code symbols "X" [--kind K --path P --language L --fuzzy]` | Ranked exact, prefix, substring; `--fuzzy` adds fuzzy matches last. |
 | "One symbol's body, or a line span?" | `basemind code read path --symbol name` / `--line N --end-line M` | Alias `expand`. One form, not both. |
 | "Where does this text appear?" | `basemind code grep "pattern" [--regex --path P --language L --context N]` | Literal unless `--regex`; `--path` is a substring. |
 | "Find code by meaning?" | `basemind code search "query" [--lane hybrid\|semantic\|keyword]` | Alias `semantic`. Needs `code-search`. |
@@ -72,8 +72,8 @@ command covers the question.
 | "What implements / extends X?" | `basemind code implementations "X"` | Shorthand for `refs X --relation implementations`. |
 | "What imports module M?" | `basemind code dependents "M"` | Shorthand for `refs M --relation importers`. |
 | "Which definition does this reference bind to?" | `basemind code definition path line name [--column C]` | Shorthand for `refs name --relation definition`. |
-| "Which file is named like X?" | `basemind code find "X" [--path-prefix P --language L]` | Fuzzy; code and documents. |
-| "What files are indexed?" | `basemind code files [--path-prefix P --language L]` | `find` with no query. |
+| "Which file is named like X?" | `basemind code find "X" [--path P --language L]` | Fuzzy; code and documents. `P`: a prefix, or a glob with `*`. |
+| "What files are indexed?" | `basemind code files [--path P --language L]` | `find` with no query. |
 | "What changed recently?" | `basemind git log [--limit N]` | Shorthand `git recent`. |
 | "Which commits touched a path?" | `basemind git log --path P` | Shorthand `git touching P`; a trailing `/` means a directory. |
 | "Which commit mentions X?" | `basemind git log --query "X" [--author A]` | Shorthand `git search`. |

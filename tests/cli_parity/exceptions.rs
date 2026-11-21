@@ -93,6 +93,8 @@ pub fn all() -> Vec<Exception> {
     vec![
         // ---- renamed arguments ----
         alias("memory put", "tag", "tags", REPEATABLE),
+        alias("memory search", "tag", "tags", REPEATABLE),
+        alias("memory list", "tag", "tags", REPEATABLE),
         alias("memory put", "individual", "visibility", TIER),
         alias("memory search", "individual", "visibility", TIER),
         alias("memory get", "individual", "visibility", TIER),

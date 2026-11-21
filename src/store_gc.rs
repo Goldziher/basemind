@@ -28,6 +28,7 @@ use crate::data_root::DataRoot;
 use crate::store::{INDEX_FILE, StoreError, VIEWS_DIR, WORKSPACES_DIR, global_blobs_dir, read_index};
 pub use crate::store_gc_live::LiveBlobs;
 use crate::store_gc_live::{SweepLock, is_rebuildable_view_error};
+use crate::store_gc_namespaces::Holds;
 
 /// The blob filename suffixes the scanner emits today, all keyed by one content hash.
 /// Used to strip the suffix off a blob filename to recover its hex stem. The four suffixes are
@@ -146,6 +147,14 @@ pub struct GcReport {
     /// Bytes reclaimed by reaping those directories. Disjoint from the other byte counters.
     #[serde(default)]
     pub group_store_bytes_freed: u64,
+    /// Per-view index databases of releases up to 0.33 removed by the same sweep (ADR-0054): those
+    /// the group index adopted, and, with the cache over budget, every other one before any
+    /// workspace was evicted.
+    #[serde(default)]
+    pub legacy_indexes_reaped: usize,
+    /// Bytes reclaimed by removing those databases. Disjoint from the other byte counters.
+    #[serde(default)]
+    pub legacy_index_bytes_freed: u64,
     /// Marker-less workspace dirs the next destructive sweep would reap (see
     /// [`markerless_workspace_candidates`]). Set only by [`gc_report_only`]; a destructive sweep
     /// counts the ones it removed in [`Self::workspaces_reaped`].
@@ -423,21 +432,27 @@ pub fn gc_global_blobs(data: &DataRoot) -> Result<GcReport, GcError> {
         &data.global_blobs_root(),
         crate::extract::SCHEMA_VER,
         blob_gc_grace(),
+        || Holds::under(data),
     )
 }
 
 /// Sweep a whole blob store: the unreferenced blobs of the `schema` namespace under `blobs_root`,
-/// and everything older builds left there (see [`crate::store_gc_namespaces`]). The second sweep
-/// needs no live set, so it runs whatever became of the first: a workspace whose references cannot
-/// be read must not also keep the superseded namespaces on disk.
+/// and everything older builds left there that the `holds` read lets go (see
+/// [`crate::store_gc_namespaces`]). The second sweep needs no live set, so it runs whatever became
+/// of the first: a workspace whose references cannot be read must not also keep the superseded
+/// namespaces on disk. The holds are read only once the first sweep is done, so a basemind that
+/// registered while it ran is seen; one registering after the read is not. No lock can close that
+/// window: the releases up to 0.33 register without one. It lasts one sweep of the superseded
+/// namespaces, and only a namespace unwritten for the hold is at stake.
 pub(crate) fn gc_blob_store_in(
     workspaces_dir: &Path,
     blobs_root: &Path,
     schema: u16,
     grace: Duration,
+    holds: impl FnOnce() -> Holds,
 ) -> Result<GcReport, GcError> {
     let current = gc_global_blobs_in(workspaces_dir, &blobs_root.join(format!("v{schema}")), grace);
-    let superseded = crate::store_gc_namespaces::sweep_superseded_namespaces(blobs_root, schema, grace);
+    let superseded = crate::store_gc_namespaces::sweep_superseded_namespaces(blobs_root, schema, grace, &holds());
     if let (Err(_), Ok(superseded)) = (&current, &superseded)
         && superseded.removed > 0
     {
@@ -481,7 +496,8 @@ pub(crate) fn gc_global_blobs_in(
 }
 
 /// The daemon's full cache sweep: reap orphaned workspace cache dirs FIRST, then the directories
-/// of the groups no workspace names any more, then reference-count and sweep the global blob store.
+/// of the groups no workspace names any more and the per-view indexes the group index adopted, then
+/// reference-count and sweep the global blob store.
 ///
 /// Order is load-bearing. An orphaned workspace (its worktree deleted) still votes in the blob GC's
 /// cross-workspace live set, so every blob it references is pinned in the machine-global store
@@ -490,16 +506,20 @@ pub(crate) fn gc_global_blobs_in(
 pub fn reap_and_gc_global(data: &DataRoot) -> Result<GcReport, GcError> {
     let reaped = reap_orphaned_workspaces(data)?;
     let groups = crate::store_gc_groups::reap_orphaned_group_stores(data)?;
+    let legacy = crate::store_gc_legacy_views::reap_adopted_legacy_indexes(data)?;
     let mut report = gc_global_blobs(data)?;
     report.workspaces_reaped = reaped.reaped;
     report.workspace_bytes_freed = reaped.bytes_freed;
     report.group_stores_reaped = groups.reaped;
     report.group_store_bytes_freed = groups.bytes_freed;
+    report.legacy_indexes_reaped = legacy.reaped;
+    report.legacy_index_bytes_freed = legacy.bytes_freed;
     Ok(report)
 }
 
 /// The daemon's complete maintenance sweep: [`reap_and_gc_global`], then cache-budget
-/// enforcement (preferring cold workspaces and reclaiming their orphaned blobs in the same pass),
+/// enforcement (removing the per-view indexes of releases up to 0.33 first, then preferring cold
+/// workspaces and reclaiming their orphaned blobs in the same pass),
 /// and finally persistence of the sweep's health and budget outcome to `gc-state.json`.
 pub fn reap_gc_and_enforce_budget(data: &DataRoot) -> Result<GcReport, GcError> {
     let mut report = reap_and_gc_global(data)?;
@@ -510,6 +530,8 @@ pub fn reap_gc_and_enforce_budget(data: &DataRoot) -> Result<GcReport, GcError> 
         report.hot_workspaces_evicted = evicted.hot_evicted;
         report.locked_workspaces_skipped = evicted.locked_skipped;
         report.protected_workspaces = evicted.protected;
+        report.legacy_indexes_reaped += evicted.legacy_indexes_evicted;
+        report.legacy_index_bytes_freed += evicted.legacy_index_bytes_freed;
         if evicted.evicted > 0 {
             report.workspaces_evicted = evicted.evicted;
             report.evicted_bytes_freed = evicted.bytes_freed + evicted.group_bytes_freed;

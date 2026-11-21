@@ -62,7 +62,7 @@ async fn find_files_answers_byte_for_byte() {
             r#"{"files":["worker.rb"]}"#,
         ),
         (
-            json!({ "path_prefix": "src/" }),
+            json!({ "path": "src/" }),
             r#"{"files":["src/callers.rs","src/outline.rs"]}"#,
         ),
         (json!({ "query": "zzz_none" }), r#"{"files":[]}"#),
@@ -137,8 +137,8 @@ async fn every_find_files_refusal_keeps_its_exact_words() {
             r#"`find_files`: `min_lines` must be at least 1; omit it to list files of any size."#,
         ),
         (
-            json!({ "min_lines": 7, "path_prefix": "nope/" }),
-            r#"`find_files`: no indexed path starts with `nope/`. The filter is literal text, not a glob; list what is indexed with `find_files`."#,
+            json!({ "min_lines": 7, "path": "nope/" }),
+            r#"`find_files`: no indexed path starts with `nope/`; `path` is a repo-relative prefix, or a glob when it holds `*`. List what is indexed with `find_files`."#,
         ),
         (
             json!({ "cursor": "not-bound" }),
@@ -149,12 +149,12 @@ async fn every_find_files_refusal_keeps_its_exact_words() {
             r#"`find_files`: no indexed file has language `cobol`. Indexed languages: python, ruby, rust."#,
         ),
         (
-            json!({ "path_prefix": "nope/" }),
-            r#"`find_files`: no indexed path starts with `nope/`. The filter is literal text, not a glob; list what is indexed with `find_files`."#,
+            json!({ "path": "nope/" }),
+            r#"`find_files`: no indexed path starts with `nope/`; `path` is a repo-relative prefix, or a glob when it holds `*`. List what is indexed with `find_files`."#,
         ),
         (
-            json!({ "query": "outline", "path_prefix": "nope/" }),
-            r#"`find_files`: no indexed path starts with `nope/`. The filter is literal text, not a glob; list what is indexed with `find_files`."#,
+            json!({ "query": "outline", "path": "nope/" }),
+            r#"`find_files`: no indexed path starts with `nope/`; `path` is a repo-relative prefix, or a glob when it holds `*`. List what is indexed with `find_files`."#,
         ),
     ];
     let mut rows = Vec::new();

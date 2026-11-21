@@ -29,6 +29,23 @@ struct HostRecord {
     /// boot named above is the host itself.
     #[serde(default)]
     started: Option<u64>,
+    /// The host's build version.
+    #[serde(default)]
+    version: Option<String>,
+    /// The blob schema whose namespace the host reads ([`crate::extract::SCHEMA_VER`]).
+    #[serde(default)]
+    blob_schema: Option<u16>,
+}
+
+/// What a live host's marker says about its build: what [`crate::store_gc_namespaces`] reads its
+/// blob namespace from.
+#[cfg(any(unix, windows))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostBuild {
+    /// The host's build version.
+    pub(crate) version: Option<String>,
+    /// The blob schema the host reads; `None` in a marker that records only the version.
+    pub(crate) blob_schema: Option<u16>,
 }
 
 /// The boot this process runs in, as the judge of markers sees it.
@@ -88,6 +105,57 @@ fn marker_of_this_boot(path: &Path, record: &HostRecord, this_boot: ThisBoot<'_>
     })
 }
 
+/// Every marker under `hosting_dir`, with what it holds and what became of its host.
+#[cfg(any(unix, windows))]
+fn judged_markers(hosting_dir: &Path, this_boot: ThisBoot<'_>) -> Vec<(PathBuf, HostRecord, HostFate)> {
+    let mut judged = Vec::new();
+    for entry in std::fs::read_dir(hosting_dir).into_iter().flatten().flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
+            continue;
+        };
+        let path = entry.path();
+        let record: HostRecord = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let same_process =
+            crate::boot_identity::is_recorded_process(pid, record.started, record.boot.as_deref(), this_boot.id);
+        let fate = host_fate(
+            crate::boot_identity::pid_state(pid),
+            same_process,
+            marker_of_this_boot(&path, &record, this_boot),
+        );
+        judged.push((path, record, fate));
+    }
+    judged
+}
+
+/// The builds of the live hosts whose markers are under the data home `data`. Read-only.
+#[cfg(any(unix, windows))]
+pub(crate) fn live_host_builds(data: &DataRoot) -> Vec<HostBuild> {
+    let id = crate::boot_identity::current();
+    live_host_builds_in(
+        &data.path().join(HOSTING_DIR),
+        ThisBoot {
+            id: id.as_deref(),
+            began: crate::boot_identity::boot_time(),
+        },
+    )
+}
+
+/// [`live_host_builds`] over an explicit hosting directory.
+#[cfg(any(unix, windows))]
+fn live_host_builds_in(hosting_dir: &Path, this_boot: ThisBoot<'_>) -> Vec<HostBuild> {
+    judged_markers(hosting_dir, this_boot)
+        .into_iter()
+        .filter(|(_, _, fate)| *fate == HostFate::Live)
+        .map(|(_, record, _)| HostBuild {
+            version: record.version,
+            blob_schema: record.blob_schema,
+        })
+        .collect()
+}
+
 /// Remove the markers of hosts that are gone. When the machine went down under one, ask every
 /// workspace under `workspaces_dir` to verify its blobs: the marker does not say which workspaces
 /// its host served, and the request must not depend on which process happens to open one next.
@@ -113,22 +181,7 @@ fn settle_dead_hosts_with(
 ) -> bool {
     let mut dead = Vec::new();
     let mut machine_went_down = false;
-    for entry in std::fs::read_dir(hosting_dir).into_iter().flatten().flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse::<u32>().ok()) else {
-            continue;
-        };
-        let path = entry.path();
-        let record: HostRecord = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
-        let same_process =
-            crate::boot_identity::is_recorded_process(pid, record.started, record.boot.as_deref(), this_boot.id);
-        let fate = host_fate(
-            crate::boot_identity::pid_state(pid),
-            same_process,
-            marker_of_this_boot(&path, &record, this_boot),
-        );
+    for (path, _, fate) in judged_markers(hosting_dir, this_boot) {
         if fate == HostFate::Live {
             continue;
         }
@@ -241,6 +294,8 @@ fn write_marker(dir: &Path, boot: Option<&str>) -> Option<PathBuf> {
     let record = HostRecord {
         boot: boot.map(str::to_string),
         started: crate::boot_identity::process_start(std::process::id()),
+        version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        blob_schema: Some(crate::extract::SCHEMA_VER),
     };
     let bytes = serde_json::to_vec(&record).ok()?;
     let path = dir.join(std::process::id().to_string());

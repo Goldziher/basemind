@@ -101,7 +101,7 @@ async fn find_files_refuses_another_query_s_cursor() {
         "find_files",
         json!({ "limit": 1 }),
         "find_files",
-        json!({ "path_prefix": "src/", "limit": 1 }),
+        json!({ "path": "src/", "limit": 1 }),
     )
     .await;
     assert_foreign_cursor_is_refused(

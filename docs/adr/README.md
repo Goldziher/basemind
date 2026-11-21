@@ -116,7 +116,7 @@ them.
 | [0025](0025-store-versioning-and-durability.md) | Store versioning and durability policy | Accepted (amended by ADR-0028, ADR-0030, ADR-0033, ADR-0037) |
 | [0026](0026-release-and-branch-policy.md) | Release and branch policy — trunk-based, three breaking releases | Superseded by ADR-0027 |
 | [0027](0027-single-breaking-release.md) | Release and branch policy — trunk-based, one breaking release | Accepted (amended by ADR-0035, ADR-0046) |
-| [0028](0028-content-keyed-group-index.md) | One content-keyed index per repository group | Accepted (amended by ADR-0036, ADR-0041) |
+| [0028](0028-content-keyed-group-index.md) | One content-keyed index per repository group | Accepted (amended by ADR-0036, ADR-0041, ADR-0054) |
 | [0029](0029-document-retrieval-pipeline-and-store.md) | Document retrieval pipeline and retrieval store | Accepted (amended by ADR-0037) |
 | [0030](0030-as-built-daemon-wire-and-store-rules.md) | As-built rules — daemon generations, verb-tool wire contract, store durability | Accepted (amended by ADR-0033, ADR-0038, ADR-0045) |
 | [0031](0031-value-gate-by-job.md) | Value gate by job — locating and reducing are judged differently | Accepted (amended by ADR-0051) |
@@ -142,3 +142,4 @@ them.
 | [0051](0051-value-gate-for-the-analysis-kinds-and-failed-baselines.md) | Value gate for the analysis kinds, failed baselines and the binary's identity | Accepted |
 | [0052](0052-rows-as-the-shell-prints-them.md) | Locating rows as the shell prints them | Accepted (amended by ADR-0053) |
 | [0053](0053-text-answers-encoded-per-tool.md) | Text answers encoded per tool, by measured tokens | Accepted |
+| [0054](0054-per-view-indexes-go-at-adoption.md) | Per-view indexes go when the group index adopts their view | Proposed |

@@ -173,42 +173,6 @@ async fn code_read_and_outline_refuse_a_path_outside_the_repository() {
     }
 }
 
-const PAGE_TSX: &str = "export function Page() {\n  return \"bracket-needle\";\n}\n";
-
-/// `path` is a substring, so a path that happens to contain glob characters is searchable.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_grep_path_is_a_literal_substring_even_with_glob_characters() {
-    let (_dir, client) = started_with(&[("app/[id]/page.tsx", PAGE_TSX)]).await;
-
-    let body = call(
-        &client,
-        "code_grep",
-        json!({ "pattern": "bracket-needle", "path": "app/[id]/" }),
-    )
-    .await;
-    assert_eq!(super::grep_hits(&body).len(), 1, "{body}");
-    assert!(body["hits"]["app/[id]/page.tsx"].is_object(), "{body}");
-
-    let glob = call_err(
-        &client,
-        "code_grep",
-        json!({ "pattern": "file_outline", "path": "src/*.rs" }),
-    )
-    .await;
-    assert!(glob.contains("not a glob"), "{glob}");
-
-    let unmatched = call_err(
-        &client,
-        "code_grep",
-        json!({ "pattern": "file_outline", "path": "nowhere/" }),
-    )
-    .await;
-    assert!(
-        unmatched.contains("no indexed path contains `nowhere/`"),
-        "a plain filter matching no path is refused too: {unmatched}"
-    );
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_grep_refuses_an_empty_pattern() {
     let (_dir, client) = started().await;
@@ -252,7 +216,7 @@ async fn a_filter_that_selects_no_file_is_refused_with_what_would_match() {
     );
 
     let path = call_err(&client, "code_grep", json!({ "pattern": "fn", "path": "no/such/dir/" })).await;
-    assert!(path.contains("no indexed path contains `no/such/dir/`"), "{path}");
+    assert!(path.contains("no indexed path starts with `no/such/dir/`"), "{path}");
 
     let both = call_err(
         &client,
@@ -261,7 +225,7 @@ async fn a_filter_that_selects_no_file_is_refused_with_what_would_match() {
     )
     .await;
     assert!(
-        both.contains("no indexed `ruby` file has a path containing `src/`"),
+        both.contains("no indexed `ruby` file has a path starting with `src/`"),
         "{both}"
     );
 
@@ -284,14 +248,9 @@ async fn a_filter_that_selects_no_file_is_refused_with_what_would_match() {
         let message = call_err(&client, "find_files", arguments).await;
         assert!(message.contains("no indexed file has language `cobol`"), "{message}");
     }
-    let prefix = call_err(&client, "find_files", json!({ "path_prefix": "nope/" })).await;
+    let prefix = call_err(&client, "find_files", json!({ "path": "nope/" })).await;
     assert!(prefix.contains("no indexed path starts with `nope/`"), "{prefix}");
-    let unmatched = call(
-        &client,
-        "find_files",
-        json!({ "query": "zzzzqqqq", "path_prefix": "src/" }),
-    )
-    .await;
+    let unmatched = call(&client, "find_files", json!({ "query": "zzzzqqqq", "path": "src/" })).await;
     assert_eq!(unmatched["files"], json!([]), "{unmatched}");
 
     let never = call_err(&client, "git_log", json!({ "path": "src/never_existed.rs" })).await;
@@ -389,12 +348,8 @@ async fn a_filter_refusal_waits_for_a_finished_index() {
         ("code_grep", json!({ "pattern": "fn", "language": "cobol" }), "hits"),
         ("code_grep", json!({ "pattern": "fn", "path": "no/such/dir/" }), "hits"),
         ("find_files", json!({ "language": "cobol" }), "files"),
-        ("find_files", json!({ "path_prefix": "nope/" }), "files"),
-        (
-            "find_files",
-            json!({ "query": "outline", "path_prefix": "nope/" }),
-            "files",
-        ),
+        ("find_files", json!({ "path": "nope/" }), "files"),
+        ("find_files", json!({ "query": "outline", "path": "nope/" }), "files"),
     ] {
         let page = call(&client, tool, arguments.clone()).await;
         let listed = match &page[rows] {

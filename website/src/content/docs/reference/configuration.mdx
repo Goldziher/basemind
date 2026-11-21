@@ -447,6 +447,7 @@ Read directly rather than mapped from a config key:
 | `BASEMIND_DATA_HOME` | Overrides the global cache root. |
 | `BASEMIND_GREP_BLOOM` | `0` disables the per-file trigram bloom prefilter of `code_grep` and forces the full sweep. Anything else (or unset) leaves it on. See [Performance](/reference/performance/#code-grep). |
 | `BASEMIND_BLOB_GC_GRACE_SECS` | Whole seconds a blob must age before the sweep (`basemind cache gc`, post-migration cleanup, the daemon's hourly sweep) may reclaim it. Default `21600` (6 h); `0` reclaims every unreferenced blob at once. |
+| `BASEMIND_PRUNE_AFTER_DAYS` | Whole days an older version is kept: the plugin launcher keeps its binary that long after its last launch, and the blob sweep keeps its blob namespace that long after its last write, and for as long as a process of that version runs. Default `14`; `0` leaves only the running-process check. |
 | `BASEMIND_GH_INDEX` | `0` disables the git-history index (the history tools then walk git directly); `scan` / `rescan --no-git-history` does the same per run. |
 | `BASEMIND_GIT_DISCOVER_PARENTS` | Restores indexing an ancestor repository's history for a workspace root that is only a subdirectory of it. |
 | `BASEMIND_BLAME_MAX_BYTES` / `BASEMIND_BLAME_MAX_LINES` | Size limits past which `git_blame` refuses a file (defaults 1 MiB and 5000 lines). |
@@ -468,8 +469,8 @@ Daemon-side knobs that are not config keys (`BASEMIND_WARM_READ_STACKS`, `BASEMI
 The `documents.*` overrides are CLI flags and environment variables only; the MCP tools
 do not accept them (they used to inflate every session's tool schema). Set those keys in
 `basemind.toml`. The per-call knobs MCP does expose are the ones that change a single query:
-`docs_search` takes `max_tokens`, `mime_type`, `scope`, `entity` (needs the `documents-ner`
-feature) and `keywords`, and `code_search` takes `lane`.
+`docs_search` takes `max_tokens`, `mime_type`, `format`, `path`, `entity` (needs the `documents-ner`
+feature) and `keywords`, and `code_search` takes `lane`, `path` and `language`.
 
 ## Cargo Features
 

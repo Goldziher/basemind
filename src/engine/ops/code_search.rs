@@ -30,6 +30,7 @@ mod enabled {
 
     use crate::engine::budget::budget;
     use crate::engine::error::EngineError;
+    use crate::engine::filters::{Filters, grep_selects_no_file, parse_path};
     use crate::engine::ranked::{RANKED_FETCH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset, ranked_retrieval};
     use crate::engine::timing::elapsed_us;
     use crate::engine::types::search::{CodeSearchPage, CodeSearchParams, GetChunkParams, GetChunkResponse};
@@ -43,15 +44,42 @@ mod enabled {
             let generation = self.index_generation.load(Ordering::Relaxed);
             let offset = ranked_offset("code_search", p.cursor.as_ref(), generation)?;
             let limit = p.limit.unwrap_or(RANKED_LIMIT_DEFAULT);
-            let arguments = serde_json::json!({ "query": &p.query, "lane": &p.lane });
+            let path = parse_path("code_search", p.path.as_deref())?;
+            let filters = Filters {
+                tool: "code_search",
+                path: path.as_ref(),
+                language: p.language.as_deref(),
+            };
+            let arguments = serde_json::json!({
+                "query": &p.query,
+                "lane": &p.lane,
+                "path": &p.path,
+                "language": &p.language,
+            });
             let ranking = ranked_retrieval(
                 &self.ranked,
                 "code_search",
                 &arguments,
                 generation,
-                || crate::engine::code_search::retrieve(self, p.query, p.lane.as_deref(), RANKED_FETCH as usize),
+                || {
+                    crate::engine::code_search::retrieve(
+                        self,
+                        p.query,
+                        p.lane.as_deref(),
+                        RANKED_FETCH as usize,
+                        &filters,
+                    )
+                },
                 crate::engine::code_search::is_cacheable,
             )?;
+            if ranking.hits.is_empty() {
+                // A lazy-cache CLI call has an empty map until this barrier builds it, which would
+                // make the no-file refusal below see nothing to refuse.
+                self.wait_map_ready();
+                if let Some(refusal) = grep_selects_no_file(self, &self.cache.load_full(), &filters) {
+                    return Err(refusal);
+                }
+            }
             let mut ranking = ranking;
             let page = page_ranked(
                 std::mem::take(&mut ranking.hits),

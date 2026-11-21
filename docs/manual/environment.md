@@ -42,5 +42,6 @@ repository. A truthy value is `1`, `true` or `yes`.
 | `BASEMIND_MIN_FREE_MB` | Headroom a scan needs free on disk on top of its size estimate (1.5 times the index, plus the index rows, blobs and vectors of the files no file map lists yet), or it refuses. |
 | `BASEMIND_CACHE_BUDGET_MB` | Budget for the cache in MiB, enforced by eviction (`0`: unlimited). Unset: `min(20 GiB, (cache size + free space) / 2)`, the free space being that of the cache's volume. |
 | `BASEMIND_BLOB_GC_GRACE_SECS` | Age under which `basemind cache gc` keeps an unreferenced blob (default 6 h). |
+| `BASEMIND_PRUNE_AFTER_DAYS` | Days the plugin launcher keeps an unused version, and the blob sweep an older version's blobs after their last write (default 14). |
 
 Logging follows `RUST_LOG`; `-v` and `-q` adjust it per command. `NO_COLOR` disables colour.

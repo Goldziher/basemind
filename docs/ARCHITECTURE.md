@@ -103,6 +103,7 @@ src/
 │                             `cache/gc.lock` that serialises sweeps
 ├── store_gc_budget.rs      — cache size budget + `gc-state.json` (last sweep health)
 ├── store_gc_workspace.rs   — orphaned-workspace reaper for the machine-global cache
+├── store_gc_legacy_views.rs — removes the per-view indexes of releases up to 0.33 once the group adopts them
 ├── store_group.rs          — the group index's lock and the file-map checks of each view
 ├── store_group_live.rs     — which contents a group still holds, for content-keyed sweeps
 ├── store_cache_admin.rs    — cache clear / stats admin surface (CLI + MCP)
@@ -551,8 +552,8 @@ on-disk component, is in [UPGRADING.md](UPGRADING.md).
 
 Extraction results live in a content-addressed blob store shared by every workspace on the machine
 (`<cache>/cache/blobs/v<schema>/`, one namespace per blob schema, so two installed versions never read
-or overwrite each other's blobs; the sweep also removes un-namespaced blobs and older namespaces once
-past the grace period, and leaves a newer namespace alone); a workspace's `files` (code lane) and `doc_files` (document lane) entries
+or overwrite each other's blobs; the sweep also removes un-namespaced blobs and older namespaces,
+and leaves a newer namespace alone); a workspace's `files` (code lane) and `doc_files` (document lane) entries
 reference blobs by hash. The sweep (`src/store_gc.rs`, `src/store_gc_live.rs`) is tier-aware: a `.doc`
 blob is live only if some workspace's `doc_files` references the hash, and `.fm` / `.chunk` / `.rref`
 blobs only if a `files` entry does. That matters when a path changes tier (a markdown file that used
@@ -570,8 +571,18 @@ Budget eviction never touches a locked, most-recently-used or recently built wor
 budget, which is reported instead); the rules live in `src/store_gc_protect.rs`. The collector heals
 nothing: a view of an older schema or blob layout, or one whose file map does not decode, has no vote
 in the sweep and is passed over without the workspace lock, never removed, and its next writer open
-rebuilds it. An older install may still use such a view, but the view outlives its blobs: the sweep of
-superseded namespaces reaps that install's blobs by age, so it re-extracts them on its next scan.
+rebuilds it. An older install may still use such a view, but the view can outlive its blobs. The sweep
+of superseded namespaces (`src/store_gc_namespaces.rs`) leaves an older version's namespace while a
+live process of that version is registered under the data home (`daemons/`, `hosting/<pid>`; a
+record names the blob schema its process reads, one a release up to 0.33 wrote only its version) and
+until nothing was written into it for `BASEMIND_PRUNE_AFTER_DAYS` days (14 by default, the launcher's
+retention of an unused version); once it is reaped, that install re-extracts on its next scan.
+The daemon's cache sweep also deletes the per-view `index.fjall` of releases up to 0.33 in every
+workspace whose repository's group index exists (`src/store_gc_legacy_views.rs`, ADR-0054), under
+the workspace lock and after moving any notes it holds, and none while a 0.33 daemon is registered.
+With the cache over budget, budget enforcement deletes every per-view index left, adopted or not, by
+the same rules before it evicts any workspace; `cache stats` counts the ones left on the machine
+(`legacy_indexes`, `legacy_index_bytes`).
 
 Before eviction or the orphan reaper removes a workspace, each view whose index still holds the notes
 keyspace of a release before 0.30 has its notes moved to the group store by a writer open under the

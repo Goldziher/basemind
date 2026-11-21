@@ -129,6 +129,17 @@ fn protected_workspaces_are_persisted_and_make_the_state_over_budget() {
 
 const SCHEMA: u16 = 7;
 
+/// A day's hot floor, no grace and no live basemind.
+const NO_LIVE_RULES: EvictionRules<'static> = EvictionRules {
+    hot_floor: DAY,
+    grace: Duration::ZERO,
+    holds: &Holds {
+        live: Vec::new(),
+        unidentified: false,
+        hold: Duration::ZERO,
+    },
+};
+
 /// The budget is a disk budget: blobs in an older schema's namespace and un-namespaced blobs of an
 /// older build occupy the same disk and are this binary's to reap, so the footprint counts them.
 #[test]
@@ -141,8 +152,8 @@ fn the_budget_footprint_counts_the_older_blob_namespaces() {
     fs::write(root.join("flat.fm.msgpack"), vec![0_u8; 64 * 1024]).expect("flat blob");
     seed_workspace_aged(&workspaces, "key-a", &"a".repeat(64), Duration::from_secs(9999));
 
-    let report = enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, |_| u64::MAX, DAY, Duration::ZERO)
-        .expect("enforce");
+    let report =
+        enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, |_| u64::MAX, &NO_LIVE_RULES).expect("enforce");
 
     assert!(
         report.total_bytes_before >= 2 * 64 * 1024,
@@ -176,8 +187,8 @@ fn a_newer_blob_namespace_is_outside_the_budget_and_costs_no_workspace() {
     // Exactly this version's bytes, as measured here: allocation differs between file systems.
     let budget = dir_size(&workspaces).expect("size") + dir_size(&root).expect("size")
         - dir_size(&root.join("v8")).expect("size");
-    let report = enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, |_| budget, DAY, Duration::ZERO)
-        .expect("enforce");
+    let report =
+        enforce_cache_budget_at(&workspaces, &root, &current, SCHEMA, |_| budget, &NO_LIVE_RULES).expect("enforce");
 
     assert!(
         report.total_bytes_before <= budget,
@@ -215,8 +226,7 @@ fn the_disk_aware_budget_resolves_from_the_footprint_with_a_newer_blob_namespace
             resolved_from.set(cache);
             CacheBudget::DiskAware.resolve(cache, Some(free))
         },
-        DAY,
-        Duration::ZERO,
+        &NO_LIVE_RULES,
     )
     .expect("enforce");
 

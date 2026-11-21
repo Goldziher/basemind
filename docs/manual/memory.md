@@ -15,7 +15,7 @@ agent working in the same repository should know. Notes are keyed, tagged and se
 
 - `memory_save` with an existing `key` replaces the note.
 - `memory_search` takes at most one of `query`, `key` and `prefix`; with none it lists every note.
-  `tag` filters a search or a listing. A listing shows the first 200 characters of each value and
+  `tags` filters a search or a listing: a note carrying any of them passes. A listing shows the first 200 characters of each value and
   pages with `next_cursor`; `key` reads a note whole.
 - `visibility` is `group` (the default, shared by every agent of the repository) or `individual`
   (only the agent that saved it).

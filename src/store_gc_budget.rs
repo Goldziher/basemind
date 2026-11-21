@@ -5,9 +5,10 @@
 //!
 //! 1. **Size budget** ([`enforce_cache_budget`]). The blob store, the workspaces and the group
 //!    directories (`cache/groups/<group>/`: the code index and the document retrieval stores) are a
-//!    rebuildable cache, so when their combined footprint exceeds a byte budget the coldest
-//!    workspace dirs are evicted (their blobs orphan and the next sweep reclaims them), and a group
-//!    goes with the last of its workspaces that still held a view. This is
+//!    rebuildable cache, so when their combined footprint exceeds a byte budget the per-view
+//!    indexes of releases up to 0.33 go first (ADR-0054), then the coldest workspace dirs are
+//!    evicted (their blobs orphan and the next sweep reclaims them), and a group goes with the last
+//!    of its workspaces that still held a view. This is
 //!    the backstop the reference-counting GC lacks: reaping only ever removes *orphans*, so a
 //!    machine that accumulates live-but-idle workspaces still grows without bound.
 //! 2. **GC health state** ([`persist_gc_state`] / [`read_gc_state`]). Every attempt records its
@@ -25,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::data_root::DataRoot;
 use crate::store::{WORKSPACE_MARKER_FILE, acquire_lock, read_workspace_marker};
 use crate::store_gc::{GcError, GcReport, dir_size, gc_global_blobs_in, read_dir};
+use crate::store_gc_namespaces::Holds;
 use crate::store_gc_protect::{ProtectedWorkspace, ProtectionReason, cache_grace};
 
 /// Environment variable holding the cache byte budget in MiB. Unset ⇒ the disk-aware default
@@ -229,6 +231,10 @@ pub struct EvictReport {
     pub evicted: usize,
     /// Bytes those dirs occupied (stat'd before deletion).
     pub bytes_freed: u64,
+    /// Per-view index databases of releases up to 0.33 removed before any workspace was evicted.
+    pub legacy_indexes_evicted: usize,
+    /// Bytes those databases occupied. Disjoint from [`Self::bytes_freed`].
+    pub legacy_index_bytes_freed: u64,
     /// Group directories evicted because no workspace that holds a view belongs to them any more.
     pub groups_evicted: usize,
     /// Bytes those group directories occupied. Disjoint from [`Self::bytes_freed`].
@@ -244,6 +250,17 @@ pub struct EvictReport {
     /// Workspaces left alone because they are locked, most recently used, or freshly built. Only
     /// workspaces the pass actually reached while over budget are listed.
     pub protected: Vec<ProtectedWorkspace>,
+}
+
+/// What, besides the budget, decides what a budget pass may evict.
+pub(crate) struct EvictionRules<'a> {
+    /// Workspaces used more recently than this are evicted only after every colder one.
+    pub(crate) hot_floor: Duration,
+    /// A workspace with a view built more recently than this is never evicted.
+    pub(crate) grace: Duration,
+    /// What live basemind processes read. While one of a release up to 0.33, or one whose
+    /// namespace cannot be told, runs, no per-view index is removed ahead of the workspaces.
+    pub(crate) holds: &'a Holds,
 }
 
 struct EvictionCandidate {
@@ -400,10 +417,11 @@ pub(crate) fn read_gc_state_at(path: &Path) -> Option<GcState> {
 
 /// Enforce the cache budget against the machine-global cache: when workspaces (their git caches
 /// included) + groups + blobs exceed `budget` resolved against the measured footprint and the
-/// cache volume's free space, evict the coldest workspace dirs, then hot dirs only if necessary,
-/// and the group directory of each evicted workspace once no workspace holding a view uses it.
-/// Locked workspaces remain protected. Each eviction immediately reclaims blobs that lost their
-/// final reference and remeasures the real footprint before selecting another victim.
+/// cache volume's free space, remove the per-view indexes of releases up to 0.33, then evict the
+/// coldest workspace dirs, then hot dirs only if necessary, and the group directory of each evicted
+/// workspace once no workspace holding a view uses it. Locked workspaces remain protected. Each
+/// eviction immediately reclaims blobs that lost their final reference and remeasures the real
+/// footprint before selecting another victim.
 pub fn enforce_cache_budget(data: &DataRoot, budget: CacheBudget) -> Result<EvictReport, GcError> {
     let free_bytes = free_bytes_at(&data.cache_dir());
     enforce_cache_budget_at(
@@ -412,12 +430,16 @@ pub fn enforce_cache_budget(data: &DataRoot, budget: CacheBudget) -> Result<Evic
         &data.global_blobs_dir(),
         crate::extract::SCHEMA_VER,
         |cache_bytes| budget.resolve(cache_bytes, free_bytes),
-        BUDGET_EVICTION_HOT_FLOOR,
-        cache_grace(),
+        &EvictionRules {
+            hot_floor: BUDGET_EVICTION_HOT_FLOOR,
+            grace: cache_grace(),
+            holds: &Holds::under(data),
+        },
     )
 }
 
-/// [`enforce_cache_budget`] against a per-fixture cache whose blob store is one flat directory.
+/// [`enforce_cache_budget`] against a per-fixture cache whose blob store is one flat directory, with
+/// no live basemind.
 #[cfg(test)]
 pub(crate) fn enforce_cache_budget_in(
     workspaces_dir: &Path,
@@ -432,8 +454,11 @@ pub(crate) fn enforce_cache_budget_in(
         blobs_dir,
         crate::extract::SCHEMA_VER,
         |_| budget_bytes,
-        hot_floor,
-        grace,
+        &EvictionRules {
+            hot_floor,
+            grace,
+            holds: &Holds::default(),
+        },
     )
 }
 
@@ -450,8 +475,7 @@ pub(crate) fn enforce_cache_budget_at(
     blobs_dir: &Path,
     schema: u16,
     budget: impl FnOnce(u64) -> u64,
-    hot_floor: Duration,
-    grace: Duration,
+    rules: &EvictionRules<'_>,
 ) -> Result<EvictReport, GcError> {
     // Within budget counting a newer basemind's workspaces, the cache is within it without them:
     // telling them apart reads a view of every workspace, so only a cache over budget pays for it.
@@ -481,8 +505,15 @@ pub(crate) fn enforce_cache_budget_at(
     if report.total_bytes_before <= budget_bytes {
         return Ok(report);
     }
+    // This release reads no per-view index: removing them first costs no workspace its index. ~keep
+    let legacy = crate::store_gc_legacy_views::evict_legacy_indexes_in(workspaces_dir, rules.holds, &newer)?;
+    if legacy.reaped > 0 {
+        report.legacy_indexes_evicted = legacy.reaped;
+        report.legacy_index_bytes_freed = legacy.bytes_freed;
+        report.total_bytes_after = cache_footprint(workspaces_dir, blobs_root, schema, &newer)?;
+    }
 
-    for candidate in eviction_candidates(workspaces_dir, &newer, hot_floor, grace)? {
+    for candidate in eviction_candidates(workspaces_dir, &newer, rules.hot_floor, rules.grace)? {
         if report.total_bytes_after <= budget_bytes {
             break;
         }
@@ -652,7 +683,7 @@ fn evict_workspace(dir: &Path) -> Result<Eviction, GcError> {
 
 /// Whether a view of this workspace was written by a newer basemind. Such a view is that
 /// version's live index over blobs this binary cannot read, not cache this one may rebuild.
-fn holds_a_newer_view(workspace: &Path) -> bool {
+pub(crate) fn holds_a_newer_view(workspace: &Path) -> bool {
     let views = workspace.join(crate::store::VIEWS_DIR);
     std::fs::read_dir(views).is_ok_and(|entries| entries.flatten().any(|view| view_is_newer(&view.path())))
 }

@@ -25,18 +25,18 @@ tool's body, before changing one.
 | Tool | Arguments (required first; `?` = optional) | Job |
 |---|---|---|
 | `code_outline` | `path`, `limit?`, `cursor?`, `max_tokens?` | a file's symbols and imports |
-| `code_symbols` | `name`, `kind?`, `fuzzy?`, `limit?`, `cursor?`, `max_tokens?` | find a definition by name |
+| `code_symbols` | `name`, `kind?`, `path?`, `language?`, `fuzzy?`, `limit?`, `cursor?`, `max_tokens?` | find a definition by name |
 | `code_read` | `path`, then `symbol?` (+ `line?` / `kind?` when several share the name) or `line?` + `end_line?` | one symbol's body, or a line span |
 | `code_grep` | `pattern`, `regex?`, `path?`, `language?`, `context?`, `limit?`, `cursor?`, `max_tokens?` | exact text search over indexed code and text documents |
-| `code_search` | `query`, `lane?`, `limit?`, `cursor?`, `max_tokens?` | search code by meaning; pointers, not bodies |
+| `code_search` | `query`, `lane?`, `path?`, `language?`, `limit?`, `cursor?`, `max_tokens?` | search code by meaning; pointers, not bodies |
 | `code_refs` | `name`, `relation?`, `path?`, `line?`, `column?`, `match?`, `limit?`, `cursor?`, `max_tokens?` | call sites, callers, implementations, importers, or the definition a reference binds to |
-| `find_files` | `query?`, `path_prefix?`, `language?`, `limit?`, `cursor?`, `max_tokens?` | fuzzy file-name search, or a listing |
-| `docs_search` | `query`, `mime_type?`, `kind?`, `path?`, `keywords?`, `entity?`, `limit?`, `cursor?`, `max_tokens?` | semantic search over indexed documents |
+| `find_files` | `query?`, `path?`, `language?`, `limit?`, `cursor?`, `max_tokens?` | fuzzy file-name search, or a listing |
+| `docs_search` | `query`, `mime_type?`, `format?`, `path?`, `keywords?`, `entity?`, `limit?`, `cursor?`, `max_tokens?` | semantic search over indexed documents |
 | `git_log` | `path?`, `query?`, `author?`, `symbol?`, `line?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | recent commits, a path's or symbol's history, a commit search, or one commit |
 | `git_blame` | `path`, `line?` + `end_line?`, `symbol?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | per-line authorship of a file, a span, or one symbol |
 | `git_diff` | `path?`, `from?`, `to?`, `structural?` | working-tree status, a file's diff, or the symbols added and removed |
 | `memory_save` | `key`, `value`, `tags?`, `visibility?` | write a durable note |
-| `memory_search` | `query?` or `key?` or `prefix?`, `tag?`, `visibility?`, `limit?`, `cursor?` | recall notes by meaning, key, or key prefix |
+| `memory_search` | `query?` or `key?` or `prefix?`, `tags?`, `visibility?`, `limit?`, `cursor?` | recall notes by meaning, key, or key prefix |
 | `index_status` | none | index health and repository identity |
 | `index_rescan` | `paths?` | re-index files or directories, or the whole workspace |
 

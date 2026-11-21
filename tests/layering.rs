@@ -84,6 +84,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("mcp", Root),
     ("once_map", Core),
     ("path", Core),
+    ("path_filter", Core),
     ("process_start", Core),
     ("query", Core),
     ("registry", Core),

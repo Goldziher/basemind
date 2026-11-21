@@ -19,6 +19,8 @@ async fn symbols(shared: &crate::mcp::ServedWorkspace, name: &str) -> serde_json
         .code_symbols_call(crate::mcp::params::CodeSymbolsParams {
             name: name.to_string(),
             kind: None,
+            path: None,
+            language: None,
             fuzzy: None,
             limit: None,
             cursor: None,

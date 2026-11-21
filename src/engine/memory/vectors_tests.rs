@@ -1,7 +1,7 @@
 use super::*;
 use crate::embeddings::SharedEmbedder;
 use crate::engine::memory::ops::{delete_core, put_core};
-use crate::engine::types::memory::MemoryDeleteParams;
+use crate::engine::types::memory::{MemoryDeleteParams, MemorySearchAnswer, MemorySearchToolParams};
 
 const DIM: u16 = 4;
 /// The group tier's namespace byte.
@@ -102,7 +102,7 @@ fn search_json(state: &Workspace, query: &str, limit: u32) -> serde_json::Value 
     let params = MemorySearchParams {
         query: query.into(),
         limit: Some(limit),
-        tag: None,
+        tags: Vec::new(),
         visibility: Visibility::Group,
     };
     serde_json::to_value(search(state, params).unwrap()).unwrap()
@@ -198,7 +198,7 @@ fn a_row_whose_note_was_deleted_is_not_served() {
     let joined = truth_join(
         vec![hit("gone", "resurrected", 5)],
         &notes_by_key(vec![("gone", None)]),
-        None,
+        &[],
         10,
     );
     assert!(
@@ -211,7 +211,7 @@ fn a_row_whose_note_was_deleted_is_not_served() {
 #[test]
 fn a_row_left_behind_by_a_newer_write_is_not_served() {
     let notes = notes_by_key(vec![("k", Some(note("k", "new text", 9)))]);
-    let joined = truth_join(vec![hit("k", "old text", 5)], &notes, None, 10);
+    let joined = truth_join(vec![hit("k", "old text", 5)], &notes, &[], 10);
     assert!(joined.hits.is_empty(), "the row holds the text of an earlier write");
     assert_eq!(joined.dropped, 1);
 }
@@ -219,7 +219,7 @@ fn a_row_left_behind_by_a_newer_write_is_not_served() {
 #[test]
 fn a_current_row_is_answered_from_the_note() {
     let notes = notes_by_key(vec![("k", Some(note("k", "note text", 9)))]);
-    let joined = truth_join(vec![hit("k", "row text", 9)], &notes, None, 10);
+    let joined = truth_join(vec![hit("k", "row text", 9)], &notes, &[], 10);
     assert_eq!(joined.hits.len(), 1);
     assert_eq!(joined.hits[0].value, "note text");
     assert_eq!(joined.hits[0].tags, ["note"]);
@@ -235,7 +235,7 @@ fn dropped_rows_do_not_count_against_the_limit() {
         ("a", Some(note("a", "a", 2))),
         ("b", Some(note("b", "b", 3))),
     ]);
-    let joined = truth_join(hits, &notes, None, 1);
+    let joined = truth_join(hits, &notes, &[], 1);
     assert_eq!(joined.hits.len(), 1);
     assert_eq!(joined.hits[0].key, "a");
 }
@@ -254,21 +254,77 @@ fn a_note_with_several_rows_is_served_once() {
         ("k", Some(note("k", "text", 9))),
         ("other", Some(note("other", "o", 2))),
     ]);
-    let joined = truth_join(hits, &notes, None, 10);
+    let joined = truth_join(hits, &notes, &[], 10);
     let keys: Vec<&str> = joined.hits.iter().map(|hit| hit.key.as_str()).collect();
     assert_eq!(keys, ["k", "other"]);
     assert_eq!(joined.dropped, 2, "the stale row and the second current one");
 }
 
-/// The tag filter reads the note's tags, the truth, and a row it excludes is not a stale row.
+/// The `tags` filter reads the note's tags, the truth, keeps a note carrying any of them, and a row
+/// it excludes is not a stale row.
 #[test]
-fn the_tag_filter_is_applied_to_the_note() {
+fn the_tags_filter_is_applied_to_the_note() {
     let notes = notes_by_key(vec![("k", Some(note("k", "text", 9)))]);
-    let with = truth_join(vec![hit("k", "x", 9)], &notes, Some("note"), 10);
-    let without = truth_join(vec![hit("k", "x", 9)], &notes, Some("row"), 10);
-    assert_eq!(with.hits.len(), 1);
+    let joined = |tags: &[&str]| {
+        let tags: Vec<String> = tags.iter().map(|tag| tag.to_string()).collect();
+        truth_join(vec![hit("k", "x", 9)], &notes, &tags, 10)
+    };
+    assert_eq!(joined(&["note"]).hits.len(), 1);
+    assert_eq!(joined(&["row", "note"]).hits.len(), 1, "any of the tags is enough");
+    let without = joined(&["row"]);
     assert!(without.hits.is_empty(), "`row` is a tag of the vector row only");
     assert_eq!(without.dropped, 0);
+}
+
+/// `memory_search` takes `tags`, as `memory_save` does: a search by meaning and a listing keep the
+/// notes carrying any of them, and a `key` read refuses them.
+#[test]
+fn memory_search_keeps_the_notes_carrying_any_of_its_tags() {
+    let root = tempfile::tempdir().unwrap();
+    let state = server(root.path(), "fake");
+    for (key, tag) in [("auth", "security"), ("cache", "perf"), ("style", "ui")] {
+        let store = state.store_read();
+        let idx = store.index_db.as_ref().unwrap();
+        put_core(idx, &state.scope, vis(), "", key, "a note", &[tag.to_string()]).unwrap();
+    }
+    let params = |query: Option<&str>, tags: &[&str]| MemorySearchToolParams {
+        query: query.map(str::to_string),
+        key: None,
+        prefix: None,
+        tags: Some(tags.iter().map(|tag| tag.to_string()).collect()),
+        visibility: None,
+        limit: None,
+        cursor: None,
+    };
+    let keys = |answer: MemorySearchAnswer| -> Vec<String> {
+        let mut keys: Vec<String> = match answer {
+            MemorySearchAnswer::Search(found) => found.hits.into_iter().map(|hit| hit.key).collect(),
+            MemorySearchAnswer::List(listed) => listed.entries.into_iter().map(|entry| entry.key).collect(),
+            _ => panic!("a search or a listing"),
+        };
+        keys.sort_unstable();
+        keys
+    };
+
+    let searched = state
+        .memory_search(params(Some("a note"), &["security", "perf"]))
+        .unwrap();
+    assert_eq!(keys(searched), ["auth", "cache"]);
+    let listed = state.memory_search(params(None, &["ui", "absent"])).unwrap();
+    assert_eq!(keys(listed), ["style"]);
+    assert!(keys(state.memory_search(params(None, &["absent"])).unwrap()).is_empty());
+
+    let read = state
+        .memory_search(MemorySearchToolParams {
+            key: Some("auth".to_string()),
+            ..params(None, &["security"])
+        })
+        .unwrap_err();
+    assert!(
+        read.to_string()
+            .contains("a `key` read returns one note and takes no `tags`, `limit` or `cursor`"),
+        "{read}"
+    );
 }
 
 /// The whole path of a search by meaning: notes that have no row are embedded by the search that
@@ -783,7 +839,7 @@ fn stamps_pick_the_notes_to_read_and_the_rows_to_refuse() {
         .map(|hit| hit.key)
         .collect();
     assert_eq!(keys, ["a", "stale", "a", "gone"], "c is current but unread");
-    let joined = truth_join(decidable(&hits, &stamps, &notes), &notes, None, 10);
+    let joined = truth_join(decidable(&hits, &stamps, &notes), &notes, &[], 10);
     assert_eq!(joined.hits.len(), 1);
     assert_eq!(
         joined.dropped, 3,
@@ -859,7 +915,7 @@ fn a_store_that_would_not_open_is_unavailable_at_once_to_the_next_call() {
     let params = || MemorySearchParams {
         query: "a note".into(),
         limit: Some(5),
-        tag: None,
+        tags: Vec::new(),
         visibility: Visibility::Group,
     };
     let first = search(&state, params()).unwrap_err();

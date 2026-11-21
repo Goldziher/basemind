@@ -88,19 +88,19 @@ needs no tool-search round trip, so call them directly. `tools/list` for them is
 
 | Old | New | Where |
 | --- | --- | --- |
-| `path_contains` | `path` | `code_grep` (still a literal substring of the repo-relative path, never a glob) |
-| `path_contains` | `path_prefix` | `find_files` (now a prefix) |
+| `path_contains` | `path` | `code_grep`, `find_files` (a prefix, or a glob when it holds `*`; no longer a substring) |
 | `include_context` | `context` | `code_grep` (default off) |
 | `line_start` / `line_end` | `line` / `end_line` | `git_blame` |
 | `rev_old` / `rev_new` | `from` / `to` | `git_diff` |
 | `entity_category` | `entity` | `docs_search` |
 | `keywords_contains` | `keywords` | `docs_search` |
+| `tag` | `tags` | `memory_search` (a list, like `memory_save`'s; a note carrying any of them passes) |
 | `start_row` (responses) | `line` / `end_line` | every tool that reports a position |
 
 ### Removed arguments
 
 - `mode`, on all 15 tools.
-- `format` (`"toon"`): responses are JSON.
+- `format` (`"toon"`): responses are JSON. `docs_search`'s `format` is the document format.
 - The undocumented aliases (`q`, `needle`, `token_budget` and similar). Only the names in a tool's
   schema are accepted.
 - `field` on commit search: pass `query` for messages or `author` for authors to `git_log`.
@@ -122,7 +122,7 @@ JSON.
 | `code expand <path> <name>` | `code read <path> --symbol <name>` (`expand` stays as an alias of `read`), or `code read <path> --line <n> --end-line <m>` |
 | `code grep <regex>` | `code grep <pattern>` is literal; add `--regex` |
 | `code grep --path-contains <s>` | `code grep --path <s>` |
-| `code files --path-contains <s>` | `code files --path-prefix <s>` / `code find [query] --path-prefix <s>` |
+| `code files --path-contains <s>` | `code files --path <s>` / `code find [query] --path <s>` |
 | `code references <name>` | `code refs <name>` (`references` stays as an alias) |
 | `code semantic <query>` | `code search <query>` (`semantic` stays as an alias) |
 | `code definition <path> <line> [--column]` | `code definition <path> <line> <name> [--column]` |
@@ -144,6 +144,11 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
 
 ### Behaviour changes
 
+- **`path` is a prefix, or a glob when it holds `*`.** `code_grep`, `find_files`, `docs_search`,
+  `code_symbols` and `code_search` read their `path` filter one way: a repo-relative prefix (`src/mcp/`), or a glob over the whole
+  path when the value holds `*` (`src/**/*.rs`; `*` stays within one segment, `**` crosses `/`).
+  `path_contains` was a substring, so `mcp` matched `src/mcp/tools.rs`; pass `src/mcp/` or
+  `**/mcp/**`. A `docs_search` `path` without `*` is now a prefix: `docs/` where it was `docs/**`.
 - **`code_grep` is literal by default.** The pattern is plain text unless `regex: true` (`--regex`).
   A script that passed a regex must add the flag, or it searches for the regex source text.
 - **Lines are 1-based everywhere**, in arguments and in responses (`line`, `end_line`, `column`).
@@ -172,8 +177,8 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
 - **`limit: 0` is refused** by every tool that takes `limit`. It returned an empty page, with a
   cursor back to the same position where one was issued.
 - **A filter that selects no file is an error.** `code_grep` with a `path` or `language`, and
-  `find_files` with a `path_prefix` or `language`, that no indexed file passes return an error
-  saying what would match (the indexed languages, or that `path` is literal text and not a glob;
+  `find_files` with a `path` or `language`, that no indexed file passes return an error
+  saying what would match (the indexed languages, or the rule `path` was read by;
   `code_grep` names `docs_search` when only documents match). While the index is still being built
   the empty page is returned with its `notice` instead. `git_log {path}` refuses a path that no
   commit reachable from HEAD touches and that is not on disk, for a file and for a directory.
@@ -254,7 +259,7 @@ lowered), `body_truncated` (`git_log` search: one commit's message was shortened
 | `find_files` | `truncated` | removed: `next_cursor` says a listing goes on |
 | `memory_search` listing | `truncated` on a `limit` cut | `next_cursor` alone on a `limit` cut; `truncated`, `truncated_reason: "scan_cap"` when `total` stopped counting (a lower bound) |
 | `code_search` | none | `also_at` on a hit (other paths with the same content; `path` is the live one); `truncated`, `truncated_reason: "stale_chunks"`, `omitted` when ranked chunks no indexed file holds were dropped; a reranker that could not run is a `rerank` entry of `lanes_unavailable` |
-| `docs_search` | `chunk_idx`, `distance`, `byte_start` / `byte_end`, per-hit `keywords` / `entities` / `summary` | `chunk`, `cite` (pages, section, headings inside the hit, lines, bytes), `context`, `also_at`, `title`, `lanes`, `score`; on the response `lanes_ran`, `lanes_unavailable`, `lexical_fuzzy`, `vector_mode`, `rerank`; `truncated_reason` (`depth`, `liveness_depth`). `scope` is gone; `kind` and `path` filter before ranking (ADR-0029, ADR-0037) |
+| `docs_search` | `chunk_idx`, `distance`, `byte_start` / `byte_end`, per-hit `keywords` / `entities` / `summary` | `chunk`, `cite` (pages, section, headings inside the hit, lines, bytes), `context`, `also_at`, `title`, `lanes`, `score`; on the response `lanes_ran`, `lanes_unavailable`, `lexical_fuzzy`, `vector_mode`, `rerank`; `truncated_reason` (`depth`, `liveness_depth`). `scope` is gone; `format` and `path` filter before ranking (ADR-0029, ADR-0037) |
 | `git_diff {}` | none | `truncated`, `truncated_reason: "path_cap"`, `omitted` (paths), `path` |
 | `git_diff {path}` | `truncated`, `total_hunks` | `truncated`, `truncated_reason` (`hunk_cap`, `byte_cap`), `omitted` (hunks) |
 | `git_diff {structural}` | `common` (a list) | `common` (a count) |
@@ -549,11 +554,12 @@ Also check scripts for these behaviour changes:
 | Symbol `signature` now ends at the grammar's body field instead of embedding the body | `EXTRACT_EPOCH` (see below): only files whose entry or blob predates the epoch are re-extracted, in the normal bounded scan | One parse per affected file, no wipe |
 | Release-minor schema bump (`0.28.x` to `0.29.x`) | `RELEASE_MINOR` mismatch: each view's `index.msgpack` and fjall index are reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
 | `grep_bloom` index keyspace (per-file trigram bloom for `code_grep`) | A new keyspace, so `INDEX_SCHEMA_VER` is not bumped. An index without it opens with an empty `grep_bloom` and greps correctly at once (every file is a candidate); the next scan builds the rows from the bytes it reads, and an unchanged file with no row is read once to backfill it | One read per unchanged file, once; about 12.8 % of the indexed code bytes on disk |
-| Blob store namespaced by blob schema: `cache/blobs/v<schema>/` instead of `cache/blobs/` | Nothing is moved. A file map records the layout it was written for (`blob_layout`); one from before the namespaces is discarded with its index at the first open, so the first scan re-extracts into the new namespace and embeds every document and code chunk again (the embeddings live in the blobs). The blob GC removes un-namespaced blob files and the namespaces of older schemas once a file is past the 6 hour grace period, and never touches, counts or evicts for the namespace of a newer schema, so two installed versions no longer overwrite each other's blobs. This ships with the 0.34 release-minor bump: an older basemind left installed finds its blobs gone and re-extracts on its next scan | Full re-extraction and re-embedding, once |
+| Blob store namespaced by blob schema: `cache/blobs/v<schema>/` instead of `cache/blobs/` | Nothing is moved. A file map records the layout it was written for (`blob_layout`); one from before the namespaces is discarded with its index at the first open, so the first scan re-extracts into the new namespace and embeds every document and code chunk again (the embeddings live in the blobs). The blob GC removes un-namespaced blob files and the namespaces of older schemas, by the rule in [Per-version binaries](#per-version-binaries): not while a process of that version runs, and not until nothing has been written into them for `BASEMIND_PRUNE_AFTER_DAYS` days (default 14; `0` removes the wait). It never touches, counts or evicts for the namespace of a newer schema, so two installed versions no longer overwrite each other's blobs. This ships with the 0.34 release-minor bump: an older basemind left installed keeps its blobs while it is in use, and once they are reaped re-extracts on its next scan | Full re-extraction and re-embedding, once |
+| One index per repository group: `cache/groups/<group>/index.fjall` instead of `views/<view>/index.fjall` in each workspace (ADR-0028) | Nothing is converted: the first scan of each workspace rebuilds its views into the group index. A view's own `index.fjall` is deleted at its first writer open, and the daemon's cache sweep deletes it in every workspace whose repository's group index exists, opened since the upgrade or not (ADR-0054), by the rule in [Per-version binaries](#per-version-binaries); with the cache over its budget, every one left goes before any workspace is evicted. `cache stats` counts those left (`legacy_indexes`, `legacy_index_bytes`). Memory notes a release before 0.30 kept in it are moved to the group's notes store first; a workspace whose notes cannot be moved, or whose lock another process holds, keeps it | One full scan per workspace |
 | Memory vectors live in `cache/repos/<group>/memory.lance/<model>-<dim>-<hash>/`, beside `memory.fjall`, instead of the workspace's `lance/` | Not migrated. A `memory_search` by meaning embeds the notes that have no current vector row, from `memory.fjall`, up to 256 per call, and says so in `notice` until every note has one; the same happens for an embedding preset used for the first time and after a release-minor bump empties the table. The old `memory` table goes with the workspace's `lance/`, which the release-minor bump wipes at its first open. A store of a preset no longer used is not removed | One embedding per note, once per preset |
 | `index.msgpack` fields `rebuild_pending` and `rebuild_pins`; `pending-vectors.msgpack` and `vector-store-id` beside it; `store-id` in the workspace's `lance/` | Additive: a file map written before them reads as owing no rebuild, and a view without the files as owing no vector rows. Vector rows that a development build of this release recorded as owed inside the file map are not carried over: the first scan after the upgrade embeds and writes every row again | none |
 | `memory.fjall` keyspace `store_meta` (the notes store's own version) | Written at the first open that holds the workspace lock, by a version that has it. Notes are never wiped. A store stamped by a newer basemind is refused for memory operations with "written by a newer basemind"; the code index of the workspace still opens | none |
-| `verify-blobs` marker in the workspace cache directory; `hosting/<pid>` under the data directory, holding the boot the daemon was started in and its process start | The marker is written when a scan of the workspace is found to have died without finishing, or when a process about to scan finds the `hosting/<pid>` of a daemon from an earlier boot of the machine (then for every workspace at once). A daemon that was killed while the machine stayed up leaves no request. The next scan of that workspace is a full one that decodes each combined and document blob instead of trusting it for existing, rewrites the vector rows from the blobs, then removes the marker | One blob read per file and one rewrite of the vector rows, for that one scan |
+| `verify-blobs` marker in the workspace cache directory; `hosting/<pid>` under the data directory, holding the boot the daemon was started in, its process start, its version and the blob schema it reads | The marker is written when a scan of the workspace is found to have died without finishing, or when a process about to scan finds the `hosting/<pid>` of a daemon from an earlier boot of the machine (then for every workspace at once). A daemon that was killed while the machine stayed up leaves no request. The next scan of that workspace is a full one that decodes each combined and document blob instead of trusting it for existing, rewrites the vector rows from the blobs, then removes the marker | One blob read per file and one rewrite of the vector rows, for that one scan |
 | Resident term index, name dictionaries, heap retag | In memory only. Nothing on disk, nothing to migrate | none |
 | `[resources] onnx_provider` defaults to `cpu` | Behaviour only: models load on the CPU provider instead of the platform default (CoreML on macOS). Set `onnx_provider = "auto"` to restore it. No on-disk change | none |
 | Daemon `IndexRead` forwarding | Wire protocol only | none |
@@ -627,6 +633,30 @@ only when the process installing into it is gone. It does not stop processes of 
 their sessions and daemons keep running, and a daemon exits on its own once idle.
 That cache is a few
 tens of MB per version and is not touched by the above.
+
+The blob store follows the same retention. A version reads its own blob namespace
+(`cache/blobs/v<schema>/`; releases up to 0.33 read the un-namespaced blobs directly in
+`cache/blobs/`), and the blob sweep of a newer version reaps an older one's only when both of these
+hold: no live process of that version is registered under the data directory (a daemon in
+`daemons/`, of any generation, or a host in `hosting/<pid>`), and nothing has been written into the
+namespace for `BASEMIND_PRUNE_AFTER_DAYS` days (default 14; `0` leaves only the first test). A
+0.33 daemon still serving another repository through an upgrade therefore keeps its blobs. While a
+live process whose namespace cannot be told is registered (a `hosting/<pid>` that names no build, or
+a version that does not parse), or while a record in `daemons/` cannot be read, no older namespace
+is reaped at all. A daemon record that names no process start (0.33 and earlier) keeps its
+namespace for as long as a process runs under its pid. Each
+file still goes only once it is older than the blob grace period (`BASEMIND_BLOB_GC_GRACE_SECS`).
+A version none of whose processes runs at the sweep keeps its blobs while it has written into them
+within the hold; once they are reaped, its next scan re-extracts.
+
+The per-view indexes of releases up to 0.33 (`views/<view>/index.fjall`) are kept only while such
+a release runs. The daemon's cache sweep deletes them in a workspace once its repository's group
+index exists, except while a daemon of a release up to 0.33 is registered in `daemons/` under
+the data directory or a live basemind of unknown build runs, and except in a workspace that is
+locked, holds a view a newer basemind wrote, or has notes the sweep could not move to the group's
+store. With the cache over its budget, every one left goes, adopted or not, before any workspace
+is evicted, under the same exceptions; a skipped one stays while another workspace may be evicted.
+They have no hold.
 
 ## Adding a new on-disk component (checklist)
 

@@ -1,8 +1,9 @@
 //! Rank document chunks for one query (ADR-0029 rules 3 to 7, as amended by ADR-0037).
 //!
 //! 1. **Live documents.** The view's document map names, for every path, the `doc_key` its rows
-//!    are stored under. A `path` glob and a `keywords` filter narrow that set.
-//! 2. **Filter before ranking.** `mime_type`, `kind`, `entity` and the allowed keys are one
+//!    are stored under. A `path` filter (a prefix, or a glob when it holds `*`) and a `keywords`
+//!    filter narrow that set.
+//! 2. **Filter before ranking.** `mime_type`, `format`, `entity` and the allowed keys are one
 //!    predicate both lanes apply. While the allowed keys number at most [`LIVE_KEYS_PREFILTER`]
 //!    they go into it; above that, each lane over-fetches and projects onto them, widening until
 //!    it has enough or reaches [`LIVE_WIDEN_CAP`], which the ranking then reports.
@@ -70,7 +71,8 @@ impl std::error::Error for DocsSearchError {}
 pub struct DocsRequest {
     pub query: String,
     pub mime_type: Option<String>,
-    pub kind: Option<String>,
+    /// The document format family, one of [`MIME_GROUPS`].
+    pub format: Option<String>,
     pub entity: Option<String>,
     pub keywords: Option<String>,
     pub path: Option<String>,
@@ -79,10 +81,10 @@ pub struct DocsRequest {
 /// The filters of one request, checked.
 pub struct Filters {
     pub mime_type: Option<String>,
-    pub kind: Option<String>,
+    pub format: Option<String>,
     pub entity: Option<String>,
     pub keywords: Vec<String>,
-    pub path: Option<globset::GlobMatcher>,
+    pub path: Option<crate::path_filter::PathFilter>,
 }
 
 impl Filters {
@@ -92,12 +94,12 @@ impl Filters {
         if request.query.trim().is_empty() {
             return Err(DocsSearchError::InvalidArgument("`query` is empty".to_string()));
         }
-        let kind = request.kind.as_deref().map(str::trim).map(str::to_ascii_lowercase);
-        if let Some(kind) = &kind
-            && !MIME_GROUPS.contains(&kind.as_str())
+        let format = request.format.as_deref().map(str::trim).map(str::to_ascii_lowercase);
+        if let Some(format) = &format
+            && !MIME_GROUPS.contains(&format.as_str())
         {
             return Err(DocsSearchError::InvalidArgument(format!(
-                "unknown `kind` {kind:?}; one of {}",
+                "unknown `format` {format:?}; one of {}",
                 MIME_GROUPS.join(", ")
             )));
         }
@@ -106,21 +108,15 @@ impl Filters {
         {
             return Err(DocsSearchError::Unsupported(reason));
         }
-        let path = match request.path.as_deref() {
-            Some(pattern) => Some(
-                globset::GlobBuilder::new(pattern)
-                    .literal_separator(true)
-                    .build()
-                    .map_err(|error| {
-                        DocsSearchError::InvalidArgument(format!("`path` is not a glob ({error}); e.g. `docs/**/*.md`"))
-                    })?
-                    .compile_matcher(),
-            ),
-            None => None,
-        };
+        let path = request
+            .path
+            .as_deref()
+            .map(crate::path_filter::PathFilter::parse)
+            .transpose()
+            .map_err(DocsSearchError::InvalidArgument)?;
         Ok(Self {
             mime_type: request.mime_type.clone().filter(|m| !m.trim().is_empty()),
-            kind,
+            format,
             entity: request
                 .entity
                 .as_deref()
@@ -151,13 +147,13 @@ impl LiveDocs {
     /// Every document of the view's document map whose path passes `path_filter`. The key is the
     /// one the scan stored the rows under: computed from the content hash and the extraction
     /// digest the entry records, never from the current settings.
-    pub fn of_store(store: &crate::store::Store, path_filter: Option<&globset::GlobMatcher>) -> Self {
+    pub fn of_store(store: &crate::store::Store, path_filter: Option<&crate::path_filter::PathFilter>) -> Self {
         let mut by_key: AHashMap<String, Vec<String>> = AHashMap::new();
         for (path, entry) in &store.index.doc_files {
-            let path = path.to_str_lossy();
-            if path_filter.is_some_and(|glob| !glob.is_match(path.as_ref())) {
+            if path_filter.is_some_and(|filter| !filter.matches(path.as_bytes())) {
                 continue;
             }
+            let path = path.to_str_lossy();
             let key = super::docs::doc_key(&entry.hash_hex, &entry.config_digest);
             by_key.entry(key).or_default().push(path.into_owned());
         }
@@ -231,7 +227,7 @@ pub fn rank(query: &str, filters: &Filters, inputs: RankInputs<'_>) -> Result<Do
     }
     let predicate = DocPredicate {
         mime_type: filters.mime_type.clone(),
-        mime_group: filters.kind.clone(),
+        mime_group: filters.format.clone(),
         entity: filters.entity.clone(),
         keys: (allowed.len() <= LIVE_KEYS_PREFILTER).then(|| {
             let mut keys: Vec<String> = allowed.iter().cloned().collect();

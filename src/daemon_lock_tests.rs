@@ -58,6 +58,71 @@ fn a_live_daemon_is_found_by_pid_in_any_generation_and_a_dead_one_is_not() {
     assert_eq!(found.version, "0.33.0", "the pre-generation layout is read too");
 }
 
+/// A registry that does not exist is an empty, complete census; a record that cannot be read may
+/// be a live daemon's, so the census that skips it says it is incomplete, and still lists the rest.
+#[test]
+fn a_record_that_cannot_be_read_leaves_the_census_incomplete() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let missing = registered_daemons_in(&root.path().join("daemons"));
+    assert_eq!(
+        missing,
+        DaemonCensus {
+            daemons: Vec::new(),
+            complete: true
+        }
+    );
+
+    let record = serde_json::json!({
+        "pid": std::process::id(), "kind": "comms", "dir": "/tmp/comms", "version": "0.34.0", "started_unix": now_unix(),
+    });
+    std::fs::create_dir_all(root.path().join("g1/comms-unreadable.pid")).expect("a record that cannot be read");
+    std::fs::write(root.path().join("g1/comms-live.pid"), record.to_string()).expect("write");
+    let census = registered_daemons_in(root.path());
+    assert!(!census.complete);
+    let listed: Vec<String> = census.daemons.into_iter().map(|daemon| daemon.record.version).collect();
+    assert_eq!(listed, ["0.34.0"]);
+}
+
+/// Every live daemon is listed with where it recorded itself, so the blob sweep can tell a release up
+/// to 0.33 (registry root) from a later one (a generation directory). Dead ones and records outside
+/// a generation directory are not.
+#[test]
+fn every_live_daemon_is_listed_with_whether_it_predates_the_generations() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let record = |pid: u32, version: &str| {
+        serde_json::json!({
+            "pid": pid, "kind": "comms", "dir": "/tmp/comms", "version": version, "started_unix": now_unix(),
+        })
+        .to_string()
+    };
+    let me = std::process::id();
+    let write = |rel: &str, body: String| {
+        let path = root.path().join(rel);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(path, body).expect("write");
+    };
+    write("comms-old.pid", record(me, "0.33.0"));
+    write("comms-dead.pid", record(0x7FFF_FFFE, "0.32.0"));
+    write("g1/comms-new.pid", record(me, "0.34.0"));
+    write("g1/comms-dead.pid", record(0x7FFF_FFFE, "0.34.0"));
+    write("scratch/comms-stray.pid", record(me, "0.99.0"));
+
+    let census = registered_daemons_in(root.path());
+    assert!(census.complete);
+    let mut listed: Vec<(String, bool)> = census
+        .daemons
+        .into_iter()
+        .map(|daemon| (daemon.record.version, daemon.pre_generation))
+        .collect();
+    listed.sort();
+
+    assert_eq!(listed, [("0.33.0".to_string(), true), ("0.34.0".to_string(), false)]);
+    assert!(
+        root.path().join("comms-dead.pid").exists() && root.path().join("g1/comms-dead.pid").exists(),
+        "listing is read-only"
+    );
+}
+
 /// A 0.33 daemon was killed and left its record; its pid now belongs to a newer daemon. The
 /// stale record is older than that process, so it does not name it.
 #[cfg(any(target_os = "macos", target_os = "linux", windows))]
@@ -191,6 +256,7 @@ fn count_prunes_dead_holders_and_counts_live_ones() {
         kind: DaemonKind::Comms,
         dir: PathBuf::from("/nonexistent"),
         version: "9.9.9".to_string(),
+        blob_schema: None,
         started_unix: now_unix(),
         process_start: None,
         boot: None,
@@ -217,6 +283,7 @@ fn a_record_whose_process_refuses_to_be_opened_is_kept() {
         kind: DaemonKind::Comms,
         dir: PathBuf::from("/nonexistent"),
         version: "9.9.9".to_string(),
+        blob_schema: None,
         started_unix: now_unix(),
         process_start: None,
         boot: None,
@@ -231,6 +298,47 @@ fn a_record_whose_process_refuses_to_be_opened_is_kept() {
 
     assert!(live_daemons_judged_by(machine.path(), |_pid| PidState::Gone).is_empty());
     assert!(!path.exists(), "a gone process's pidfile is pruned");
+}
+
+/// A daemon whose process Windows refuses to open may be one of another account or sandbox sharing
+/// the data home: the census the blob sweep holds namespaces by lists it, in every generation, but
+/// it is not named as the holder of a pid.
+#[test]
+fn a_daemon_whose_process_refuses_to_be_opened_holds_but_is_not_named() {
+    use crate::boot_identity::{PidState, windows_state};
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const PID: u32 = 0x7FFF_FFFE;
+    let root = tempfile::tempdir().expect("tempdir");
+    let record = |version: &str| DaemonRecord {
+        pid: PID,
+        kind: DaemonKind::Comms,
+        dir: PathBuf::from("/nonexistent"),
+        version: version.to_string(),
+        blob_schema: None,
+        started_unix: now_unix(),
+        process_start: None,
+        boot: None,
+    };
+    write_record(&root.path().join("comms-old.pid"), &record("0.33.0"));
+    std::fs::create_dir_all(root.path().join("g1")).expect("mkdir generation");
+    write_record(&root.path().join("g1/comms-new.pid"), &record("0.34.0"));
+    let unopenable = |_pid: u32| windows_state(Err(Some(ERROR_ACCESS_DENIED)));
+
+    let listed: Vec<(String, bool)> = registered_daemons_judged_by(root.path(), unopenable)
+        .daemons
+        .into_iter()
+        .map(|daemon| (daemon.record.version, daemon.pre_generation))
+        .collect();
+    assert_eq!(listed, [("0.33.0".to_string(), true), ("0.34.0".to_string(), false)]);
+    assert!(
+        registered_daemons_judged_by(root.path(), |_pid| PidState::Gone)
+            .daemons
+            .is_empty()
+    );
+
+    assert_eq!(registered_daemon_judged_by(root.path(), PID, unopenable), None);
+    let named = registered_daemon_judged_by(root.path(), PID, |_pid| PidState::Live).expect("a live holder");
+    assert_eq!(named.version, "0.33.0");
 }
 
 #[test]

@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:d0fd7a6a94322c715ea9bc828643dec54501d1c22b987e9f32bf51a0c390f173
-Source-Hash: blake3:d748a02f18a6fbf03f98def377634fb76b352d2fd7155f08dc111a83e11057fc
+Content-Hash: blake3:366ba0114baf3c27111174d82a08cd1fba769ac9477358d169891d1933934880
+Source-Hash: blake3:5542b727379f65e1a715fec964c3ecdf17a294803bb36e2f2bbabc2f2e8786ab
 Schema-Version: v1
 -->
 
@@ -81,9 +81,9 @@ docs_search {"query":"rate limiting","mime_type":"text/html"}
   version scraped or crawled stay in the store under `web:<host>` and are no longer refreshed; pass
   `"scope":"web:<host>"` to search them.
 - `memory_search` takes one selector: `query` (by meaning, ranked, no `cursor`), `key` (one note)
-  or `prefix` (list by key prefix); with none it lists everything. `tag` filters a search or a
-  list. A list pages by `next_cursor`; `truncated` with `truncated_reason: "scan_cap"` means its
-  `total` stopped counting and is a lower bound. Saving an existing `key` replaces the note.
+  or `prefix` (list by key prefix); with none it lists everything. `tags` (any of them) filters a
+  search or a list. A list pages by `next_cursor`; `truncated` with `truncated_reason: "scan_cap"`
+  means its `total` stopped counting and is a lower bound. Saving an existing `key` replaces the note.
 - Memory is scoped by the normalised git `origin` URL, so clones of the same repo share stored
   entries and unrelated repos do not. `"visibility":"individual"` keeps a note to this agent.
 - `docs_search` returns 10 hits by default; lists take `limit` and page with `next_cursor` ->

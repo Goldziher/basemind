@@ -65,7 +65,7 @@ command covers the question.
 | Question | Command | Notes |
 |---|---|---|
 | "What's the shape of file F?" | `basemind code outline path/F` | Symbols with 1-based line spans, plus imports. |
-| "Where is X defined?" | `basemind code symbols "X" [--kind K --fuzzy]` | Ranked exact, prefix, substring; `--fuzzy` adds fuzzy matches last. |
+| "Where is X defined?" | `basemind code symbols "X" [--kind K --path P --language L --fuzzy]` | Ranked exact, prefix, substring; `--fuzzy` adds fuzzy matches last. |
 | "One symbol's body, or a line span?" | `basemind code read path --symbol name` / `--line N --end-line M` | Alias `expand`. One form, not both. |
 | "Where does this text appear?" | `basemind code grep "pattern" [--regex --path P --language L --context N]` | Literal unless `--regex`; `--path` is a substring. |
 | "Find code by meaning?" | `basemind code search "query" [--lane hybrid\|semantic\|keyword]` | Alias `semantic`. Needs `code-search`. |
@@ -74,8 +74,8 @@ command covers the question.
 | "What implements / extends X?" | `basemind code implementations "X"` | Shorthand for `refs X --relation implementations`. |
 | "What imports module M?" | `basemind code dependents "M"` | Shorthand for `refs M --relation importers`. |
 | "Which definition does this reference bind to?" | `basemind code definition path line name [--column C]` | Shorthand for `refs name --relation definition`. |
-| "Which file is named like X?" | `basemind code find "X" [--path-prefix P --language L]` | Fuzzy; code and documents. |
-| "What files are indexed?" | `basemind code files [--path-prefix P --language L]` | `find` with no query. |
+| "Which file is named like X?" | `basemind code find "X" [--path P --language L]` | Fuzzy; code and documents. `P`: a prefix, or a glob with `*`. |
+| "What files are indexed?" | `basemind code files [--path P --language L]` | `find` with no query. |
 | "What changed recently?" | `basemind git log [--limit N]` | Shorthand `git recent`. |
 | "Which commits touched a path?" | `basemind git log --path P` | Shorthand `git touching P`; a trailing `/` means a directory. |
 | "Which commit mentions X?" | `basemind git log --query "X" [--author A]` | Shorthand `git search`. |
