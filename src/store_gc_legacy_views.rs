@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 
 use crate::data_root::DataRoot;
 use crate::index::INDEX_DIR;
+use crate::index::durability::{DISCARD_PREFIX, discard_index, sweep_discarded};
 use crate::store::{LockHolder, StoreError, VIEWS_DIR};
 use crate::store_gc::{GcError, dir_size, read_dir};
 use crate::store_gc_namespaces::{BlobNamespace, Holds};
@@ -75,11 +76,38 @@ fn paths_in(dir: &Path) -> Result<Vec<PathBuf>, GcError> {
         .collect()
 }
 
-/// The view directories of `workspace` that still hold a per-view index.
+/// The database directories a view still holds: its index, and any a discard set aside but could
+/// not finish deleting, which no open retries in a view nobody opens.
+fn legacy_index_dirs(view: &Path) -> Result<Vec<PathBuf>, GcError> {
+    let mut dirs = paths_in(view)?;
+    dirs.retain(|dir| {
+        dir.is_dir()
+            && dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == INDEX_DIR || name.starts_with(DISCARD_PREFIX))
+    });
+    Ok(dirs)
+}
+
+/// The view directories of `workspace` that still hold a per-view index or the remains of one.
 fn views_with_legacy_index(workspace: &Path) -> Result<Vec<PathBuf>, GcError> {
-    let mut views = paths_in(&workspace.join(VIEWS_DIR))?;
-    views.retain(|view| view.join(INDEX_DIR).is_dir());
+    let mut views = Vec::new();
+    for view in paths_in(&workspace.join(VIEWS_DIR))? {
+        if view.is_dir() && !legacy_index_dirs(&view)?.is_empty() {
+            views.push(view);
+        }
+    }
     Ok(views)
+}
+
+/// The on-disk size of what [`legacy_index_dirs`] finds in `view`.
+fn legacy_index_bytes(view: &Path) -> Result<u64, GcError> {
+    let mut bytes = 0;
+    for dir in legacy_index_dirs(view)? {
+        bytes += dir_size(&dir)?;
+    }
+    Ok(bytes)
 }
 
 /// Whether the group index of `workspace`'s repository exists, so the group has adopted its views.
@@ -119,7 +147,7 @@ pub(crate) fn legacy_indexes_in(workspaces_dir: &Path) -> Result<LegacyIndexes, 
         }
         for view in views_with_legacy_index(&workspace)? {
             found.count += 1;
-            found.bytes += dir_size(&view.join(INDEX_DIR))?;
+            found.bytes += legacy_index_bytes(&view)?;
         }
     }
     Ok(found)
@@ -179,24 +207,34 @@ fn reap_workspace(workspace: &Path, report: &mut LegacyIndexReap) -> Result<(), 
         }
         Err(error) => return Err(error.into()),
     };
+    // A newer basemind may have written a view since the sweep judged the workspace; its indexes
+    // are then that version's. ~keep
+    if crate::store_gc_budget::holds_a_newer_view(workspace) {
+        tracing::debug!(workspace = %workspace.display(), "workspace now holds a newer view; keeping its per-view indexes");
+        return Ok(());
+    }
     // Measured before the rescue opens the databases, which rewrites their journals. ~keep
     let measured = views_with_legacy_index(workspace)?
         .into_iter()
-        .map(|view| Ok((dir_size(&view.join(INDEX_DIR))?, view)))
+        .map(|view| Ok((legacy_index_bytes(&view)?, view)))
         .collect::<Result<Vec<_>, GcError>>()?;
     if !crate::store_gc_live::rescue_legacy_memory(workspace) {
         return Ok(());
     }
     for (bytes, view) in measured {
-        match crate::index::durability::discard_index(&view) {
-            Ok(()) => {
-                report.reaped += 1;
-                report.bytes_freed += bytes;
-                tracing::info!(view = %view.display(), bytes, "removed the per-view index of a release up to 0.33");
-            }
-            Err(error) => {
-                tracing::warn!(view = %view.display(), %error, "could not remove a per-view index; kept");
-            }
+        if view.join(INDEX_DIR).is_dir()
+            && let Err(error) = discard_index(&view)
+        {
+            tracing::warn!(view = %view.display(), %error, "could not remove a per-view index; kept");
+            continue;
+        }
+        sweep_discarded(&view);
+        if legacy_index_dirs(&view)?.is_empty() {
+            report.reaped += 1;
+            report.bytes_freed += bytes;
+            tracing::info!(view = %view.display(), bytes, "removed the per-view index of a release up to 0.33");
+        } else {
+            tracing::warn!(view = %view.display(), "a per-view index is not fully deleted; the next sweep retries");
         }
     }
     drop(lock);
@@ -393,6 +431,46 @@ mod tests {
         fs::write(cache.workspace.join(VIEWS_DIR), b"not a directory").expect("plant a file as views");
 
         assert!(legacy_indexes_in(&cache.workspaces()).is_err());
+    }
+
+    /// A newer basemind may write a view between the sweep's check and the workspace lock: the
+    /// reap itself rechecks once it holds the lock.
+    #[test]
+    fn a_reap_that_finds_a_newer_view_under_the_lock_removes_nothing() {
+        let cache = Cache::new();
+        let working = cache.plant_legacy_view("working");
+        let mut newer = Index::empty();
+        newer.schema_ver = crate::extract::SCHEMA_VER + 1;
+        let newer_view = cache.workspace.join(VIEWS_DIR).join("newer");
+        fs::create_dir_all(&newer_view).expect("mk newer view");
+        fs::write(
+            newer_view.join(INDEX_FILE),
+            rmp_serde::to_vec_named(&newer).expect("encode index"),
+        )
+        .expect("write the newer file map");
+        let mut report = LegacyIndexReap::default();
+
+        reap_workspace(&cache.workspace, &mut report).expect("reap");
+
+        assert_eq!(report, LegacyIndexReap::default());
+        assert!(working.join(INDEX_DIR).is_dir());
+    }
+
+    /// A discard that set a database aside but could not delete it leaves it where no open retries:
+    /// the next sweep finishes the deletion and counts it.
+    #[test]
+    fn a_database_a_discard_left_aside_is_deleted_by_the_next_sweep() {
+        let cache = Cache::new();
+        let working = cache.plant_legacy_view("working");
+        fs::rename(working.join(INDEX_DIR), working.join(format!("{DISCARD_PREFIX}1-0"))).expect("set aside");
+        cache.adopt();
+
+        let stats = legacy_indexes_in(&cache.workspaces()).expect("count");
+        let report = reap_adopted_legacy_indexes_in(&cache.workspaces(), &Holds::default()).expect("reap");
+
+        assert_eq!(stats.count, 1);
+        assert_eq!((report.reaped, report.bytes_freed), (1, stats.bytes));
+        assert!(!working.join(format!("{DISCARD_PREFIX}1-0")).exists());
     }
 
     #[test]

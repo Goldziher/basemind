@@ -523,7 +523,7 @@ fn enforce_disk_aware(workspaces: &Path, blobs: &Path, free: u64) -> EvictReport
         &EvictionRules {
             hot_floor: Duration::ZERO,
             grace: Duration::ZERO,
-            live: &[],
+            holds: &Holds::default(),
         },
     )
     .expect("enforce")

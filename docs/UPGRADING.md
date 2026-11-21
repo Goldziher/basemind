@@ -647,8 +647,11 @@ within the hold; once they are reaped, its next scan re-extracts.
 The per-view indexes of releases up to 0.33 (`views/<view>/index.fjall`) are kept only while such
 a release runs. The daemon's cache sweep deletes them in a workspace once its repository's group
 index exists, except while a daemon of a release up to 0.33 is registered in `daemons/` under
-the data directory. With the cache over its budget, every one left goes, adopted or not, before any
-workspace is evicted, under the same exception. They have no hold.
+the data directory or a live basemind of unknown build runs, and except in a workspace that is
+locked, holds a view a newer basemind wrote, or has notes the sweep could not move to the group's
+store. With the cache over its budget, every one left goes, adopted or not, before any workspace
+is evicted, under the same exceptions; a skipped one stays while another workspace may be evicted.
+They have no hold.
 
 ## Adding a new on-disk component (checklist)
 

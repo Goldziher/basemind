@@ -96,14 +96,26 @@ impl Drop for SweepLock {
 /// `workspace`, before a collector removes that index. Only a writer open of the view moved them, so a
 /// workspace not opened for writing since the upgrade still held them, and evicting or reaping it
 /// destroyed notes a user wrote. Judged by the index itself: a writer open that met a newer notes store
-/// left the notes and still rewrote the file map. Returns `false` when they could not be moved: the
-/// caller must then leave the views alone. The caller holds the workspace lock.
+/// left the notes and still rewrote the file map. Returns `false` when they could not be moved, or the
+/// views could not all be listed: the caller must then leave the views alone. The caller holds the workspace lock.
 pub(crate) fn rescue_legacy_memory(workspace: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(workspace.join(VIEWS_DIR)) else {
-        return true;
+    let views_dir = workspace.join(VIEWS_DIR);
+    let entries = match std::fs::read_dir(&views_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(error) => {
+            tracing::warn!(views = %views_dir.display(), %error, "keeping the views whose memory notes could not be listed");
+            return false;
+        }
     };
-    for entry in entries.flatten() {
-        let view_dir = entry.path();
+    for entry in entries {
+        let view_dir = match entry {
+            Ok(entry) => entry.path(),
+            Err(error) => {
+                tracing::warn!(views = %views_dir.display(), %error, "keeping the views whose memory notes could not be listed");
+                return false;
+            }
+        };
         if !view_dir.join(crate::index::INDEX_DIR).is_dir() {
             continue;
         }
@@ -154,6 +166,17 @@ pub(crate) fn is_rebuildable_view_error(error: &StoreError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Views that cannot be listed may hold the only copy of a note: the rescue refuses, where a
+    /// workspace with no views directory has nothing to rescue.
+    #[test]
+    fn a_views_directory_that_cannot_be_listed_blocks_the_rescue() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(rescue_legacy_memory(tmp.path()), "no views directory: nothing to move");
+        std::fs::write(tmp.path().join(VIEWS_DIR), b"not a directory").expect("plant a file as views");
+
+        assert!(!rescue_legacy_memory(tmp.path()));
+    }
 
     fn live(code: &[&str], docs: &[&str]) -> LiveBlobs {
         LiveBlobs {
