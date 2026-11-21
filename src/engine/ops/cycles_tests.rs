@@ -94,7 +94,7 @@ fn the_closing_chain_of_a_cycle_starts_and_ends_at_its_first_file() {
 
 #[test]
 fn a_cycle_note_says_what_the_language_makes_of_it() {
-    assert_eq!(note([Some("rust"), Some("rust")].into_iter()), Some(RUST_NOTE));
+    assert_eq!(note([Some("rust"), Some("rust")].into_iter()), Some(RUST_CYCLE_NOTE));
     assert_eq!(note([Some("rust"), Some("go")].into_iter()), Some(GO_NOTE));
     assert_eq!(note([Some("rust"), Some("typescript")].into_iter()), None);
     assert_eq!(note([Some("rust"), None].into_iter()), None);
@@ -136,7 +136,7 @@ mod scanned {
         let cycle = &report.cycles[0];
         assert_eq!(cycle.files, [RelPath::from("src/a.rs"), RelPath::from("src/b.rs")]);
         assert_eq!(cycle.chain, "src/a.rs:1 -> src/b.rs:1 -> src/a.rs");
-        assert_eq!(cycle.note, Some(RUST_NOTE));
+        assert_eq!(cycle.note, Some(RUST_CYCLE_NOTE));
         assert!(
             report
                 .coverage

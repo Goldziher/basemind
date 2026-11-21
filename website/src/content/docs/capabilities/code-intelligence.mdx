@@ -80,7 +80,8 @@ Returns path, line and signature for each match.
 
 Read one symbol's source body, or an exact line span, instead of the whole file. Pass `symbol`, or
 `line` with `end_line`; not both. Bodies over 128 KiB are cut and flagged `truncated`, with
-`omitted_bytes` saying how much was left out.
+`omitted_bytes` saying how much was left out. A span of more than 2,000 lines carries a `notice`
+naming `code_outline`, the cheaper read before a narrower span.
 
 ```json
 {
