@@ -945,5 +945,9 @@ fn dir_size_or_zero(dir: &Path) -> Result<u64, GcError> {
 mod tests;
 
 #[cfg(test)]
+#[path = "store_gc_budget_group_tests.rs"]
+mod group_tests;
+
+#[cfg(test)]
 #[path = "store_gc_protect_tests.rs"]
 mod protect_tests;
