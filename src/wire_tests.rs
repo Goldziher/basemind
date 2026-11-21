@@ -1,5 +1,5 @@
 use proptest::prelude::*;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Number, Value, json};
 
 use super::*;
 
@@ -171,17 +171,59 @@ fn a_toon_encoder_failure_panics_in_a_debug_build() {
     toon(&deep);
 }
 
+#[test]
+fn numbers_compare_by_exact_value() {
+    assert!(same(&json!(1.0), &json!(1)));
+    assert!(same(&json!(-0.0), &json!(0)));
+    assert!(same(&json!(u64::MAX), &json!(u64::MAX)));
+    assert!(same(&json!(1.5), &json!(1.5)));
+    assert!(!same(
+        &json!(9_007_199_254_740_993_u64),
+        &json!(9_007_199_254_740_992.0)
+    ));
+    assert!(!same(
+        &json!(9_007_199_254_740_992.0),
+        &json!(9_007_199_254_740_993_u64)
+    ));
+    assert!(!same(&json!(1.5), &json!(1)));
+    assert!(!same(&json!(f64::MAX), &json!(i64::MAX)));
+}
+
 /// Whether `decoded` reads back as `original`, numbers compared by value: TOON writes a number in
 /// canonical form (§2), so an integral float such as `1.0` or `-0.0` reads back as the integer.
 fn same(original: &Value, decoded: &Value) -> bool {
     match (original, decoded) {
-        (Value::Number(a), Value::Number(b)) => a == b || ((a.is_f64() || b.is_f64()) && a.as_f64() == b.as_f64()),
+        (Value::Number(a), Value::Number(b)) => same_number(a, b),
         (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(a, b)),
         (Value::Object(a), Value::Object(b)) => {
             a.len() == b.len() && a.iter().all(|(key, a)| b.get(key).is_some_and(|b| same(a, b)))
         }
         _ => original == decoded,
     }
+}
+
+/// Whether two numbers hold the same value, an integer and a float compared without rounding the
+/// integer to a float: from 2^53 several integers round to one float.
+fn same_number(a: &Number, b: &Number) -> bool {
+    match (integer(a), integer(b)) {
+        (Some(a), Some(b)) => a == b,
+        (Some(int), None) => b.as_f64().is_some_and(|float| float_is(float, int)),
+        (None, Some(int)) => a.as_f64().is_some_and(|float| float_is(float, int)),
+        (None, None) => a.as_f64() == b.as_f64(),
+    }
+}
+
+fn integer(number: &Number) -> Option<i128> {
+    number
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| number.as_u64().map(i128::from))
+}
+
+/// Whether `float` is exactly `int`. A float at or past 2^127 saturates the cast to an `i128` bound,
+/// which no `i64` or `u64` reaches.
+fn float_is(float: f64, int: i128) -> bool {
+    float.fract() == 0.0 && float as i128 == int
 }
 
 /// Any string, control characters and line breaks included, or one TOON must quote.
