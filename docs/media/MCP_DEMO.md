@@ -8,9 +8,11 @@ Claude Code session can't be scripted).
 
 ## What to show (~20–25s)
 
-1. Use the release being documented. The plugin's MCP launcher downloads the
-   binary matching the plugin's version; `BASEMIND_BIN` pins another one
-   (`plugin/scripts/mcp-launch.sh`). Check it with `basemind --version`.
+1. Use the release being documented. The plugin's MCP launcher runs the binary
+   `BASEMIND_BIN` names, or else downloads the one matching the plugin's version
+   (`plugin/scripts/mcp-launch.sh`), so the `basemind` on `PATH` may not be the
+   one it serves. Pin the release's binary with `BASEMIND_BIN` in the shell that
+   starts the session, and check that executable with `"$BASEMIND_BIN" --version`.
 2. Open a fresh Claude Code session in a **public** repository with the basemind
    plugin installed (`/plugin marketplace add Goldziher/basemind`, then
    `/plugin install basemind@basemind`). Run `/bm-statusline` once so the
