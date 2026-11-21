@@ -19,8 +19,10 @@ weights on first use. [`ATTRIBUTIONS.md`](ATTRIBUTIONS.md#grammars-and-models-do
 lists what is verified before each is used and where. For grammars:
 
 - A bundle must match the SHA-256 listed in the manifest of the tree-sitter-language-pack GitHub
-  release, fetched over HTTPS. The manifest is not signed or pinned, and a library is not hashed
-  again when it is loaded from the cache.
+  release, fetched over HTTPS by default. `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL` replaces that
+  URL, and the replacement may be `http://` or `file://`, so HTTPS protects only the default
+  manifest. The manifest is not signed or pinned, and a library is not hashed again when it is
+  loaded from the cache.
 - The cache is `<data home>/grammars/tree-sitter-language-pack/v<version>/libs` (`BASEMIND_DATA_HOME`),
   or the same suffix under `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR`. On Unix it must be owned by the
   current user or root and not be group- or other-writable, or it is not used.
