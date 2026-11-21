@@ -681,6 +681,20 @@ pub fn wait_times_out_when_nothing_arrives(h: &impl ConformanceHarness) {
     assert_eq!(h.position(&created.thread, &agent(h, "b")), Some((1, 1)));
 }
 
+/// A relayed read that already delivered is answered with what it delivered when it comes again,
+/// at once: the wait does not look for news the first read consumed.
+pub fn wait_replays_a_relayed_read_that_already_delivered(h: &impl ConformanceHarness) {
+    start(h, "a", "topic", &["b"]);
+    let keyed = who(h, "b").with_replay_key(ReplayKey::parse("relay-1").expect("replay key"));
+    let first = h.inbox(&keyed, InboxBody::default()).expect("inbox");
+    assert_eq!(first.messages.len(), 1);
+
+    let again = wait_then_read(h, &keyed, InboxBody::default(), GENEROUS_WAIT, || {}).expect("inbox");
+
+    assert_eq!(again.wait, WaitOutcome::NotWaited);
+    assert_eq!(again.messages, first.messages);
+}
+
 /// The caller's own post moves the arrivals counter but is not something to wake up for.
 pub fn wait_ignores_the_callers_own_posts(h: &impl ConformanceHarness) {
     let created = start(h, "a", "topic", &["b"]);

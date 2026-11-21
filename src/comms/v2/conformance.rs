@@ -121,6 +121,18 @@ pub fn wait_then_read<O: AgentOps + ?Sized>(
     if !matches!(body.kind()?, ReadKind::Marking | ReadKind::Peek) {
         return ops.inbox(caller, body);
     }
+    // As the daemon does, a relayed marking read goes to the store at once: the store answers a
+    // replay of a read that already delivered with what it delivered, which the peek below, run
+    // without the key, would not see, and the wait would time out on news already told.
+    if caller.replay_key.is_some() && body.kind()? == ReadKind::Marking {
+        let reply = ops.inbox(caller, body.clone())?;
+        if !reply.messages.is_empty() || !reply.notices.is_empty() {
+            return Ok(InboxReply {
+                wait: WaitOutcome::NotWaited,
+                ..reply
+            });
+        }
+    }
     let probe_caller = Caller::new(caller.actor.clone(), caller.repo.clone());
     let probe = InboxBody {
         mark: Mark::Peek,
@@ -238,6 +250,7 @@ macro_rules! conformance_tests {
             wait_returns_when_a_message_arrives,
             wait_times_out_when_nothing_arrives,
             wait_ignores_the_callers_own_posts,
+            wait_replays_a_relayed_read_that_already_delivered,
             wait_is_skipped_when_something_is_unread,
             no_arguments_lists_the_callers_threads_and_their_peers,
             summary_counts_unread_messages_from_others,
