@@ -13,7 +13,10 @@ fails when:
    change the native code or its licence gets the entry re-checked;
 2. ``scripts/package-release.sh`` and ``scripts/smoke_release_archive.py`` disagree on the linked
    notices every archive ships;
-3. a linked notice is missing from ``licenses/`` or not named in ``ATTRIBUTIONS.md``.
+3. a linked notice is missing from ``licenses/`` or not named in ``ATTRIBUTIONS.md``;
+4. a library ``scripts/build-libheif.sh`` pins (libheif, libde265) is not named at that version in
+   ``ATTRIBUTIONS.md``, or its ``licenses/<library>.txt`` does not open with that version or does not
+   name the source tarball's sha256 and the vcpkg commit Windows builds it from.
 """
 
 from __future__ import annotations
@@ -30,6 +33,8 @@ PINNED = ("ort-sys", "xberg-tesseract", "tree-sitter-language-pack")
 SHELL_LIST = re.compile(r"^LINKED_NOTICES=\(\n(?P<body>.*?)\n\)$", re.MULTILINE | re.DOTALL)
 # A version token: it ends in a letter or digit, so a sentence's closing period is not part of it.
 VERSION_TOKEN = r"(\d[0-9A-Za-z.+-]*[0-9A-Za-z])"
+BUILT_PIN = re.compile(r"^(?P<name>[A-Z0-9]+)_(?P<key>VERSION|SHA256)=(?P<value>\S+)$", re.MULTILINE)
+VCPKG_COMMIT = re.compile(r"BASEMIND_VCPKG_COMMIT=(?P<commit>[0-9a-f]{40})")
 
 
 def locked_versions(lock: str, crate: str) -> list[str]:
@@ -41,6 +46,53 @@ def attributed_versions(attributions: str, crate: str) -> set[str]:
     """Every whole version the ATTRIBUTIONS.md text ``attributions`` names ``crate`` at, as
     "`<crate>` <version>"."""
     return set(re.findall(rf"`{re.escape(crate)}` {VERSION_TOKEN}", attributions))
+
+
+def named_library_versions(attributions: str, library: str) -> set[str]:
+    """Every whole version the ATTRIBUTIONS.md text ``attributions`` names ``library`` at, as
+    "<library> <version>" (so "xberg-libheif 1.4.2" does not name libheif)."""
+    return set(re.findall(rf"(?<![\w-]){re.escape(library)} {VERSION_TOKEN}", attributions))
+
+
+def built_pins(script: str) -> dict[str, tuple[str, str]]:
+    """Each library the build-libheif.sh text ``script`` pins, as ``{library: (version, sha256)}``."""
+    pins: dict[str, dict[str, str]] = {}
+    for match in BUILT_PIN.finditer(script):
+        pins.setdefault(match["name"].lower(), {})[match["key"]] = match["value"]
+    return {library: (pin["VERSION"], pin["SHA256"]) for library, pin in pins.items()}
+
+
+def vcpkg_commit(action: str) -> str:
+    """The vcpkg commit the install-libheif action text ``action`` builds Windows' libheif from."""
+    match = VCPKG_COMMIT.search(action)
+    if match is None:
+        raise ValueError("install-libheif pins no BASEMIND_VCPKG_COMMIT")
+    return match["commit"]
+
+
+def notice_problems(library: str, version: str, sha256: str, commit: str, notice: str) -> list[str]:
+    """Each way the ``licenses/<library>.txt`` text ``notice`` misstates the build of ``library``
+    ``version`` from the tarball with ``sha256`` (Linux, macOS) and vcpkg ``commit`` (Windows)."""
+    checks = (
+        (notice.startswith(f"{library} {version}:"), f'does not open with "{library} {version}:"'),
+        (sha256 in notice, f"does not name the {library} {version} tarball's sha256 {sha256}"),
+        (commit in notice, f"does not name vcpkg commit {commit}"),
+    )
+    return [f"licenses/{library}.txt {problem}" for holds, problem in checks if not holds]
+
+
+def built_problems(root: Path, attributions: str) -> list[str]:
+    """Each way the notices of the libraries build-libheif.sh pins under ``root`` are stale."""
+    pins = built_pins((root / "scripts" / "build-libheif.sh").read_text(encoding="utf-8"))
+    commit = vcpkg_commit((root / ".github/actions/install-libheif/action.yml").read_text(encoding="utf-8"))
+    found = []
+    for library, (version, sha256) in pins.items():
+        if version not in named_library_versions(attributions, library):
+            found.append(f"build-libheif.sh builds {library} {version}, ATTRIBUTIONS.md does not name it so")
+        notice_path = root / "licenses" / f"{library}.txt"
+        notice = notice_path.read_text(encoding="utf-8") if notice_path.is_file() else ""
+        found.extend(notice_problems(library, version, sha256, commit, notice))
+    return found
 
 
 def shell_notices(script: str) -> tuple[str, ...]:
@@ -86,6 +138,7 @@ def problems(root: Path) -> list[str]:
             found.append(f"{notice} is missing")
         if notice not in attributions:
             found.append(f"ATTRIBUTIONS.md does not name {notice}")
+    found.extend(built_problems(root, attributions))
     return found
 
 
