@@ -446,17 +446,48 @@ impl Repo {
             what: "git index".to_string(),
             msg: e.to_string(),
         })?;
-        let needle = rel.as_bytes();
-        for entry in index.entries() {
-            if entry.path(&index) == needle {
-                let object = local.find_object(entry.id).map_err(|e| GitError::Read {
-                    what: format!("blob {rel}"),
-                    msg: e.to_string(),
-                })?;
-                return Ok(Some(object.data.clone()));
-            }
-        }
-        Ok(None)
+        let Some(entry) = staged_entry(&index, rel) else {
+            return Ok(None);
+        };
+        let object = local.find_object(entry.id).map_err(|e| GitError::Read {
+            what: format!("blob {rel}"),
+            msg: e.to_string(),
+        })?;
+        Ok(Some(object.data.clone()))
+    }
+
+    /// Sizes of the staged blobs of `rels` (forward-slash), read from object headers so no blob body
+    /// is inflated: the blob [`Repo::read_blob_staged`] reads, a conflicted path's first stage. A
+    /// path the index does not list, or whose object is missing, is left out.
+    pub fn staged_blob_sizes<'a>(&self, rels: impl IntoIterator<Item = &'a str>) -> Result<Vec<u64>, GitError> {
+        let local = self.local();
+        let index = local.index().map_err(|e| GitError::Read {
+            what: "git index".to_string(),
+            msg: e.to_string(),
+        })?;
+        Ok(rels
+            .into_iter()
+            .filter_map(|rel| staged_entry(&index, rel))
+            .filter_map(|entry| local.find_header(entry.id).ok())
+            .map(|header| header.size())
+            .collect())
+    }
+
+    /// Sizes of the blobs of `rels` at `rev_sha`, read from object headers so no blob body is
+    /// inflated. A path absent at that rev, or whose object is missing, is left out.
+    pub fn rev_blob_sizes<'a>(
+        &self,
+        rev_sha: &str,
+        rels: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Vec<u64>, GitError> {
+        let local = self.local();
+        let tree = resolve_tree(&local, rev_sha)?;
+        Ok(rels
+            .into_iter()
+            .filter_map(|rel| tree.lookup_entry_by_path(rel).ok().flatten())
+            .filter_map(|entry| local.find_header(entry.object_id()).ok())
+            .map(|header| header.size())
+            .collect())
     }
 
     /// Read the blob content for `rel` at `rev_sha`. `None` = path doesn't exist at that rev.
@@ -781,6 +812,14 @@ fn blob_size_and_line_count(local: &gix::Repository, rev: &str, path: &crate::pa
         nls + 1
     };
     Some((bytes, lines))
+}
+
+/// The index entry of `rel` (forward-slash) a staged read takes: its first stage, which is stage 0,
+/// or for a conflicted path the lowest stage it has (1, the merge base, when there is one). The
+/// index sorts a path's entries by stage.
+fn staged_entry<'i>(index: &'i gix::index::State, rel: &str) -> Option<&'i gix::index::Entry> {
+    let stages = index.entry_range(gix::bstr::BStr::new(rel))?;
+    index.entries().get(stages.start)
 }
 
 /// Heuristic match for gix's shallow-related blame failures. The exact wording lives in
