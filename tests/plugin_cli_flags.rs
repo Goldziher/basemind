@@ -90,38 +90,60 @@ fn parse_help(text: &str) -> Help {
     help
 }
 
-/// The tokens of the `basemind` invocation in `rest`: words and quoted strings, up to a shell break
-/// or a comment, with Markdown's brackets, ellipses and table pipes taken off.
-fn tokens(rest: &str) -> Vec<String> {
+/// The `basemind` invocations in `rest`: for each, its words and quoted strings up to a shell break
+/// or a comment, with Markdown's brackets, ellipses and table pipes taken off. A command after
+/// `&&`, `||` or `;` counts when it is `basemind` (or the plugin launcher) again. A quoted word is
+/// never a shell break, a comment or a bracketed placeholder.
+fn tokens(rest: &str) -> Vec<Vec<String>> {
     let rest = rest.replace("\\|", " | ");
-    let mut words = Vec::new();
-    let mut word: Option<String> = None;
+    let mut words: Vec<(String, bool)> = Vec::new();
+    let mut word: Option<(String, bool)> = None;
     let mut quote = None;
     for ch in rest.chars().chain(std::iter::once(' ')) {
         match quote {
             Some(open) if ch == open => quote = None,
-            Some(_) => word.get_or_insert_with(String::new).push(ch),
+            Some(_) => word.get_or_insert_with(Default::default).0.push(ch),
             None if ch == '\'' || ch == '"' => {
                 quote = Some(ch);
-                word.get_or_insert_with(String::new);
+                word.get_or_insert_with(Default::default).1 = true;
             }
             None if ch.is_whitespace() => words.extend(word.take()),
-            None => word.get_or_insert_with(String::new).push(ch),
+            None => word.get_or_insert_with(Default::default).0.push(ch),
         }
     }
-    let mut out = Vec::new();
-    for word in words {
-        if SHELL_BREAKS.contains(&word.as_str()) || word.starts_with('#') {
+    let mut commands: Vec<Vec<String>> = vec![Vec::new()];
+    for (word, quoted) in words {
+        if !quoted && word.starts_with('#') {
             break;
         }
-        let word = word
-            .trim_start_matches(['[', '('])
-            .trim_end_matches([']', ')', ','])
-            .trim_end_matches("...")
-            .trim_end_matches('…')
-            .trim_end_matches(']');
+        if !quoted && SHELL_BREAKS.contains(&word.as_str()) {
+            if ["&&", "||", ";"].contains(&word.as_str()) {
+                commands.push(Vec::new());
+                continue;
+            }
+            break;
+        }
+        let word = if quoted {
+            word.as_str()
+        } else {
+            word.trim_start_matches(['[', '('])
+                .trim_end_matches([']', ')', ','])
+                .trim_end_matches("...")
+                .trim_end_matches('…')
+                .trim_end_matches(']')
+        };
         if !word.is_empty() {
-            out.push(word.to_string());
+            commands.last_mut().expect("a command").push(word.to_string());
+        }
+    }
+    let mut out = vec![commands.remove(0)];
+    for mut command in commands {
+        if command
+            .first()
+            .is_some_and(|name| name == "basemind" || name.ends_with("mcp-launch.sh"))
+        {
+            command.remove(0);
+            out.push(command);
         }
     }
     out
@@ -139,7 +161,15 @@ fn flag_name(flag: &str) -> (&str, bool) {
 /// resolved. An unknown flag is taken to carry a value, so its value is not also reported as a
 /// positional.
 fn invocation_mismatches(rest: &str, help: &dyn Fn(&[String]) -> Option<Help>) -> Vec<String> {
-    let mut words = tokens(rest).into_iter().peekable();
+    tokens(rest)
+        .into_iter()
+        .flat_map(|command| command_mismatches(command, help))
+        .collect()
+}
+
+/// `invocation_mismatches` for one command's words.
+fn command_mismatches(command: Vec<String>, help: &dyn Fn(&[String]) -> Option<Help>) -> Vec<String> {
+    let mut words = command.into_iter().peekable();
     let mut path: Vec<String> = Vec::new();
     let Some(mut command) = help(path.as_slice()) else {
         return Vec::new();
@@ -460,6 +490,16 @@ fn an_unknown_flag_or_an_extra_positional_is_reported() {
         ("code grep 'fn \\w+_call' --regex --path src/ | head", vec![]),
         ("code stats|gc", vec![]),
         ("<command> --help", vec![]),
+        (
+            "code grep '#' extra",
+            vec!["`basemind code grep` takes 1 positional argument(s), the example passes 2"],
+        ),
+        ("code grep '#'", vec![]),
+        (
+            "scan && basemind scan src/lib.rs",
+            vec!["`basemind scan` takes 0 positional argument(s), the example passes 1"],
+        ),
+        ("scan && basemind scan --staged", vec![]),
     ] {
         assert_eq!(invocation_mismatches(rest, &fixture_help), expected, "{rest}");
     }

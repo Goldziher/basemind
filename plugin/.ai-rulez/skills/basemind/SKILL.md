@@ -219,9 +219,10 @@ A 1000-line file becomes a 30-line table of contents.
   names the field.
 - The code map (`code_outline`, `code_symbols`, `code_refs`) covers code only. `code_grep` also
   finds exact text in markdown, config and data files; `docs_search` is for searching by meaning,
-  and for PDFs, Office files, HTML and email. `find_files` lists the indexed files and the other
-  files git tracks, not an untracked file the index leaves out (a local `.env`) or a file outside a
-  git work tree; `code_read` with a line span reads any text file.
+  and for PDFs, Office files, HTML and email. `find_files` lists the indexed files and, in a git
+  work tree, the other files git tracks; it leaves out an untracked file the index excludes (a local
+  `.env`). `code_read` reads an indexed file only; read one the scan excludes with the host's file
+  tools.
 - A `notice` field means the result is incomplete and says why (empty index, scan in progress).
 - The git tools require `basemind serve` to be running inside a git repository.
 - `code_search` needs the `code-search` Cargo feature, `docs_search` needs `documents`, and the

@@ -69,9 +69,9 @@ neither. Both files live in this workspace's directory under the machine-global 
 
 - If that `pid` is **alive** (`ps -p <pid>`), let it finish, or stop it. While it holds the index and
   no daemon serves the workspace, index-backed MCP tools (`code_refs`, the keyword lane of
-  `code_search`) answer with a busy error, and `basemind rescan` exits 3 the same way: stop the
-  holder or start the daemon with `basemind comms start`, then retry the tool; retry the rescan once
-  the holder has finished or stopped.
+  `code_search`) answer with a busy error, and `basemind rescan` exits 3 the same way. Starting the
+  daemon with `basemind comms start` does not serve this workspace while the holder keeps the index,
+  so stop the holder, then retry the tool; retry the rescan once the holder has finished or stopped.
 - If the error names **no holder**, there is no `pid` to check: rerun the same command. The OS
   releases the lock when its holder exits, so a second exit 3 means a live process still holds it;
   wait for it to finish, or stop the basemind process you started for this repo, then retry.

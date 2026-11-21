@@ -23,7 +23,7 @@ basemind pre-indexes the repo into a tree-sitter code map across 300+ languages.
 (outline, symbols, refs) covers **code only**. `code_grep` also finds exact text in markdown,
 config and data files (Markdown, JSON, YAML, TOML, XML, CSV, INI). `docs_search` is for searching
 by meaning, and for PDFs, Office files, HTML and email (see `basemind-documents`). `find_files`
-lists every file.
+lists the indexed files and the other files git tracks, not an untracked file the index leaves out.
 
 Structural questions (where a symbol lives, what calls it, what shape a file has) resolve from the
 index in milliseconds and return **paths, 1-based line numbers, and signatures, not file bodies**.
