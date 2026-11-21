@@ -686,6 +686,21 @@ class McpJsonCachedLauncherTests(unittest.TestCase):
                 )
                 self.assert_runs(enabled, "basemind 1.0.0")
 
+    def test_table_shaped_text_inside_a_multiline_string_is_not_a_table(self) -> None:
+        for quotes in ("'''", '"""'):
+            for config in (
+                f'developer_instructions = {quotes}\n[plugins."basemind@curated"]\nenabled = true\n{quotes}\n\n'
+                '[plugins."basemind@curated"]\nenabled = false\n\n[plugins."basemind@basemind"]\nenabled = true\n',
+                f'[plugins."basemind@curated"]\nnote = {quotes}\n[example]\n{quotes}\nenabled = false\n\n'
+                '[plugins."basemind@basemind"]\nenabled = true\n',
+            ):
+                with self.subTest(config=config):
+                    self.clear_cache()
+                    self.install("curated", "9.9.9")
+                    enabled = self.install("basemind", "1.0.0", modified_ago=DAY)
+                    self.configure(config)
+                    self.assert_runs(enabled, "basemind 1.0.0")
+
     def test_when_every_configured_plugin_is_disabled_no_cached_launcher_runs(self) -> None:
         self.install("basemind", "1.0.0")
         self.install("curated", "1.0.0")
