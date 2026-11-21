@@ -15,7 +15,9 @@ use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_semantic::SemanticBuilder;
 use oxc_span::{GetSpan, SourceType};
-use oxc_syntax::module_record::{ExportExportName, ImportImportName};
+use oxc_syntax::module_record::{ExportExportName, ExportImportName, ImportImportName, ModuleRecord};
+
+use crate::intel::model::{NamedReexport, ReexportEdge};
 
 /// A resolved intra-file reference: a use of a symbol linked to the definition it binds to, both
 /// as byte spans. oxc has already applied scope/shadowing resolution, so `def_start` is the
@@ -55,8 +57,8 @@ pub struct JsImport {
 /// A name this module exports (for the cross-file stitch: an importer binds to one of these).
 ///
 /// Covers only direct named exports (`export function foo`, `export const foo`, `export { foo }`).
-/// Re-exports (`export { foo } from './mod'`) live in oxc's `indirect_export_entries` and star
-/// exports in `star_export_entries` — both are picked up by the cross-file stitch slice, not here.
+/// Re-exports (`export { foo } from './mod'`, `export * from './mod'`) are [`ReexportEdge`]s in
+/// [`JsAnalysis::reexports`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsExport {
     pub name: String,
@@ -72,6 +74,9 @@ pub struct JsAnalysis {
     pub resolved: Vec<ResolvedRef>,
     pub imports: Vec<JsImport>,
     pub exports: Vec<JsExport>,
+    /// Names forwarded from other modules: named and star re-exports, in source order within each
+    /// kind (named first). An `export { x }` of an imported `x` is a named re-export too.
+    pub reexports: Vec<ReexportEdge>,
     /// True when oxc reported any parse diagnostics or bailed (`panicked`) — the analysis is
     /// best-effort in that case (the AST may be partial).
     pub had_errors: bool,
@@ -149,6 +154,7 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
         resolved,
         imports,
         exports,
+        reexports: reexports(&parsed.module_record),
         had_errors: parsed.fatal_error || !parsed.diagnostics.is_empty(),
     }
 }
@@ -158,7 +164,7 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
 /// import graph needs as file edges. A runtime request beside only type-only bindings still gets
 /// one, so its edge is not marked type-only. Anchored at the first request of the specifier;
 /// type-only when every request is.
-fn module_only_imports(record: &oxc_syntax::module_record::ModuleRecord<'_>, bound: &[JsImport]) -> Vec<JsImport> {
+fn module_only_imports(record: &ModuleRecord<'_>, bound: &[JsImport]) -> Vec<JsImport> {
     let any_bound: ahash::AHashSet<&str> = bound.iter().map(|import| import.specifier.as_str()).collect();
     let runtime_bound: ahash::AHashSet<&str> = bound
         .iter()
@@ -190,6 +196,39 @@ fn module_only_imports(record: &oxc_syntax::module_record::ModuleRecord<'_>, bou
         .collect();
     out.sort_unstable_by_key(|import| import.local_start);
     out
+}
+
+/// The module's re-exports: every indirect export that forwards one named binding (`export { a as b }
+/// from`, `export { a as default } from`, `export { x }` of an imported `x`), then every star export
+/// (`export * from`). `export * as ns from` forwards no single binding, so it is not one.
+fn reexports(record: &ModuleRecord<'_>) -> Vec<ReexportEdge> {
+    let named = record.indirect_export_entries.iter().filter_map(|entry| {
+        let (ExportImportName::Name(imported), ExportExportName::Name(exported)) =
+            (&entry.import_name, &entry.export_name)
+        else {
+            return None;
+        };
+        let request = entry.module_request.as_ref()?;
+        Some(ReexportEdge {
+            specifier: request.name.as_str().to_string(),
+            specifier_start: request.span.start,
+            named: Some(NamedReexport {
+                exported: exported.name.as_str().to_string(),
+                imported: imported.name.as_str().to_string(),
+            }),
+            is_type: entry.is_type,
+        })
+    });
+    let star = record.star_export_entries.iter().filter_map(|entry| {
+        let request = entry.module_request.as_ref()?;
+        Some(ReexportEdge {
+            specifier: request.name.as_str().to_string(),
+            specifier_start: request.span.start,
+            named: None,
+            is_type: entry.is_type,
+        })
+    });
+    named.chain(star).collect()
 }
 
 #[cfg(test)]
@@ -317,6 +356,55 @@ export * from './u';
         let mut names: Vec<&str> = a.exports.iter().map(|e| e.name.as_str()).collect();
         names.sort_unstable();
         assert_eq!(names, ["alpha", "beta"], "exactly alpha and beta must be exported");
+    }
+
+    #[test]
+    fn extracts_named_and_star_reexports() {
+        let src = "import { x } from './x';
+export { x };
+export { a as b, c } from './named';
+export { d as default } from './dflt';
+export type { T } from './types';
+export * from './all';
+export * as ns from './ns';
+export type * from './typestar';
+";
+        let a = ts(src);
+        assert!(!a.had_errors);
+        let at = |needle: &str| src.find(needle).unwrap() as u32;
+        let named = |specifier: &str, exported: &str, imported: &str, is_type: bool| ReexportEdge {
+            specifier: specifier.to_string(),
+            specifier_start: at(&format!("'{specifier}'")),
+            named: Some(NamedReexport {
+                exported: exported.to_string(),
+                imported: imported.to_string(),
+            }),
+            is_type,
+        };
+        let star = |specifier: &str, is_type: bool| ReexportEdge {
+            specifier: specifier.to_string(),
+            specifier_start: at(&format!("'{specifier}'")),
+            named: None,
+            is_type,
+        };
+        assert_eq!(
+            a.reexports,
+            [
+                named("./x", "x", "x", false),
+                named("./named", "b", "a", false),
+                named("./named", "c", "c", false),
+                named("./dflt", "default", "d", false),
+                named("./types", "T", "T", true),
+                star("./all", false),
+                star("./typestar", true),
+            ],
+            "`export * as ns from` forwards no single binding, so it is no re-export"
+        );
+        assert!(
+            a.exports.is_empty(),
+            "a re-export is not a direct export: {:?}",
+            a.exports
+        );
     }
 
     #[test]

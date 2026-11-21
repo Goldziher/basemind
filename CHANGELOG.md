@@ -963,6 +963,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doctor`; `basemind scan` rebuilds it" in place of the library's message, on an in-process and a
   daemon-hosted rescan alike, and a held index is `busy`. A panicking tool body answers with a fixed message
   naming its failure reference in the log, not the panic payload.
+- JS/TS imports resolve through barrel files built from `export { x } from`, `export { a as b }
+  from` and `export * from` (#310): `code_refs` definition and references now reach the defining file
+  through any chain of such re-exports, up to eight files deep. A re-export cycle is cut where it
+  closes, and `export * from` does not forward `default`. The next scan re-resolves every file once,
+  with no cache wipe.
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

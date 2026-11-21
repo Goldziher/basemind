@@ -14,6 +14,8 @@
 //! 2. Require that target to be an indexed file.
 //! 3. In the target file's export list, find the [`ExportEdge`] whose `name` matches the import's
 //!    `imported` name (or `"default"` for default / namespace imports, whose `imported` is `None`).
+//!    A target that only forwards the name (a barrel's re-import, `export { x } from` or
+//!    `export * from`) is followed to the file that defines it.
 //! 4. Emit a cross-file edge — **def** = `(target, export.name_start)`, **use** =
 //!    `(importer, import.local_start)` — into `refs_by_def` + `refs_by_path`.
 //!
@@ -42,7 +44,7 @@ use ahash::AHashMap;
 
 use crate::index::IndexDb;
 use crate::index::keys::{EdgeKinds, FileEdge, FileEdges, MAX_UNRESOLVED_SPECIFIERS};
-use crate::intel::model::{ExportEdge, ImportEdge, ResolvedEdge};
+use crate::intel::model::{ExportEdge, ImportEdge, ReexportEdge, ResolvedEdge};
 use crate::intel::resolver::{ProbeSet, SpecifierResolver};
 use crate::intel::stage_budget::BudgetedWriter;
 use crate::store::Store;
@@ -52,6 +54,9 @@ use crate::store::Store;
 pub struct FileFacts {
     pub imports: Vec<ImportEdge>,
     pub exports: Vec<ExportEdge>,
+    /// Names this file forwards from other modules — the hops a barrel file adds to an import's
+    /// resolution.
+    pub reexports: Vec<ReexportEdge>,
     /// This file's in-file use sites of an imported name — intra edges whose `def_start` is one of
     /// the file's import bindings (`local_start`). The stitch redirects each of these across the
     /// import boundary so a `foo()` call resolves to the *exported* definition, not merely the
@@ -110,7 +115,8 @@ impl<'a> FactsCatalog<'a> {
         }
     }
 
-    /// `key`'s facts, or `None` when it neither imports nor exports anything (or is unindexed).
+    /// `key`'s facts, or `None` when it neither imports, exports nor re-exports anything (or is
+    /// unindexed).
     fn facts(&self, key: &str) -> Option<Facts<'a>> {
         if let Some(facts) = self.resident.get(key) {
             return Some(Facts::Resident(facts));
@@ -126,12 +132,13 @@ impl<'a> FactsCatalog<'a> {
     fn load(&self, key: &str) -> Option<FileFacts> {
         let entry = self.store.lookup(key)?;
         let refs = self.store.read_resolved_by_hex(&entry.hash_hex).ok()??;
-        if refs.imports.is_empty() && refs.exports.is_empty() {
+        if refs.imports.is_empty() && refs.exports.is_empty() && refs.reexports.is_empty() {
             return None;
         }
         Some(FileFacts {
             imports: refs.imports,
             exports: refs.exports,
+            reexports: refs.reexports,
             import_uses: Vec::new(),
         })
     }
@@ -154,10 +161,18 @@ impl<'a> FactsCatalog<'a> {
 }
 
 /// Resolve `wanted` to its ultimate exported definition starting from `target_rel`, transparently
-/// following re-export chains: a file that does not directly export `wanted` but IMPORTS it (a
-/// package `__init__.py` re-export, a TS barrel) forwards to that import's target, and so on.
-/// Returns `(defining_file, name_start)` — the file that actually defines the export and the byte
-/// the join keys on — or why there is none ([`Unbound`]). Cycle-guarded on `(file, name)`.
+/// following re-export chains: a file that does not directly export `wanted` forwards it when a
+/// named re-export provides it (`export { a as wanted } from`), when it IMPORTS it (a package
+/// `__init__.py` re-export, a TS `import { x } …; export { x }` barrel), or when a star re-export
+/// may (`export * from`, every name but `default`). Forwards are tried in that order, so a named
+/// re-export beats a local import of the same name (the import is not what the file exports), star
+/// re-exports in source order, and the first that reaches a definition wins. Returns `(defining_file, name_start)`
+/// — the file that actually defines the export and the byte the join keys on — or why there is none
+/// ([`Unbound`]), within [`MAX_REEXPORT_HOPS`] files.
+/// Cycle-guarded on `(file, name)` with the fewest hops it was reached at: a barrel that re-exports
+/// itself, directly or around a loop, terminates, while a pair first reached down a long chain is
+/// searched again when a shorter path reaches it, so the hop limit cut nothing the short path
+/// allows.
 ///
 /// Re-exports stay within one language (a Python import resolves to a Python file), so the importer's
 /// `resolver` is valid for every hop; each hop resolves relative to the current file in the chain.
@@ -172,36 +187,122 @@ fn resolve_export_transitively(
     wanted: &str,
     probes: &mut ProbeSet,
 ) -> Result<(crate::path::RelPath, u32), Unbound> {
-    let mut current_rel = target_rel;
-    let mut wanted = wanted.to_string();
-    let mut visited: ahash::AHashSet<(String, String)> = ahash::AHashSet::new();
-    for _ in 0..MAX_REEXPORT_HOPS {
-        let current_key = current_rel.as_str().ok_or(Unbound::Absent)?.to_string();
-        if !visited.insert((current_key.clone(), wanted.clone())) {
-            return Err(Unbound::Package(current_rel, wanted));
+    let mut search = ExportSearch {
+        root,
+        store,
+        catalog,
+        resolver,
+        probes,
+        visited: AHashMap::new(),
+    };
+    search.find(target_rel, wanted, 0)
+}
+
+/// One [`resolve_export_transitively`] walk: the depth-first search over a file's forwards, with
+/// the `(file, name)` pairs already visited and the fewest hops each was reached at.
+struct ExportSearch<'s, 'a> {
+    root: &'s Path,
+    store: &'s Store,
+    catalog: &'s FactsCatalog<'a>,
+    resolver: &'s SpecifierResolver,
+    probes: &'s mut ProbeSet,
+    visited: AHashMap<(String, String), usize>,
+}
+
+type Found = Result<(crate::path::RelPath, u32), Unbound>;
+
+/// The reason a search reports: the first that says more than [`Unbound::Absent`].
+fn first_reason(first: Unbound, next: Unbound) -> Unbound {
+    if first == Unbound::Absent { next } else { first }
+}
+
+impl ExportSearch<'_, '_> {
+    /// The definition of `wanted` as seen from `current_rel`, reached `hops` files into the chain.
+    fn find(&mut self, current_rel: crate::path::RelPath, wanted: &str, hops: usize) -> Found {
+        if hops >= MAX_REEXPORT_HOPS {
+            return Err(Unbound::Absent);
         }
-        if let Some(name_start) = catalog.export_start(&current_key, &wanted) {
+        let current_key = current_rel.as_str().ok_or(Unbound::Absent)?.to_string();
+        let pair = (current_key.clone(), wanted.to_string());
+        if self.visited.get(&pair).is_some_and(|&seen| seen <= hops) {
+            return Err(Unbound::Package(current_rel, wanted.to_string()));
+        }
+        self.visited.insert(pair, hops);
+        if let Some(name_start) = self.catalog.export_start(&current_key, wanted) {
             return Ok((current_rel, name_start));
         }
-        let facts = catalog.facts(&current_key).ok_or(Unbound::Absent)?;
-        let Some(reexport) = facts
+        let facts = self.catalog.facts(&current_key).ok_or(Unbound::Absent)?;
+        let named = self.follow_reexports(&current_key, &facts, wanted, hops, true);
+        if let Some(named) = named {
+            // A named re-export of `wanted` shadows the imports and star re-exports even when its
+            // module is outside the index: ECMAScript does not consult a star export once a name matches.
+            return named;
+        }
+        let mut failure = Unbound::Absent;
+        let import = facts
             .imports
             .iter()
-            .find(|import| !import.is_type && !import.module_only && import.local == wanted)
-        else {
-            return Err(Unbound::Package(current_rel, wanted));
-        };
-        if reexport.imported.is_none() && resolver.default_export_name().is_none() {
-            return Err(Unbound::Module);
+            .find(|import| !import.is_type && !import.module_only && import.local == wanted);
+        if let Some(import) = import {
+            if import.imported.is_none() && self.resolver.default_export_name().is_none() {
+                return Err(Unbound::Module);
+            }
+            let next_wanted = import.imported.as_deref().unwrap_or(wanted);
+            match self.follow(&current_key, import, next_wanted, hops) {
+                Ok(found) => return Ok(found),
+                Err(reason) => failure = reason,
+            }
         }
-        let next_rel = resolver
-            .resolve(root, &current_key, reexport, probes)
-            .ok_or(Unbound::Absent)?;
-        store.lookup(&next_rel).ok_or(Unbound::Absent)?;
-        wanted = reexport.imported.clone().unwrap_or(wanted);
-        current_rel = next_rel;
+        let star = self.follow_reexports(&current_key, &facts, wanted, hops, false);
+        match star {
+            Some(Ok(found)) => Ok(found),
+            Some(Err(reason)) => Err(first_reason(failure, reason)),
+            None if import.is_none() => Err(Unbound::Package(current_rel, wanted.to_string())),
+            None => Err(failure),
+        }
     }
-    Err(Unbound::Absent)
+
+    /// Follow the runtime re-exports of `facts` that forward `wanted`: the named ones when `named`,
+    /// else the star ones, in source order. The first that reaches a definition wins; `None` when
+    /// none forwards `wanted`, else the reason the last one failed.
+    fn follow_reexports(
+        &mut self,
+        current_key: &str,
+        facts: &FileFacts,
+        wanted: &str,
+        hops: usize,
+        named: bool,
+    ) -> Option<Found> {
+        let mut outcome: Option<Found> = None;
+        for reexport in facts
+            .reexports
+            .iter()
+            .filter(|reexport| !reexport.is_type && reexport.named.is_some() == named)
+        {
+            let Some(next_wanted) = reexport.forwards(wanted) else {
+                continue;
+            };
+            match self.follow(current_key, &reexport.module_request(), next_wanted, hops) {
+                Ok(found) => return Some(Ok(found)),
+                Err(reason) => {
+                    let kept = outcome.take().and_then(Result::err).unwrap_or(Unbound::Absent);
+                    outcome = Some(Err(first_reason(kept, reason)));
+                }
+            }
+        }
+        outcome
+    }
+
+    /// Resolve `request` from `from_key` and continue the search for `wanted` in the indexed file it
+    /// names.
+    fn follow(&mut self, from_key: &str, request: &ImportEdge, wanted: &str, hops: usize) -> Found {
+        let next_rel = self
+            .resolver
+            .resolve(self.root, from_key, request, self.probes)
+            .ok_or(Unbound::Absent)?;
+        self.store.lookup(&next_rel).ok_or(Unbound::Absent)?;
+        self.find(next_rel, wanted, hops + 1)
+    }
 }
 
 /// Why [`resolve_export_transitively`] found no definition for a name.

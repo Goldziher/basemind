@@ -360,7 +360,8 @@ oxc/stack-graphs engines are skipped and every language falls back to `locals`.
   including monorepo path aliases; Python: dotted/relative import path arithmetic over `src/`
   and flat layouts; Java: fully-qualified-name resolution over Maven/Gradle source roots), then
   joins the imported name against the target file's export list — following re-export chains
-  (package `__init__.py`, TS barrels) up to 8 hops. The result is written straight to
+  (package `__init__.py`; TS barrels built from re-imports, `export { a as b } from` or
+  `export * from`) up to 8 files, cycle-guarded. The result is written straight to
   `refs_by_def` / `refs_by_path`; nothing cross-file is cached in the per-file blob, so an
   unchanged file whose *dependency* moved still gets re-stitched correctly.
 - **Probe index.** The stitch also records what each importer depended on. `import_targets` keeps
