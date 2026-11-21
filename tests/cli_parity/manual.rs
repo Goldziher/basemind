@@ -391,6 +391,8 @@ fn read_variables() -> BTreeSet<String> {
 /// The variables the environment page documents: the first column of its tables, and the names its
 /// `## Removed` section lists.
 fn documented_variables(page: &str) -> BTreeSet<String> {
+    // `include_str!` keeps CRLF on a checkout that converts line endings.
+    let page = page.replace("\r\n", "\n");
     let rows = page
         .lines()
         .filter_map(|line| line.strip_prefix('|'))
@@ -437,6 +439,10 @@ fn the_environment_table_documents_its_first_column_and_the_removed_settings() {
     assert_eq!(
         documented_variables(page).into_iter().collect::<Vec<_>>(),
         ["BASEMIND_OLD", "BASEMIND_ONE"]
+    );
+    assert_eq!(
+        documented_variables(&page.replace('\n', "\r\n")),
+        documented_variables(page)
     );
 }
 
