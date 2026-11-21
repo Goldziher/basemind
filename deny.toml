@@ -78,14 +78,6 @@ allow = ["MPL-2.0"]
 name = "colored"
 allow = ["MPL-2.0"]
 
-[[licenses.exceptions]]
-name = "libbz2-rs-sys"
-allow = ["bzip2-1.0.6"]
-
-[[licenses.exceptions]]
-name = "inferno"
-allow = ["CDDL-1.0"]
-
 [licenses.private]
 ignore = false
 registries = []

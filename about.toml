@@ -1,0 +1,60 @@
+# cargo-about config for THIRD_PARTY_LICENSES, the notice file every release archive ships. The
+# release workflow renders it with about.hbs over the `full` feature graph, the one that ships.
+#
+# `accepted` mirrors deny.toml's allow list, in order of preference: for a crate offered under
+# several licences, the first accepted one is the one its notice uses. Copyleft licences stay
+# per-crate, as deny.toml's exceptions are.
+accepted = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "MIT-0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "CDLA-Permissive-2.0",
+  "Zlib",
+  "Unlicense",
+  "CC0-1.0",
+  "Unicode-3.0",
+  "BSL-1.0",
+  "0BSD",
+  "Unicode-DFS-2016",
+]
+# The four release targets.
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+ignore-dev-dependencies = true
+# Crates whose published package lacks or misstates its licence files.
+workarounds = [
+  "bitvec",
+  "chrono",
+  "clap",
+  "prost",
+  "ring",
+  "rustls",
+  "tonic",
+  "unicode-ident",
+  "linux-raw-sys",
+  "rustix",
+]
+
+[colored]
+accepted = ["MPL-2.0"]
+
+[nucleo-matcher]
+accepted = ["MPL-2.0"]
+
+[option-ext]
+accepted = ["MPL-2.0"]
+
+[uluru]
+accepted = ["MPL-2.0"]
+
+# basemind's own crate root is the repository, so a crawl finds every licence file in it; its
+# licence is LICENSE alone (the forks under crates/ are listed as their own crates).
+[basemind.clarify]
+license = "MIT"
+
+[[basemind.clarify.files]]
+path = "LICENSE"
+checksum = "e4611c3a2a26e8a205cd6456a59513111f9898ff32065b06b7582c734d05b7ea"

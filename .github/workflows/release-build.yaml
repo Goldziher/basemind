@@ -21,8 +21,43 @@ permissions:
   contents: read
 
 jobs:
+  # One notice file for all four archives: cargo-about reads the locked dependency graph, which does
+  # not depend on the build host, so it runs once on a stock runner rather than in each build.
+  third-party-licenses:
+    name: Third-party licences
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+
+      - uses: xberg-io/actions/setup-mise@v1
+        with:
+          install-args: github:EmbarkStudios/cargo-about
+
+      - name: Native-code notices match Cargo.lock
+        run: python3 scripts/check_native_notices.py
+
+      - name: Generate THIRD_PARTY_LICENSES
+        run: mise run release:licenses
+
+      - name: Upload THIRD_PARTY_LICENSES
+        uses: actions/upload-artifact@v7
+        with:
+          name: third-party-licenses
+          path: THIRD_PARTY_LICENSES
+          if-no-files-found: error
+          retention-days: 7
+
   build-native:
     name: Build / ${{ matrix.triple }}
+    needs: third-party-licenses
     strategy:
       fail-fast: false
       matrix:
@@ -86,6 +121,11 @@ jobs:
           cargo build --locked --release --features full --bin basemind \
             --target "${{ matrix.triple }}"
 
+      - name: Download THIRD_PARTY_LICENSES
+        uses: actions/download-artifact@v8
+        with:
+          name: third-party-licenses
+
       - name: Package release
         shell: bash
         run: ./scripts/package-release.sh ${{ matrix.triple }}
@@ -100,6 +140,7 @@ jobs:
 
   build-linux:
     name: Build / ${{ matrix.triple }}
+    needs: third-party-licenses
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     container: ${{ matrix.image }}
@@ -217,6 +258,11 @@ jobs:
             exit 1
           fi
           echo "✓ glibc floor verified: ${max:-none} <= GLIBC_2.28"
+
+      - name: Download THIRD_PARTY_LICENSES
+        uses: actions/download-artifact@v8
+        with:
+          name: third-party-licenses
 
       - name: Package release
         shell: bash

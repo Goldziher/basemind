@@ -205,6 +205,57 @@ fn archives_are_executed_before_upload() {
     );
 }
 
+/// Every archive is packaged with the generated THIRD_PARTY_LICENSES: one job renders it from the
+/// locked graph, and each build job waits for it and downloads it before packaging.
+#[test]
+fn every_archive_is_packaged_with_the_third_party_licenses() {
+    let build = read_workflow("release-build.yaml");
+    assert!(
+        job_block(&build, "third-party-licenses").contains("run: mise run release:licenses"),
+        "release-build.yaml must generate THIRD_PARTY_LICENSES with the release:licenses task",
+    );
+    for job in ["build-native", "build-linux"] {
+        let block = job_block(&build, job);
+        assert!(
+            block.contains("needs: third-party-licenses"),
+            "{job} must wait for THIRD_PARTY_LICENSES"
+        );
+        let download = block
+            .find("name: third-party-licenses")
+            .unwrap_or_else(|| panic!("{job} must download THIRD_PARTY_LICENSES"));
+        let package = block
+            .find("scripts/package-release.sh")
+            .unwrap_or_else(|| panic!("{job} must package the release"));
+        assert!(
+            download < package,
+            "{job} must download THIRD_PARTY_LICENSES before packaging"
+        );
+    }
+}
+
+/// Every change and every release checks the hand-written native-code notices against Cargo.lock
+/// before rendering THIRD_PARTY_LICENSES, so a stale entry or a licence about.toml does not accept
+/// fails on the pull request rather than at release time.
+#[test]
+fn native_notices_are_checked_before_third_party_licenses_render() {
+    let check = "run: python3 scripts/check_native_notices.py";
+    let render = "run: mise run release:licenses";
+    for file in ["ci.yaml", "release-build.yaml"] {
+        let workflow = read_workflow(file);
+        let block = job_block(&workflow, "third-party-licenses");
+        let checked = block
+            .find(check)
+            .unwrap_or_else(|| panic!("{file} must check the native-code notices"));
+        let rendered = block
+            .find(render)
+            .unwrap_or_else(|| panic!("{file} must render THIRD_PARTY_LICENSES"));
+        assert!(
+            checked < rendered,
+            "{file} must check the native-code notices before rendering THIRD_PARTY_LICENSES"
+        );
+    }
+}
+
 /// Promotion (which flips the release public and lets `latest` move) must require the full
 /// platform-asset set plus checksums, not a partial draft.
 #[test]
