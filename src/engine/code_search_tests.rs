@@ -190,7 +190,9 @@ fn a_change_scope_keeps_only_the_hits_and_copies_in_its_files() {
         0,
         &UNFILTERED,
         Some(&scope),
-    );
+        &|| false,
+    )
+    .expect("hydrated");
 
     assert!(!hydrated.hits.is_empty(), "the copies in the scope are found");
     for hit in &hydrated.hits {
@@ -209,7 +211,9 @@ fn a_change_scope_keeps_only_the_hits_and_copies_in_its_files() {
         0,
         &UNFILTERED,
         Some(&elsewhere),
-    );
+        &|| false,
+    )
+    .expect("hydrated");
     assert!(hydrated.hits.is_empty(), "{:?}", hydrated.hits);
     assert_eq!(hydrated.omitted, 0, "a hit outside the scope is not a stale chunk");
 }
