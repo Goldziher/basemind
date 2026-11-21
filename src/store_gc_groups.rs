@@ -64,6 +64,11 @@ fn named_groups(workspaces_dir: &Path) -> Option<AHashSet<String>> {
     Some(named)
 }
 
+/// Whether the workspaces under `workspaces_dir` name `group`, or one of them could.
+fn group_may_be_named(workspaces_dir: &Path, group: &str) -> bool {
+    named_groups(workspaces_dir).is_none_or(|named| named.contains(group))
+}
+
 /// Whether a workspace under `workspaces_dir` that still holds a view belongs to `group`, or may:
 /// one whose group cannot be told could belong to any. A workspace with nothing under `views/`
 /// (evicted, or never scanned) has no file map naming the group's rows.
@@ -139,9 +144,11 @@ pub(crate) fn reap_orphaned_group_stores_in(cache_dir: &Path) -> Result<GroupSto
         return Ok(report);
     };
     crate::store_lock::purge_reaped(&groups_dir);
+    let workspaces_dir = cache_dir.join(WORKSPACES_DIR);
     for entry in crate::store_gc::read_dir(&groups_dir)?.flatten() {
         let group_dir = entry.path();
-        if named.contains(entry.file_name().to_string_lossy().as_ref()) || !group_dir.is_dir() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if named.contains(&name) || !group_dir.is_dir() {
             continue;
         }
         let Ok(lock) = crate::store_lock::try_acquire_lock_as(&group_dir, LockHolder::Maintenance) else {
@@ -150,21 +157,28 @@ pub(crate) fn reap_orphaned_group_stores_in(cache_dir: &Path) -> Result<GroupSto
         };
         // One group that cannot be removed (a file held open on Windows, a protected directory) ~keep
         // is left for the next run; it must not keep the other groups, or the blob GC, from running. ~keep
-        let removed = dir_size(&group_dir).and_then(|bytes| {
-            crate::store_lock::remove_dir_under_lock(&group_dir)
-                .map(|()| bytes)
-                .map_err(|source| GcError::Io {
-                    path: group_dir.clone(),
-                    source,
-                })
-        });
+        let removed = if group_may_be_named(&workspaces_dir, &name) {
+            // A scan registered a workspace of the group between the snapshot and the lock. ~keep
+            tracing::debug!(group = %group_dir.display(), "a workspace now names the group; keeping it");
+            Ok(None)
+        } else {
+            dir_size(&group_dir).and_then(|bytes| {
+                crate::store_lock::remove_dir_under_lock(&group_dir)
+                    .map(|()| Some(bytes))
+                    .map_err(|source| GcError::Io {
+                        path: group_dir.clone(),
+                        source,
+                    })
+            })
+        };
         drop(lock);
         match removed {
-            Ok(bytes) => {
+            Ok(Some(bytes)) => {
                 report.reaped += 1;
                 report.bytes_freed += bytes;
                 tracing::info!(group = %group_dir.display(), bytes, "reaped a group no workspace names");
             }
+            Ok(None) => {}
             Err(error) => {
                 tracing::warn!(group = %group_dir.display(), %error, "could not reap a group no workspace names; kept");
             }
@@ -208,6 +222,20 @@ mod tests {
 
     fn store_of(cache: &Path, group: &str) -> PathBuf {
         cache.join(GROUPS_DIR).join(group).join(GROUP_LANCE_DIR)
+    }
+
+    /// The reaper names the groups once, then takes each group's lock: a workspace registered in
+    /// between must be seen under the lock.
+    #[test]
+    fn a_group_a_workspace_registered_since_the_snapshot_names_is_kept_under_the_lock() {
+        let (_tmp, cache) = cache_with_groups(&["late"]);
+        let workspaces = cache.join(WORKSPACES_DIR);
+        assert!(!group_may_be_named(&workspaces, "late"), "nothing names it yet");
+
+        workspace(&cache, "w", Some(r#"{"root":"/gone","updated_unix":0,"group":"late"}"#));
+
+        assert!(group_may_be_named(&workspaces, "late"), "the new workspace names it");
+        assert!(!group_may_be_named(&workspaces, "other"));
     }
 
     #[test]
