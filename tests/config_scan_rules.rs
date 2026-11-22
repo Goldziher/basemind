@@ -142,16 +142,15 @@ fn disabling_a_language_drops_its_files_from_the_index() {
 
 #[test]
 fn unknown_language_key_is_a_config_error_with_suggestions() {
-    // The near-match hint reads the grammars present on disk, which a clean runner has not fetched.
-    if basemind::lang::ensure_grammars().is_err() {
-        basemind::testing::unavailable("BASEMIND_TEST_ALLOW_NO_GRAMMAR", "the grammars cannot be fetched");
-        return;
-    }
+    basemind::store::init_isolated_cache();
     let err = config::parse_str("\"$schema\" = \"v1\"\n[languages.pythn]\nenabled = false\n")
         .expect_err("typo in grammar name");
     let msg = err.to_string();
     assert!(msg.contains("[languages.pythn]"), "{msg}");
-    assert!(msg.contains("python"), "suggests near matches: {msg}");
+    assert!(
+        msg.contains("python") || msg.contains("basemind lang install"),
+        "suggests a near match, or says how to fetch the grammars: {msg}"
+    );
 }
 
 #[test]

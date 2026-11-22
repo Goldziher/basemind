@@ -171,7 +171,8 @@ fn nearby_hint(key: &str) -> String {
     scored.sort();
     scored.truncate(5);
     if scored.is_empty() {
-        " (run `basemind lang list` to see the available grammars)".to_string()
+        " (suggestions come only from downloaded grammars; run `basemind lang install` to fetch them all, then `basemind lang list`)"
+            .to_string()
     } else {
         let names: Vec<String> = scored.into_iter().map(|(_, n)| n).collect();
         format!("; did you mean: {}?", names.join(", "))
