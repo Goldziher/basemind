@@ -491,6 +491,7 @@ pub fn scan_with_observer(
     let candidates = candidates_for_source(root, config, &filters, &source, cancel)?;
     debug!(count = candidates.len(), kind = source.label(), "scan candidates");
     crate::scanner_integrity::ensure_scan_space(store, root, &source, &filters, config, &candidates)?;
+    store.reap_legacy_index()?;
     advance(&mut breadcrumb, &phase_peaks, PHASE_EXTRACT, Some(candidates.len()));
 
     let scope = derive_scope(root, &source);

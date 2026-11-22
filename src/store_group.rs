@@ -119,22 +119,25 @@ fn reconcile(index: &mut Index, group: &GroupDb, db: &IndexDb, view_id: u32, vie
 
 /// The writer open of a view in the group layout: the group database, the view's id (allocated on
 /// first use) and the reconciled file map. The view's database of its own, left by the per-view
-/// layout, is deleted: the group index replaces it. Notes an older build kept in it move to the
-/// group's notes store first; while that store cannot take them, the database is kept.
+/// layout is replaced by the group index. Notes an older build kept in it move to the group's notes
+/// store first; while that store cannot take them, the database is kept. The database is not
+/// deleted here: the returned flag says it is ready to go ([`Store::reap_legacy_index`]), which a
+/// scan does once its free-space check has passed, so a refusal leaves the old release's index.
 pub(super) fn open_index_for_writer(
     root: &Path,
     view: &str,
     view_dir: &Path,
     index: &mut Index,
     holder: LockHolder,
-) -> Result<(IndexDb, bool), StoreError> {
+) -> Result<(IndexDb, bool, bool), StoreError> {
     let group = open_group_for_writer(root, holder)?;
     let claim = group.claim_view(&workspace_key(root), view)?;
     let view_id = claim.id();
     let db = group.open_claimed(claim, &memory_store_dir(root), false)?;
+    let mut legacy_adopted = false;
     if view_dir.join(crate::index::INDEX_DIR).exists() {
         if db.adopt_legacy_view_notes(view_dir)? {
-            crate::index::durability::discard_index(view_dir)?;
+            legacy_adopted = true;
         } else {
             tracing::warn!(
                 view,
@@ -143,7 +146,7 @@ pub(super) fn open_index_for_writer(
         }
     }
     let rebuild = reconcile(index, &group, &db, view_id, view)?;
-    Ok((db, rebuild))
+    Ok((db, rebuild, legacy_adopted))
 }
 
 /// How a read-only open may reach the group database when its process holds no handle on it.

@@ -323,6 +323,9 @@ pub struct Store {
     /// an empty index. A read-only open sets it for an index of an older schema, which it leaves
     /// untouched and unopened (`index_db` is `None`) for the scan to replace.
     pub index_rebuild_needed: bool,
+    /// The view's per-view index of a release up to 0.33 is still on disk, its notes already in the
+    /// group's store: [`Store::reap_legacy_index`] deletes it once a scan's free-space check passes.
+    legacy_index_adopted: bool,
     /// Paths whose vector rows are not written yet (see [`crate::store_pending`]).
     pub pending_vectors: crate::store_pending::PendingVectors,
     /// Document keys ([`doc_key`]) the file map stopped naming since the last document sweep, by
@@ -409,7 +412,8 @@ impl Store {
             }
             ViewOnOpen::Refuse(e) => return Err(e),
         };
-        let (index_db, index_rebuild_needed) = open_index_for_writer(root, view, &view_dir, &mut index, holder)?;
+        let (index_db, index_rebuild_needed, legacy_index_adopted) =
+            open_index_for_writer(root, view, &view_dir, &mut index, holder)?;
         let pending_vectors = crate::store_pending::PendingVectors::load(&view_dir);
         let mut store = Self {
             root: root.to_path_buf(),
@@ -428,6 +432,7 @@ impl Store {
             lance_unavailable: None,
             reset_stale_schema,
             index_rebuild_needed,
+            legacy_index_adopted,
             pending_vectors,
             dropped_doc_keys: Vec::new(),
             index_source: None,
@@ -557,6 +562,7 @@ impl Store {
             lance_unavailable: None,
             reset_stale_schema: false,
             index_rebuild_needed,
+            legacy_index_adopted: false,
             pending_vectors,
             dropped_doc_keys: Vec::new(),
             index_source: None,

@@ -860,8 +860,8 @@ fn a_file_map_whose_version_cannot_be_read_is_set_aside_not_deleted() {
 }
 
 /// A view's own `index.fjall`, left by a build from before the group index, may hold the notes of
-/// that time: the writer open moves them into the group's notes store before it deletes the
-/// database, so an upgrade keeps them.
+/// that time: the writer open moves them into the group's notes store, and the database goes once
+/// a scan asks for it ([`Store::reap_legacy_index`]), so an upgrade keeps them.
 #[test]
 fn the_writer_open_keeps_the_notes_of_an_older_view_index_it_deletes() {
     init_isolated_cache();
@@ -880,7 +880,12 @@ fn the_writer_open_keeps_the_notes_of_an_older_view_index_it_deletes() {
         db.persist(fjall::PersistMode::SyncAll).expect("persist");
     }
 
-    let store = Store::open(tmp.path(), VIEW_WORKING).expect("writer open");
+    let mut store = Store::open(tmp.path(), VIEW_WORKING).expect("writer open");
+    assert!(
+        view_dir.join(crate::index::INDEX_DIR).exists(),
+        "the open leaves the older view index for the scan's free-space check to clear"
+    );
+    store.reap_legacy_index().expect("reap");
     assert!(
         !view_dir.join(crate::index::INDEX_DIR).exists(),
         "the older view index is deleted"

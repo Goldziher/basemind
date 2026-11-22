@@ -12,15 +12,16 @@ use super::{HashRefs, Index, LockHolder, Store, StoreError};
 use crate::index::IndexDb;
 
 /// Open the group index of `view` for a writer, reconciling the file map `index` with it (see
-/// [`super::group`]). Returns the handle and whether a full scan must rebuild the view, in which
-/// case `index` lists no files any more.
+/// [`super::group`]). Returns the handle, whether a full scan must rebuild the view (in which
+/// case `index` lists no files any more) and whether the view's per-view index of an older release
+/// is ready to be reaped.
 pub(crate) fn open_index_for_writer(
     root: &Path,
     view: &str,
     view_dir: &Path,
     index: &mut Index,
     holder: LockHolder,
-) -> Result<(IndexDb, bool), StoreError> {
+) -> Result<(IndexDb, bool, bool), StoreError> {
     super::group::open_index_for_writer(root, view, view_dir, index, holder)
 }
 
@@ -66,6 +67,17 @@ impl Index {
 }
 
 impl Store {
+    /// Delete the per-view index of an older release that the writer open found and adopted the
+    /// notes of. A scan calls it once its free-space check has passed: the open must not, or a
+    /// refused scan would leave no usable index under either release (issue #438). A no-op without
+    /// one.
+    pub(crate) fn reap_legacy_index(&mut self) -> Result<(), StoreError> {
+        if std::mem::take(&mut self.legacy_index_adopted) {
+            crate::index::durability::discard_index(&self.view_dir)?;
+        }
+        Ok(())
+    }
+
     /// Whether the index cannot answer until a scan rebuilds it: this open found an index it must
     /// not serve, or the file map records a rebuild that never finished.
     pub fn rescan_owed(&self) -> bool {
@@ -148,7 +160,7 @@ impl Store {
             }
             Err(error) => return Err(error),
         };
-        let (index_db, rebuild_needed) = open_index_for_writer(
+        let (index_db, rebuild_needed, legacy_adopted) = open_index_for_writer(
             &self.root,
             &self.view,
             &self.view_dir,
@@ -157,6 +169,7 @@ impl Store {
         )?;
         self.index = index;
         self.index_rebuild_needed |= rebuild_needed;
+        self.legacy_index_adopted |= legacy_adopted;
         self.hash_refs = HashRefs::of(&self.index.files);
         self.index_db = Some(index_db);
         self.flush()

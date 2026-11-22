@@ -209,3 +209,28 @@ fn a_conflicted_path_is_charged_the_stage_a_staged_scan_reads() {
         "stage 0"
     );
 }
+
+/// A refused scan must leave the per-view index of an older release where it was: the refusal came
+/// after the writer open, which used to delete it, so the user was left with no index under either
+/// release (issue #438). It goes once a scan passes the check.
+#[test]
+fn a_refused_scan_keeps_the_legacy_per_view_index_and_a_passing_one_reaps_it() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let view_dir = crate::data_root::DataRoot::current()
+        .workspace_cache_dir(root)
+        .join(crate::store::VIEWS_DIR)
+        .join(VIEW_WORKING);
+    std::fs::create_dir_all(&view_dir).expect("view dir");
+    drop(crate::index::IndexDb::open(&view_dir).expect("write a per-view index"));
+    let legacy = view_dir.join(crate::index::INDEX_DIR);
+    assert!(legacy.is_dir());
+
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    refusal(scan_with_free(root, &mut store, 0));
+    assert!(legacy.is_dir(), "a refusal leaves the old release's index in place");
+
+    scan_with_free(root, &mut store, u64::MAX).expect("a volume with room scans");
+    assert!(!legacy.exists(), "the scan that passed the check reaps the old index");
+}
