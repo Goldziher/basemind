@@ -1019,6 +1019,9 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   scan's per-source-byte ratios. `docs/UPGRADING.md` also says that a 0.33 daemon which touched a
   repository must be stopped before it is scanned, and that a forwarded scan reads the daemon's
   environment (#440).
+- `docs_search` refuses a `keywords` or `entity` filter while `[documents.keywords]` or `[documents.ner]` is
+  off, and an `entity` category the extractor never emits, naming the config key or the accepted
+  categories instead of returning no hits (#443).
 - A detached server that outlived its session is reported (#201).
 - `code_read` of a span ending on the last line of a CRLF file no longer keeps that line's trailing `\r`.
 - Error text that names a path no longer rewrites a home or repository root that only appears inside

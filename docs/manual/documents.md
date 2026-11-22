@@ -24,9 +24,13 @@ The hidden `memory documents` command is the same search under its earlier name.
 - `format` is one of `pdf`, `office`, `html`, `markdown`, `email`, `notebook`, `text`, `other`.
   `path` is a repository-relative prefix, or a glob over the whole path when it holds `*`, as in
   the code tools. Filters apply before ranking.
-- `keywords` are whole keywords, comma-separated, any one matching. `entity` keeps chunks naming an
-  entity of that category and needs a build with named-entity recognition; without it the filter is
-  an error, not an empty result.
+- `keywords` are whole keywords, comma-separated, any one matching, matched against the phrases the
+  extractor stored: `flood response` matches a document whose keyword is `flood response`, `flood`
+  does not. `entity` keeps chunks naming an entity of that category and needs a build with
+  named-entity recognition. Both read what a scan extracted and both extractors are off by default:
+  set `[documents.keywords] enabled = true` and `[documents.ner] enabled = true`, then rescan.
+  With the extractor off, or an `entity` category the extractor never emits (the call lists the
+  accepted ones), the filter is an error, not an empty result.
 - Plain text, logs, CSV, JSON, YAML and TOML are chunked from the file itself, so every hit cites
   its lines. `code_grep` still searches them as text and `find_files` still lists them.
 - Structured data (JSON, JSON Lines, YAML, TOML, CSV, TSV, XML) is not embedded by default: it is

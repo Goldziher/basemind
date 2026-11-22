@@ -81,6 +81,56 @@ fn entity_filter_unavailable_for(ner_compiled: bool) -> Option<String> {
     })
 }
 
+/// Entity categories the ONNX backend emits besides `[documents.ner] custom_labels`.
+const BUILTIN_ENTITY_CATEGORIES: [&str; 10] = [
+    "person",
+    "organization",
+    "location",
+    "date",
+    "time",
+    "money",
+    "percent",
+    "email",
+    "phone",
+    "url",
+];
+
+/// Why a `docs_search` `keywords` or `entity` filter can only come back empty under `cfg`, or
+/// `None` when it can match. Both read what an ingest-time extractor stored, and each is off by
+/// default: with it off no document carries keywords or entities, which an empty result would
+/// present as "no such documents". An entity category the extractor never emits is refused with
+/// the accepted ones.
+pub fn extractor_filter_refusal(cfg: &DocumentsConfig, entity: Option<&str>, keywords: bool) -> Option<String> {
+    if keywords && !cfg.keywords.enabled {
+        return Some(
+            "the `keywords` filter of `docs_search` matches keywords extracted at scan time, and extraction is off, \
+             so no document carries any. Set `[documents.keywords] enabled = true` in basemind.toml, rescan, or \
+             drop the filter."
+                .to_string(),
+        );
+    }
+    let entity = entity.map(str::trim).filter(|entity| !entity.is_empty())?;
+    if !cfg.ner.enabled {
+        return Some(
+            "the `entity` filter of `docs_search` matches entities extracted at scan time, and extraction is off, \
+             so no document carries any. Set `[documents.ner] enabled = true` in basemind.toml, rescan, or drop \
+             the filter."
+                .to_string(),
+        );
+    }
+    let accepted: Vec<&str> = BUILTIN_ENTITY_CATEGORIES
+        .iter()
+        .copied()
+        .chain(cfg.ner.custom_labels.iter().map(String::as_str))
+        .collect();
+    (!accepted.iter().any(|known| known.eq_ignore_ascii_case(entity))).then(|| {
+        format!(
+            "unknown `entity` {entity:?}: no document can carry it. Accepted categories: {}.",
+            accepted.join(", ")
+        )
+    })
+}
+
 /// The warning for a PDF that extracted to no text in a build without OCR, or `None` when there is
 /// nothing to say. The document is still indexed, empty: failing it would re-parse the file on every
 /// scan and misreport a genuinely blank PDF. `config::rules::doc_digest` differs between a build with
@@ -103,6 +153,24 @@ fn textless_pdf_warning_for(mime_type: &str, content: &str, ocr_compiled: bool) 
 mod tests {
     use super::*;
     use crate::config::NerConfig;
+
+    #[test]
+    fn extractor_filters_are_refused_when_their_extractor_is_off() {
+        let mut cfg = DocumentsConfig::default();
+        let keywords = extractor_filter_refusal(&cfg, None, true).expect("refused");
+        assert!(keywords.contains("[documents.keywords] enabled = true"), "{keywords}");
+        let entity = extractor_filter_refusal(&cfg, Some("PERSON"), false).expect("refused");
+        assert!(entity.contains("[documents.ner] enabled = true"), "{entity}");
+        assert_eq!(extractor_filter_refusal(&cfg, None, false), None);
+
+        cfg.keywords.enabled = true;
+        cfg.ner.enabled = true;
+        cfg.ner.custom_labels = vec!["Vessel".to_string()];
+        assert_eq!(extractor_filter_refusal(&cfg, Some("PERSON"), true), None);
+        assert_eq!(extractor_filter_refusal(&cfg, Some("vessel"), false), None);
+        let unknown = extractor_filter_refusal(&cfg, Some("planet"), false).expect("refused");
+        assert!(unknown.contains("\"planet\"") && unknown.contains("person") && unknown.contains("Vessel"));
+    }
 
     fn ner_enabled(backend: NerBackend) -> DocumentsConfig {
         DocumentsConfig {

@@ -70,6 +70,13 @@ mod enabled {
             };
             let filters =
                 Filters::parse(&request, crate::extract::doc_tiers::entity_filter_unavailable()).map_err(tool_error)?;
+            if let Some(reason) = crate::extract::doc_tiers::extractor_filter_refusal(
+                &self.config.documents,
+                request.entity.as_deref(),
+                request.keywords.as_deref().is_some_and(|k| !k.trim().is_empty()),
+            ) {
+                return Err(EngineError::invalid_argument(format!("`docs_search`: {reason}")));
+            }
             let arguments = serde_json::json!({
                 "query": &request.query,
                 "mime_type": &filters.mime_type,
