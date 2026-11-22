@@ -26,7 +26,7 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 
 use crate::mcp::BasemindServer;
-use crate::mcp::tokens::TOKENS_ARE_COUNTED;
+use crate::mcp::tokens::{TOKENS_ARE_COUNTED, o200k_counted};
 
 pub use gate::{
     GATE_MIN_CREDITED, GREP_MIN_SYMBOL_ACCURACY, GateVerdict, Job, LOCATING_MAX_RECALL_DEFICIT, LOCATING_MIN_RATIO,
@@ -114,7 +114,13 @@ pub async fn run(server: &BasemindServer, args: &EvalArgs, out: &mut impl Write)
         None => out.write_all(ndjson.as_bytes()).context("write results")?,
     }
 
-    let tokenizer = if TOKENS_ARE_COUNTED { "o200k" } else { "bytes/4" };
+    let tokenizer = if o200k_counted() {
+        "o200k"
+    } else if TOKENS_ARE_COUNTED {
+        "word-estimate"
+    } else {
+        "bytes/4"
+    };
     let rep = aggregate(
         &results,
         tokenizer,

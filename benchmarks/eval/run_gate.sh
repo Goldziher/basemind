@@ -53,9 +53,15 @@ stop_daemon() {
 }
 trap stop_daemon EXIT
 
-# `admin tokens` fails outright without the `tokenizer` feature rather than falling back to bytes/4.
-if ! printf 'hello world' | "${bin}" admin tokens --stdin >/dev/null 2>&1; then
+# `admin tokens` fails outright without the `tokenizer` feature rather than falling back to bytes/4,
+# but with it the count silently becomes a word estimate when the tokenizer cannot load (offline).
+# The probe has a known o200k count (src/engine/tokens.rs `O200K_PROBE`) that the estimate misses.
+if ! probe_count="$(printf '%s' 'Hello, world!' | "${bin}" admin tokens --stdin 2>/dev/null)"; then
   echo "refusing to run: ${bin} does not count o200k tokens (build it with --features tokenizer)" >&2
+  exit 2
+fi
+if [ "${probe_count}" != "4" ]; then
+  echo "refusing to run: ${bin} counted ${probe_count} tokens for the o200k probe, expected 4; the tokenizer fell back to the word estimate (offline? download Xenova/gpt-4o first)" >&2
   exit 2
 fi
 

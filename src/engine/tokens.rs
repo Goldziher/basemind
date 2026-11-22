@@ -30,9 +30,53 @@ pub(crate) fn count_tokens(text: &str) -> u64 {
 /// `false` when it uses the `bytes/4` heuristic.
 pub(crate) const TOKENS_ARE_COUNTED: bool = cfg!(feature = "tokenizer");
 
+/// A string whose o200k count differs from the offline word estimate (2), so a count of it tells
+/// the real tokenizer from the fallback. `benchmarks/eval/run_gate.sh` checks the same pair.
+#[cfg(feature = "tokenizer")]
+pub(crate) const O200K_PROBE: &str = "Hello, world!";
+/// The o200k token count of [`O200K_PROBE`].
+#[cfg(feature = "tokenizer")]
+pub(crate) const O200K_PROBE_TOKENS: u64 = 4;
+
+/// `true` when [`count_tokens`] really counts o200k: the `tokenizer` feature is on and the
+/// tokenizer loaded, which [`O200K_PROBE`] proves because the word-estimate fallback (an offline
+/// first use) counts it differently. Probed once.
+pub(crate) fn o200k_counted() -> bool {
+    #[cfg(feature = "tokenizer")]
+    {
+        static COUNTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *COUNTED.get_or_init(|| count_tokens(O200K_PROBE) == O200K_PROBE_TOKENS)
+    }
+    #[cfg(not(feature = "tokenizer"))]
+    {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The word estimate must not equal the probe's o200k count, or the probe could not tell them apart.
+    #[cfg(feature = "tokenizer")]
+    #[test]
+    fn probe_is_not_what_the_word_estimate_counts() {
+        assert_ne!(O200K_PROBE.split_whitespace().count() as u64, O200K_PROBE_TOKENS);
+    }
+
+    /// With the tokenizer cached or downloadable the probe counts as o200k.
+    #[cfg(feature = "tokenizer")]
+    #[test]
+    fn probe_counts_as_o200k_when_the_tokenizer_loads() {
+        assert_eq!(count_tokens(O200K_PROBE), O200K_PROBE_TOKENS);
+        assert!(o200k_counted());
+    }
+
+    #[cfg(not(feature = "tokenizer"))]
+    #[test]
+    fn no_feature_is_never_o200k() {
+        assert!(!o200k_counted());
+    }
 
     /// Under the heuristic path (no `tokenizer`), the count is exactly `bytes / 4`.
     #[cfg(not(feature = "tokenizer"))]
