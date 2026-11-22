@@ -296,6 +296,48 @@ def thread_rule(
     )
 
 
+def handle_rule(
+    v: Verdict,
+    label: str,
+    series: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    marks: dict[str, float],
+    args: argparse.Namespace,
+) -> None:
+    """R3 on Windows: handles net of threads climb no faster than the tolerance, or, when they do,
+    the quiescent floor after load holds at most `--handle-slack` more than the one before it.
+
+    A Windows sample cannot name its descriptor kinds, so the live LSM tables the daemon holds open
+    (their growth is R8's) read as a slope. A leak never closes, so it survives the idle phase and is
+    far larger than the slack over a run of tens of thousands of calls; a table descriptor is
+    closed when a compaction deletes its table and the floor returns to the baseline.
+    """
+    points = [(r["t"], r["fds"] - r["threads"]) for r in series]
+    growth = measure_growth(points, args.fd_tol, 1.0)
+    if isinstance(growth, str):
+        v.add(label, False, growth)
+        return
+    if not growth.climbing:
+        v.add(label, True, growth.detail("handles"), growth.value("handles"), f"{args.fd_tol} handles/min")
+        return
+    base = _quiescent(rows, "baseline", marks.get("baseline_start"), args.idle_settle)
+    after = _quiescent(rows, "idle", marks.get("idle_start"), args.idle_settle)
+    if len(base) < 2 or len(after) < 2:  # noqa: PLR2004
+        v.add(label, False, growth.detail("handles") + f"; quiescent samples: baseline {len(base)}, idle {len(after)}")
+        return
+    low_base = min(r["fds"] - r["threads"] for r in base)
+    low_after = min(r["fds"] - r["threads"] for r in after)
+    retained = low_after - low_base
+    v.add(
+        label,
+        retained <= args.handle_slack,
+        growth.detail("handles")
+        + f"; quiescent floor {low_base} before load, {low_after} after ({retained:+d}, slack {args.handle_slack})",
+        f"{retained:+d} handles retained",
+        f"{args.fd_tol} handles/min or {args.handle_slack} retained",
+    )
+
+
 def floor_rule(v: Verdict, label: str, points: list[tuple[float, float]], args: argparse.Namespace) -> None:
     """Fail when the memory floor keeps rising on a long run, below what the slope rule can see.
 
@@ -391,12 +433,13 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
             # A Windows handle count includes one handle per live thread, so a pool that grows at a
             # concurrency peak and is reaped at idle reads as handle growth (R4 judges threads). The
             # handles a call can leak are the ones threads do not account for.
-            growth_rule(
+            handle_rule(
                 v,
                 f"R3 {role} {pid} open handles net of threads",
-                [(r["t"], r["fds"] - r["threads"]) for r in series],
-                args.fd_tol,
-                "handles",
+                series,
+                by_pid[pid],
+                marks,
+                args,
             )
         else:
             tables_rule(v, role, pid, series, args)
@@ -684,6 +727,13 @@ def build_parser() -> argparse.ArgumentParser:
         f"(default {LSM_BLOCK_CACHE_MIB:g})",
     )
     ap.add_argument("--fd-tol", type=float, default=0.2, help="fds/min (default 0.2)")
+    ap.add_argument(
+        "--handle-slack",
+        type=int,
+        default=16,
+        help="Windows handles net of threads the quiescent floor may rise from the baseline to the idle phase "
+        "when their slope is over --fd-tol (default 16)",
+    )
     ap.add_argument(
         "--thread-slack",
         type=int,
