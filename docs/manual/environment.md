@@ -103,7 +103,7 @@ not raise it. `BASEMIND_DAEMON_MIN_DEBOUNCE_MS` is a floor instead.
 | `BASEMIND_GIT_DISCOVER_PARENTS` | off | CLI, daemon | True indexes an ancestor repository's history for a workspace that is a subdirectory of it. |
 | `BASEMIND_GRAMMAR_OFFLINE` | off | CLI, daemon | Never download a grammar; a missing one is reported instead. Takes the values `BASEMIND_OFFLINE` takes. |
 | `BASEMIND_PARSE_TIMEOUT_MS` | `5000` | CLI, daemon | Time after which parsing one file is abandoned. |
-| `BASEMIND_MIN_FREE_MB` | `512` | CLI, daemon | Headroom a scan needs free on disk on top of its size estimate (1.5 times the index, plus the index rows, blobs and vectors of the files no file map lists yet), or it refuses. |
+| `BASEMIND_MIN_FREE_MB` | `512` | CLI, daemon | Headroom a scan needs free on disk on top of its size estimate (1.5 times the index, plus the index rows, blobs and vectors of the files no file map lists yet; `upgrade --plan` uses the same estimate), or it refuses. |
 | `BASEMIND_CACHE_BUDGET_MB` | `min(20 GiB, (cache size + free space) / 2)` | CLI, daemon | Budget for the cache in MiB, enforced by eviction (`0`: unlimited). Unset: `[cache] budget_mb` in the user settings file (below), else the default; the free space is that of the cache's volume. `basemind cache stats` reports `budget_warning` when a set budget is larger than the cache plus that free space. |
 | `BASEMIND_CACHE_GRACE_MINUTES` | `360` | CLI, daemon | A workspace built this recently is not evicted for the budget. |
 | `BASEMIND_BLOB_GC_GRACE_SECS` | `21600` | CLI, daemon | Age under which `basemind cache gc` keeps an unreferenced blob. |

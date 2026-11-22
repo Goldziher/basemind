@@ -23,6 +23,14 @@ is cleaned up.
    `entry_points`, `[documents.dependencies]`): 0.33 rejects unknown keys, so a file that uses one
    stops loading for a teammate still on 0.33.
 3. Run `basemind comms stop`, so the 0.33 daemon is replaced (see "Upgrading to agent comms v2").
+   The single 0.33 daemon holds the workspace lock of every repository a 0.33 client touched, even
+   through one call (`agents`, `memory put`) with `--root <repo>`, and the new `basemind scan` of
+   that repository then fails with "already running against this repo ... stop it first". The old
+   daemon keeps serving another repository through an upgrade only while it never touched the
+   repository being upgraded; stop it before you scan one it did. The 0.34 `scan` is forwarded to
+   the daemon, which reads its own environment, not yours (it warns when they differ): set
+   `BASEMIND_*` variables such as `BASEMIND_MIN_FREE_MB` in the daemon's environment, or stop the
+   daemon so the command starts one from yours.
 4. Run `basemind scan`. The index is wiped and rebuilt at its first open, and the blob store moves to
    `cache/blobs/v34/`, so every file is re-extracted and every document re-embedded once (see "What
    changes on upgrade"). Run `basemind upgrade --plan` first to see what that costs, and rebuild one
@@ -624,8 +632,12 @@ repository with many worktrees that is gigabytes and minutes. `basemind upgrade 
 repository group it prints:
 
 - the group index (`cache/groups/<group>/index.fjall`): replaced when one of the group's file maps
-  is of an older schema, its size freed, and the free space the scan's check then asks for (1.5x the
-  index plus the `BASEMIND_MIN_FREE_MB` headroom);
+  is of an older schema, its size freed, and the free space the scan's check then asks for. It is the
+  scan's own estimate: 1.5x the index, plus 3.5x for the index rows and 2.5x for the blobs of the
+  source the scan extracts, plus the `BASEMIND_MIN_FREE_MB` headroom. The plan reads no source, so
+  it takes the source the older blobs came from (the blobs divided by 2.5), split evenly among the
+  groups it rebuilds; the scan measures the real source and can differ. The total line counts the
+  headroom once, and the blobs line is part of it, not added to it;
 - each workspace and each of its views: kept, rebuilt (with the reason: an older schema, an earlier
   blob layout, a map that does not decode), set aside (a map whose version cannot be read), or
   refused (a newer basemind's, left alone), with the bytes of the file maps removed;
@@ -635,7 +647,8 @@ repository group it prints:
 
 Then the blob store: the namespaces of older schemas and the un-namespaced blobs the sweep reaps once
 they are past the blob grace period, and the space the rebuild writes into the new namespace (the
-largest of those). The total line adds them up beside the free space of the data home's volume.
+largest of those, already counted in the groups' figures). The total line sums the groups beside the
+free space of the data home's volume.
 
 The verdicts come from the code that acts on them: the writer open's decision for each file map, the
 blob sweep's for each namespace, and the scan's free-space estimate. A view is rebuilt only when
@@ -652,7 +665,7 @@ workspace rebuilds it too.
 | Release-minor schema bump (`0.28.x` to `0.29.x`) | `RELEASE_MINOR` mismatch: each view's `index.msgpack` and fjall index are reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
 | `grep_bloom` index keyspace (per-file trigram bloom for `code_grep`) | A new keyspace, so `INDEX_SCHEMA_VER` is not bumped. An index without it opens with an empty `grep_bloom` and greps correctly at once (every file is a candidate); the next scan builds the rows from the bytes it reads, and an unchanged file with no row is read once to backfill it | One read per unchanged file, once; about 12.8 % of the indexed code bytes on disk |
 | Blob store namespaced by blob schema: `cache/blobs/v<schema>/` instead of `cache/blobs/` | Nothing is moved. A file map records the layout it was written for (`blob_layout`); one from before the namespaces is discarded with its index at the first open, so the first scan re-extracts into the new namespace and embeds every document and code chunk again (the embeddings live in the blobs). The blob GC removes un-namespaced blob files and the namespaces of older schemas, by the rule in [Per-version binaries](#per-version-binaries): not while a process of that version runs, and not until nothing has been written into them for `BASEMIND_PRUNE_AFTER_DAYS` days (default 14; `0` removes the wait). It never touches, counts or evicts for the namespace of a newer schema, so two installed versions no longer overwrite each other's blobs. This ships with the 0.34 release-minor bump: an older basemind left installed keeps its blobs while it is in use, and once they are reaped re-extracts on its next scan | Full re-extraction and re-embedding, once |
-| One index per repository group: `cache/groups/<group>/index.fjall` instead of `views/<view>/index.fjall` in each workspace (ADR-0028) | Nothing is converted: the first scan of each workspace rebuilds its views into the group index. A view's own `index.fjall` is deleted at its first writer open, and the daemon's cache sweep deletes it in every workspace whose repository's group index exists, opened since the upgrade or not (ADR-0054), by the rule in [Per-version binaries](#per-version-binaries); with the cache over its budget, every one left goes before any workspace is evicted. `cache stats` counts those left (`legacy_indexes`, `legacy_index_bytes`). Memory notes a release before 0.30 kept in it are moved to the group's notes store first; a workspace whose notes cannot be moved, or whose lock another process holds, keeps it | One full scan per workspace |
+| One index per repository group: `cache/groups/<group>/index.fjall` instead of `views/<view>/index.fjall` in each workspace (ADR-0028) | Nothing is converted: the first scan of each workspace rebuilds its views into the group index. A view's own `index.fjall` is deleted by the first scan of the view that passes the free-space check (a scan the check refuses leaves it, so the old release still has its index), and the daemon's cache sweep deletes it in every workspace whose repository's group index exists, opened since the upgrade or not (ADR-0054), by the rule in [Per-version binaries](#per-version-binaries); with the cache over its budget, every one left goes before any workspace is evicted. `cache stats` counts those left (`legacy_indexes`, `legacy_index_bytes`). Memory notes a release before 0.30 kept in it are moved to the group's notes store first; a workspace whose notes cannot be moved, or whose lock another process holds, keeps it | One full scan per workspace |
 | Memory vectors live in `cache/repos/<group>/memory.lance/<model>-<dim>-<hash>/`, beside `memory.fjall`, instead of the workspace's `lance/` | Not migrated. A `memory_search` by meaning embeds the notes that have no current vector row, from `memory.fjall`, up to 256 per call, and says so in `notice` until every note has one; the same happens for an embedding preset used for the first time and after a release-minor bump empties the table. The old `memory` table goes with the workspace's `lance/`, which the release-minor bump wipes at its first open. A store of a preset no longer used is not removed | One embedding per note, once per preset |
 | `index.msgpack` fields `rebuild_pending` and `rebuild_pins`; `pending-vectors.msgpack` and `vector-store-id` beside it; `store-id` in the workspace's `lance/` | Additive: a file map written before them reads as owing no rebuild, and a view without the files as owing no vector rows. Vector rows that a development build of this release recorded as owed inside the file map are not carried over: the first scan after the upgrade embeds and writes every row again | none |
 | `memory.fjall` keyspace `store_meta` (the notes store's own version) | Written at the first open that holds the workspace lock, by a version that has it. Notes are never wiped. A store stamped by a newer basemind is refused for memory operations with "written by a newer basemind"; the code index of the workspace still opens | none |

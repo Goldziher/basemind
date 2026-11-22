@@ -1011,6 +1011,14 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 
 ### Fixed
 
+- **A refused scan no longer deletes the old release's index (#438).** The per-view `index.fjall` of
+  0.33 was deleted at the writer open, before the scan's free-space check could refuse, leaving no
+  usable index under either release. It is now deleted by the scan that passes the check.
+- **`upgrade --plan` asks for what the scan asks for (#439).** The plan counted 1.5x the index plus
+  the headroom; it now uses the scan's estimate, charging the source the older blobs came from at the
+  scan's per-source-byte ratios. `docs/UPGRADING.md` also says that a 0.33 daemon which touched a
+  repository must be stopped before it is scanned, and that a forwarded scan reads the daemon's
+  environment (#440).
 - A detached server that outlived its session is reported (#201).
 - `code_read` of a span ending on the last line of a CRLF file no longer keeps that line's trailing `\r`.
 - Error text that names a path no longer rewrites a home or repository root that only appears inside
