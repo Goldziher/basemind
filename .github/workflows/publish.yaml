@@ -52,10 +52,12 @@ jobs:
         env:
           TAG: ${{ github.event.inputs.tag }}
           PLUGINS_ONLY: ${{ inputs.plugins-only }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$PLUGINS_ONLY" != "true" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$PLUGINS_ONLY" != "true" ]; then
             [ -n "$TAG" ] || { echo "::error::a release dispatch must name the tag to publish"; exit 1; }
+            [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "::error::tag '$TAG' is not vX.Y.Z or vX.Y.Z-rc.N"; exit 1; }
             git fetch --no-tags --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
             sha="$(git rev-parse "refs/tags/$TAG^{commit}")"
           else
@@ -67,7 +69,8 @@ jobs:
       - name: Require a successful ci run on that commit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/require-green-ci.sh "${{ steps.commit.outputs.sha }}"
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: bash .github/scripts/require-green-ci.sh "$SHA"
 
   meta:
     if: ${{ !inputs.plugins-only }}
@@ -99,11 +102,21 @@ jobs:
 
       - name: Extract version from tag
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ github.event.inputs.tag }}"
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
           else
             tag="${GITHUB_REF#refs/tags/}"
+          fi
+
+          # Every later step receives this tag through env; refuse anything that is not a release tag.
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "::error::tag '$tag' is not vX.Y.Z or vX.Y.Z-rc.N"
+            exit 1
           fi
 
           version="${tag#v}"
@@ -120,7 +133,9 @@ jobs:
           echo "Python version: $python_version"
 
       - name: Verify version consistency across all surfaces
-        run: python3 scripts/check_release_versions.py "${{ steps.version.outputs.version }}"
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: python3 scripts/check_release_versions.py "$VERSION"
 
       # The marker lets main name tools the pinned release lacks (tests/plugin_tool_skew.rs). A
       # release ends that state: the commit it is cut from must not carry the marker.
@@ -152,9 +167,12 @@ jobs:
 
       - name: Detect already-published versions
         id: published
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PYTHON_VERSION: ${{ steps.version.outputs.python_version }}
         run: |
-          version="${{ steps.version.outputs.version }}"
-          python_version="${{ steps.version.outputs.python_version }}"
+          version="$VERSION"
+          python_version="$PYTHON_VERSION"
 
           crates_exists=false
           if curl -fsS "https://crates.io/api/v1/crates/basemind/${version}" >/dev/null; then
@@ -200,10 +218,12 @@ jobs:
         id: release_assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          tag="${{ steps.version.outputs.tag }}"
-          version="${{ steps.version.outputs.version }}"
+          tag="$TAG"
+          version="$VERSION"
           release_assets_exist=false
 
           # Only treat the release as "already published" when the FULL asset set a
@@ -257,15 +277,18 @@ jobs:
       # The release body is the tagged CHANGELOG's section for this version; a version without
       # one stops the release here, before anything is built or published.
       - name: Extract the release notes from the CHANGELOG
-        run: python3 scripts/changelog_section.py "${{ needs.meta.outputs.version }}" > "$RUNNER_TEMP/release-notes.md"
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: python3 scripts/changelog_section.py "$VERSION" > "$RUNNER_TEMP/release-notes.md"
 
       - name: Ensure the GitHub release exists
         id: ensure
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.meta.outputs.tag }}
         run: |
           set -euo pipefail
-          tag="${{ needs.meta.outputs.tag }}"
+          tag="$TAG"
 
           # `gh release view --json databaseId` is the query GitHub eventually settles on; retry it
           # a bounded few times because the record is not always visible the instant create returns.
@@ -314,18 +337,21 @@ jobs:
         id: release_info
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          CREATED: ${{ steps.ensure.outputs.created }}
+          CREATED_ID: ${{ steps.ensure.outputs.release_id }}
         run: |
           set -euo pipefail
           # Every later job addresses assets by this id, never by the tag: a tag can resolve to
           # more than one release record, and that is what split the v0.27.0 assets.
-          if [ "${{ steps.ensure.outputs.created }}" = "true" ]; then
+          if [ "$CREATED" = "true" ]; then
             # Reuse the id create just returned. Re-resolving the id from the releases list is
             # racy: the list endpoint omits the draft for a short window right after creation, so
             # a freshly created release looked absent and the run died with "no release record".
-            release_id="${{ steps.ensure.outputs.release_id }}"
+            release_id="$CREATED_ID"
             echo "Reusing created release id: $release_id"
           else
-            release_id="$(bash .github/scripts/release-asset.sh resolve "${{ needs.meta.outputs.tag }}")"
+            release_id="$(bash .github/scripts/release-asset.sh resolve "$TAG")"
             echo "Resolved release id: $release_id"
           fi
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
@@ -391,10 +417,12 @@ jobs:
 
       - name: Generate checksums
         working-directory: dist
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
-          sha256sum basemind-*.tar.gz basemind-*.zip | sort >"basemind_${{ needs.meta.outputs.version }}_checksums.txt"
-          cat "basemind_${{ needs.meta.outputs.version }}_checksums.txt"
+          sha256sum basemind-*.tar.gz basemind-*.zip | sort >"basemind_${VERSION}_checksums.txt"
+          cat "basemind_${VERSION}_checksums.txt"
 
       # Signed build provenance for each archive, verifiable with `gh attestation verify <file>
       # --repo Goldziher/basemind`. The checksums file comes from the same release as the archive,
@@ -409,25 +437,28 @@ jobs:
       - name: Upload archives and checksums to the draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          EXPECTED_ID: ${{ needs.create_release.outputs.release_id }}
         run: |
           set -euo pipefail
           # Refuse to upload while the tag is ambiguous or the draft has been promoted — the
           # v0.27.0 state, in which uploads followed the tag onto a second release record.
           release_id="$(bash .github/scripts/release-asset.sh resolve \
-            "${{ needs.meta.outputs.tag }}" true "${{ needs.create_release.outputs.release_id }}")"
+            "$TAG" true "$EXPECTED_ID")"
           for archive in dist/basemind-*.tar.gz; do
             bash .github/scripts/release-asset.sh upload "$release_id" "$archive" application/gzip
           done
           bash .github/scripts/release-asset.sh upload "$release_id" \
             dist/basemind-x86_64-pc-windows-msvc.zip application/zip
           bash .github/scripts/release-asset.sh upload "$release_id" \
-            "dist/basemind_${{ needs.meta.outputs.version }}_checksums.txt" text/plain
+            "dist/basemind_${VERSION}_checksums.txt" text/plain
 
   finalize_release:
     name: Publish GitHub release
     needs: [meta, create_release, checksums]
     if: >-
-      ${{ !inputs.plugins-only && (always() && needs.meta.result == 'success') }}
+      ${{ !inputs.plugins-only && (always() && needs.meta.result == 'success' && (needs.checksums.result == 'success' || needs.meta.outputs.release_assets_exist == 'true')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -441,17 +472,20 @@ jobs:
       - name: Promote draft to a published release once complete
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          EXPECTED_ID: ${{ needs.create_release.outputs.release_id }}
         run: |
           set -euo pipefail
-          tag="${{ needs.meta.outputs.tag }}"
-          version="${{ needs.meta.outputs.version }}"
+          tag="$TAG"
+          version="$VERSION"
 
           # require_draft=false here, unlike every upload site: this job is the one that promotes,
           # and on a re-run over an already-complete release `create_release` is skipped and the
           # record is already published. Refusing that would strand the wrapper publishes.
           # expected_id is empty on that same path, which `resolve` treats as "no expectation".
           release_id="$(bash .github/scripts/release-asset.sh resolve \
-            "$tag" false "${{ needs.create_release.outputs.release_id }}")"
+            "$tag" false "$EXPECTED_ID")"
 
           # The full asset set a launcher / npm install.js / pip downloader needs:
           # every platform archive plus the checksums file they verify against. v0.27.0 was
@@ -477,6 +511,9 @@ jobs:
             echo "::error::release $release_id (tag $tag) is incomplete ($missing required assets missing); leaving it as a draft"
             exit 1
           fi
+
+          # Names alone cannot tell archives from a different build than the checksums file.
+          bash .github/scripts/verify-release-assets.sh "$release_id" "$version"
 
           # By id, not tag: the tag would follow whichever record GitHub decides it points at.
           # Idempotent — a PATCH to draft=false on a published release is a no-op.
@@ -623,10 +660,11 @@ jobs:
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ""
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
           unset NODE_AUTH_TOKEN
           cd npm-package
-          version="${{ needs.meta.outputs.version }}"
+          version="$VERSION"
           if [[ "$version" == *"-rc."* ]]; then
             npm_tag="beta"
           else
@@ -684,9 +722,10 @@ jobs:
         if: needs.meta.outputs.opencode_exists != 'true'
         env:
           NODE_AUTH_TOKEN: ""
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
           unset NODE_AUTH_TOKEN
-          version="${{ needs.meta.outputs.version }}"
+          version="$VERSION"
           if [[ "$version" == *"-rc."* ]]; then
             npm_tag="beta"
           else
@@ -786,10 +825,12 @@ jobs:
           python3 scripts/verify_plugin_distribution.py npm "$archive"
 
       - name: Publish the agent package
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -euo pipefail
           name="$(jq -r '.name' plugin/package.json)"
-          version="${{ needs.meta.outputs.version }}"
+          version="$VERSION"
           if ! pnpm view "$name" version >/dev/null 2>&1; then
             echo "::error::$name needs a first manual publish and trusted publisher setup; see CONTRIBUTING.md."
             exit 1
@@ -941,6 +982,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          EXPECTED_ID: ${{ needs.create_release.outputs.release_id }}
         run: |
           set -euo pipefail
           if [ -z "${HOMEBREW_TOKEN:-}" ]; then
@@ -951,8 +995,8 @@ jobs:
           # already-complete path, where create_release is skipped and that output is empty.
           # By now finalize_release has promoted the record, so the draft requirement is off.
           release_id="$(bash .github/scripts/release-asset.sh resolve \
-            "${{ needs.meta.outputs.tag }}" false "${{ needs.create_release.outputs.release_id }}")"
-          version="${{ needs.meta.outputs.version }}"
+            "$TAG" false "$EXPECTED_ID")"
+          version="$VERSION"
           checksums_file="basemind_${version}_checksums.txt"
 
           bash .github/scripts/release-asset.sh download "$release_id" "$checksums_file" checksums.txt
