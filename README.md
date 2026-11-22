@@ -26,7 +26,7 @@
   threads and read their own inbox.
 
 <!-- markdownlint-disable MD013 -->
-<p align="center"><img src="docs/media/mcp-demo.gif" alt="An agent answering from a file outline and its call sites in a live Claude Code session" width="820"></p>
+<p align="center"><img src="docs/media/mcp-demo.gif" alt="An MCP client calling code_outline and code_refs on basemind serve and getting paths, lines and signatures back" width="820"></p>
 <p align="center"><em>An agent reasoning from structure — a file outline and a call-site lookup in a live session, statusline tracking tokens saved. Recorded on an earlier release: the tools are now <code>code_outline</code> and <code>code_refs</code>.</em></p>
 <!-- markdownlint-enable MD013 -->
 

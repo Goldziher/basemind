@@ -1,43 +1,29 @@
 # Media assets
 
-Generated demo assets embedded in the top-level `README.md`. Do not hand-edit
-the binary outputs — regenerate them.
-
-## `demo.cast` / `demo.gif` — CLI demo
-
-The terminal demo of `basemind scan` plus the `code`, `git`, and `admin`
-command groups.
-
-- Source of truth: `demo.cast` (an [asciinema](https://asciinema.org) recording).
-- Embedded asset: `demo.gif`, rendered from the cast with
-  [`agg`](https://github.com/asciinema/agg).
-
-Re-record (needs `asciinema` + `agg` on PATH — macOS: `brew install asciinema agg`):
+Generated demo assets. Do not hand-edit the binary outputs; regenerate them
+with [vhs](https://github.com/charmbracelet/vhs) (and `ffmpeg`, `git`, `python3`):
 
 ```bash
-mise run demo:record    # → scripts/demo-record.sh
+BASEMIND_BIN=/path/to/basemind mise run demo:record          # all three
+BASEMIND_BIN=/path/to/basemind ./scripts/demo-record.sh mcp  # one of cli|mcp|comms
 ```
 
-The script records whichever binary `scripts/demo.sh` resolves: `BASEMIND_BIN`,
-then `target/release/basemind`, then `basemind` on `PATH`. It builds
-`target/release/basemind` with the release features (`--features full`) only
-when neither of the first two exists, so a stale build is recorded as is. To
-record a published release, point `BASEMIND_BIN` at it:
+`BASEMIND_BIN` defaults to `target/release/basemind`, then `basemind` on `PATH`.
+Each recording uses a throwaway `BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR`,
+and the MCP and comms demos use a shallow clone of a public project.
 
-```bash
-BASEMIND_BIN="$(command -v basemind)" mise run demo:record
-```
+## `demo.gif` - CLI demo
 
-The recorded command sequence lives in `scripts/demo.sh`; edit that to change
-what the demo shows, then re-record. Preview without recording:
+`basemind scan` plus the `code`, `git` commands on this repository. The command
+sequence lives in `scripts/demo.sh`; edit it, then re-record. Preview without
+recording: `./scripts/demo.sh`.
 
-```bash
-./scripts/demo.sh
-```
+## `mcp-demo.gif` - MCP demo
 
-## `mcp-demo.gif` — agent (MCP) demo
+An MCP client driving `basemind serve` over stdio (`code_outline`, `code_refs`).
+See [`MCP_DEMO.md`](./MCP_DEMO.md).
 
-A live Claude Code session using the basemind MCP tools `code_outline` and
-`code_refs` to answer a question from structure, not file reads.
-Captured manually (a live session can't be scripted) — see
-[`MCP_DEMO.md`](./MCP_DEMO.md) for the capture + conversion steps.
+## `../demos/comms-demo.gif` - agent messaging demo
+
+Two agent identities coordinating with `basemind agent post|threads|inbox`
+(`scripts/demo-comms.sh`). Needs a `comms` build.

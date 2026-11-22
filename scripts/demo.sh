@@ -9,7 +9,7 @@ unset NO_COLOR 2>/dev/null || true
 
 SPEED="${DEMO_SPEED:-1.0}"
 TYPE_DELAY="$(awk -v s="$SPEED" 'BEGIN { printf "%.4f", 0.03 * s }')"
-PROMPT_PAUSE="$(awk -v s="$SPEED" 'BEGIN { printf "%.4f", 0.6 * s }')"
+PROMPT_PAUSE="$(awk -v s="$SPEED" 'BEGIN { printf "%.4f", 2.5 * s }')"
 PROMPT="$(printf '\033[1;32m❯\033[0m ')"
 
 resolve_bin() {
@@ -33,6 +33,7 @@ git clone -q "$REPO_ROOT" "$WORKDIR/basemind"
 cd "$WORKDIR/basemind"
 
 pe() {
+  clear
   printf '%s' "$PROMPT"
   local i ch
   for ((i = 0; i < ${#1}; i++)); do
@@ -47,12 +48,14 @@ pe() {
   sleep "$PROMPT_PAUSE"
 }
 
+"$BIN" scan --quiet >/dev/null 2>&1 || true
+clear
+
 pe "basemind scan --quiet"
-pe "basemind code outline src/scanner.rs"
-pe "basemind code symbols scan --limit 10"
-pe "basemind code refs contained_file --limit 8"
-pe "basemind code callers src/scanner.rs scan_with_observer --limit 8"
-pe "basemind code explain contained_file --sections callers,history --limit 5"
-pe "basemind git recent --limit 5"
-pe "basemind git blame-symbol src/main.rs cmd_scan"
-pe "basemind admin telemetry --window today"
+pe "basemind code outline src/path.rs --limit 12"
+pe "basemind code symbols contained_file"
+pe "basemind code refs contained_file --limit 6"
+pe "basemind code explain contained_file --sections callers,history --limit 3"
+pe "basemind git recent --limit 3"
+pe "basemind git blame src/path.rs --symbol contained_file"
+pe "basemind code find scanner_drive --limit 4"

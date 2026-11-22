@@ -1,51 +1,26 @@
-# Agent (MCP) demo — capture checklist
+# Agent (MCP) demo
 
-The CLI GIF (`demo.gif`) shows the command-line surface, but basemind's real
-value is the **MCP tools an agent calls** — and `basemind serve` is a stdio
-JSON-RPC server with nothing to _see_. The `mcp-demo.gif` screen recording
-captures the agent experience the CLI GIF can't. It is a manual capture (a live
-Claude Code session can't be scripted).
+`mcp-demo.gif` shows what an MCP host sees: `basemind serve` is a stdio JSON-RPC
+server, so the recording drives it with `scripts/demo-mcp.py`, a small client
+that sends `initialize`, `tools/list`, then `tools/call` for `code_outline` and
+`code_refs`. It shows the answers are paths, line numbers and signatures, not
+file bodies. A live host session is not recorded: it needs a model, and the
+recording must be reproducible.
 
-## What to show (~20–25s)
+## Record
 
-1. Use the release being documented. The plugin's MCP launcher runs the binary
-   `BASEMIND_BIN` names, or else downloads the one matching the plugin's version
-   (`plugin/scripts/mcp-launch.sh`), so the `basemind` on `PATH` may not be the
-   one it serves. Pin the release's binary with `BASEMIND_BIN` in the shell that
-   starts the session, and check that executable with `"$BASEMIND_BIN" --version`.
-2. Open a fresh Claude Code session in a **public** repository with the basemind
-   plugin installed (`/plugin marketplace add Goldziher/basemind`, then
-   `/plugin install basemind@basemind`). Run `/bm-statusline` once so the
-   statusline shows the tokens saved.
-3. Ask something that a file outline and a call-site lookup answer, e.g.
-   _"where is X defined and what calls it?"_ — show `code_outline`,
-   `code_symbols` and `code_refs` returning **paths, line numbers and
-   signatures, not file bodies**. The point is structure at a fraction of the
-   tokens of grep + Read.
-4. Run `/bm-stats` to show the per-tool histogram and estimated tokens saved.
+```bash
+BASEMIND_BIN=/path/to/basemind mise run demo:record mcp
+```
 
-Keep it tight: one clear question → tool calls → the savings dashboard. Every
-tool on screen must be one that binary serves (`VERB_TOOLS`,
-`src/mcp/types_tools.rs`); no other repository, path or account may appear in
-the frame.
+`scripts/demo-record.sh mcp` shallow-clones a small public project
+(`psf/requests`) into a temp directory, scans it with a throwaway
+`BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR`, records with
+[vhs](https://github.com/charmbracelet/vhs), and writes `docs/media/mcp-demo.gif`.
+The temp directories are removed on exit.
 
-## Record, convert, embed
-
-1. Screen-record (macOS: `⇧⌘5`, "Record Selected Portion") to a `.mov`. Keep it
-   ≤~30s; crop to the terminal/session pane.
-
-2. Convert to an optimized GIF with ffmpeg (two-pass palette — scaled to 1000px
-   wide, 12 fps keeps it small and crisp):
-
-   ```bash
-   SRC="$HOME/Desktop/your-recording.mov"
-   PAL="$(mktemp -d)/palette.png"
-   ffmpeg -y -i "$SRC" -vf "fps=12,scale=1000:-1:flags=lanczos,palettegen=stats_mode=diff" "$PAL"
-   ffmpeg -y -i "$SRC" -i "$PAL" \
-     -lavfi "fps=12,scale=1000:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3" \
-     docs/media/mcp-demo.gif
-   ```
-
-3. The top-level `README.md` embeds `docs/media/mcp-demo.gif` under its
-   intro. Commit the regenerated GIF and drop any caption that says it was
-   recorded on an earlier release.
+Every tool on screen must be one the binary serves (`VERB_TOOLS`,
+`src/mcp/types_tools.rs`): `tools/list` is printed from the live server, so a
+renamed tool fails the recording instead of showing a stale name. Check the
+frames for local paths, usernames and secrets before committing; the recorded
+shell uses a bare `$` prompt and a relative `.` root for that reason.

@@ -98,7 +98,7 @@ description = "Run the real-OSS hardening harness against all canary repos"
 run = "./scripts/harden.sh"
 
 [tasks."demo:record"]
-description = "Record the CLI demo to an asciinema cast and render docs/media/demo.gif (needs asciinema + agg)"
+description = "Record the README demos (docs/media/*.gif, docs/demos/comms-demo.gif) with vhs"
 run = "./scripts/demo-record.sh"
 
 [tasks."release:sync-version"]
