@@ -2,66 +2,85 @@
 
 root `$CORPUS/tokio`, tasks `benchmarks/eval/tasks/tokio.jsonl`, tokenizer `o200k`, savings credited at recall >= 0.80
 
+binary 0.33.0 (build `7bdf56cb440c`, features `tokenizer,code-intel,intelligence,documents,code-search`)
+
 ## Retrieval quality
 
 | mode | tasks | err | p50 us | p95 us | P | R | F1 | hit@1 | hit@5 | MRR | nDCG | tokens |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| symbols | 100 | 0 | 13294 | 52436 | 0.836 | 0.908 | 0.853 | 0.947 | 0.947 | 0.947 | 0.901 | 500 |
-| outline | 25 | 0 | 33674 | 158819 | 0.806 | 0.860 | 0.800 | - | - | - | - | 696 |
-| references | 25 | 0 | 5827 | 10924 | 0.890 | 0.754 | 0.784 | - | - | - | - | 127 |
-| callers | 25 | 4 | 6365 | 17088 | 0.742 | 0.698 | 0.713 | - | - | - | - | 139 |
-| grep | 25 | 0 | 20352 | 60705 | 1.000 | 1.000 | 1.000 | - | - | - | - | 634 |
-| find | 25 | 0 | 10785 | 42012 | 0.741 | 0.880 | 0.768 | 0.840 | 0.880 | 0.860 | 0.865 | 63 |
-| dependents | 25 | 0 | 6532 | 14735 | 0.920 | 0.830 | 0.862 | - | - | - | - | 49 |
-| git_search | 25 | 0 | 15572 | 26716 | 1.000 | 0.967 | 0.979 | 1.000 | 1.000 | 1.000 | 1.000 | 407 |
-| implementations | 25 | 0 | 5112 | 16697 | 0.680 | 0.511 | 0.560 | - | - | - | - | 148 |
-| read | 25 | 0 | 7938 | 23792 | 1.000 | 1.000 | 1.000 | - | - | - | - | 142 |
-| git_path | 25 | 0 | 20950 | 70235 | 0.442 | 0.993 | 0.583 | - | - | - | - | 1525 |
-| git_symbol | 25 | 1 | 61155 | 385030 | 0.910 | 0.957 | 0.921 | - | - | - | - | 208 |
-| blame | 25 | 0 | 562329 | 1787402 | 0.987 | 0.987 | 0.987 | - | - | - | - | 323 |
-| blame_symbol | 25 | 2 | 997599 | 3364808 | 0.875 | 0.875 | 0.875 | - | - | - | - | 401 |
-| diff | 25 | 0 | 18139 | 33660 | 0.991 | 0.994 | 0.993 | - | - | - | - | 509 |
-| diff_structural | 25 | 0 | 18518 | 50287 | 0.916 | 0.792 | 0.824 | - | - | - | - | 102 |
-| **all** | 475 | 7 | 14769 | 797823 | 0.855 | 0.881 | 0.845 | 0.936 | 0.944 | 0.940 | 0.913 | 393 |
+| symbols | 100 | 0 | 604 | 2492 | 0.887 | 0.972 | 0.908 | 0.987 | 0.987 | 0.987 | 0.967 | 257 |
+| outline | 25 | 0 | 1067 | 1868 | 0.814 | 0.937 | 0.855 | - | - | - | - | 554 |
+| references | 25 | 0 | 681 | 1803 | 1.000 | 0.990 | 0.994 | - | - | - | - | 69 |
+| callers | 25 | 0 | 486 | 781 | 1.000 | 1.000 | 1.000 | - | - | - | - | 84 |
+| grep | 25 | 0 | 1885 | 5908 | 1.000 | 1.000 | 1.000 | - | - | - | - | 301 |
+| find | 25 | 0 | 247 | 408 | 0.821 | 1.000 | 0.861 | 0.960 | 1.000 | 0.980 | 0.985 | 22 |
+| dependents | 25 | 0 | 207 | 436 | 0.960 | 0.898 | 0.920 | - | - | - | - | 34 |
+| git_search | 25 | 0 | 351 | 711 | 1.000 | 0.967 | 0.979 | 1.000 | 1.000 | 1.000 | 1.000 | 79 |
+| implementations | 25 | 0 | 342 | 1136 | 1.000 | 1.000 | 1.000 | - | - | - | - | 125 |
+| read | 25 | 0 | 628 | 841 | 1.000 | 1.000 | 1.000 | - | - | - | - | 137 |
+| git_path | 25 | 0 | 631 | 1841 | 1.000 | 1.000 | 1.000 | - | - | - | - | 204 |
+| git_symbol | 25 | 0 | 7178 | 53267 | 0.980 | 1.000 | 0.987 | - | - | - | - | 53 |
+| blame | 25 | 0 | 45651 | 81427 | 0.987 | 0.987 | 0.987 | - | - | - | - | 150 |
+| blame_symbol | 25 | 0 | 55670 | 100827 | 0.955 | 0.955 | 0.955 | - | - | - | - | 149 |
+| diff | 25 | 0 | 1088 | 3511 | 0.991 | 0.994 | 0.993 | - | - | - | - | 441 |
+| diff_structural | 25 | 0 | 1997 | 5838 | 0.996 | 0.973 | 0.982 | - | - | - | - | 90 |
+| impact | 25 | 0 | 211 | 583 | 1.000 | 1.000 | 1.000 | - | - | - | - | 95 |
+| cycles | 26 | 0 | 146 | 824 | 0.923 | 0.922 | 0.923 | - | - | - | - | 283 |
+| grep_changed | 20 | 0 | 4150 | 5178 | 1.000 | 1.000 | 1.000 | - | - | - | - | 139 |
+| find_large | 20 | 0 | 266 | 707 | 1.000 | 1.000 | 1.000 | - | - | - | - | 228 |
+| read_around | 25 | 0 | 1968 | 3611 | 1.000 | 1.000 | 1.000 | - | - | - | - | 314 |
+| explain | 25 | 0 | 17234 | 121492 | 1.000 | 1.000 | 1.000 | - | - | - | - | 358 |
+| **all** | 616 | 0 | 736 | 53370 | 0.958 | 0.980 | 0.962 | 0.984 | 0.992 | 0.988 | 0.977 | 198 |
 
 ## Token savings vs `savings.rs` multipliers
 
 | mode | credited | withheld | median x | p90 x | median saved | p90 saved | model x | model | deviation | flag |
 |---|---|---|---|---|---|---|---|---|---|---|
-| symbols | 87 | 13 | 0.32 | 0.50 | -102 | -39 | 25.00 | grep_plus_read_top_hits | -99% | DEVIATES |
-| outline | 17 | 8 | 1.69 | 4.23 | 905 | 2728 | 1.20 | full_file_read | +41% | DEVIATES |
-| references | 16 | 9 | 1.06 | 1.96 | 7 | 99 | 1.00 | grep_top_hits | +6% |  |
-| callers | 16 | 5 | 0.68 | 1.11 | -34 | 34 | 1.00 | grep_top_hits | -32% | DEVIATES |
-| grep | 25 | 0 | 0.35 | 0.55 | -89 | -55 | 1.00 | no_baseline | -65% | DEVIATES |
-| find | 22 | 3 | 0.21 | 0.29 | -34 | -34 | 1.00 | git_ls_files_grep | -79% | DEVIATES |
-| dependents | 19 | 6 | 0.55 | 0.81 | -20 | -12 | 1.00 | grep_top_hits | -45% | DEVIATES |
-| git_search | 23 | 2 | 0.23 | 0.28 | -103 | -68 | 1.00 | no_baseline | -77% | DEVIATES |
-| implementations | 9 | 16 | 0.49 | 1.58 | -46 | 162 | 1.00 | grep_top_hits | -51% | DEVIATES |
-| read | 25 | 0 | 25.87 | 86.34 | 2704 | 10400 | 1.00 | no_baseline | +2487% | DEVIATES |
-| git_path | 25 | 0 | 0.11 | 0.28 | -1079 | -348 | 1.00 | no_baseline | -89% | DEVIATES |
-| git_symbol | 24 | 0 | 0.22 | 0.50 | -95 | -62 | 1.00 | no_baseline | -78% | DEVIATES |
-| blame | 24 | 1 | 1.87 | 3.25 | 287 | 573 | 1.00 | no_baseline | +87% | DEVIATES |
-| blame_symbol | 22 | 1 | 1.11 | 2.66 | 36 | 926 | 1.00 | no_baseline | +11% |  |
-| diff | 25 | 0 | 1.00 | 1.21 | -2 | 47 | 1.00 | no_baseline | -0% |  |
-| diff_structural | 18 | 7 | 9.80 | 41.75 | 768 | 6808 | 1.00 | no_baseline | +880% | DEVIATES |
+| symbols | 96 | 4 | 0.78 | 0.97 | -22 | -3 | 1.00 | git_grep | -22% |  |
+| outline | 21 | 4 | 2.21 | 5.95 | 1209 | 2630 | 1.60 | full_file_read | +38% | DEVIATES |
+| references | 24 | 1 | 3.02 | 5.73 | 71 | 633 | 1.00 | grep_top_hits | +202% | DEVIATES |
+| callers | 25 | 0 | 1.22 | 4.41 | 16 | 341 | 1.00 | grep_top_hits | +22% |  |
+| grep | 25 | 0 | 0.86 | 1.20 | -5 | 57 | 1.00 | no_baseline | -14% |  |
+| find | 25 | 0 | 0.75 | 0.83 | -3 | -3 | 1.00 | git_ls_files_grep | -25% |  |
+| dependents | 21 | 4 | 0.85 | 0.94 | -4 | -4 | 1.00 | grep_top_hits | -15% |  |
+| git_search | 23 | 2 | 0.77 | 1.31 | -8 | 14 | 1.00 | no_baseline | -23% |  |
+| implementations | 25 | 0 | 1.25 | 2.75 | 21 | 186 | 1.00 | grep_top_hits | +25% |  |
+| read | 25 | 0 | 26.44 | 92.59 | 2709 | 10405 | 25.80 | full_file_read | +2% |  |
+| git_path | 25 | 0 | 0.83 | 1.80 | -16 | 141 | 1.00 | no_baseline | -17% |  |
+| git_symbol | 25 | 0 | 0.92 | 2.14 | -4 | 45 | 1.00 | no_baseline | -8% |  |
+| blame | 24 | 1 | 3.84 | 7.69 | 398 | 877 | 1.10 | git_blame | +250% | DEVIATES |
+| blame_symbol | 24 | 1 | 2.09 | 6.78 | 117 | 1028 | 1.10 | git_blame | +91% | DEVIATES |
+| diff | 25 | 0 | 1.17 | 1.57 | 42 | 190 | 1.00 | no_baseline | +17% |  |
+| diff_structural | 23 | 2 | 13.46 | 50.55 | 990 | 5037 | 1.00 | no_baseline | +1246% | DEVIATES |
+| impact | 25 | 0 | 1.49 | 39.68 | 2 | 2429 | 1.00 | grep_top_hits | +49% | DEVIATES |
+| grep_changed | 20 | 0 | 0.98 | 1.24 | -1 | 84 | 1.00 | no_baseline | -2% |  |
+| find_large | 20 | 0 | 0.89 | 0.91 | -13 | -5 | 1.00 | git_ls_files_grep | -11% |  |
+| read_around | 25 | 0 | 1.61 | 1.91 | 157 | 490 | 1.00 | no_baseline | +61% | DEVIATES |
+| explain | 25 | 0 | 5.76 | 10.83 | 1670 | 3931 | - |  | - |  |
 
-## Value gate (ADR-0022: credited >= 0.7, median >= 1.5x)
+## Value gate (ADR-0031: credited >= 0.7 for every job; reducing median >= 1.5x; locating median >= 0.6667x (2/3) and recall >= baseline - 0.02; grep symbol accuracy >= 0.95)
 
-| kind | tool | tasks | credited | median x | tool R | baseline R | baseline R>=min | symbol acc | verdict |
-|---|---|---|---|---|---|---|---|---|---|
-| symbols | code_symbols | 100 | 87 (0.87) | 0.32 | 0.908 | 0.978 | 97/100 | - | FAIL (median 0.32x < 1.5x) |
-| outline | code_outline | 25 | 17 (0.68) | 1.69 | 0.860 | 1.000 | 25/25 | - | FAIL (credited 0.68 < 0.7) |
-| references | code_refs | 25 | 16 (0.64) | 1.06 | 0.754 | 1.000 | 25/25 | - | FAIL (credited 0.64 < 0.7; median 1.06x < 1.5x) |
-| callers | code_refs | 25 | 16 (0.64) | 0.68 | 0.698 | 1.000 | 21/21 | - | FAIL (credited 0.64 < 0.7; median 0.68x < 1.5x) |
-| grep | code_grep | 25 | 25 (1.00) | 0.35 | 1.000 | 1.000 | 25/25 | 0.979 | FAIL (median 0.35x < 1.5x) |
-| find | find_files | 25 | 22 (0.88) | 0.21 | 0.880 | 0.880 | 22/25 | - | FAIL (median 0.21x < 1.5x) |
-| dependents | code_refs | 25 | 19 (0.76) | 0.55 | 0.830 | 0.898 | 21/25 | - | FAIL (median 0.55x < 1.5x) |
-| git_search | git_log | 25 | 23 (0.92) | 0.23 | 0.967 | 0.965 | 23/25 | - | FAIL (median 0.23x < 1.5x) |
-| implementations | code_refs | 25 | 9 (0.36) | 0.49 | 0.511 | 1.000 | 25/25 | - | FAIL (credited 0.36 < 0.7; median 0.49x < 1.5x) |
-| read | code_read | 25 | 25 (1.00) | 25.87 | 1.000 | 1.000 | 25/25 | - | PASS |
-| git_path | git_log | 25 | 25 (1.00) | 0.11 | 0.993 | 0.985 | 24/25 | - | FAIL (median 0.11x < 1.5x) |
-| git_symbol | git_log | 25 | 24 (0.96) | 0.22 | 0.957 | 0.702 | 16/24 | - | FAIL (median 0.22x < 1.5x) |
-| blame | git_blame | 25 | 24 (0.96) | 1.87 | 0.987 | 1.000 | 25/25 | - | PASS |
-| blame_symbol | git_blame | 25 | 22 (0.88) | 1.11 | 0.875 | 1.000 | 23/23 | - | FAIL (median 1.11x < 1.5x) |
-| diff | git_diff | 25 | 25 (1.00) | 1.00 | 0.994 | 1.000 | 25/25 | - | FAIL (median 1.00x < 1.5x) |
-| diff_structural | git_diff | 25 | 18 (0.72) | 9.80 | 0.792 | 1.000 | 25/25 | - | PASS |
+| kind | tool | job | tasks | credited | baseline failed | median x | tool R | baseline R | symbol acc | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| symbols | code_symbols | locating | 100 | 96 (0.96) | 0 | 0.78 | 0.972 | 0.978 | - | PASS |
+| outline | code_outline | reducing | 25 | 21 (0.84) | 0 | 2.21 | 0.937 | 1.000 | - | PASS |
+| references | code_refs | locating | 25 | 24 (0.96) | 0 | 3.02 | 0.990 | 1.000 | - | PASS |
+| callers | code_refs | locating | 25 | 25 (1.00) | 0 | 1.22 | 1.000 | 1.000 | - | PASS |
+| grep | code_grep | locating | 25 | 25 (1.00) | 0 | 0.86 | 1.000 | 1.000 | 1.000 | PASS |
+| find | find_files | locating | 25 | 25 (1.00) | 1 | 0.75 | 1.000 | 0.880 | - | PASS |
+| dependents | code_refs | locating | 25 | 21 (0.84) | 1 | 0.85 | 0.898 | 0.898 | - | PASS |
+| git_search | git_log | locating | 25 | 23 (0.92) | 0 | 0.77 | 0.967 | 0.965 | - | PASS |
+| implementations | code_refs | locating | 25 | 25 (1.00) | 0 | 1.25 | 1.000 | 1.000 | - | PASS |
+| read | code_read | reducing | 25 | 25 (1.00) | 0 | 26.44 | 1.000 | 1.000 | - | PASS |
+| git_path | git_log | locating | 25 | 25 (1.00) | 0 | 0.83 | 1.000 | 0.985 | - | PASS |
+| git_symbol | git_log | locating | 25 | 25 (1.00) | 0 | 0.92 | 1.000 | 0.714 | - | PASS |
+| blame | git_blame | reducing | 25 | 24 (0.96) | 0 | 3.84 | 0.987 | 1.000 | - | PASS |
+| blame_symbol | git_blame | reducing | 25 | 24 (0.96) | 0 | 2.09 | 0.955 | 1.000 | - | PASS |
+| diff | git_diff | locating | 25 | 25 (1.00) | 0 | 1.17 | 0.994 | 1.000 | - | PASS |
+| diff_structural | git_diff | reducing | 25 | 23 (0.92) | 0 | 13.46 | 0.973 | 1.000 | - | PASS |
+| impact | code_refs | locating | 25 | 25 (1.00) | 3 | 1.49 | 1.000 | 0.682 | - | PASS |
+| cycles | code_refs | correctness | 26 | 24 (0.92) | 0 | - | - | - | - | PASS |
+| grep_changed | code_grep | locating | 20 | 20 (1.00) | 0 | 0.98 | 1.000 | 1.000 | - | PASS |
+| find_large | find_files | locating | 20 | 20 (1.00) | 0 | 0.89 | 1.000 | 1.000 | - | PASS |
+| read_around | code_grep | reducing | 25 | 25 (1.00) | 0 | 1.61 | 1.000 | 1.000 | - | PASS |
+| explain | code_explain | reducing | 25 | 25 (1.00) | 0 | 5.76 | 1.000 | 1.000 | - | PASS |

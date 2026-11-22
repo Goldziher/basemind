@@ -1,36 +1,154 @@
 {
+  "code_explain": {
+    "kinds": {
+      "explain": {
+        "basemind": {
+          "baseline_failed": 0,
+          "baseline_recall": 1.0,
+          "baseline_tokens_median": 1637,
+          "credited": 25,
+          "credited_fraction": 1.0,
+          "errors": 0,
+          "job": "reducing",
+          "median_ratio": 4.955414012738854,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": null,
+          "tasks": 25,
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 339
+        },
+        "tokio": {
+          "baseline_failed": 0,
+          "baseline_recall": 1.0,
+          "baseline_tokens_median": 1990,
+          "credited": 25,
+          "credited_fraction": 1.0,
+          "errors": 0,
+          "job": "reducing",
+          "median_ratio": 5.757327080890973,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": null,
+          "tasks": 25,
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 320
+        }
+      }
+    },
+    "missing": "",
+    "verdict": "PASS"
+  },
   "code_grep": {
     "kinds": {
       "grep": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 33,
           "credited": 25,
           "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 0.304,
-          "pass": false,
-          "reason": "median 0.30x < 1.5x",
+          "job": "locating",
+          "median_ratio": 0.78125,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": 1.0,
           "tasks": 25,
           "tool_precision": 1.0,
           "tool_recall": 1.0,
-          "tool_tokens_median": 100
+          "tool_tokens_median": 39
         },
         "tokio": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 55,
           "credited": 25,
           "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 0.34523809523809523,
-          "pass": false,
-          "reason": "median 0.35x < 1.5x",
-          "symbol_accuracy": 0.979293283465794,
+          "job": "locating",
+          "median_ratio": 0.859375,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": 1.0,
           "tasks": 25,
           "tool_precision": 1.0,
           "tool_recall": 1.0,
-          "tool_tokens_median": 133
+          "tool_tokens_median": 53
+        }
+      },
+      "grep_changed": {
+        "basemind": {
+          "baseline_failed": 0,
+          "baseline_recall": 1.0,
+          "baseline_tokens_median": 35,
+          "credited": 25,
+          "credited_fraction": 1.0,
+          "errors": 0,
+          "job": "locating",
+          "median_ratio": 0.8333333333333334,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": null,
+          "tasks": 25,
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 47
+        },
+        "tokio": {
+          "baseline_failed": 0,
+          "baseline_recall": 1.0,
+          "baseline_tokens_median": 84.0,
+          "credited": 20,
+          "credited_fraction": 1.0,
+          "errors": 0,
+          "job": "locating",
+          "median_ratio": 0.9849246231155779,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": null,
+          "tasks": 20,
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 74.5
+        }
+      },
+      "read_around": {
+        "basemind": {
+          "baseline_failed": 0,
+          "baseline_recall": 1.0,
+          "baseline_tokens_median": 543,
+          "credited": 25,
+          "credited_fraction": 1.0,
+          "errors": 0,
+          "job": "reducing",
+          "median_ratio": 1.4294871794871795,
+          "pass": false,
+          "reason": "median 1.43x < 1.50x",
+          "symbol_accuracy": null,
+          "tasks": 25,
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 340
+        },
+        "tokio": {
+          "baseline_failed": 0,
+          "baseline_recall": 1.0,
+          "baseline_tokens_median": 432,
+          "credited": 25,
+          "credited_fraction": 1.0,
+          "errors": 0,
+          "job": "reducing",
+          "median_ratio": 1.611764705882353,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": null,
+          "tasks": 25,
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 231
         }
       }
     },
@@ -41,72 +159,80 @@
     "kinds": {
       "outline": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 2539,
           "credited": 25,
           "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 3.4906444906444904,
+          "job": "reducing",
+          "median_ratio": 4.707847707847708,
           "pass": true,
           "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.951068955364663,
-          "tool_recall": 0.9884673021547684,
-          "tool_tokens_median": 875
+          "tool_precision": 0.9522245991036401,
+          "tool_recall": 0.9947202295552366,
+          "tool_tokens_median": 669
         },
         "tokio": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 1402,
-          "credited": 17,
-          "credited_fraction": 0.68,
+          "credited": 21,
+          "credited_fraction": 0.84,
           "errors": 0,
-          "median_ratio": 1.694789081885856,
-          "pass": false,
-          "reason": "credited 0.68 < 0.7",
+          "job": "reducing",
+          "median_ratio": 2.2132209980557356,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.8059889119026069,
-          "tool_recall": 0.8598317650091845,
-          "tool_tokens_median": 476
+          "tool_precision": 0.8135671887929041,
+          "tool_recall": 0.9369384486481261,
+          "tool_tokens_median": 359
         }
       }
     },
     "missing": "",
-    "verdict": "FAIL"
+    "verdict": "PASS"
   },
   "code_read": {
     "kinds": {
       "read": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 5719,
           "credited": 25,
           "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 32.68214285714286,
+          "job": "reducing",
+          "median_ratio": 33.276363636363634,
           "pass": true,
           "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 1.0,
           "tool_recall": 1.0,
-          "tool_tokens_median": 193
+          "tool_tokens_median": 188
         },
         "tokio": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 2796,
           "credited": 25,
           "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 25.871244635193133,
+          "job": "reducing",
+          "median_ratio": 26.43859649122807,
           "pass": true,
           "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 1.0,
           "tool_recall": 1.0,
-          "tool_tokens_median": 119
+          "tool_tokens_median": 114
         }
       }
     },
@@ -117,135 +243,223 @@
     "kinds": {
       "callers": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 119,
-          "credited": 20,
-          "credited_fraction": 0.8,
+          "credited": 25,
+          "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 0.8310344827586207,
-          "pass": false,
-          "reason": "median 0.83x < 1.5x",
+          "job": "locating",
+          "median_ratio": 1.618421052631579,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 1.0,
-          "tool_recall": 0.8799047619047619,
-          "tool_tokens_median": 108
+          "tool_recall": 1.0,
+          "tool_tokens_median": 70
         },
         "tokio": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 88,
-          "credited": 16,
-          "credited_fraction": 0.64,
-          "errors": 4,
-          "median_ratio": 0.6785714285714286,
-          "pass": false,
-          "reason": "credited 0.64 < 0.7; median 0.68x < 1.5x",
+          "credited": 25,
+          "credited_fraction": 1.0,
+          "errors": 0,
+          "job": "locating",
+          "median_ratio": 1.2222222222222223,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.7416425120772946,
-          "tool_recall": 0.6978333333333333,
-          "tool_tokens_median": 90
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 70
+        }
+      },
+      "cycles": {
+        "basemind": {
+          "baseline_failed": 0,
+          "baseline_recall": null,
+          "baseline_tokens_median": null,
+          "credited": 22,
+          "credited_fraction": 0.8461538461538461,
+          "errors": 0,
+          "job": "correctness",
+          "median_ratio": null,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": null,
+          "tasks": 26,
+          "tool_precision": 0.8453922315308454,
+          "tool_recall": 0.8436139332365747,
+          "tool_tokens_median": 56.0
+        },
+        "tokio": {
+          "baseline_failed": 0,
+          "baseline_recall": null,
+          "baseline_tokens_median": null,
+          "credited": 24,
+          "credited_fraction": 0.9230769230769231,
+          "errors": 0,
+          "job": "correctness",
+          "median_ratio": null,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": null,
+          "tasks": 26,
+          "tool_precision": 0.9230769230769231,
+          "tool_recall": 0.9221124313266921,
+          "tool_tokens_median": 90.0
         }
       },
       "dependents": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 0.98,
           "baseline_tokens_median": 19,
           "credited": 24,
           "credited_fraction": 0.96,
           "errors": 0,
-          "median_ratio": 0.5,
-          "pass": false,
-          "reason": "median 0.50x < 1.5x",
+          "job": "locating",
+          "median_ratio": 0.8260869565217391,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 1.0,
           "tool_recall": 0.98,
-          "tool_tokens_median": 33
+          "tool_tokens_median": 17
         },
         "tokio": {
+          "baseline_failed": 1,
           "baseline_recall": 0.8983492063492062,
           "baseline_tokens_median": 23,
-          "credited": 19,
-          "credited_fraction": 0.76,
+          "credited": 21,
+          "credited_fraction": 0.84,
           "errors": 0,
-          "median_ratio": 0.5454545454545454,
-          "pass": false,
-          "reason": "median 0.55x < 1.5x",
+          "job": "locating",
+          "median_ratio": 0.8518518518518519,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.92,
-          "tool_recall": 0.8303492063492064,
-          "tool_tokens_median": 44
+          "tool_precision": 0.96,
+          "tool_recall": 0.8983492063492062,
+          "tool_tokens_median": 27
+        }
+      },
+      "impact": {
+        "basemind": {
+          "baseline_failed": 1,
+          "baseline_recall": 0.9122090764532625,
+          "baseline_tokens_median": 31,
+          "credited": 23,
+          "credited_fraction": 0.92,
+          "errors": 0,
+          "job": "locating",
+          "median_ratio": 0.7166666666666667,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": null,
+          "tasks": 25,
+          "tool_precision": 1.0,
+          "tool_recall": 0.9612162320883251,
+          "tool_tokens_median": 43
+        },
+        "tokio": {
+          "baseline_failed": 3,
+          "baseline_recall": 0.6822163742690058,
+          "baseline_tokens_median": 89,
+          "credited": 25,
+          "credited_fraction": 1.0,
+          "errors": 0,
+          "job": "locating",
+          "median_ratio": 1.4871794871794872,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": null,
+          "tasks": 25,
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 39
         }
       },
       "implementations": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 84,
-          "credited": 9,
-          "credited_fraction": 0.36,
+          "credited": 25,
+          "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 0.6033519553072626,
-          "pass": false,
-          "reason": "credited 0.36 < 0.7; median 0.60x < 1.5x",
+          "job": "locating",
+          "median_ratio": 1.2682926829268293,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.48,
-          "tool_recall": 0.4192857142857143,
-          "tool_tokens_median": 23
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 59
         },
         "tokio": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 110,
-          "credited": 9,
-          "credited_fraction": 0.36,
+          "credited": 25,
+          "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 0.4915254237288136,
-          "pass": false,
-          "reason": "credited 0.36 < 0.7; median 0.49x < 1.5x",
+          "job": "locating",
+          "median_ratio": 1.2452830188679245,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.68,
-          "tool_recall": 0.511437908496732,
-          "tool_tokens_median": 82
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 67
         }
       },
       "references": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 123,
-          "credited": 19,
-          "credited_fraction": 0.76,
+          "credited": 25,
+          "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 1.1,
-          "pass": false,
-          "reason": "median 1.10x < 1.5x",
+          "job": "locating",
+          "median_ratio": 3.5789473684210527,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 1.0,
-          "tool_recall": 0.8767532467532467,
-          "tool_tokens_median": 119
+          "tool_recall": 1.0,
+          "tool_tokens_median": 32
         },
         "tokio": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 126,
-          "credited": 16,
-          "credited_fraction": 0.64,
+          "credited": 24,
+          "credited_fraction": 0.96,
           "errors": 0,
-          "median_ratio": 1.0588235294117647,
-          "pass": false,
-          "reason": "credited 0.64 < 0.7; median 1.06x < 1.5x",
+          "job": "locating",
+          "median_ratio": 3.015625,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.8902222222222222,
-          "tool_recall": 0.7537331855136733,
-          "tool_tokens_median": 82
+          "tool_precision": 1.0,
+          "tool_recall": 0.99,
+          "tool_tokens_median": 44
         }
       }
     },
     "missing": "",
-    "verdict": "FAIL"
+    "verdict": "PASS"
   },
   "code_search": {
     "kinds": {},
@@ -256,39 +470,43 @@
     "kinds": {
       "symbols": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 0.99,
           "baseline_tokens_median": 27.0,
-          "credited": 98,
-          "credited_fraction": 0.98,
+          "credited": 99,
+          "credited_fraction": 0.99,
           "errors": 0,
-          "median_ratio": 0.2857142857142857,
-          "pass": false,
-          "reason": "median 0.29x < 1.5x",
+          "job": "locating",
+          "median_ratio": 0.7518248175182481,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 100,
-          "tool_precision": 0.9516944444444444,
-          "tool_recall": 0.9844444444444445,
-          "tool_tokens_median": 112.5
+          "tool_precision": 0.9572499999999999,
+          "tool_recall": 0.99,
+          "tool_tokens_median": 47.0
         },
         "tokio": {
+          "baseline_failed": 0,
           "baseline_recall": 0.9775,
           "baseline_tokens_median": 41.0,
-          "credited": 87,
-          "credited_fraction": 0.87,
+          "credited": 96,
+          "credited_fraction": 0.96,
           "errors": 0,
-          "median_ratio": 0.3225806451612903,
-          "pass": false,
-          "reason": "median 0.32x < 1.5x",
+          "job": "locating",
+          "median_ratio": 0.7777777777777778,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 100,
-          "tool_precision": 0.835695647489765,
-          "tool_recall": 0.908110066404184,
-          "tool_tokens_median": 184.5
+          "tool_precision": 0.887409523809524,
+          "tool_recall": 0.9715151515151516,
+          "tool_tokens_median": 94.0
         }
       }
     },
     "missing": "",
-    "verdict": "FAIL"
+    "verdict": "PASS"
   },
   "docs_search": {
     "kinds": {
@@ -301,280 +519,348 @@
     "kinds": {
       "find": {
         "basemind": {
+          "baseline_failed": 5,
           "baseline_recall": 0.72,
           "baseline_tokens_median": 8,
-          "credited": 15,
-          "credited_fraction": 0.6,
+          "credited": 25,
+          "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 0.19047619047619047,
-          "pass": false,
-          "reason": "credited 0.60 < 0.7; median 0.19x < 1.5x",
+          "job": "locating",
+          "median_ratio": 0.7272727272727273,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.4933333333333333,
-          "tool_recall": 0.6,
-          "tool_tokens_median": 42
+          "tool_precision": 0.8373333333333334,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 11
         },
         "tokio": {
+          "baseline_failed": 1,
           "baseline_recall": 0.88,
           "baseline_tokens_median": 10,
-          "credited": 22,
-          "credited_fraction": 0.88,
+          "credited": 25,
+          "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 0.21428571428571427,
-          "pass": false,
-          "reason": "median 0.21x < 1.5x",
+          "job": "locating",
+          "median_ratio": 0.75,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.7406666666666668,
-          "tool_recall": 0.88,
-          "tool_tokens_median": 44
+          "tool_precision": 0.8206666666666668,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 13
+        }
+      },
+      "find_large": {
+        "basemind": {
+          "baseline_failed": 0,
+          "baseline_recall": 1.0,
+          "baseline_tokens_median": 79,
+          "credited": 23,
+          "credited_fraction": 1.0,
+          "errors": 0,
+          "job": "locating",
+          "median_ratio": 0.8492063492063492,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": null,
+          "tasks": 23,
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 93
+        },
+        "tokio": {
+          "baseline_failed": 0,
+          "baseline_recall": 1.0,
+          "baseline_tokens_median": 94.0,
+          "credited": 20,
+          "credited_fraction": 1.0,
+          "errors": 0,
+          "job": "locating",
+          "median_ratio": 0.8850574712643678,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": null,
+          "tasks": 20,
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 105.5
         }
       }
     },
     "missing": "",
-    "verdict": "FAIL"
+    "verdict": "PASS"
   },
   "git_blame": {
     "kinds": {
       "blame": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 803,
           "credited": 24,
           "credited_fraction": 0.96,
           "errors": 0,
-          "median_ratio": 2.7587064676616917,
+          "job": "reducing",
+          "median_ratio": 6.708955223880597,
           "pass": true,
           "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 0.9830769230769231,
           "tool_recall": 0.9830769230769231,
-          "tool_tokens_median": 140
+          "tool_tokens_median": 75
         },
         "tokio": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 475,
           "credited": 24,
           "credited_fraction": 0.96,
           "errors": 0,
-          "median_ratio": 1.8696537678207739,
+          "job": "reducing",
+          "median_ratio": 3.8410041841004183,
           "pass": true,
           "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 0.9872727272727272,
           "tool_recall": 0.9872727272727272,
-          "tool_tokens_median": 226
+          "tool_tokens_median": 121
         }
       },
       "blame_symbol": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
-          "baseline_tokens_median": 359.0,
-          "credited": 23,
-          "credited_fraction": 0.92,
-          "errors": 1,
-          "median_ratio": 2.2420382165605095,
+          "baseline_tokens_median": 365,
+          "credited": 24,
+          "credited_fraction": 0.96,
+          "errors": 0,
+          "job": "reducing",
+          "median_ratio": 4.707142857142857,
           "pass": true,
           "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.9416666666666665,
-          "tool_recall": 0.9416666666666665,
-          "tool_tokens_median": 161
+          "tool_precision": 0.9816666666666667,
+          "tool_recall": 0.9816666666666667,
+          "tool_tokens_median": 81
         },
         "tokio": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 224,
-          "credited": 22,
-          "credited_fraction": 0.88,
-          "errors": 2,
-          "median_ratio": 1.1095652173913044,
-          "pass": false,
-          "reason": "median 1.11x < 1.5x",
+          "credited": 24,
+          "credited_fraction": 0.96,
+          "errors": 0,
+          "job": "reducing",
+          "median_ratio": 2.08955223880597,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.8752777777777777,
-          "tool_recall": 0.8752777777777777,
-          "tool_tokens_median": 174
+          "tool_precision": 0.9552777777777777,
+          "tool_recall": 0.9552777777777777,
+          "tool_tokens_median": 84
         }
       }
     },
     "missing": "",
-    "verdict": "FAIL"
+    "verdict": "PASS"
   },
   "git_diff": {
     "kinds": {
       "diff": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 419,
           "credited": 25,
           "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 1.0368620037807184,
-          "pass": false,
-          "reason": "median 1.04x < 1.5x",
+          "job": "locating",
+          "median_ratio": 1.1598497495826376,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 0.9991549295774648,
           "tool_recall": 0.9991549295774648,
-          "tool_tokens_median": 423
+          "tool_tokens_median": 381
         },
         "tokio": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 262,
           "credited": 25,
           "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 0.9979529170931423,
-          "pass": false,
-          "reason": "median 1.00x < 1.5x",
+          "job": "locating",
+          "median_ratio": 1.1715686274509804,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 0.991440414507772,
           "tool_recall": 0.9940118430792007,
-          "tool_tokens_median": 244
+          "tool_tokens_median": 209
         }
       },
       "diff_structural": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 4211,
           "credited": 21,
           "credited_fraction": 0.84,
           "errors": 0,
-          "median_ratio": 25.21917808219178,
-          "pass": true,
-          "reason": "",
-          "symbol_accuracy": null,
-          "tasks": 25,
-          "tool_precision": 0.9127272727272728,
-          "tool_recall": 0.8651341991341992,
-          "tool_tokens_median": 139
-        },
-        "tokio": {
-          "baseline_recall": 1.0,
-          "baseline_tokens_median": 1432,
-          "credited": 18,
-          "credited_fraction": 0.72,
-          "errors": 0,
-          "median_ratio": 9.801801801801801,
+          "job": "reducing",
+          "median_ratio": 32.186440677966104,
           "pass": true,
           "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 0.9159999999999999,
-          "tool_recall": 0.792,
-          "tool_tokens_median": 87
+          "tool_recall": 0.8800865800865801,
+          "tool_tokens_median": 114
+        },
+        "tokio": {
+          "baseline_failed": 0,
+          "baseline_recall": 1.0,
+          "baseline_tokens_median": 1432,
+          "credited": 23,
+          "credited_fraction": 0.92,
+          "errors": 0,
+          "job": "reducing",
+          "median_ratio": 13.46031746031746,
+          "pass": true,
+          "reason": "",
+          "symbol_accuracy": null,
+          "tasks": 25,
+          "tool_precision": 0.996,
+          "tool_recall": 0.9726666666666667,
+          "tool_tokens_median": 74
         }
       }
     },
     "missing": "",
-    "verdict": "FAIL"
+    "verdict": "PASS"
   },
   "git_log": {
     "kinds": {
       "git_path": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 252,
           "credited": 25,
           "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 0.2528409090909091,
-          "pass": false,
-          "reason": "median 0.25x < 1.5x",
+          "job": "locating",
+          "median_ratio": 0.8543689320388349,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.9252107402652975,
+          "tool_precision": 0.9966666666666666,
           "tool_recall": 1.0,
-          "tool_tokens_median": 1034
+          "tool_tokens_median": 286
         },
         "tokio": {
+          "baseline_failed": 0,
           "baseline_recall": 0.9848236808236809,
           "baseline_tokens_median": 157,
           "credited": 25,
           "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 0.1104868913857678,
-          "pass": false,
-          "reason": "median 0.11x < 1.5x",
+          "job": "locating",
+          "median_ratio": 0.8310344827586207,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.44210409334801726,
-          "tool_recall": 0.9933333333333333,
-          "tool_tokens_median": 1217
+          "tool_precision": 1.0,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 138
         }
       },
       "git_search": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 1.0,
           "baseline_tokens_median": 25,
           "credited": 25,
           "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 0.1111111111111111,
-          "pass": false,
-          "reason": "median 0.11x < 1.5x",
+          "job": "locating",
+          "median_ratio": 0.78125,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 1.0,
           "tool_recall": 1.0,
-          "tool_tokens_median": 267
+          "tool_tokens_median": 32
         },
         "tokio": {
+          "baseline_failed": 0,
           "baseline_recall": 0.9647058823529412,
           "baseline_tokens_median": 38,
           "credited": 23,
           "credited_fraction": 0.92,
           "errors": 0,
-          "median_ratio": 0.2289156626506024,
-          "pass": false,
-          "reason": "median 0.23x < 1.5x",
+          "job": "locating",
+          "median_ratio": 0.7714285714285715,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 1.0,
           "tool_recall": 0.9670588235294117,
-          "tool_tokens_median": 158
+          "tool_tokens_median": 35
         }
       },
       "git_symbol": {
         "basemind": {
+          "baseline_failed": 0,
           "baseline_recall": 0.98,
           "baseline_tokens_median": 27,
           "credited": 25,
           "credited_fraction": 1.0,
           "errors": 0,
-          "median_ratio": 0.2,
-          "pass": false,
-          "reason": "median 0.20x < 1.5x",
+          "job": "locating",
+          "median_ratio": 0.7666666666666667,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
           "tool_precision": 1.0,
           "tool_recall": 1.0,
-          "tool_tokens_median": 124
+          "tool_tokens_median": 32
         },
         "tokio": {
-          "baseline_recall": 0.701923076923077,
-          "baseline_tokens_median": 35.0,
-          "credited": 24,
-          "credited_fraction": 0.96,
-          "errors": 1,
-          "median_ratio": 0.21808510638297873,
-          "pass": false,
-          "reason": "median 0.22x < 1.5x",
+          "baseline_failed": 0,
+          "baseline_recall": 0.7138461538461539,
+          "baseline_tokens_median": 29,
+          "credited": 25,
+          "credited_fraction": 1.0,
+          "errors": 0,
+          "job": "locating",
+          "median_ratio": 0.92,
+          "pass": true,
+          "reason": "",
           "symbol_accuracy": null,
           "tasks": 25,
-          "tool_precision": 0.91,
-          "tool_recall": 0.956923076923077,
-          "tool_tokens_median": 119
+          "tool_precision": 0.98,
+          "tool_recall": 1.0,
+          "tool_tokens_median": 30
         }
       }
     },
     "missing": "",
-    "verdict": "FAIL"
+    "verdict": "PASS"
   }
 }
