@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.14.1'
 scope = 'all'
-tree = 'sha256:77639bfd143f636de2353282c779cebb7e75ed25845d8526a035163ee491546d'
+tree = 'sha256:4d0dc872ad5d5cfb1f4b2e4568a19d50032c7f607921ebace664795870f15060'
 
 [[item]]
 kind = 'command'
@@ -46,7 +46,7 @@ digest = 'sha256:97e4cf0bb225e72bab95c0e967264d9176013f89c8c8a7f98fae1ebe1cc6721
 kind = 'skill'
 id = 'basemind'
 path = 'skills/basemind'
-digest = 'sha256:3631ca7351e2a67192c2b808612e27b6b6bb24d9cc650ece50d7bd88ea5bf499'
+digest = 'sha256:720d12f45dbbfbf3540a0497232be337e44fa7edf5183f8e0790b0ea71ae437b'
 
 [[item]]
 kind = 'skill'
@@ -64,7 +64,7 @@ digest = 'sha256:47949900cd441477797c1868abcb77d75ae1349b0b8d56d3d048a3ac89f9dd4
 kind = 'skill'
 id = 'basemind-comms'
 path = 'skills/basemind-comms'
-digest = 'sha256:79af33bc38be0dd72ff33c72e3164625592d8611a9797d8293dde0523c730bfe'
+digest = 'sha256:0fedc31126f0b718536a81c6e800717f0812f43d9bdd8777a6d94c2510e19df2'
 
 [[item]]
 kind = 'skill'
@@ -88,7 +88,7 @@ digest = 'sha256:6a0a18dfe5a50c0a97df8fc361f23217b8c090da2c56b478f08f00648bc7f98
 kind = 'skill'
 id = 'basemind-multi-agent-room'
 path = 'skills/basemind-multi-agent-room'
-digest = 'sha256:81d482ff61e48158e5af40217b47488f39794b4d852476740a7d927eda3d282d'
+digest = 'sha256:7907108c126ad677176165b89395cedf6aa5a76e5d6aef12cadfb94a513b2b34'
 
 [[item]]
 kind = 'skill'

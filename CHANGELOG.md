@@ -98,6 +98,12 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   meaning drops the hits past a relevance floor (squared L2 distance `1.0`, a cosine similarity
   below one half) and says how many it left out, so an unrelated query returns no hit instead of
   the ten nearest notes (#326).
+- `basemind manual environment` lists every `BASEMIND_*` variable the binary, the plugin scripts and
+  the npm and pip packages read, each with its default and scope (#237); a test fails when the shipped
+  code reads a variable the table lacks.
+- The npm package honours `BASEMIND_BIN` to run another binary, such as a local build, as the plugin
+  launcher does (#237). `BASEMIND_BINARY`, the pip package's earlier name, stays an alias in all three:
+  the launcher and the npm and pip packages read `BASEMIND_BIN` first and fall back to it.
 - `code_refs` over the file-level import graph (#121, #135): `relation: "importers"` with `path`
   lists the files importing that file `by_depth`, up to `depth` hops (default 1, max 5), names those
   in an import cycle with it and says when the walk was cut; `relation: "cycles"` lists the import
@@ -314,6 +320,10 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   disk filled. The footprint counts each workspace's git cache, which eviction already removed. A
   set `BASEMIND_CACHE_BUDGET_MB` is enforced as given; `0` still disables enforcement.
   `cache_stats.last_gc.cache_budget_bytes` reports the budget the sweep applied.
+- The server instructions, the session-start hook, the rules and the skills describe the agent tools
+  without assuming a host feature (#259): they are listed separately and needed only when
+  collaborating, instead of "deferred, find them by tool search". On Claude Code, which also shows the
+  server instructions, the session-start hook points at them instead of repeating the routing.
 
 - **`[documents] embed_exclude` now defaults to the structured data formats**
   ([#260](https://github.com/Goldziher/basemind/issues/260)): `*.json`, `*.jsonc`, `*.json5`,

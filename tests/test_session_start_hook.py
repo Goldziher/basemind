@@ -216,7 +216,7 @@ esac""",
         self.assertIsNone(REMOVED_SPELLING.search(result), result)
 
     def test_routing_steers_a_rescan_to_the_edited_paths(self) -> None:
-        result = self.invoke('{"file_count":631,"schema_version":33}')
+        result = self.invoke('{"file_count":631,"schema_version":33}', PLUGIN_ROOT=str(self.root))
         self.assertIn(
             'if a result says stale or a new file is missing, run index_rescan {"paths":["src/store.rs"]} '
             "for that file; run index_rescan {} only when index_status {} reports an empty "
