@@ -40,6 +40,11 @@ mod worktrees;
 /// Per-tool wall-clock ceiling. Any call exceeding this fails the harness.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// The name the explicit hot-name `code_refs` call asks about, and the elapsed time above which it
+/// warns. It fails only at [`TOOL_TIMEOUT`].
+const HOT_NAME: &str = "get";
+const HOT_NAME_WARN: Duration = Duration::from_secs(30);
+
 /// Scan ceilings keyed by repo logical name. Defaults to 60s if missing.
 fn scan_ceiling_secs(repo_name: &str) -> u64 {
     match repo_name {
@@ -65,6 +70,10 @@ struct ToolCallRecord {
     elapsed_us: u128,
     /// Brief one-liner; for errors, includes the error code/message.
     detail: String,
+    /// The arguments as sent, so a slow or failed call names the symbol it was asked about.
+    args: String,
+    /// Rows the answer held (`code_refs` only): tells a fast empty answer from a slow full one.
+    rows: Option<u64>,
 }
 
 /// One warm indexed-vs-live-walk latency comparison for a single git read query, measured
@@ -113,11 +122,20 @@ struct RepoRecord {
     scan_read_failed: usize,
     scan_extract_failed: usize,
     server_boot_ms: u128,
+    /// The file and symbol the sampled calls ran against. `None` when no file had a symbol.
+    sample: Option<SampleRecord>,
     tools: Vec<ToolCallRecord>,
     /// In-process git-history metrics (build time, index size, indexed-vs-live latency). `None` for
     /// repos with no history. Additive — older readers ignore it.
     git_history: Option<GitOpsMetrics>,
     canaries: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct SampleRecord {
+    path: String,
+    symbol: Option<String>,
+    line: Option<u32>,
 }
 
 type ServiceHandle = RunningService<RoleClient, ()>;
@@ -269,6 +287,7 @@ async fn call(
     let started = Instant::now();
     let outcome = tokio::time::timeout(TOOL_TIMEOUT, svc.call_tool(call_params(tool, &args))).await;
     let elapsed = started.elapsed();
+    let args_text = args.to_string();
     match outcome {
         Err(_) => {
             records.push(ToolCallRecord {
@@ -277,6 +296,8 @@ async fn call(
                 elapsed_ms: elapsed.as_millis(),
                 elapsed_us: elapsed.as_micros(),
                 detail: format!("timeout after {:?}", TOOL_TIMEOUT),
+                args: args_text,
+                rows: None,
             });
             None
         }
@@ -287,6 +308,8 @@ async fn call(
                 elapsed_ms: elapsed.as_millis(),
                 elapsed_us: elapsed.as_micros(),
                 detail: format!("rmcp error: {e}"),
+                args: args_text,
+                rows: None,
             });
             None
         }
@@ -302,6 +325,8 @@ async fn call(
                 } else {
                     error_detail(&result)
                 },
+                args: args_text,
+                rows: body.as_ref().filter(|_| tool == "code_refs").map(rows_in),
             });
             body
         }
@@ -356,10 +381,32 @@ fn run_scan(repo_root: &Path) -> ScanOutcome {
     }
 }
 
+/// Names so common that `code_refs` on one walks 100k+ call sites in a large repo. The sample call
+/// runs against a name outside this list so the sampled timing does not depend on which file the
+/// walk met first; the hot-name call measures the expensive path on purpose.
+const UBIQUITOUS_NAMES: &[&str] = &[
+    "get", "set", "new", "name", "type", "kind", "text", "value", "id", "len", "map", "run", "test", "init", "main",
+];
+
+/// The files in path order. The index map is randomly seeded per process, so iterating it directly
+/// would pick a different sample on every run.
+fn sorted_files<V>(files: &ahash::AHashMap<basemind::path::RelPath, V>) -> Vec<(&basemind::path::RelPath, &V)> {
+    let mut sorted: Vec<_> = files.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(b.0));
+    sorted
+}
+
+/// The first named symbol that is not a ubiquitous name, else the first named one.
+fn pick_symbol<'a>(symbols: impl Iterator<Item = (&'a str, u32)> + Clone) -> Option<(&'a str, u32)> {
+    let mut named = symbols.filter(|(name, _)| !name.is_empty());
+    let first = named.clone().next();
+    named.find(|(name, _)| !UBIQUITOUS_NAMES.contains(name)).or(first)
+}
+
 fn pick_sample(store: &basemind::store::Store) -> Option<SampleFile> {
     let mut sample: Option<SampleFile> = None;
     let mut fallback_module: Option<String> = None;
-    for (path, entry) in &store.index.files {
+    for (path, entry) in sorted_files(&store.index.files) {
         let l1 = match store.read_l1_by_hex(&entry.hash_hex) {
             Ok(Some(l1)) => l1,
             _ => continue,
@@ -372,10 +419,10 @@ fn pick_sample(store: &basemind::store::Store) -> Option<SampleFile> {
                 }
             }
         }
-        if sample.is_none() && !l1.symbols.is_empty() && l1.symbols.iter().any(|s| !s.name.is_empty()) {
-            let picked = l1.symbols.iter().find(|s| !s.name.is_empty());
-            let sym = picked.map(|s| s.name.clone());
-            let line = picked.map(|s| s.start_row + 1);
+        if sample.is_none()
+            && let Some((name, row)) = pick_symbol(l1.symbols.iter().map(|s| (s.name.as_str(), s.start_row)))
+            && !UBIQUITOUS_NAMES.contains(&name)
+        {
             let module = l1
                 .imports
                 .iter()
@@ -383,8 +430,8 @@ fn pick_sample(store: &basemind::store::Store) -> Option<SampleFile> {
                 .or_else(|| fallback_module.clone());
             sample = Some(SampleFile {
                 path: path.clone(),
-                sample_symbol: sym,
-                sample_line: line,
+                sample_symbol: Some(name.to_string()),
+                sample_line: Some(row + 1),
                 sample_module: module,
             });
         }
@@ -515,6 +562,24 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         }
     }
 
+    // The expensive name, called on purpose: a slow hot path shows in the record, and only the
+    // per-call timeout fails it.
+    call(
+        svc,
+        &mut records,
+        "code_refs",
+        json!({ "name": HOT_NAME, "limit": 100 }),
+    )
+    .await;
+    if let Some(hot) = records.last()
+        && hot.elapsed_ms > HOT_NAME_WARN.as_millis()
+    {
+        eprintln!(
+            "[harden] WARN hot-name code_refs({HOT_NAME}) took {}ms ({:?} rows)",
+            hot.elapsed_ms, hot.rows
+        );
+    }
+
     call(
         svc,
         &mut records,
@@ -634,12 +699,13 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
 
     for r in &repo_record.tools {
         if !r.ok && !tolerated_failure(&r.tool, &r.detail) {
-            failures.push(format!("{} failed: {}", r.tool, r.detail));
+            failures.push(format!("{} {} failed: {}", r.tool, r.args, r.detail));
         }
         if r.elapsed_ms > TOOL_TIMEOUT.as_millis() {
             failures.push(format!(
-                "{} ran {}ms > timeout {}ms",
+                "{} {} ran {}ms > timeout {}ms",
                 r.tool,
+                r.args,
                 r.elapsed_ms,
                 TOOL_TIMEOUT.as_millis()
             ));
@@ -1448,6 +1514,11 @@ async fn harden_repo() {
         scan_read_failed: scan.stats.read_failed,
         scan_extract_failed: scan.stats.extract_failed,
         server_boot_ms,
+        sample: scan.sample_file.as_ref().map(|s| SampleRecord {
+            path: s.path.to_str_lossy().into_owned(),
+            symbol: s.sample_symbol.clone(),
+            line: s.sample_line,
+        }),
         tools,
         git_history,
         canaries: BTreeMap::new(),
@@ -1550,4 +1621,34 @@ fn counts_find_files_and_importer_rows_read_back_from_the_text_block() {
     let importers = json!({ "by_depth": { "1": ["a.rs", "b.rs"], "2": ["c.rs"] } });
     let body = basemind::wire::decode(&basemind::wire::encode("code_refs", &importers)).expect("decode importers");
     assert_eq!(rows_in(&body["by_depth"]), 3);
+}
+
+#[test]
+fn sample_order_is_the_path_order_whatever_the_map_seed() {
+    use basemind::path::RelPath;
+    let paths: Vec<String> = (0..64).rev().map(|i| format!("src/m{i:02}.rs")).collect();
+    let mut expected = paths.clone();
+    expected.sort();
+    let build = || -> ahash::AHashMap<RelPath, ()> { paths.iter().map(|p| (RelPath::new(p.as_str()), ())).collect() };
+    let (first, second) = (build(), build());
+    let unordered =
+        |m: &ahash::AHashMap<RelPath, ()>| -> Vec<String> { m.keys().map(|k| k.to_str_lossy().into_owned()).collect() };
+    // Two maps over the same keys iterate differently, which is what made the sample vary per run.
+    assert_ne!(unordered(&first), unordered(&second), "map seeds should differ");
+    for map in [&first, &second] {
+        let sorted: Vec<String> = sorted_files(map)
+            .iter()
+            .map(|(k, _)| k.to_str_lossy().into_owned())
+            .collect();
+        assert_eq!(sorted, expected);
+    }
+}
+
+#[test]
+fn picks_the_first_symbol_that_is_not_ubiquitous() {
+    let symbols = [("", 0), ("get", 1), ("Parser", 7), ("walk", 9)];
+    assert_eq!(pick_symbol(symbols.iter().copied()), Some(("Parser", 7)));
+    let only_hot = [("get", 1), ("name", 2)];
+    assert_eq!(pick_symbol(only_hot.iter().copied()), Some(("get", 1)));
+    assert_eq!(pick_symbol([("", 0)].iter().copied()), None);
 }
