@@ -228,19 +228,45 @@ Example:
 
 Next: `basemind memory list` to review what remains.";
 
-/// `basemind memory documents`.
-pub const MEMORY_DOCUMENTS: &str = "\
+/// `basemind docs search`.
+pub const DOCS_SEARCH: &str = "\
 When to use: you are looking for a topic in prose, data or config files: Markdown, PDF, Office,
 HTML, email, JSON, YAML, TOML. The code tools do not cover them.
 
-Returns: ranked passages, each cited with its path and its pages, section or lines. `--kind`,
+Returns: ranked passages, each cited with its path and its pages, section or lines. `--format`,
 `--path` (a glob), `--mime-type`, `--keywords` and `--entity` filter before ranking. Needs a build
 with the `documents` feature and a scan.
 
 Example:
-  basemind memory documents \"how releases are versioned\" --kind markdown
+  basemind docs search \"how releases are versioned\" --format markdown
 
 Next: `basemind code read <path> --line <n>` on a cited text file.";
+
+/// `basemind memory clear`.
+pub const MEMORY_CLEAR: &str = "\
+When to use: you want to start this repository's memory over, or remove every note before
+deleting the repository's data.
+
+Returns: how many notes were removed. It asks for confirmation on a terminal and needs `--yes`
+anywhere else. Notes of every tier and agent go, with their vectors.
+
+Example:
+  basemind memory clear --yes
+
+Next: `basemind memory list` to confirm nothing is left.";
+
+/// `basemind upgrade`.
+pub const UPGRADE: &str = "\
+When to use: before installing a release that bumps the release minor, to see what the next scan
+rebuilds.
+
+Returns: per repository group and workspace, what is rebuilt, the bytes that frees and needs, and a
+scan estimate. It reads only; nothing is converted until each workspace's next scan.
+
+Example:
+  basemind upgrade --plan
+
+Next: `basemind scan` in each workspace once the new binary is installed.";
 
 /// `basemind admin repo`.
 pub const ADMIN_REPO: &str = "\

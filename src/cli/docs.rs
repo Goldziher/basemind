@@ -21,6 +21,7 @@ use crate::mcp::params::DocsSearchParams;
 #[derive(Subcommand, Debug)]
 pub enum DocsCmd {
     /// Semantic search over indexed documents (needs `--features documents`).
+    #[command(after_long_help = crate::cli::help::DOCS_SEARCH)]
     Search(DocsSearchArgs),
 }
 

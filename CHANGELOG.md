@@ -10,6 +10,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33
+to 34, so each view's index is wiped at its first open, the blob store moves to `cache/blobs/v34/`,
+and every file is re-extracted and every document and code chunk re-embedded once. Read
+[`docs/UPGRADING.md`](docs/UPGRADING.md) before installing.
+
+**Highlights:**
+
+- **One MCP tool per job (ADR-0018).** The mode-dispatched `code`, `git`, `memory` and `admin` tools
+  are replaced by verb tools with exact schemas and no `mode`; the `agents` tool by `agent_post`,
+  `agent_inbox` and `agent_threads` (agent comms v2, ADR-0021). No aliases.
+- **Smaller answers.** The locating tools answer with rows as the shell prints them (ADR-0052), and
+  the text block of `code_grep`, `code_outline`, `git_diff` and a `find_files` list is no longer JSON
+  (#157, ADR-0053).
+- **The import graph and analysis commands.** `code_refs` lists a file's importers and the import
+  cycles (#121, #135); every call site says how it was resolved (#125, ADR-0047). New CLI commands:
+  `code impact` (#121), `code cycles` (#135), `code explain` (#120), `code deadcode` (#123),
+  `code migration check` (#130), `overview` (#131), `git hotspots` (#134) and `sessions` (#128).
+- **Scoped and size-aware queries.** `changed` limits `code_grep`, `code_symbols`, `code_refs` and
+  `find_files` to the files a change touched (#122); `index_status` and `find_files` `min_lines`
+  name the large files before they are opened (#127).
+- **One index per repository group (ADR-0028)**, shared by every worktree and view, and `docs_search`
+  rebuilt on one document store per group (ADR-0029, ADR-0037), with the documentation of the
+  repository's dependencies behind `[documents.dependencies]` (#132).
+- **Agent launch.** `basemind serve --lead` launches agents in worktrees of their own, off until the
+  operator's `agents.toml` enables it (ADR-0040).
+- **An offline manual**, `basemind manual [topic]`, compiled into the binary.
+- **Removed:** web ingestion, agent shells, the code graph tool, the token-saving text tools, the
+  `workspace` tool, memory audit and mining, archive extraction and LLM summarization.
+
 ### Added
 
 - An unknown `basemind.toml` key names its TOML table (`[scan]`, `[[x]]` for an array-of-tables
@@ -130,7 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and troubleshooting. It needs no index or daemon. The pages in
   `docs/manual/` are also the source of the skills' manual sections, spliced in by
   `scripts/sync_public_skills.py --manual` and checked for drift by `plugin_manifest_smoke` (#133).
-- `[documents.dependencies]` (off by default): a full scan indexes the README, CHANGELOG and `docs/**`
+- `[documents.dependencies]` (#132, off by default): a full scan indexes the README, CHANGELOG and `docs/**`
   of the dependencies `Cargo.toml` + `Cargo.lock`, `package.json`, `pyproject.toml` + `uv.lock` /
   `poetry.lock` and `go.mod` name, under `deps/<ecosystem>/<name>@<version>/<file>`, so
   `docs_search {path: "deps/npm/react@*/**"}` filters by package and a hit carries `package` and
@@ -250,6 +279,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/network.md` lists every host basemind downloads from, what triggers each download, and the
   variables that redirect it (`BASEMIND_RELEASE_BASE_URL`, `HF_ENDPOINT`,
   `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL`).
+- Large files before they are opened (#127): `index_status` reports `large_files`, the count of code
+  files of 2,000 lines or more and the five largest with their line and byte counts, and
+  `find_files` `min_lines` (CLI `basemind code find --min-lines`) lists every code file of at least
+  that many lines, largest first, as path to line count. The file map records each file's line count.
+- Every command's `--help` ends with when to use it, what it returns, one example and what to call
+  next (#163); `-h` keeps the one-line summary. `basemind --help` describes what basemind is, and the
+  `init`, `memory`, `cache` and `comms status` summaries say what those commands do.
+- `basemind comms cleanup [--dry-run] [--older-than <days>]` removes the rendezvous files no daemon
+  uses any more: the directories of other protocol generations under the comms directory, and the
+  files releases up to 0.33 keep directly in it (`comms.sock`, `daemon.lock`, `daemon.pid`,
+  `store.fjall/`, `daemon.log`, `daemon.log.1`, `http.addr`, `last-fatal.json`). A rendezvous goes
+  only when it has a `daemon.lock` the command can take and its newest file is older than 30 days;
+  one without a `daemon.lock`, or with one that cannot be opened, is left alone. `--older-than 0`
+  drops the age test, so the previous release's message store goes as soon as none of its daemons
+  is running. A directory is renamed aside under the lock before it is deleted, so a daemon
+  starting meanwhile finds its generation whole or absent. The command reads locks and file ages
+  only, never contacts or signals a daemon, and never touches the generation of the binary that
+  runs it (ADR-0024 rule 7). It also removes the daemon-registry records other generations left
+  for a daemon whose directory is gone or whose lock is free; with a reused pid such a record
+  counted toward the ceiling of live daemons for good.
+- Agent comms: a read says how many messages a sweep removed before the reader read them (#306).
+  The sweep keeps the newest 1,000 messages of a thread and 30 days of them whatever each member
+  has read, and the inbox used to step over the gap without a word. A marking read, a hook's
+  announcing read and the first page of a peek now carry a notice for each thread whose first stored
+  message lies past the reader's position, with the count, until a read takes the reader past it;
+  a waiting read returns at once with it. History reads and reads by id carry none.
 
 ### Changed
 
@@ -319,7 +374,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Busy errors exit `3` because the tool marks them busy, no longer because their text says "index
   not available".
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
-  list is no longer JSON (ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields
+  list is no longer JSON (#157, ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields
   as `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`
   groups them; the other three are [TOON](https://toonformat.dev), which writes a list of objects as
   one table. The `basemind://outline/{path}` resource mirrors its tool: TOON, served as `text/toon`.
@@ -923,28 +978,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PaddleOCR in the published binaries.** PaddleOCR is now the opt-in `documents-ocr-paddle` feature,
   which `full` does not include, so the Homebrew, npm, pip and GitHub release binaries no longer contain
   it. Tesseract OCR is unchanged.
-
-### Added
-
-- Agent comms: a read says how many messages a sweep removed before the reader read them (#306).
-  The sweep keeps the newest 1,000 messages of a thread and 30 days of them whatever each member
-  has read, and the inbox used to step over the gap without a word. A marking read, a hook's
-  announcing read and the first page of a peek now carry a notice for each thread whose first stored
-  message lies past the reader's position, with the count, until a read takes the reader past it;
-  a waiting read returns at once with it. History reads and reads by id carry none.
-- `basemind comms cleanup [--dry-run] [--older-than <days>]` removes the rendezvous files no daemon
-  uses any more: the directories of other protocol generations under the comms directory, and the
-  files releases up to 0.33 keep directly in it (`comms.sock`, `daemon.lock`, `daemon.pid`,
-  `store.fjall/`, `daemon.log`, `daemon.log.1`, `http.addr`, `last-fatal.json`). A rendezvous goes
-  only when it has a `daemon.lock` the command can take and its newest file is older than 30 days;
-  one without a `daemon.lock`, or with one that cannot be opened, is left alone. `--older-than 0`
-  drops the age test, so the previous release's message store goes as soon as none of its daemons
-  is running. A directory is renamed aside under the lock before it is deleted, so a daemon
-  starting meanwhile finds its generation whole or absent. The command reads locks and file ages
-  only, never contacts or signals a daemon, and never touches the generation of the binary that
-  runs it (ADR-0024 rule 7). It also removes the daemon-registry records other generations left
-  for a daemon whose directory is gone or whose lock is free; with a reused pid such a record
-  counted toward the ceiling of live daemons for good.
 
 ### Fixed
 

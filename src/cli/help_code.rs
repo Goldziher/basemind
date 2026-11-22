@@ -149,7 +149,7 @@ When to use: you want the indexed files under a directory or of one language.
 Returns: the indexed paths, the same rows as `code find` with no query.
 
 Example:
-  basemind code files --path-prefix src/mcp/
+  basemind code files --path src/mcp/
 
 Next: `basemind code outline <path>` on a file.";
 

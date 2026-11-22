@@ -84,6 +84,7 @@ pub enum MemoryCmd {
     },
     /// Remove every memory note of this repository, of every tier and agent, and their vectors (CLI
     /// only). Asks for confirmation on a terminal and requires `--yes` otherwise.
+    #[command(after_long_help = crate::cli::help::MEMORY_CLEAR)]
     Clear {
         /// Skip the confirmation prompt (required when stdin is not a terminal).
         #[arg(short = 'y', long)]

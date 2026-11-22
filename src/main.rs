@@ -168,6 +168,7 @@ enum Cmd {
     Cache(basemind::cli::admin::CacheCmd),
     /// Before a release-minor rebuild: `--plan` prints, per repository group and workspace, what
     /// the next scan rebuilds, the bytes freed and needed, and a scan estimate. Offline, read-only.
+    #[command(after_long_help = basemind::cli::help::UPGRADE)]
     Upgrade(basemind::cli::upgrade::UpgradeArgs),
     /// Manage the user-global agent-comms broker daemon (needs `--features comms`).
     #[cfg(all(feature = "comms", any(unix, windows)))]
