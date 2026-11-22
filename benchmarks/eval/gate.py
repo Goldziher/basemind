@@ -44,6 +44,9 @@ NOT_RUN = {
 }
 
 
+CODE_INTEL_PARTS = {"code-intel-js", "code-intel-stack"}
+
+
 def load(results: Path) -> dict[str, tuple[dict, list[dict]]]:
     out = {}
     for rep in sorted(results.glob("*.report.json")):
@@ -131,7 +134,13 @@ def binary_line(data: dict, run: list[dict]) -> str:
     parts.append(f"source commit `{commits[0]}`" if len(commits) == 1 else "source commit not recorded")
     if build:
         parts.append(f"build `{build.get('build_id', '?')}`")
-        parts.append(f"features `{','.join(build.get('features', [])) or 'none'}`")
+        features = build.get("features", [])
+        shown = f"features `{','.join(features) or 'none'}`"
+        # The binary reports `code-intel` as its two parts; say which build flag that was.
+        if CODE_INTEL_PARTS <= set(features):
+            flags = ["code-intel" if f == "code-intel-js" else f for f in features if f != "code-intel-stack"]
+            shown += f" (build flags `{','.join(flags)}`)"
+        parts.append(shown)
     else:
         parts.append("build not recorded" if not builds else "the corpora were run by different binaries")
     return "Binary: " + ", ".join(parts) + "."
@@ -195,7 +204,7 @@ def markdown(data: dict, tools: dict, run: list[dict] | None = None) -> str:
                     f" | {fmt(row['tool_recall'], '.3f')}"
                     f" | {fmt(row['tool_precision'], '.3f')} | {fmt(row['baseline_recall'], '.3f')}"
                     f" | {fmt(row['tool_tokens_median'], '.0f')} | {fmt(row['baseline_tokens_median'], '.0f')}"
-                    f" | {fmt(row['median_ratio'])} | {fmt(row['symbol_accuracy'], '.3f')} | {verdict} |"
+                    f" | {fmt(row['median_ratio'], '.4f')} | {fmt(row['symbol_accuracy'], '.3f')} | {verdict} |"
                 )
     return "\n".join(lines) + "\n"
 

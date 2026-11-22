@@ -100,6 +100,34 @@ class GateSummary(unittest.TestCase):
             self.assertIn("build `abc123def456`", md)
             self.assertIn("features `tokenizer,code-intel-js`", md)
 
+    def test_the_ratio_column_tells_two_thirds_from_0_67(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            self.write(d, "a", {"find": False})
+            report = json.loads((d / "a.report.json").read_text())
+            report["gate"]["find"]["median_ratio"] = 2 / 3
+            (d / "a.report.json").write_text(json.dumps(report))
+            data = gate.load(d)
+            md = gate.markdown(data, gate.verdicts(data))
+            self.assertIn("| 0.6667 |", md)
+            self.assertNotIn("| 0.67 |", md)
+
+    def test_the_binary_line_maps_reported_features_to_the_build_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            self.write(d, "a", {"symbols": True})
+            report = json.loads((d / "a.report.json").read_text())
+            report["build"]["features"] = ["tokenizer", "code-intel-js", "code-intel-stack"]
+            (d / "a.report.json").write_text(json.dumps(report))
+            line = gate.binary_line(gate.load(d), [])
+            self.assertIn(
+                "features `tokenizer,code-intel-js,code-intel-stack` (build flags `tokenizer,code-intel`)", line
+            )
+            report["build"]["features"] = ["tokenizer", "code-intel-js"]
+            (d / "a.report.json").write_text(json.dumps(report))
+            line = gate.binary_line(gate.load(d), [])
+            self.assertNotIn("build flags", line)
+
 
 if __name__ == "__main__":
     unittest.main()
