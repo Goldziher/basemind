@@ -248,9 +248,9 @@ pub struct ServerOptions {
     /// scanning. The passive view watcher still runs, so the in-RAM map tracks
     /// the lock-holding writer's `index.msgpack` updates.
     pub read_only: bool,
-    /// When true, defer [`MapCache::build`] to the first tool that actually reads the map, instead
+    /// When true, defer `MapCache::build` to the first tool that actually reads the map, instead
     /// of running it at construction. Set only for the one-shot CLI — see
-    /// [`ServerState::lazy_cache`].
+    /// `ServerState::lazy_cache`.
     pub lazy_cache: bool,
 }
 

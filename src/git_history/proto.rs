@@ -58,7 +58,7 @@ pub enum GitHistoryReply {
 }
 
 /// What a forwarded [`GitHistoryOp::Sync`] did. The owned mirror of
-/// [`RebuildOutcome`](super::builder::RebuildOutcome) (whose `reason` is a `&'static str`, which
+/// [`RebuildOutcome`] (whose `reason` is a `&'static str`, which
 /// cannot round-trip through `Deserialize`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", content = "data", rename_all = "snake_case")]

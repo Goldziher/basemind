@@ -5,7 +5,7 @@
 //! * [`resolve_paths`] turns user spellings (`./a.rs`, an absolute path, `src//b.rs`) into the
 //!   repo-relative keys the index uses, and refuses anything that cannot be a rescan target —
 //!   escaping the repo, naming the repo root, or neither existing on disk nor indexed.
-//! * [`rescan_via_daemon`] ships the scan to the daemon when one is running. The CLI never runs an
+//! * `rescan_via_daemon` ships the scan to the daemon when one is running. The CLI never runs an
 //!   unlocked in-process scan next to a live daemon.
 //!
 //! [`scan_json`] (and `forwarded_json` for a scan the daemon ran) is what `scan --json` and

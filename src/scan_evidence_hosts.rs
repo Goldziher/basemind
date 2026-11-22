@@ -206,7 +206,7 @@ fn settle_dead_hosts_with(
     machine_went_down
 }
 
-/// [`settle_dead_hosts_in`] against the data home, once per process: a host that dies while this
+/// `settle_dead_hosts_in` against the data home, once per process: a host that dies while this
 /// process lives dies in this boot, which asks for nothing. Run by every process about to scan, so
 /// a `basemind scan` after a power loss verifies without waiting for a daemon to start.
 pub fn settle_dead_hosts() {
@@ -240,7 +240,7 @@ pub fn settle_dead_hosts() {
 /// marker left by a host of an earlier boot means blobs written since may be torn, in any workspace
 /// of the shared store.
 ///
-/// One file per process however many hold it ([`HOLDERS`]): the first to begin writes it, the last
+/// One file per process however many hold it (`HOLDERS`): the first to begin writes it, the last
 /// to drop removes it.
 #[derive(Debug)]
 pub struct HostingMarker {

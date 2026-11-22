@@ -65,7 +65,7 @@ pub enum AdmitOutcome {
 }
 
 /// Shared bookkeeping behind [`FootprintGate::admit_exclusive`]: the overshoot token and the number
-/// of live admissions. Process-wide in production ([`GLOBAL_ADMISSIONS`]); tests build their own so
+/// of live admissions. Process-wide in production (`GLOBAL_ADMISSIONS`); tests build their own so
 /// they cannot observe one another.
 pub struct AdmissionState {
     overshoot: Mutex<()>,

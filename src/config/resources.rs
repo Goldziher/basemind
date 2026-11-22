@@ -91,7 +91,7 @@ pub struct ResourcesConfig {
     #[serde(default)]
     pub max_footprint_mb: MaxFootprint,
     /// Byte budget, in mebibytes, for the MCP read stack's decoded-outline cache
-    /// ([`crate::mcp::l1_cache::L1Cache`]). `0` means unbounded — the
+    /// (`crate::mcp::l1_cache::L1Cache`). `0` means unbounded — the
     /// pre-0.26 behaviour, where every indexed file's decoded L1 stayed
     /// resident for the process lifetime, once per hot workspace.
     ///

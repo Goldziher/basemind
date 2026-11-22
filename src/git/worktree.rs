@@ -88,7 +88,7 @@ impl Repo {
     /// — the intended cheap path: each entry has a `gitdir` file pointing at the worktree's
     /// `.git` (whose parent is the checkout root) and a `HEAD` file giving the checked-out
     /// branch or a detached sha. Stored paths may be relative, so they are anchored with
-    /// [`anchor_git_path`] and canonicalized. Malformed entries (missing/garbled `gitdir` or
+    /// `anchor_git_path` and canonicalized. Malformed entries (missing/garbled `gitdir` or
     /// `HEAD`) are skipped rather than failing the whole call.
     ///
     /// # Errors

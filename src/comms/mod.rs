@@ -1,5 +1,5 @@
 //! The singleton daemon and its clients: agent messaging (ADR-0021, in [`v2`] and
-//! [`agents_hub`]), the hot workspaces it hosts for `basemind serve`, the forwarded index work, and
+//! `agents_hub`), the hot workspaces it hosts for `basemind serve`, the forwarded index work, and
 //! the front-ends (Unix socket or named pipe, in-process, streamable HTTP).
 
 pub mod identity;

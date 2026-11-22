@@ -57,7 +57,7 @@ impl FtsScope {
 /// Split `text` into lowercased alphanumeric tokens, inserting each distinct token into `out`.
 /// Runs of non-alphanumeric characters are separators, so `fix(api): cache` → {`fix`, `api`,
 /// `cache`} and `jane@example.com` → {`jane`, `example`, `com`}. Tokens longer than
-/// [`MAX_TERM_LEN`] are dropped. `AHashSet` dedups within a field so a repeated word writes one
+/// `MAX_TERM_LEN` are dropped. `AHashSet` dedups within a field so a repeated word writes one
 /// posting edge per commit.
 pub fn tokenize(text: &str, out: &mut AHashSet<String>) {
     let mut current = String::new();

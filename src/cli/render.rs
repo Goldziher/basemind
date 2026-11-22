@@ -187,7 +187,7 @@ fn scalar_to_string(value: &Value) -> String {
 /// - A scalar/flat object → `key: value` lines; a multi-line string (a source body, a diff, an
 ///   export) prints raw on the lines after `key:` so it can be piped or pasted as-is.
 ///
-/// Key/value strings are never shortened; only table cells are cut (see [`MAX_CELL_LEN`]).
+/// Key/value strings are never shortened; only table cells are cut (see `MAX_CELL_LEN`).
 ///
 /// `tool_name` is the `domain:mode` key the CLI dispatched (e.g. `code:outline`) and enables a few
 /// nicer special-cases.

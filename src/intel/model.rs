@@ -12,7 +12,7 @@
 //!
 //! The model is unconditional (no feature gate): the tree-sitter `locals` engine
 //! ([`crate::extract::locals`]) populates `intra` for any language, while the oxc engine
-//! ([`crate::intel::js`], `code-intel-js`) additionally fills `imports`/`exports`/`reexports` for JS/TS.
+//! (`crate::intel::js`, `code-intel-js`) additionally fills `imports`/`exports`/`reexports` for JS/TS.
 
 use serde::{Deserialize, Serialize};
 
@@ -103,7 +103,7 @@ pub struct NamedReexport {
 
 impl ReexportEdge {
     /// The module request behind this re-export, as the `module_only` [`ImportEdge`] a
-    /// [`crate::intel::resolver::SpecifierResolver`] resolves.
+    /// `crate::intel::resolver::SpecifierResolver` resolves.
     pub fn module_request(&self) -> ImportEdge {
         ImportEdge {
             local: String::new(),

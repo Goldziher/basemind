@@ -77,7 +77,7 @@ pub(crate) fn read_if_exists(path: &Path) -> Result<Option<Vec<u8>>, StoreError>
 ///
 /// Blobs are content-addressed, so `blobs_dir` + the hash is the whole identity of the read — no
 /// index, no view, and no [`Store`] (hence no store lock). That is what lets the MCP read stack's
-/// L1 cache ([`crate::mcp::l1_cache`]) serve a miss from a `&self` method on a shared, lock-free
+/// L1 cache (`crate::mcp::l1_cache`) serve a miss from a `&self` method on a shared, lock-free
 /// handle instead of having to reach back through the async `RwLock<Store>` every reader holds.
 pub fn read_l1_blob_in(blobs_dir: &Path, hash_hex: &str) -> Result<Option<FileMapL1>, StoreError> {
     let path = blobs_dir.join(format!("{hash_hex}.fm.msgpack"));

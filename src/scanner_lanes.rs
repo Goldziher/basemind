@@ -13,9 +13,9 @@
 //!
 //! Two containment primitives, both built on `catch_unwind`:
 //!
-//! - [`run_optional_lane`] — wraps a whole lane. Rayon's `ThreadPool::install` re-raises a worker
+//! - `run_optional_lane` — wraps a whole lane. Rayon's `ThreadPool::install` re-raises a worker
 //!   panic on the calling thread, so this also contains panics raised on the scanner pool's workers.
-//! - [`contain_panic`] — wraps one unit of work inside a lane, so a single pathological file is
+//! - `contain_panic` — wraps one unit of work inside a lane, so a single pathological file is
 //!   dropped instead of taking the other 47 000 files' resolution down with it.
 
 use std::any::Any;

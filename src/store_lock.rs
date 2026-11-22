@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::store::{LOCK_FILE, LOCK_META_FILE, StoreError};
 
 /// Which basemind command is taking the exclusive store lock. Threaded from the caller
-/// (`scan` / `rescan` / `watch` / `serve`) into [`Store::open_with_holder`] so a lock
+/// (`scan` / `rescan` / `watch` / `serve`) into `Store::open_with_holder` so a lock
 /// contention error can name the *actual* holder rather than a hardcoded guess.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockHolder {

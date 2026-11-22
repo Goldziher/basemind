@@ -54,11 +54,11 @@ pub struct ScanInflight {
     /// extraction finishes its first chunk.
     #[serde(default)]
     pub files_done: Option<usize>,
-    /// The scanning process's [`crate::boot_identity::process_start`], which tells it from a later
+    /// The scanning process's `crate::boot_identity::process_start`, which tells it from a later
     /// process given its pid. Absent in a record from an older build, or where the platform gives none.
     #[serde(default)]
     pub process_start: Option<u64>,
-    /// The boot the scan ran in ([`crate::boot_identity::current`]), without which a Linux start
+    /// The boot the scan ran in (`crate::boot_identity::current`), without which a Linux start
     /// from an earlier boot could repeat. Absent as `process_start` is.
     #[serde(default)]
     pub boot: Option<String>,

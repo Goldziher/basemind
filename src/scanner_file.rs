@@ -5,8 +5,8 @@
 //! language, short-circuit an unchanged file (mtime+size, then content hash), read the bytes from
 //! the active [`ScanSource`], classify (binary / too large), extract or reuse the L1+L2
 //! blobs, stage the Fjall index upsert, and (feature-gated) chunk / embed. The reader helpers
-//! ([`read_working_tree`] / [`read_via_git`]), the classifiers ([`looks_binary`]), the
-//! unchanged-file gates, and the [`WorkerIndexBatch`] accumulator are all in service of that one
+//! (`read_working_tree` / `read_via_git`), the classifiers ([`looks_binary`]), the
+//! unchanged-file gates, and the `WorkerIndexBatch` accumulator are all in service of that one
 //! pipeline and change with it.
 //!
 //! Carved out of `scanner.rs` (which was over the 1000-line module cap): what stays there is the

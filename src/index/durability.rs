@@ -270,9 +270,9 @@ impl IndexDb {
         self.db.journal_count() > RECLAIM_SEALED_JOURNALS && self.reclaim_journal()
     }
 
-    /// Once more than [`SETTLED_WRITE_BUFFER_BYTES`] sit unflushed, flush the largest memtables
+    /// Once more than `SETTLED_WRITE_BUFFER_BYTES` sit unflushed, flush the largest memtables
     /// until at most half of it is left, compact each flushed keyspace still under
-    /// [`SMALL_KEYSPACE_BYTES`] into one table, and return how many were flushed. Call at the end of
+    /// `SMALL_KEYSPACE_BYTES` into one table, and return how many were flushed. Call at the end of
     /// a pass: the rows are durable in the journal, and flushing only the big memtables keeps the
     /// tables (and their open descriptors) few. A failure only logs, since the rows stay in the
     /// memtable and the journal.

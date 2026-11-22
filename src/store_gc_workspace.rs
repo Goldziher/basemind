@@ -21,12 +21,12 @@
 //! | marker present, recorded root missing | reap (renamed aside, then deleted) |
 //! | marker present, recorded root exists | keep |
 //! | marker **absent**, holds index or other state | **keep** — unverifiable; it self-heals on next open |
-//! | marker **absent**, only stale disposable leftovers | reap — see [`DISPOSABLE_LEFTOVERS`] |
+//! | marker **absent**, only stale disposable leftovers | reap — see `DISPOSABLE_LEFTOVERS` |
 //! | `.lock` held by another process | skip — never reap a workspace someone is using |
 //!
 //! A marker-less dir is reaped only when every entry in it is a regular file named in
-//! [`DISPOSABLE_LEFTOVERS`], nothing in it (nor the dir itself) was modified within
-//! [`MARKERLESS_WORKSPACE_GRACE`], and no process holds its `.lock`. These are the dirs a comms CLI
+//! `DISPOSABLE_LEFTOVERS`, nothing in it (nor the dir itself) was modified within
+//! `MARKERLESS_WORKSPACE_GRACE`, and no process holds its `.lock`. These are the dirs a comms CLI
 //! verb or hook leaves behind when it resolves its identity for a directory that is never scanned:
 //! no store open ever writes their marker, so without this rule they accumulate forever.
 //!

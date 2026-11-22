@@ -4,7 +4,7 @@
 //! agent tools that carries no `as` with the same input plus a session-scoped `as`, so two
 //! sessions in one checkout, and a session and its subagents, read as separate actors. `name`
 //! prints that name, for the inbox hook's announcing read. The name is
-//! [`hook_sub_name`](crate::comms::v2::identity::hook_sub_name): `<agent_type>-<8 hex>` inside a
+//! [`hook_sub_name`]: `<agent_type>-<8 hex>` inside a
 //! subagent, `session-<8 hex>` in the main session.
 //!
 //! Both answer only on a host whose hook can rewrite an MCP call's input, named by

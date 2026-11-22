@@ -1,27 +1,27 @@
 //! Single-owner daemon lock, pidfile, and the machine-wide live-daemon registry + ceiling.
 //!
-//! Shared by every daemon family basemind spawns (see [`DaemonKind`]), so one lock discipline, one
+//! Shared by every daemon family basemind spawns (see `DaemonKind`), so one lock discipline, one
 //! registry and one ceiling cover all of them. The registry itself is feature-independent; its
 //! consumers stay feature-gated.
 //!
 //! Two safeguards against the process/memory leak class, layered on top of the per-daemon-dir
 //! guards a family may already have (for comms: the UDS bind and the store flock):
 //!
-//! 1. **[`DaemonLock`]** — an exclusive `fs2` flock on `<dir>/daemon.lock`, acquired *before* the
+//! 1. **`DaemonLock`** — an exclusive `fs2` flock on `<dir>/daemon.lock`, acquired *before* the
 //!    socket bind so a redundant daemon converges (exits 0) without first unlinking the live
 //!    daemon's socket. Holding it writes `<dir>/daemon.pid` and a machine-registry entry; both are
 //!    removed on `Drop`. This is the authoritative "one daemon per dir" gate, uniform across Unix
 //!    and Windows (a real lock, not the Unix-only socket-inode watchdog).
 //!
 //! 2. **The machine ceiling** — every live daemon registers a pidfile under
-//!    `<data_home>/daemons/g<N>/`, `N` being its [`RENDEZVOUS_GENERATION`]. [`live_daemons`] and
-//!    [`live_daemons_of`] list this generation's holders only, pruning dead ones via
-//!    [`crate::boot_identity::PidState::may_be_live`]; they are what `comms doctor` and `comms stop --all` act on, so neither can
-//!    reach another generation's daemon. [`count_live_daemons_of`] tallies one kind's holders
+//!    `<data_home>/daemons/g<N>/`, `N` being its `RENDEZVOUS_GENERATION`. `live_daemons` and
+//!    `live_daemons_of` list this generation's holders only, pruning dead ones via
+//!    `crate::boot_identity::PidState::may_be_live`; they are what `comms doctor` and `comms stop --all` act on, so neither can
+//!    reach another generation's daemon. `count_live_daemons_of` tallies one kind's holders
 //!    across every generation — this one's directory, the other `g<M>/` directories and the
 //!    unscoped `daemons/` that releases up to 0.33 register in — by reading the records, never by
 //!    contacting a daemon, and a spawner (e.g. `ensure_daemon` in `comms::singleton`) refuses to
-//!    spawn past [`max_live_daemons`]. The ceiling is applied per kind so one runaway family
+//!    spawn past `max_live_daemons`. The ceiling is applied per kind so one runaway family
 //!    cannot starve another. It is keyed on the resolved data home (`BASEMIND_DATA_HOME`), so it
 //!    is a **production** ceiling on a shared cache — NOT the test guard. Tests isolate the data
 //!    home per process, so a suite's daemons never accumulate here; their leak safety comes from
@@ -151,19 +151,19 @@ pub struct DaemonRecord {
     /// The daemon's build version.
     pub version: String,
     /// The blob schema whose namespace the daemon reads ([`crate::extract::SCHEMA_VER`]). `None` in a
-    /// record a release up to 0.33 wrote: [`crate::store_gc_namespaces`] then reads the namespace
+    /// record a release up to 0.33 wrote: `crate::store_gc_namespaces` then reads the namespace
     /// off `version`.
     #[serde(default)]
     pub blob_schema: Option<u16>,
     /// Unix seconds when the daemon acquired the lock.
     pub started_unix: i64,
-    /// The daemon's own [`crate::boot_identity::process_start`]: the process at `pid` is the daemon
+    /// The daemon's own `crate::boot_identity::process_start`: the process at `pid` is the daemon
     /// exactly when its start is this one. `None` in a record an older release wrote, or where the
     /// platform gives no start; [`crate::process_start::can_have_written`] then falls back to
     /// comparing wall-clock times.
     #[serde(default)]
     pub process_start: Option<u64>,
-    /// The boot the daemon ran in ([`crate::boot_identity::current`]), without which a Linux
+    /// The boot the daemon ran in (`crate::boot_identity::current`), without which a Linux
     /// `process_start` (ticks since boot) could match a process of a later boot.
     #[serde(default)]
     pub boot: Option<String>,
@@ -234,27 +234,27 @@ pub fn live_daemons() -> Vec<DaemonRecord> {
     live_daemons_in(&daemons_dir())
 }
 
-/// [`live_daemons`] restricted to one family. Powers the per-kind ceiling
-/// ([`count_live_daemons_of`]) and `comms stop --all`, which addresses holders over a
+/// `live_daemons` restricted to one family. Powers the per-kind ceiling
+/// (`count_live_daemons_of`) and `comms stop --all`, which addresses holders over a
 /// kind-specific protocol and must not touch another family's daemons.
 pub fn live_daemons_of(kind: DaemonKind) -> Vec<DaemonRecord> {
     live_daemons_of_in(&daemons_dir(), kind)
 }
 
-/// [`live_daemons_of`] over an explicit machine dir. Injected so unit tests use a temp registry.
+/// `live_daemons_of` over an explicit machine dir. Injected so unit tests use a temp registry.
 fn live_daemons_of_in(machine_dir: &Path, kind: DaemonKind) -> Vec<DaemonRecord> {
     let mut live = live_daemons_in(machine_dir);
     live.retain(|record| record.kind == kind);
     live
 }
 
-/// [`live_daemons`] over an explicit machine dir. Injected so unit tests use a temp registry.
+/// `live_daemons` over an explicit machine dir. Injected so unit tests use a temp registry.
 fn live_daemons_in(machine_dir: &Path) -> Vec<DaemonRecord> {
     live_daemons_judged_by(machine_dir, crate::boot_identity::pid_state)
 }
 
 /// [`live_daemons_in`] with what runs at a pid read by `state`. A record is pruned only when its
-/// process is surely gone ([`crate::boot_identity::PidState::may_be_live`]): one Windows refuses to
+/// process is surely gone (`crate::boot_identity::PidState::may_be_live`): one Windows refuses to
 /// open may be a daemon of another account or sandbox sharing the data home, and losing its record
 /// would hide it from `comms doctor` and `stop --all` and from the ceiling for good. It is listed.
 fn live_daemons_judged_by(
@@ -287,7 +287,7 @@ pub fn count_live_daemons_of(kind: DaemonKind) -> usize {
     count_all_generations_in(&daemons_root(), kind)
 }
 
-/// [`count_live_daemons_of`] over an explicit registry root.
+/// `count_live_daemons_of` over an explicit registry root.
 fn count_all_generations_in(root: &Path, kind: DaemonKind) -> usize {
     live_daemons_of_in(&generation_registry_in(root), kind).len() + count_other_generations_in(root, kind)
 }
@@ -386,7 +386,7 @@ pub struct DaemonCensus {
 /// Every daemon registered under the data home `data` that may be running, of every generation and
 /// kind: the records in the registry root first, then those of each `g<N>/`. Read-only. For a
 /// caller that keeps what such a daemon uses, so a process that refuses to be opened counts as
-/// running ([`crate::boot_identity::PidState::may_be_live`]), and only a recorded process start
+/// running (`crate::boot_identity::PidState::may_be_live`), and only a recorded process start
 /// that is not the one under the pid passes a record over
 /// ([`crate::process_start::may_still_have_written`]): a daemon that was killed left it, and the
 /// number now belongs to something else.

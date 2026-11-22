@@ -1,11 +1,11 @@
 //! `basemind admin eval` — retrieval-quality and token-savings evaluation.
 //!
-//! Reads a JSONL task file (see [`task`]), runs every task through the same tool code the MCP
+//! Reads a JSONL task file (see `task`), runs every task through the same tool code the MCP
 //! server dispatches (in-process, one-shot server over the existing index), and scores the
 //! answer against gold ([`score`]). Tasks that carry a `baseline` additionally run the
 //! grep/read-style alternative in the workspace root; its output is counted with the same
 //! tokenizer, and the savings count only when the basemind answer was correct enough
-//! (`--min-recall`). The per-mode aggregate ([`report`]) is written as JSON and markdown and can
+//! (`--min-recall`). The per-mode aggregate (`report`) is written as JSON and markdown and can
 //! be compared to an earlier report to gate regressions.
 //!
 //! Gold generators that are repo-agnostic live under `benchmarks/eval/`.

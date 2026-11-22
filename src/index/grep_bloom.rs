@@ -118,7 +118,7 @@ impl Needle {
     /// Two necessary conditions are extracted with `regex-syntax`'s literal [`Extractor`]: the set
     /// of literals one of which every match STARTS with, and the set one of which every match ENDS
     /// with. A set is usable only when it is finite, non-empty and every member is at least
-    /// [`MIN_LITERAL_BYTES`] long; one empty or short member means some match may contain no
+    /// `MIN_LITERAL_BYTES` long; one empty or short member means some match may contain no
     /// trigram at all, and an infinite set means no bound. Case-insensitive flags and classes are
     /// expanded by the extractor into their case variants (or make the set unusable when they would
     /// explode), so they need no special handling here.
@@ -229,7 +229,7 @@ impl IndexDb {
     /// rows from before the content-hash re-key are never live, so they leave here too.
     ///
     /// Row values are read only until the keyspace has been swept once under the current
-    /// [`ROW_VERSION`] (recorded in `meta`): that pass also drops rows whose layout is older, which
+    /// `ROW_VERSION` (recorded in `meta`): that pass also drops rows whose layout is older, which
     /// are unreadable. Afterwards every row is current, so the sweep is key-only and a large index
     /// is not read back in full on each scan. A row a writer of the group staged and no file map it
     /// wrote names yet stays.

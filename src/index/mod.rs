@@ -69,7 +69,7 @@ use thiserror::Error;
 const INDEX_PARTITION_REVISION: u32 = 7;
 
 /// Bumped whenever the on-disk key layout changes — the sum of `RELEASE_MINOR` and the
-/// [`INDEX_PARTITION_REVISION`] offset, monotonic across both. When `RELEASE_MINOR` next bumps,
+/// `INDEX_PARTITION_REVISION` offset, monotonic across both. When `RELEASE_MINOR` next bumps,
 /// both move together. Decoupled from blob schema ([`crate::extract::SCHEMA_VER`]) which stays tied
 /// to `RELEASE_MINOR` — blobs remain valid across a pure index revision; only the secondary index
 /// rebuilds on next open via the wipe-on-mismatch flow in [`IndexDb::open`].
@@ -171,7 +171,7 @@ const MEMTABLE_SEALED_LIMIT: u64 = 4;
 /// Worst-case resident memtable bytes across every keyspace of one open [`IndexDb`], each holding a
 /// full active memtable plus the maximum sealed queue at the same moment.
 ///
-/// This is the bound [`KEYSPACE_MEMTABLE_BYTES`] exists to set. At fjall's unconfigured 64 MiB
+/// This is the bound `KEYSPACE_MEMTABLE_BYTES` exists to set. At fjall's unconfigured 64 MiB
 /// default the same expression is `17 * 5 * 64 MiB` = 5.3 GiB — headroom fjall would grant *before
 /// stalling a single write*, which is how an unbounded scan reached 43.8 GiB RSS without fjall ever
 /// pushing back.
@@ -265,7 +265,7 @@ const INDEX_CACHE_CEILING_BYTES: u64 = 256 * 1_024 * 1_024;
 const INDEX_CACHE_DISK_FRACTION: f64 = 0.20;
 
 /// Overrides the computed Fjall block cache size outright (bytes), bypassing the floor/fraction/
-/// ceiling heuristic in [`index_cache_bytes`]. Mirrors the `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` /
+/// ceiling heuristic in `index_cache_bytes`. Mirrors the `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` /
 /// `BASEMIND_BLAME_MAX_BYTES` env-var escape hatches used elsewhere for cache/budget tuning.
 pub const INDEX_CACHE_BYTES_ENV: &str = "BASEMIND_INDEX_CACHE_BYTES";
 
@@ -373,7 +373,7 @@ pub enum IndexError {
     NewerSchema { stored: u32, current: u32 },
     /// The memory-notes store carries a version newer than this binary's. It is user-authored: never
     /// wiped, never written by a binary that does not know its layout. An open that meets one still
-    /// opens the code index ([`IndexDb::memory`] then refuses); this fails an open only when going
+    /// opens the code index (`IndexDb::memory` then refuses); this fails an open only when going
     /// on would wipe memory rows that could not be moved into that store.
     #[error(
         "memory store written by a newer basemind (version {stored}); this binary understands {current} \
@@ -389,7 +389,7 @@ pub enum IndexError {
     #[error("the code index was written under an older schema ({stored}, current {current}); rescan to rebuild it")]
     NeedsRescan { stored: u32, current: u32 },
     /// The file map vouches for a scan generation the index never sealed: the index lost the tail
-    /// of its journal and must be rebuilt before it is sealed again (see [`durability`]).
+    /// of its journal and must be rebuilt before it is sealed again (see `durability`).
     #[error(
         "the code index (generation {index}) is behind its file map (generation {file_map}); \
          rescan to rebuild it"
@@ -622,7 +622,7 @@ impl IndexDb {
         Self::open_inner(view_dir, Some(memory_dir), true, None)
     }
 
-    /// Whether this handle holds no memory notes (see [`IndexDb::memory`]). Memory operations on
+    /// Whether this handle holds no memory notes (see `IndexDb::memory`). Memory operations on
     /// a detached handle must be refused or forwarded, never served.
     pub fn memory_detached(&self) -> bool {
         self.memory.is_err()

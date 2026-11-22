@@ -27,7 +27,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 /// Environment variable holding the post-build grace window in minutes. Unset gives
-/// [`DEFAULT_CACHE_GRACE_MINUTES`]; `0` disables the window (the most-recently-used and locked
+/// `DEFAULT_CACHE_GRACE_MINUTES`; `0` disables the window (the most-recently-used and locked
 /// protections stay).
 pub const CACHE_GRACE_ENV: &str = "BASEMIND_CACHE_GRACE_MINUTES";
 

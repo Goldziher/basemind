@@ -4,7 +4,7 @@
 //! record names the daemon's own process start, and the process at its pid is the daemon exactly
 //! when that start is the one it has now. A record an older release wrote names none; the daemon
 //! was running when it wrote it, so a process that started after the record was written cannot be
-//! it. The starts are read by [`crate::boot_identity`].
+//! it. The starts are read by `crate::boot_identity`.
 
 use crate::daemon_lock::DaemonRecord;
 

@@ -1,6 +1,6 @@
 //! What the agent tools and the `basemind agent` commands do the same way (ADR-0021).
 //!
-//! A front end holds a [`Session`], turns its flat arguments into a request here, and words a
+//! A front end holds a `Session`, turns its flat arguments into a request here, and words a
 //! refusal here, so the two cannot drift apart. Nothing in this module knows MCP or clap.
 
 use std::time::Duration;

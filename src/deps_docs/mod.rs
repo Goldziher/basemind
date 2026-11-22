@@ -1,8 +1,8 @@
 //! Documentation of the repository's dependencies (#132, ADR-0049).
 //!
 //! With `[documents.dependencies]` on, a full working-tree scan resolves the dependencies the
-//! manifests and lockfiles name ([`lockfiles`]), finds each one's installed copy under a fixed list
-//! of package roots ([`locate`]) and hands the scan its README, CHANGELOG and `docs/**` as
+//! manifests and lockfiles name (`lockfiles`), finds each one's installed copy under a fixed list
+//! of package roots (`locate`) and hands the scan its README, CHANGELOG and `docs/**` as
 //! documents under the virtual path `deps/<ecosystem>/<name>@<version>/<file>`. The document tier
 //! then extracts, stores and searches them like any other document; `docs_search`'s `path` glob
 //! (`deps/npm/react@*/**`) filters by package.

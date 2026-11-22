@@ -7,7 +7,7 @@
 //! map and publishes it whenever it writes the map, so a reader sees the rows of exactly the files
 //! the last written map lists, never another view's and never a half-written scan's.
 //!
-//! [`ExpandHits`] walks a name-led keyspace in key order and yields one hit key per live holder of
+//! `ExpandHits` walks a name-led keyspace in key order and yields one hit key per live holder of
 //! each site of each row (site key ‖ path), in path order within the site; a packed row's sites in
 //! start order. A site no live path holds is yielded as its bare site key, which names no holder
 //! and so decodes to no hit: it still counts toward a scan's examined-key cap, and a scan that stops
@@ -26,7 +26,7 @@ use crate::path::RelPath;
 /// One copy of each path: `entries` holds every `(key, path)` sorted by key then path, so a key's
 /// holders are one run of it, and the two lookups index into it. The distinct keys are a sorted
 /// array indexed by their leading bits, not a hash map: content keys are uniform hashes, so a
-/// lookup reads one bucket bound and about one key, with no hashing ([`ExpandHits`] does one per
+/// lookup reads one bucket bound and about one key, with no hashing (`ExpandHits` does one per
 /// row it reads).
 #[derive(Debug, Default)]
 pub struct LiveKeys {

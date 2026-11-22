@@ -5,7 +5,7 @@
 //! thing a deleted repository leaves behind. The workspace reaper ([`crate::store_gc_workspace`])
 //! removes the workspaces of a deleted worktree; once no workspace marker names the group, its
 //! directory is reaped too, under the group lock, the way a workspace is
-//! ([`crate::store_lock::remove_dir_under_lock`]). The policy is as conservative as the workspace
+//! (`crate::store_lock::remove_dir_under_lock`). The policy is as conservative as the workspace
 //! reaper's: a workspace whose group cannot be told (no marker but index state, or a marker that
 //! names no group for a root that is gone) could belong to any group, and then nothing is reaped. A
 //! group whose lock another process holds is skipped. The memory notes (`cache/repos/<group>/`)

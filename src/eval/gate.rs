@@ -34,7 +34,7 @@ pub const GATE_MIN_CREDITED: f64 = 0.7;
 pub const REDUCING_MIN_RATIO: f64 = 1.5;
 /// Least median baseline/tool token ratio of a locating kind (ADR-0031 rule 3: the tool's answer
 /// costs at most one and a half times the shell's), exactly 2/3. A ratio that is 2/3 on paper
-/// (`8 / 12`) is the same correctly rounded double, and [`EPS`] absorbs any other rounding.
+/// (`8 / 12`) is the same correctly rounded double, and `EPS` absorbs any other rounding.
 pub const LOCATING_MIN_RATIO: f64 = 2.0 / 3.0;
 /// Most a locating kind's mean recall may fall below the baseline's (ADR-0031 rule 3).
 pub const LOCATING_MAX_RECALL_DEFICIT: f64 = 0.02;

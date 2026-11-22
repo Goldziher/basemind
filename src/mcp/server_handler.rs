@@ -36,11 +36,11 @@ impl ServerHandler for BasemindServer {
     }
 
     /// `tools/call`: dispatch through the static router as the macro would, under the call's
-    /// admission (see [`super::admission::holding`]).
+    /// admission (see `super::admission::holding`).
     ///
-    /// SEP-2663 Tasks: a call that can run long ([`tasks::SLOW_CALLS`]), made by a client that
+    /// SEP-2663 Tasks: a call that can run long (`tasks::SLOW_CALLS`), made by a client that
     /// declared the tasks extension, is answered inline when it finishes within
-    /// [`tasks::TASK_THRESHOLD`] and with a pollable task handle only when it is still running
+    /// `tasks::TASK_THRESHOLD` and with a pollable task handle only when it is still running
     /// after it. Every other case takes the normal path.
     async fn call_tool(
         &self,
@@ -88,7 +88,7 @@ impl ServerHandler for BasemindServer {
     }
 
     /// SEP-2663 `tasks/get`: report the current state of a spawned task. Thin delegation to the
-    /// [`TaskManager`]; an unknown `task_id` surfaces as `-32602 Invalid params`.
+    /// `TaskManager`; an unknown `task_id` surfaces as `-32602 Invalid params`.
     async fn get_task(
         &self,
         request: rmcp::model::GetTaskParams,
@@ -109,7 +109,7 @@ impl ServerHandler for BasemindServer {
     }
 
     /// SEP-2663 `tasks/cancel`: cooperative cancellation. Acks immediately; the running tool observes
-    /// the request at its next await point (see [`tasks::run_slow_tool`]) and settles the task.
+    /// the request at its next await point (see `tasks::run_slow_tool`) and settles the task.
     async fn cancel_task(
         &self,
         request: rmcp::model::CancelTaskParams,
@@ -147,7 +147,7 @@ impl ServerHandler for BasemindServer {
         self.prompt_router.get_prompt(prompt_context).await
     }
 
-    /// `resources/list`: the static resources (see [`super::resources`]).
+    /// `resources/list`: the static resources (see `super::resources`).
     async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,

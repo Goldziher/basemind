@@ -150,7 +150,7 @@ pub struct Index {
     #[serde(default)]
     pub doc_tombstones: AHashMap<RelPath, crate::store_doc_tombstone::DocTombstone>,
     /// The scan generation [`Store::flush`] sealed into the Fjall index before writing this file map
-    /// (see [`crate::index::durability`]). An index stamped below it lost writes this map vouches
+    /// (see `crate::index::durability`). An index stamped below it lost writes this map vouches
     /// for and is rebuilt before it is sealed again. `0` (also what a file map from before the field
     /// decodes to, via `#[serde(default)]`: additive, no schema bump) makes no claim about the index.
     #[serde(default)]
@@ -165,7 +165,7 @@ pub struct Index {
     pub rebuild_pins: Vec<String>,
     /// The layout of the blob store the hashes above are found in
     /// ([`crate::store_layout::BLOB_LAYOUT`]). A map without the field was written when blobs lay
-    /// flat in `cache/blobs/` and decodes to `0`: [`read_index`] refuses it as stale, whatever the
+    /// flat in `cache/blobs/` and decodes to `0`: `read_index` refuses it as stale, whatever the
     /// schema it carries, so its files are not called unchanged over blobs that are elsewhere.
     #[serde(default)]
     pub blob_layout: u8,
@@ -213,7 +213,7 @@ pub struct FileEntry {
     pub extract_epoch: u16,
     /// The [`crate::index::keys::ContentKey`] the file's symbol and call rows were written under
     /// (ADR-0028 rule 3): its view reads those rows by this key, never by one recomputed from the
-    /// other fields, which [`Store::extract_again`] changes while the rows stay. `None` for an entry
+    /// other fields, which `Store::extract_again` changes while the rows stay. `None` for an entry
     /// that names no rows; a scan never takes such an entry for unchanged. Additive within the
     /// minor: a map without the field decodes to `None` and its files are extracted again.
     #[serde(

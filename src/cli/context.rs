@@ -8,7 +8,7 @@
 //!
 //! When the comms daemon is up it is the sole index writer and holds the fjall lock, so a command on
 //! the working view opens no store at all: [`Tools`] forwards the whole call to the daemon over one
-//! relay session ([`super::forward`]) and renders what the daemon's tool body answered.
+//! relay session (`super::forward`) and renders what the daemon's tool body answered.
 
 use std::path::Path;
 use std::sync::Arc;

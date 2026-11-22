@@ -62,7 +62,7 @@ pub fn page(topic: &str) -> Option<&'static Page> {
     PAGES.iter().find(|page| page.topic == topic)
 }
 
-/// `topic`'s page as a skill section carries it ([`splice_body`]).
+/// `topic`'s page as a skill section carries it (`splice_body`).
 pub fn spliced(topic: &str) -> Option<String> {
     page(topic).map(|page| splice_body(page.text))
 }

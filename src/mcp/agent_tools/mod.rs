@@ -2,7 +2,7 @@
 //!
 //! Each tool is one function over [`AgentOps`](crate::comms::v2::AgentOps): it turns the flat
 //! arguments into a request and builds the [`Caller`] from what the server holds about the
-//! session, both through [`front`](crate::comms::v2::front), which the CLI uses as well, calls the
+//! session, both through [`front`], which the CLI uses as well, calls the
 //! store, and shapes the reply. Nothing here knows a
 //! transport.
 //!

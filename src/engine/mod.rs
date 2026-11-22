@@ -1,4 +1,4 @@
-//! The synchronous engine: one [`Workspace`] per served `(root, view)`, the caches it reads
+//! The synchronous engine: one `Workspace` per served `(root, view)`, the caches it reads
 //! through, and its operations, each failing with an [`EngineError`]. Nothing here names rmcp, clap
 //! or tokio types (ADR-0039); the MCP adapter and the CLI reach it from `src/mcp`.
 

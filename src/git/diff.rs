@@ -12,10 +12,10 @@ pub struct FileDiff {
     pub hunks: Vec<Hunk>,
     pub old_exists: bool,
     pub new_exists: bool,
-    /// Either side holds a NUL byte in its first [`BINARY_SNIFF_BYTES`], git's own test for a
+    /// Either side holds a NUL byte in its first `BINARY_SNIFF_BYTES`, git's own test for a
     /// binary file. A binary diff carries no hunks.
     pub binary: bool,
-    /// Either side is over [`DIFF_SIDE_MAX_BYTES`], so the two were not compared. No hunks.
+    /// Either side is over `DIFF_SIDE_MAX_BYTES`, so the two were not compared. No hunks.
     pub too_large: bool,
     /// A hunk line was not valid UTF-8: its text holds the line with each invalid byte sequence
     /// decoded as U+FFFD.

@@ -1,13 +1,13 @@
 //! `basemind sessions`: how agents worked in this repository, measured from the hosts' own local
 //! session transcripts (issue #128, ADR-0049).
 //!
-//! Each host has a [`TranscriptParser`]: [`claude::Claude`] reads `~/.claude/projects/<slug>/*.jsonl`
-//! and the subagent transcripts filed under each session, and [`codex::Codex`] reads
+//! Each host has a `TranscriptParser`: `claude::Claude` reads `~/.claude/projects/<slug>/*.jsonl`
+//! and the subagent transcripts filed under each session, and `codex::Codex` reads
 //! `~/.codex/sessions/**/*.jsonl`, where a subagent is a rollout of its own naming its parent. A
 //! transcript counts only when its recorded working directory is inside this repository's main
-//! checkout or one of its worktrees, a removed one included ([`worktrees`]). A subagent is reported
+//! checkout or one of its worktrees, a removed one included (`worktrees`). A subagent is reported
 //! on its own and attributed to its parent session. The roots are fixed and derived from the home
-//! directory alone ([`SessionRoots`]); [`contain`] holds the walk, which follows no symlink and only
+//! directory alone (`SessionRoots`); `contain` holds the walk, which follows no symlink and only
 //! reads.
 //!
 //! Nothing here echoes transcript text: a parser keeps tool names, file paths named as arguments,
@@ -93,7 +93,7 @@ pub struct Checkout {
 }
 
 /// The checkouts of this repository: the main one and every linked worktree, and the directories
-/// its removed worktrees are recognised in ([`worktrees`]).
+/// its removed worktrees are recognised in (`worktrees`).
 #[derive(Debug, Clone)]
 pub struct Scope {
     checkouts: Vec<Checkout>,
@@ -179,7 +179,7 @@ impl Scope {
 
     /// The checkout `cwd` is in: the checkout directory itself or any directory below it, the
     /// deepest checkout when one is nested in another. A `cwd` with a `..` component is matched only
-    /// by what it resolves to. A removed worktree ([`worktrees`]) is a checkout too.
+    /// by what it resolves to. A removed worktree (`worktrees`) is a checkout too.
     pub fn matching(&self, cwd: &str) -> Option<Cow<'_, Checkout>> {
         self.locate(cwd).map(|located| located.checkout)
     }

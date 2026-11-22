@@ -52,7 +52,7 @@ impl RelPath {
 
     /// True when this key refers to a file outside the repository root — i.e. one indexed
     /// via `scan.extra_roots`. External files are keyed by their absolute (forward-slash) path,
-    /// so an absolute-path key is the discriminator (see [`is_external_key`]).
+    /// so an absolute-path key is the discriminator (see `is_external_key`).
     /// Git-history / blame tools use this to short-circuit paths that git cannot resolve.
     pub fn is_external(&self) -> bool {
         is_external_key(self.0.as_slice())

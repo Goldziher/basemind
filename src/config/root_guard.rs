@@ -71,7 +71,7 @@ pub enum AdmissionReason {
     PreExistingIndex,
     /// The root was admitted solely because [`ALLOW_ANY_ROOT_ENV`] was set. Explicitly NOT a
     /// standing admission — the hatch must be set again on every invocation, and
-    /// [`is_grandfathered`] refuses to treat the index this scan produces as evidence of consent.
+    /// `is_grandfathered` refuses to treat the index this scan produces as evidence of consent.
     EnvHatch,
 }
 

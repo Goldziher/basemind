@@ -1,4 +1,4 @@
-//! Binds the scan's retrieval seams ([`crate::scan_retrieval`]) to the implementations this build
+//! Binds the scan's retrieval seams (`crate::scan_retrieval`) to the implementations this build
 //! compiles in. It belongs to the engine layer (ADR-0023): the engine is what chooses whether an
 //! embedding application gets the document and vector stack. Every scan entry point takes the
 //! binding as an argument, and the engine and the binaries pass [`backend`], so no core module

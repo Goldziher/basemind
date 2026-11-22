@@ -83,7 +83,7 @@ use crate::path::RelPath;
 ///
 /// `+8` rebuilds them again: a root commit listed every directory of its tree as an added file.
 ///
-/// `+9` recreates every keyspace at [`KEYSPACE_MEMTABLE_BYTES`]: fjall persists the memtable size
+/// `+9` recreates every keyspace at `KEYSPACE_MEMTABLE_BYTES`: fjall persists the memtable size
 /// at keyspace creation, so a store created at the 64 MiB default would keep it.
 ///
 /// `+10` rebuilds the stored authors: a name that is not UTF-8 was stored as `?` and its email as

@@ -38,7 +38,7 @@ pub type Config = ConfigV1;
 
 pub const CONFIG_FILE_NAME: &str = "basemind.toml";
 pub const BASEMIND_DIR: &str = ".basemind";
-/// Project-level `.config/` convention directory (https://github.com/pi0/config-dir).
+/// Project-level `.config/` convention directory (<https://github.com/pi0/config-dir>).
 pub const CONFIG_CONVENTION_DIR: &str = ".config";
 /// Tool-named subdirectory of the convention: `<root>/.config/basemind/`.
 pub const CONFIG_CONVENTION_SUBDIR: &str = "basemind";

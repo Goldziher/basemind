@@ -56,7 +56,7 @@ const BLOB_GC_GRACE: Duration = Duration::from_secs(6 * 60 * 60);
 /// (`<stem>.rref.msgpack.<pid>.ThreadId(N).tmp`). A writer that died leaves its file behind.
 const TMP_SUFFIX: &str = ".tmp";
 
-/// Env override for [`BLOB_GC_GRACE`], in whole seconds (`0` reclaims every unreferenced blob at
+/// Env override for `BLOB_GC_GRACE`, in whole seconds (`0` reclaims every unreferenced blob at
 /// once). Meant for operators clearing a known-dead cache and for the upgrade regression tests; the
 /// default protects entry-less blobs that a concurrent scan is about to reference.
 pub const BLOB_GC_GRACE_ENV: &str = "BASEMIND_BLOB_GC_GRACE_SECS";
@@ -67,7 +67,7 @@ pub(crate) fn blob_gc_grace() -> Duration {
     crate::config::engine::with(|config| config.gc.blob_grace)
 }
 
-/// A [`BLOB_GC_GRACE_ENV`] value in whole seconds; [`BLOB_GC_GRACE`] when unset or not a number.
+/// A [`BLOB_GC_GRACE_ENV`] value in whole seconds; `BLOB_GC_GRACE` when unset or not a number.
 pub fn grace_from(raw: Option<&str>) -> Duration {
     raw.and_then(|raw| raw.trim().parse::<u64>().ok())
         .map_or(BLOB_GC_GRACE, Duration::from_secs)
@@ -386,7 +386,7 @@ fn sweep_stray_tmp(path: &Path, now: SystemTime, grace: Duration, report: &mut G
 /// [`collect_referenced_hashes`] over each — the complete cross-workspace live set the daemon (the
 /// sole fjall writer, which alone sees every workspace) sweeps against. Schema-mismatched or corrupt
 /// view caches are passed over, not removed, and no workspace lock is taken, so a workspace another
-/// process holds cannot stop the sweep ([`collect_referenced_hashes_skipping_stale_views`]);
+/// process holds cannot stop the sweep (`collect_referenced_hashes_skipping_stale_views`);
 /// transient I/O failures still abort it so an incomplete live set never drives a delete.
 pub fn collect_referenced_hashes_global(data: &DataRoot) -> Result<LiveBlobs, GcError> {
     collect_referenced_hashes_global_in(&data.workspaces_dir())

@@ -67,7 +67,7 @@ impl CacheBudget {
 }
 
 /// The default budget: half of what the cache could occupy (its own bytes plus the volume's free
-/// space), capped at [`DEFAULT_CACHE_BUDGET_MIB`]. The ceiling alone would not evict before a disk
+/// space), capped at `DEFAULT_CACHE_BUDGET_MIB`. The ceiling alone would not evict before a disk
 /// with less than that free is full.
 ///
 /// The share is of the sum, not of the free space alone: a budget of `cache + free / 2` re-derived

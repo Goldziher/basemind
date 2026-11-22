@@ -81,7 +81,7 @@ pub enum ScanError {
     BadLanguage(String),
     #[error("git error: {0}")]
     Git(#[from] GitError),
-    /// The walk hit [`crate::config::ScanConfig::max_candidates`]. Raised from the walk loop
+    /// The walk hit `crate::config::ScanConfig::max_candidates`. Raised from the walk loop
     /// itself — before extraction, before any index write — so a pathological root costs one
     /// truncated walk instead of a 40 GiB resident scan (issue #62).
     ///
@@ -129,7 +129,7 @@ pub enum ScanError {
     /// The volume lacks room for the index; see [`crate::disk_space`].
     #[error("scan refused: {0}")]
     InsufficientSpace(#[from] crate::disk_space::InsufficientSpace),
-    /// The OS refused to spawn the scan worker pool's threads; see [`crate::scanner_file::scanner_pool`].
+    /// The OS refused to spawn the scan worker pool's threads; see `crate::scanner_file::scanner_pool`.
     #[error("scan aborted: the scan worker pool could not be started: {0}")]
     WorkerPool(#[from] rayon::ThreadPoolBuildError),
 }
@@ -340,7 +340,7 @@ pub enum FileStatus {
 }
 
 /// Aggregate outcome of one scan. Per-file outcomes are delivered to the caller's
-/// [`ScanObserver`] as they are absorbed, never accumulated here — see [`crate::scanner_drive`].
+/// [`ScanObserver`] as they are absorbed, never accumulated here — see `crate::scanner_drive`.
 #[derive(Debug, Clone, Default)]
 pub struct ScanReport {
     pub stats: ScanStats,

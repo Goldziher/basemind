@@ -243,9 +243,9 @@ pub fn pid_state(pid: u32) -> PidState {
 /// delay or a retry, not a record. Every pid asked about here comes from a record basemind wrote
 /// (a daemon or lock record, a scan breadcrumb, a hosting marker, a parked directory's name), and
 /// basemind's processes of one account can open each other, so a process that refuses to be
-/// opened is taken for not the one recorded: [`PidState::Unopenable`] is not live. Without this a
+/// opened is taken for not the one recorded: `PidState::Unopenable` is not live. Without this a
 /// stale record whose pid Windows gave to a SYSTEM or another user's process would read live for
-/// as long as that process ran. A caller that deletes the record asks [`PidState::may_be_live`].
+/// as long as that process ran. A caller that deletes the record asks `PidState::may_be_live`.
 #[cfg(any(unix, windows))]
 pub fn pid_is_live(pid: u32) -> bool {
     pid_state(pid) == PidState::Live

@@ -9,7 +9,7 @@
 //!
 //! One configuration per process (ADR-0050): the blob store, the daemon registry and the parser
 //! pool are process-wide, so a second engine with another configuration in the same process is
-//! refused. [`update`] is a test seam that bypasses that rule.
+//! refused. `update` is a test seam that bypasses that rule.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};

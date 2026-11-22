@@ -12,7 +12,7 @@
 //! and never a second seal of the index and rewrite of the whole map.
 //!
 //! Beside it, [`STORE_ID_FILE`] names the LanceDB store the view's rows were last written to
-//! ([`crate::lance::store_id`]). LanceDB commits are not fsynced by basemind and the store can be
+//! (`crate::lance::store_id`). LanceDB commits are not fsynced by basemind and the store can be
 //! wiped or deleted on its own, so two events put every embedded path back in the set, to be
 //! rewritten from the cached blobs: a scan that finds another store, or none, where that one was,
 //! and the scan that verifies blobs after the machine went down.

@@ -13,7 +13,7 @@
 //! and MCP tools live in later slices.
 //!
 //! A workspace is enumerated when it is first registered; the rows a query reads are brought up to
-//! date by [`Registry::refresh_stale`], which re-enumerates a clone only when a [`stamp::RepoStamp`]
+//! date by [`Registry::refresh_stale`], which re-enumerates a clone only when a `stamp::RepoStamp`
 //! of its refs and worktrees moved.
 
 mod refresh;

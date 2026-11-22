@@ -21,7 +21,7 @@ use crate::store_gc::blob_stem;
 pub(crate) const CODE_LANE_SUFFIXES: [&str; 3] = [".fm.msgpack", ".chunk.msgpack", ".rref.msgpack"];
 
 /// Content hashes referenced by the indexes, split by the tier that references them. See
-/// [`CODE_LANE_SUFFIXES`] for why a single union is not enough.
+/// `CODE_LANE_SUFFIXES` for why a single union is not enough.
 #[derive(Debug, Clone, Default)]
 pub struct LiveBlobs {
     /// Hashes referenced by a `files` entry (code map): keeps `.fm` / `.chunk` / `.rref` blobs alive.

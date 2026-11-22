@@ -2,7 +2,7 @@
 //!
 //! [`api`] holds the requests, replies, limits and rules that the daemon, the `agent_post` /
 //! `agent_inbox` / `agent_threads` tools, the CLI and the hooks will all use; [`ids`], [`error`],
-//! [`cursor`] and [`fields`] are its parts, and [`AgentOps`] is the seam between a front end and
+//! [`cursor`] and [`fields`] are its parts, and `AgentOps` is the seam between a front end and
 //! a store. Nothing here is wired into the daemon, the wire protocol or the MCP surface yet: the
 //! v1 `agents` and `workspace` tools still run on the types in the parent module, and the two
 //! share no state.
@@ -12,7 +12,7 @@
 //! like the rest of the daemon, is the Fjall-backed implementation that replaces v1.
 
 pub mod api;
-/// The ADR's rules as scenarios, for any [`AgentOps`] implementation to be run against.
+/// The ADR's rules as scenarios, for any `AgentOps` implementation to be run against.
 #[cfg(any(test, feature = "test-support"))]
 pub mod conformance;
 pub mod cursor;
@@ -22,9 +22,9 @@ pub mod fields;
 pub mod front;
 pub mod identity;
 pub mod ids;
-/// The rules every [`AgentOps`] implementation shares, as pure functions.
+/// The rules every `AgentOps` implementation shares, as pure functions.
 pub mod rules;
-/// The Fjall-backed [`AgentOps`]: the store the daemon will serve from.
+/// The Fjall-backed `AgentOps`: the store the daemon will serve from.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod store;
 

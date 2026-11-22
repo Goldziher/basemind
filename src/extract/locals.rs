@@ -13,8 +13,8 @@
 //!
 //! ## Layering
 //!
-//! The scope-resolution algorithm ([`resolve_bindings`]) is deliberately separated from the
-//! tree-sitter query walk ([`build_bindings`]) so it can be unit-tested with synthetic
+//! The scope-resolution algorithm (`resolve_bindings`) is deliberately separated from the
+//! tree-sitter query walk (`build_bindings`) so it can be unit-tested with synthetic
 //! scope/definition/reference data — no grammar download required. Only the thin walk wrapper
 //! needs a real grammar.
 
@@ -48,7 +48,7 @@ static LOCALS_QUERIES: LazyLock<OnceMap<LangId, lang::QueryOutcome>> = LazyLock:
 
 /// Compile + cache the `locals` query for a language.
 ///
-/// Prefers a vendored override (see [`vendored_locals`]), else the raw TSLP `locals.scm` via
+/// Prefers a vendored override (see `vendored_locals`), else the raw TSLP `locals.scm` via
 /// `get_locals_query`. Compiled with basemind's own tree-sitter runtime — deliberately *not*
 /// TSLP's compiled `get_query(_, Locals)`, which binds the query to TSLP's bundled runtime
 /// version and would break under a runtime-version skew (the crate documents this caveat).

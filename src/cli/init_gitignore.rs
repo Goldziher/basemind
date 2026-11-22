@@ -10,7 +10,7 @@
 //! append a pattern to the repo-root `.gitignore`.
 //!
 //! Deliberately reuses the `ignore` crate's own gitignore engine ([`ignore::gitignore`]) rather than
-//! hand-rolling glob matching — the same crate [`super::super::scanner_filter`] uses for the scan
+//! hand-rolling glob matching — the same crate `super::super::scanner_filter` uses for the scan
 //! walk, so "is this covered by `.gitignore`" means the same thing everywhere in the codebase.
 
 use std::io::{IsTerminal, Write};

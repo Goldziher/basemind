@@ -175,7 +175,7 @@ impl IndexWriter {
         }
     }
 
-    /// Resident bytes staged into the current batch, per [`staged_entry_bytes`]. There is no reset:
+    /// Resident bytes staged into the current batch, per `staged_entry_bytes`. There is no reset:
     /// [`Self::commit`] consumes the writer, so the counter dies with the batch it describes and
     /// the next batch starts a fresh writer at zero.
     pub fn staged_bytes(&self) -> u64 {
@@ -185,7 +185,7 @@ impl IndexWriter {
     /// Write the rows of `rel`, whose content has the [`keys::ContentKey`] `content`: its symbols
     /// and call sites (from `l1` and optionally `l2`) under `content`, shared by every view of the
     /// group holding it, and its path-keyed rows, replaced. The content's stored rows are reconciled
-    /// with the fresh ones ([`super::writer_content`]): an identical extraction writes nothing, a
+    /// with the fresh ones (`super::writer_content`): an identical extraction writes nothing, a
     /// different one replaces them whole. Calls are left as they are when `l2` is `None`. A view
     /// reads the content rows once its file map names `rel` under `content`
     /// ([`super::live_keys`]). Atomic.

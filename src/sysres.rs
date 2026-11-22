@@ -179,7 +179,7 @@ fn process_start() -> Instant {
 }
 
 /// A memory reading for the current process, reused for up to
-/// [`SAMPLE_CACHE_INTERVAL_MICROS`]. This is the call the admission gates make.
+/// `SAMPLE_CACHE_INTERVAL_MICROS`. This is the call the admission gates make.
 pub fn memory_reading() -> Option<MemoryReading> {
     // Never zero, so `0` stays available as the "never sampled" marker.
     let now = process_start().elapsed().as_micros().max(1) as u64;

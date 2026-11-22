@@ -6,8 +6,8 @@
 //! renders the reply. Nothing here opens a store or reaches a daemon, so the commands run against
 //! any implementation, the test store included.
 //!
-//! Who is calling is the [`Session`](crate::comms::v2::front::Session) the binary resolved; a
-//! command chooses only `--as`. [`run`] resolves it, connects to the daemon and dispatches.
+//! Who is calling is the [`Session`] the binary resolved; a
+//! command chooses only `--as`. `run` resolves it, connects to the daemon and dispatches.
 //!
 //! Layout:
 //! - `args.rs` — the clap grammar.
