@@ -282,3 +282,38 @@ fn errors_count_against_the_credited_fraction() {
     // 7 of 11 is 0.64.
     assert_eq!(run(EvalMode::Read, &v).pass, Some(false));
 }
+
+#[test]
+fn dependents_fail_on_misses_the_baseline_shares() {
+    // Tool and baseline both find 5 of 10 gold files: parity holds and the ratio is fine, but the
+    // gold recall is under the floor.
+    let v: Vec<TaskResult> = (0..10).map(|_| scored(100, 100, 0.5, 0.5)).collect();
+    let g = run(EvalMode::Dependents, &v);
+    assert_eq!(g.pass, Some(false));
+    assert!(g.reason.contains("gold recall 0.500 < 0.800"), "{}", g.reason);
+    // The same numbers on another locating kind pass the parity rule, so the floor is what failed.
+    assert!(!run(EvalMode::Symbols, &v).reason.contains("gold recall"));
+}
+
+#[test]
+fn dependents_pass_at_the_gold_recall_floor() {
+    let v: Vec<TaskResult> = (0..10)
+        .map(|_| scored(100, 100, DEPENDENTS_MIN_RECALL, DEPENDENTS_MIN_RECALL))
+        .collect();
+    let g = run(EvalMode::Dependents, &v);
+    assert_eq!(g.pass, Some(true), "{}", g.reason);
+}
+
+#[test]
+fn dependents_floor_counts_a_failed_call_as_recall_0() {
+    let mut v: Vec<TaskResult> = (0..9).map(|_| scored(100, 100, 1.0, 1.0)).collect();
+    let mut e = task(100, 100, false);
+    e.ok = false;
+    v.push(e);
+    let g = run(EvalMode::Dependents, &v);
+    assert_eq!(g.pass, Some(true), "9 of 10 at recall 1 is 0.9: {}", g.reason);
+    for t in v.iter_mut().take(3) {
+        t.score.recall = 0.0;
+    }
+    assert_eq!(run(EvalMode::Dependents, &v).pass, Some(false));
+}

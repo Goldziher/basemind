@@ -241,7 +241,9 @@ BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)" \
   a pin moves. Gold never comes from basemind: Rust structure from `rust_gold` (syn), git, grep and find gold from git's
   own output on the pinned commit.
 - `run_gate.sh` refuses to start unless `BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR` are set to existing, empty
-  directories outside the default cache, refuses a binary without the `tokenizer` feature, refuses to run `read_around`
+  directories outside the default cache, refuses a binary without the `tokenizer` feature or whose `admin tokens` does not count 4 for `Hello, world!` (the
+  o200k count; the offline word estimate gives 2, and `admin eval` labels such counts `word-estimate`, which gives
+  no verdict), refuses to run `read_around`
   tasks without `rg` on PATH (its version goes into `run.tsv`), refuses a binary whose `code cycles --json`
   `coverage` has no Rust resolver row (no `code-intel`) for a task file with `impact` / `cycles` tasks, scans each repository,
   runs `basemind admin eval --tasks ... --min-recall 0.8`, and stops any daemon it could have started on exit.
@@ -250,9 +252,16 @@ BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)" \
   nor what a baseline prints.
 - `gate.py RESULTS_DIR` turns the per-corpus reports into `gate.md` / `gate.json`.
 - The binary: each report's `build` holds the Cargo version, `build_id` (a hash of the executable) and the features
-  compiled in (`code-intel` when both its parts are, so a `tokenizer,code-intel` build reads as such), and `run.tsv` adds `source_commit`, the commit of the checkout `run_gate.sh` runs from (`-dirty` with
+  compiled in, and `run.tsv` adds `source_commit`, the commit of the checkout `run_gate.sh` runs from (`-dirty` with
   uncommitted tracked changes). Run it from the checkout the binary was built from: the version string is not bumped
-  on main, so it does not identify the build. `gate.md` prints all of them.
+  on main, so it does not identify the build. `gate.md` prints all of them. The binary reports the `code-intel` build flag
+  as its two parts, so a `--features tokenizer,code-intel` build reads `tokenizer,code-intel-js,code-intel-stack` in
+  `run.tsv` and the reports; `gate.md` adds the build flags (`tokenizer,code-intel`) beside that list.
+
+`dependents` has a second check beside the recall parity: its mean gold recall over all tasks must reach
+`DEPENDENTS_MIN_RECALL` (`src/eval/gate.rs`, 0.8, a conservative placeholder the owner sets). Parity cannot fail on a
+file the tool and `git grep` both miss, because both match `use` text lexically while the gold is syn-flattened; the
+floor is independent of the baseline.
 
 ### Read the table
 

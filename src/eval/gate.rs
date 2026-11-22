@@ -12,6 +12,9 @@
 //! - **correctness** (no shell command an agent would run produces the answer, so there is no
 //!   baseline to compare): credited at least [`GATE_MIN_CREDITED`].
 //!
+//! `dependents` also needs a mean gold recall of [`DEPENDENTS_MIN_RECALL`], independent of the
+//! baseline, since the tool and the baseline can miss the same files.
+//!
 //! `grep` also needs the enclosing-symbol accuracy of `code_grep` at [`GREP_MIN_SYMBOL_ACCURACY`]
 //! (ADR-0031 rule 4).
 //!
@@ -38,6 +41,11 @@ pub const REDUCING_MIN_RATIO: f64 = 1.5;
 pub const LOCATING_MIN_RATIO: f64 = 2.0 / 3.0;
 /// Most a locating kind's mean recall may fall below the baseline's (ADR-0031 rule 3).
 pub const LOCATING_MAX_RECALL_DEFICIT: f64 = 0.02;
+/// Least mean gold recall of `dependents`, whatever the baseline scores. Recall parity cannot fail
+/// on a file both arms miss (the gold is syn-flattened grouped `use` paths, which `git grep` and the
+/// tool both match lexically), so this floor is the check that can. Conservative placeholder equal
+/// to the credit threshold (`--min-recall 0.8`); the owner sets the value.
+pub const DEPENDENTS_MIN_RECALL: f64 = 0.8;
 /// Least share of `code_grep` hits whose enclosing symbol is right (ADR-0031 rule 4).
 pub const GREP_MIN_SYMBOL_ACCURACY: f64 = 0.95;
 /// The only tokenizer whose counts the gate accepts.
@@ -173,6 +181,9 @@ pub fn verdict(mode: EvalMode, results: &[&TaskResult], tokenizer: &str) -> Gate
             }
             Job::Correctness => {}
         }
+        if mode == EvalMode::Dependents {
+            checks.gold_recall(mean(results.iter().map(|r| r.score.recall)), DEPENDENTS_MIN_RECALL);
+        }
         if mode == EvalMode::Grep {
             checks.symbol_accuracy(symbol_accuracy);
         }
@@ -232,6 +243,12 @@ impl Checks {
             _ => self
                 .undecided
                 .push("no baseline recall to compare (no baseline names an `items` reader)".to_string()),
+        }
+    }
+
+    fn gold_recall(&mut self, recall: Option<f64>, min: f64) {
+        if let Some(r) = recall.filter(|r| *r < min - EPS) {
+            self.failed.push(format!("gold recall {r:.3} < {min:.3}"));
         }
     }
 
