@@ -149,7 +149,27 @@ fn recent_and_path_history_match_real_git() {
         "recent_commits must match `git log <head>` newest-first, exactly"
     );
 
-    if let Some(path) = git_one(&repo, &["show", "--format=", "--name-only", &head]) {
+    // The index lists a merge only for what it changed against every parent (`git log --cc`), where
+    // `--full-history` also lists a merge that differs from one parent, so the two agree only for a
+    // path no merge touched: take the first file of the head commit that is one.
+    let merge_free = git_lines(&repo, &["show", "--format=", "--name-only", &head])
+        .into_iter()
+        .find(|candidate| {
+            git_lines(
+                &repo,
+                &[
+                    "log",
+                    &head,
+                    "--merges",
+                    "--full-history",
+                    "--format=%H",
+                    "--",
+                    candidate,
+                ],
+            )
+            .is_empty()
+        });
+    if let Some(path) = merge_free {
         let git_touch = git_lines(&repo, &["log", &head, "--full-history", "--format=%H", "--", &path]);
         let idx_touch: Vec<String> = index
             .commits_touching(&path.as_bytes().into(), 0, git_touch.len())

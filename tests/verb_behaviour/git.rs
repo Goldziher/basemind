@@ -540,6 +540,7 @@ fn head_of(repo: &Path) -> String {
 
 /// A repository holding a submodule `vendor/dep` (two commits in it, the first one recorded), a
 /// tracked symlink `link` to `src/lib.rs` and a tracked directory `src`.
+#[cfg(unix)]
 fn special_paths_repo() -> (TempDir, TempDir, String, String) {
     let dir = dated_repo();
     let root = dir.path();
@@ -580,6 +581,7 @@ fn special_paths_repo() -> (TempDir, TempDir, String, String) {
 
 /// A submodule is a gitlink: its diff is the two commit ids, as `git diff` prints them, not an
 /// internal error for an object the superproject does not hold.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_diff_of_a_submodule_reports_the_commit_ids() {
     let (dir, _dep, first, second) = special_paths_repo();
@@ -604,6 +606,7 @@ async fn git_diff_of_a_submodule_reports_the_commit_ids() {
 }
 
 /// A tracked symlink diffs its link text, never the file it points to.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_diff_of_a_symlink_diffs_the_link_text() {
     let (dir, _dep, _first, _second) = special_paths_repo();
@@ -629,6 +632,7 @@ async fn git_diff_of_a_symlink_diffs_the_link_text() {
 }
 
 /// A directory is refused as an invalid argument that names `git_log` for its history.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_diff_of_a_directory_points_to_git_log() {
     let (dir, _dep, _first, _second) = special_paths_repo();
