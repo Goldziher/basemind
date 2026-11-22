@@ -54,31 +54,33 @@ NAMED_KINDS = {
 
 
 def binary() -> Path:
-    """Path of the release `rust-gold` binary, built offline (from the cargo cache) when missing."""
+    """Path of the release `rust-gold` binary, built when missing (offline if the cargo cache allows)."""
     override = os.environ.get("BASEMIND_EVAL_RUST_GOLD")
     if override:
         return Path(override)
     target = Path(os.environ.get("CARGO_TARGET_DIR") or Path(tempfile.gettempdir()) / "basemind-eval-target")
     exe = target / "release" / "rust-gold"
-    proc = subprocess.run(
-        [
-            "cargo",
-            "build",
-            "--release",
-            "--offline",
-            "--locked",
-            "--quiet",
-            "--manifest-path",
-            str(CRATE / "Cargo.toml"),
-        ],
-        env={**os.environ, "CARGO_TARGET_DIR": str(target)},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0 or not exe.exists():
-        sys.exit(f"building rust_gold failed:\n{proc.stderr}")
-    return exe
+    # The cargo cache holds the dependencies on a developer machine; a clean runner has to fetch them.
+    for network in (["--offline"], []):
+        proc = subprocess.run(
+            [
+                "cargo",
+                "build",
+                "--release",
+                *network,
+                "--locked",
+                "--quiet",
+                "--manifest-path",
+                str(CRATE / "Cargo.toml"),
+            ],
+            env={**os.environ, "CARGO_TARGET_DIR": str(target)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0 and exe.exists():
+            return exe
+    sys.exit(f"building rust_gold failed:\n{proc.stderr}")
 
 
 def records(blobs: Iterable[tuple[str, str]]) -> list[dict]:
