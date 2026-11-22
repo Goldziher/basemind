@@ -67,11 +67,14 @@ jobs:
           export BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)"
           bin="$GITHUB_WORKSPACE/target/release/basemind"
           benchmarks/eval/docs/run.sh "$bin" "$out"
+          # summarize.py exits 1 under its recall floor; keep going so the tables are still published.
+          floor=0
           python3 -I benchmarks/eval/docs/summarize.py benchmarks/eval/docs/tasks.jsonl \
-            "$out/results.ndjson" "docs eval" > "$out/summary.md"
+            "$out/results.ndjson" "docs eval" > "$out/summary.md" || floor=$?
           python3 -I benchmarks/eval/docs/citations.py "$bin" "$out/workspace" \
             benchmarks/eval/docs/tasks.jsonl "$out/citations.ndjson" > "$out/citations.md"
           cat "$out/summary.md" "$out/citations.md" >> "$GITHUB_STEP_SUMMARY"
+          exit "$floor"
 
       - name: Upload the results
         if: ${{ !cancelled() }}

@@ -13,6 +13,9 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+# The least mean recall@10 over all tasks that keeps `docs-eval` green. A conservative placeholder, since
+# no recorded run pins it: the owner sets it from a measured run.
+MIN_RECALL_AT_10 = 0.5
 METRICS = ("recall", "ndcg", "hit_at_1", "mrr")
 
 
@@ -62,6 +65,11 @@ def main() -> None:
         )
         out.append(f"| {group} | {len(results)} | {failed} | " + " | ".join(means) + f" | {cost} |")
     sys.stdout.write("\n".join(out) + "\n")
+    everything = rows.get("all", [])
+    recalls = [(r.get("score") or {}).get("recall") or 0.0 for r in everything]
+    mean = sum(recalls) / len(recalls) if recalls else 0.0
+    if mean < MIN_RECALL_AT_10:
+        sys.exit(f"recall@10 {mean:.3f} is below the floor {MIN_RECALL_AT_10} over {len(recalls)} tasks")
 
 
 if __name__ == "__main__":

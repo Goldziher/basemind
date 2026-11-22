@@ -52,5 +52,7 @@ p50 / p95 of response tokens and latency. `EVAL_RERANK=1` turns the reranker on;
 plain-text distractors (`grow_corpus.py`) that repeat the task queries, so the corpus holds more chunks than a lane's
 candidate cut and a filtered task only finds its gold if the filter runs first. `citations.py` checks the first gold
 hit's citation (section, PDF page, Markdown lines, the gold line of a text or data file) against the task. The
-`docs-eval` workflow (`workflow_dispatch`) runs all three on a release build and uploads the tables. Results
+`docs-eval` workflow (`workflow_dispatch`) runs all three on a release build and uploads the tables.
+`summarize.py` exits 1 when the mean recall@10 over all tasks is under `MIN_RECALL_AT_10` (0.5, a conservative
+placeholder the owner sets from a measured run), which fails the workflow after the tables are published. Results
 before and after the ADR-0029 pipeline are in the polyrepo's `reports/retrieval-eval.md`.
