@@ -782,7 +782,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "basemind"
-version = "0.33.0"
+version = "0.34.0"
 dependencies = [
  "ahash",
  "anstream",
@@ -864,7 +864,7 @@ dependencies = [
 
 [[package]]
 name = "basemind-agents"
-version = "0.1.1"
+version = "0.34.0"
 dependencies = [
  "agent-client-protocol",
  "futures",

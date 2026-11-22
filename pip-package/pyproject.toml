@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "basemind"
-version = "0.33.0"
+version = "0.34.0"
 description = "Coding agents ask a local index of your code, git history, documents and memory over MCP or the CLI, get paths and lines instead of reading files, and coordinate in shared threads."
 readme = "README.md"
 license = { text = "MIT" }

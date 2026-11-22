@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-11-22
+
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33
 to 34, so each view's index is wiped at its first open, the blob store moves to `cache/blobs/v34/`,
 and every file is re-extracted and every document and code chunk re-embedded once. Read
@@ -5480,7 +5482,8 @@ crates.io.
 - `search_documents` post-processing releases the store read-lock before
   blob I/O; `ahash::AHashMap` / `AHashSet` on the post-filter path.
 
-[Unreleased]: https://github.com/Goldziher/basemind/compare/v0.33.0...HEAD
+[Unreleased]: https://github.com/Goldziher/basemind/compare/v0.34.0...HEAD
+[0.34.0]: https://github.com/Goldziher/basemind/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/Goldziher/basemind/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/Goldziher/basemind/compare/v0.31.1...v0.32.0
 [0.31.1]: https://github.com/Goldziher/basemind/compare/v0.31.0...v0.31.1

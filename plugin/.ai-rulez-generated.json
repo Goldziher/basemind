@@ -1,25 +1,25 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:daac4d99df64a9e52e65c0770d4e10cc6b95bdb9aadec0e7f16d2e3d1a5f0fff",
+  "source_hash": "blake3:42ed917dd000c398f25f6cd197421a248de367c36effd4f924740853c653446c",
   "outputs": {
     ".claude-plugin/plugin.json": {
-      "content_hash": "blake3:91988e847ee2ad5d46f042bee9a2176ba181f22d07329a6582ace40ef744646e",
+      "content_hash": "blake3:980598aea9696c126be192b0983f7be62f3583f032499b3c383a32c2bb81fe35",
       "mode": "0644"
     },
     ".codex-plugin/plugin.json": {
-      "content_hash": "blake3:f7465c326696e13315dbcb1f8553055817765d97a7ad5680cbe64d647fb56670",
+      "content_hash": "blake3:729c373ef2d52328ef350073f781615ec1a191e4a68a046b24de89ae818bd636",
       "mode": "0644"
     },
     ".factory-plugin/plugin.json": {
-      "content_hash": "blake3:dca92ac5982d083a1b5e6697e568490d7d23a1e4e13812cac4078bde21e6f74d",
+      "content_hash": "blake3:e083350d5d104577a42439a87bef4de9a4855088b32e1833204cd57712e7620e",
       "mode": "0644"
     },
     ".hermes/package/pyproject.toml": {
-      "content_hash": "blake3:7da958ad5180f6a225e0de2c1ca44cba6cb7d56fbf79c2267bb2ac118a2eba7e",
+      "content_hash": "blake3:9bf4d57c196f1494625d70ecdbd580c0b57f85dc10f0774d20a87412e91156bb",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/__init__.py": {
-      "content_hash": "blake3:3aef15520dfb2295e38767507482245137c4c743f42f26ceb4bee86667797bfa",
+      "content_hash": "blake3:f8de9e117c46cf4b1d7b3795ed41e29462d0acc0e6df4f8cab8ed423f157f15c",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/commands/bm-doctor.md": {
@@ -51,7 +51,7 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/plugin.yaml": {
-      "content_hash": "blake3:17f0a8d7f1fa40510f84c0d6bf922589e8d4a631628f1d6b8b93121864a91096",
+      "content_hash": "blake3:b188aa91b2b82f66e3127ddd916319cde22ce23facc61299896c700fc236747d",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-cli/SKILL.md": {
@@ -135,7 +135,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/__init__.py": {
-      "content_hash": "blake3:3aef15520dfb2295e38767507482245137c4c743f42f26ceb4bee86667797bfa",
+      "content_hash": "blake3:f8de9e117c46cf4b1d7b3795ed41e29462d0acc0e6df4f8cab8ed423f157f15c",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/commands/bm-doctor.md": {
@@ -167,7 +167,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/plugin.yaml": {
-      "content_hash": "blake3:17f0a8d7f1fa40510f84c0d6bf922589e8d4a631628f1d6b8b93121864a91096",
+      "content_hash": "blake3:b188aa91b2b82f66e3127ddd916319cde22ce23facc61299896c700fc236747d",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind-cli/SKILL.md": {
@@ -539,7 +539,7 @@
       "mode": "0644"
     },
     "gemini-extension.json": {
-      "content_hash": "blake3:79f748b2b08312c1633a2d6544ae34631ce7049c2a403a25bd37a3d7099b03f0",
+      "content_hash": "blake3:6a5a84f94b0c6dfc12dc291e356cab0f690dda7397deb3269755425dfe99d0cd",
       "mode": "0644"
     },
     "hooks/agent-as": {
@@ -571,7 +571,7 @@
       "mode": "0755"
     },
     "kimi.plugin.json": {
-      "content_hash": "blake3:074a56eebd21d5b0680904d0dcfa9bf169eb492e6f9844108fb5ec901e84e0c9",
+      "content_hash": "blake3:7b065fe653faf00b7de35242e67e9c030f98f4668644b03a8565b56de1e0b5d6",
       "mode": "0644"
     },
     "mcp.json": {
@@ -579,11 +579,11 @@
       "mode": "0644"
     },
     "package.json": {
-      "content_hash": "blake3:b0c5accb9527251457a065d229175c9bb1350e7e9ee0a0338e07ae28b236555c",
+      "content_hash": "blake3:d5269544e39df9d9fed877f0998de49983092744314f444308194a080c235513",
       "mode": "0644"
     },
     "plugin.json": {
-      "content_hash": "blake3:2a976bb1b625d25353403d08b82b1683726f3c224f632d9c6de97de57b082f57",
+      "content_hash": "blake3:560f103561dfa92578dcbd05d35c6bcabd012e2a9e663d5673912133d7d24a9e",
       "mode": "0644"
     },
     "scripts/mcp-launch.cmd": {

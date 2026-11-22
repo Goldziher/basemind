@@ -70,7 +70,7 @@ The marketplaces serve `./plugin` from `main`, so the release commit reaches `ma
 release is public. Nothing else lands on `main` while a release is in flight.
 
 1. On a branch `release/vX.Y.Z` cut from `main`: `mise run release:sync-version X.Y.Z`, remove
-   `.github/unreleased-surface.toml`, move the changelog's `[Unreleased]` entries under the version.
+   the unreleased-surface marker (`unreleased-surface.toml` under `.github/`), move the changelog's `[Unreleased]` entries under the version.
    Commit, push the branch, never `main`.
 2. `gh workflow run ci.yaml --ref release/vX.Y.Z` and `gh workflow run hardening.yaml --ref
    release/vX.Y.Z`, and wait for both to go green, the harden harness included.
@@ -97,7 +97,7 @@ missing. Every archive is built and run on a clean runner
 
 The plugin manifests pin the last release, and the marketplaces serve `./plugin` from the default
 branch, so plugin content on `main` runs against the pinned binary. When `main` names tools that
-binary lacks, `.github/unreleased-surface.toml` must say so, with `pinned_version`, `since`,
+binary lacks, the unreleased-surface marker (`unreleased-surface.toml` under `.github/`) must say so, with `pinned_version`, `since`,
 `review_by` and `reason` (ADR-0035). `tests/plugin_tool_skew.rs` then reports every unserved name
 instead of failing, fails once `review_by` has passed, and fails when the marker is stale. The
 release commit removes the marker; `publish.yaml` refuses to release while it exists.
