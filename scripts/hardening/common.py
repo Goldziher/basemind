@@ -368,9 +368,7 @@ def _linked(pid: int, ppid: int) -> bool:
     return not IS_WINDOWS or parent_link_holds(pid, ppid, winproc.created)
 
 
-def expand_owned(
-    table: dict[int, int], anchors: set[int], linked: Callable[[int, int], bool], me: int
-) -> set[int]:
+def expand_owned(table: dict[int, int], anchors: set[int], linked: Callable[[int, int], bool], me: int) -> set[int]:
     """`anchors` plus every process in `table` (pid -> ppid) descending from one through `linked`."""
     owned = set(anchors)
     grew = True

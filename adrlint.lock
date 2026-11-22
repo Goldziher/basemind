@@ -166,11 +166,6 @@ number = 46
 status = "accepted"
 blake3 = "8a401042774da68b2c26959929eeaa90bf6d16c7f7849b534fc673aeba3bd6d2"
 
-[adrs."docs/adr/0047-analysis-commands-and-the-import-graph.md"]
-number = 47
-status = "accepted"
-blake3 = "5205fc31826e865c2508794c1497efe81706fdf0a8c832db8b49b0e6dfaa3944"
-
 [adrs."docs/adr/0048-http-routes-and-client-calls.md"]
 number = 48
 status = "accepted"

@@ -39,7 +39,7 @@ is cleaned up.
    prefix and `mcp__basemind__`. `memory_save`, `index_rescan` and the agent tools keep asking.
 7. Update scripts and prompts for the tool renames ("Tool mapping" below) and the `basemind agent`
    CLI ("Upgrading to agent comms v2").
-7. If the daemon's HTTP front-end binds a non-loopback `BASEMIND_HTTP_ADDR`, it is now refused (the
+8. If the daemon's HTTP front-end binds a non-loopback `BASEMIND_HTTP_ADDR`, it is now refused (the
    daemon log says why) unless `BASEMIND_ALLOW_HTTP_REMOTE=1` is set in the daemon's environment as
    well. The transport is plain HTTP, so the bearer token crosses the network in cleartext; prefer a
    loopback address reached through an SSH tunnel or a TLS reverse proxy.
@@ -163,23 +163,30 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   path when the value holds `*` (`src/**/*.rs`; `*` stays within one segment, `**` crosses `/`).
   `path_contains` was a substring, so `mcp` matched `src/mcp/tools.rs`; pass `src/mcp/` or
   `**/mcp/**`. A `docs_search` `path` without `*` is now a prefix: `docs/` where it was `docs/**`.
+
 - **`changed` with a bare revision starts at its merge base.** `"changed": "main"` is the branch's
   own changes since it left `main`, committed or not, and no longer includes what `main` gained
   since. Pass `main..HEAD` for the tree-to-tree difference; `main...HEAD` is the branch's commits
   without the uncommitted changes.
+
 - **`code_grep` is literal by default.** The pattern is plain text unless `regex: true` (`--regex`).
   A script that passed a regex must add the flag, or it searches for the regex source text.
+
 - **Lines are 1-based everywhere**, in arguments and in responses (`line`, `end_line`, `column`).
   Outline, symbol and caller positions were 0-based `start_row` values before; subtract nothing when
   feeding a `line` to `code_read` or `git_blame`.
+
 - **`code_refs` matches the whole identifier.** `open` no longer returns call sites of `open_store`.
   Pass `match: "substring"` for the previous behaviour.
+
 - **Unknown arguments are rejected.** They used to be dropped, so a misspelled filter ran unfiltered
   and reported success. The error names the closest accepted argument and lists all of them.
+
 - **Errors are tool results.** A failure the caller can fix comes back with `isError: true` and text
   naming the fix (a path that is not indexed, an empty index, a compiled-out feature) instead of a
   JSON-RPC error. An empty index is reported with a `notice` (`state: "empty_index"`), never as a
   plain empty list.
+
 - **Errors carry a code.** Every `isError` result sets `structuredContent` to
   `{"error": <code>, "retryable": <bool>}` next to the unchanged text, so a client tells failures
   apart without parsing the message:
@@ -196,6 +203,7 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   `retryable` says whether the same call, unchanged, can succeed later. The overload refusal says
   `busy` where it said `server_busy`: in its code, at the start of its text and as the message of
   the JSON-RPC error a resource read gets. It keeps `retry_after_ms`.
+
 - **Error text names no host path.** A data-home path is written `$BASEMIND_DATA_HOME/…`, a
   repository path repository-relative and another path under the home directory `~/…`; the server
   log keeps the full text. A store or index that cannot be read, and an index a rescan cannot write
@@ -204,41 +212,53 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   <path>`, `corrupt blob at <path>`, `fjall error`) as `internal`. A rescan the daemon runs is
   worded the same way. A panic in a tool answers with a
   fixed message and the failure's reference in the log.
+
 - **Default token budget.** Every list honours a default `max_tokens` of 6000 and sets `budgeted`
   when it trims; page with `next_cursor`, or raise `max_tokens`.
+
 - **`git_diff` reads the working tree.** With no arguments it returns the status (staged, modified,
   untracked); with only `path` it diffs that file's working-tree content against HEAD. `to` defaults
   to the working tree and `from` to HEAD.
+
 - **`find_files` lists documents.** Markdown, config and other document-tier files are returned
   together with code files, including on a long-lived server.
+
 - **`index_status.cache_dir`** is basemind's cache directory. It used to report the tree-sitter
   grammar directory.
+
 - **Results are inline.** A call is answered directly; `index_rescan`, `code_search` and
   `docs_search` become a server-side Task only when still running after 3 s. Fast calls are no longer
   returned as background tasks.
+
 - **`limit: 0` is refused** by every tool that takes `limit`. It returned an empty page, with a
   cursor back to the same position where one was issued.
+
 - **A filter that selects no file is an error.** `code_grep` with a `path` or `language`, and
   `find_files` with a `path` or `language`, that no indexed file passes return an error
   saying what would match (the indexed languages, or the rule `path` was read by;
   `code_grep` names `docs_search` when only documents match). While the index is still being built
   the empty page is returned with its `notice` instead. `git_log {path}` refuses a path that no
   commit reachable from HEAD touches and that is not on disk, for a file and for a directory.
+
 - **`code_grep {regex: true}` anchors per line.** `^` and `$` match at every line, CRLF-aware, as
   in `grep`; they matched only at the ends of the file. No hit is reported past the last line. A
   line ends at `\n`, with a `\r` before it counted into the ending, as `code_read` numbers lines;
   a `\r` on its own is text inside its line.
+
 - **Edited and deleted files.** `code_outline` and a `code_read` symbol read describe a file edited
   since it was indexed as it is now and set `stale: true`; a `code_grep` hit in such a file has
   `stale: true` and no `symbol`. `code_refs` with `path` (and `relation: "definition"`) answers
   from indexed positions only, so there an edited file is an error naming `index_rescan`. A file
   deleted since the scan gets one error from every tool, also naming `index_rescan`. No tool reads
   an indexed file whole once it has grown past `scan.max_file_bytes`.
+
 - **`code_read` cuts at a line.** A body over 128 KiB ends after its last whole line that fits and
   `end_line` is the last line returned: read on from `end_line + 1`.
+
 - **`git_blame {symbol}` reads the blamed revision.** The symbol's span, and a `line` passed to
   pick one of several, are those of the file at `rev` (default HEAD), not of the working tree. A
   blob over `scan.max_file_bytes` is refused: blame a line span instead.
+
 - **A symbol's history pages past its window.** `git_log {path, symbol}` inspects one window of
   the commits touching the file per page and returns `next_cursor` while older commits remain. A
   page can be short or empty and still not be the last (`truncated_reason: "span_limit"`): follow the
@@ -248,27 +268,34 @@ and `--rerank` / `--rerank-top-k` on code search. Every list command takes `--li
   A cursor of any `git_log` list (recent commits, a file's, a directory's or a symbol's history)
   is refused when the git-history index came up (or stopped answering) since it was issued,
   because the index and the live walk order commits differently: restart without `cursor`.
+
 - **A moved file lists its source.** A commit's `files` (`git_log {}`, `git_log {rev}`) lists the
   source of a move as `deleted` beside its destination as `renamed`, so a directory's history holds
   the commit that moved its last file out. A git-history index built by an earlier version keeps
   the old file lists for the commits it already holds.
+
 - **`code_refs` says how each call site was resolved.** The `resolved` flag is replaced by a
   `resolution` on every row: `same_file`, `imported`, `scope_resolved`, `elsewhere` (checked, binds
   to another definition), `name_only` (not checked) or `external` (no indexed definition). A row
   leaves out the page's `resolution_default`, and `resolution_counts` gives the rows per value. The
   free-text `resolution` is now `resolution_note`, and gains `no resolution facts for this
   definition`. Filter with `resolution`, e.g. `"same_file,imported"` for proven callers only.
+
 - **Ranked searches are paged from one retrieval.** `code_search` and `docs_search` cut every page
   from one retrieval of 101 hits (100 can be paged), so a reranker scores up to 101 candidates,
   and a cursor issued before a rescan is refused. The ranked list is kept for up to two minutes, so
   a later page or a repeated call does not rank again. `truncated` says the ranking was cut.
+
 - **`git_diff {}` is bounded.** Each status list is cut at 200 paths, in path order; a `path`
   ending in `/` returns the status under that directory, listing every untracked file on its own,
   with `is_clean` scoped to the directory. A directory that does not exist and has no changed path
   under it is an error, and so is a directory `path` without the trailing slash.
   `structural: true` returns `common` as a count, not a list.
+
 - **`index_rescan {}` is the whole workspace.** The `full` flag is gone (see Removed arguments).
+
 - **Telemetry keys are the tool names** (`code_grep`, not `code:grep`).
+
 - **Annotations are exact per tool.** Everything is read-only except `memory_save` and
   `index_rescan`, so a host that gates on read-only can allow the rest. No tool is destructive.
 

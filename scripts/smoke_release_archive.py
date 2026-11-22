@@ -59,6 +59,7 @@ def missing_notices(root: Path) -> list[str]:
     expected = [*NOTICES, *LINKED_NOTICES, *(f"licenses/{library.name}.txt" for library in sorted(bundled))]
     return [notice for notice in expected if not (root / notice).is_file()]
 
+
 # Seconds `basemind agent status` may report the agent store as `opening` before the smoke fails.
 STORE_OPEN_DEADLINE = 60
 

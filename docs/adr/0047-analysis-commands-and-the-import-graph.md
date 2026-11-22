@@ -199,6 +199,7 @@ refused.
   An empty side of a range is `HEAD`, as in git.
 
   The suffix `+importers` adds the depth-1 importers of every changed file through the graph.
+
 - The scope is a path predicate (`changed::admits`, `src/engine/changed.rs`) in each op's existing
   path filter, and a post-filter on `code_search`. The response adds `scope_files`. An empty scope
   answers `scope_files: 0` and is not an error; an unknown rev is refused.

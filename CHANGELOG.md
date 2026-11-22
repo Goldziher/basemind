@@ -57,7 +57,6 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   daemon an MCP host spawns included. A set `BASEMIND_CACHE_BUDGET_MB` wins over it; `0` disables
   enforcement in either. `basemind cache stats` reports `budget_warning` when a set budget is larger
   than the cache plus the free space on its volume, which the disk fills before eviction starts.
-
 - `basemind upgrade --plan` (#210, CLI only, `--json` too): a dry run of a release-minor rebuild.
   Per repository group and workspace it prints what the next writer open rebuilds (each view kept,
   rebuilt with its reason, set aside or refused, and whether the group index is replaced), the bytes
@@ -73,7 +72,6 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   process is reported too, and `basemind statusline --root` adds it to the status line
   (`indexing 1.2k/40k files · extract · ~3m left`) in place of the "no index" hint during a first
   scan.
-
 - `--help-json` on every command (#332) prints the command's definition as JSON from the clap tree
   the binary parses with: `positional_count` (`min`, `max`, `null` when unbounded), each positional
   and flag with its names, aliases, `takes_value`, value name, default, possible values and env
@@ -84,7 +82,6 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 - `basemind scan --json` and `basemind rescan --json` (#262) print only the `index_rescan` response
   (`scanned`, `updated`, the document and skip counts, `elapsed_ms`, `root`) on stdout, for a scan run
   in the process or forwarded to the daemon. `--json` no longer warns that it has no effect there.
-
 - `basemind memory clear [--yes]` (CLI only) removes every memory note of the repository group, of
   every tier and agent, and empties and purges the vector store of every embedding model. It asks
   for confirmation on a terminal and refuses (exit 2) without `--yes` anywhere else; with the daemon
@@ -320,6 +317,7 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   disk filled. The footprint counts each workspace's git cache, which eviction already removed. A
   set `BASEMIND_CACHE_BUDGET_MB` is enforced as given; `0` still disables enforcement.
   `cache_stats.last_gc.cache_budget_bytes` reports the budget the sweep applied.
+
 - The server instructions, the session-start hook, the rules and the skills describe the agent tools
   without assuming a host feature (#259): they are listed separately and needed only when
   collaborating, instead of "deferred, find them by tool search". On Claude Code, which also shows the
@@ -363,13 +361,13 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   `server_busy`: in its code, at the start of its text and as the message of the JSON-RPC error a
   resource read gets; it keeps `retry_after_ms`. A CLI command that fails prints the error's code
   and message without its JSON `data`.
+
 - Whole-corpus reads cost less (#280). `code_grep` stops reading files once those read hold more
   matches than `limit`: a common pattern reads only the files its page needs, `total` then counts
   those files and `total_is_partial` marks it a lower bound; `next_cursor` pages on as before. The
   import graph behind `code_refs` importers and cycles and the CLI's impact, cycles, deadcode and
   overview is built once per index generation however many calls ask for it at the same time, and
   from its rows as they are read instead of from a copy of all of them.
-
 
 - **BREAKING:** every boolean `BASEMIND_*` variable reads `1`, `true`, `yes`, `on` as true and `0`,
   `false`, `no`, `off` as false, case-insensitive, and a blank value as unset (#293). Any other value
@@ -383,6 +381,7 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   `` `basemind code grep`: `--limit` must be at least 1 `` instead of `` code_grep: `code_grep`: `limit` … ``.
   Busy errors exit `3` because the tool marks them busy, no longer because their text says "index
   not available".
+
 - **BREAKING:** the MCP text block of `code_grep`, `code_outline`, `git_diff` and a `find_files`
   list is no longer JSON (#157, ADR-0053, amending ADR-0034 and ADR-0052). `code_grep` writes its fields
   as `key: value` lines, then `# <path>` and `## <symbol>` headers over its rows, as `rg --heading`
@@ -828,6 +827,7 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   `libstdc++.so.6`. CI no longer installs or builds libheif, and packaging a release fails, naming
   each one, when a library outside the per-platform allowlist in `scripts/check-bundled-libs.sh`
   would be bundled.
+
 - A watcher batch patches the in-RAM file view, term index and document paths instead of copying
   them (#279). They are sorted maps of shared pages of about 256 entries, so the map a batch derives
   shares every page the batch did not touch, and one saved file in a 100k-file workspace rebuilds
@@ -1138,9 +1138,6 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   `read the current directory (pass --root to name the repository)` instead of panicking (#223). A
   scan whose worker pool the OS refuses to spawn, an embedding call whose thread pool cannot be built
   and `Broker::new` when neither the machine registry nor its fallback opens return errors too.
-
-
-
 - A tool error names no absolute host path (#257). A data-home path is written
   `$BASEMIND_DATA_HOME/…`, a repository path repository-relative and any other path under the home
   directory `~/…`; the full text goes to the server log. A store or index that cannot be read (an
@@ -1158,8 +1155,6 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   pre-commit hook is moved to the first free name of `pre-commit.bak`, `pre-commit.bak.1`,
   `pre-commit.bak.2`, ..., so a second forced install over a different hook keeps both. Before, it
   was renamed over `pre-commit.bak`, deleting the hook backed up the first time.
-
-
 - `BASEMIND_GRAMMAR_OFFLINE=false` (or `no`, `off`) no longer means offline: any value but `0` or
   blank turned grammar downloads off. Likewise `BASEMIND_GIT_DISCOVER_PARENTS`, `BASEMIND_GH_INDEX`
   and `BASEMIND_GREP_BLOOM` honoured only `0` as false, and `BASEMIND_NO_AUTOSPAWN`, `BASEMIND_ALLOW_*`
@@ -1177,7 +1172,6 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   `git worktree remove` the removed worktree's cache stayed and the next scan never retired its view
   from the shared group. A cache another process holds locked is skipped. Budget eviction stays with
   the daemon.
-
 - `basemind memory delete` removes the note's vector rows from the store of every embedding model
   of the repository group, not only the configured one, and purges each store after: the deleted
   rows are rewritten out of the data files and every earlier table version is dropped, so a store
