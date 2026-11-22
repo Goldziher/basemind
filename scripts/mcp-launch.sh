@@ -428,10 +428,16 @@ mkdir -p "$PARENT"
 LOCK="$PARENT/.lock-$VERSION"
 STAGING=""
 release_lock() { [ -n "${LOCK_HELD:-}" ] && rmdir "$LOCK" 2>/dev/null || true; }
+# exec replaces the shell without running the EXIT trap, so a path that execs must drop these first. ~keep
+drop_scratch() {
+  [ -n "${TMP:-}" ] && rm -rf "$TMP" 2>/dev/null || true
+  TMP=""
+  [ -n "$STAGING" ] && rm -rf "$STAGING" 2>/dev/null || true
+  STAGING=""
+}
 cleanup() {
   release_lock
-  [ -n "${TMP:-}" ] && rm -rf "$TMP" 2>/dev/null || true
-  [ -n "$STAGING" ] && rm -rf "$STAGING" 2>/dev/null || true
+  drop_scratch
 }
 trap cleanup EXIT
 # A signal ends the run through `exit`, which runs the EXIT trap, so a launcher stopped by a hook's ~keep
@@ -531,6 +537,7 @@ fallback_or_die() {
       log "v${VERSION} is not installable; running basemind ${cand} instead — Claude Code will auto-update to v${VERSION} once its release completes"
       release_lock
       LOCK_HELD=""
+      drop_scratch
       exec env BASEMIND_FORCE_VERSION="$cand" "$0" "${ARGS[@]}"
     done
   fi
@@ -542,6 +549,7 @@ fallback_or_die() {
     LOCK_HELD=""
     mark_used "$(dirname "$fb")"
     cleanup_stale_state
+    drop_scratch
     exec "$fb" "${ARGS[@]}"
   fi
   [ -z "$MIRROR" ] || die_mirror_missing "$reason"

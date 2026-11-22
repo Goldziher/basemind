@@ -292,6 +292,21 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "ran 9.9.0 serve")
         self.assertEqual(self.requests(), [])
 
+    def test_falling_back_to_a_cached_binary_leaves_no_download_scratch_behind(self) -> None:
+        self.pin("9.9.1")
+        self.cache("9.9.0")
+        scratch = self.root / "scratch"
+        scratch.mkdir()
+        # BSD mktemp ignores TMPDIR, so route the launcher's temp files into the directory under test.
+        mktemp = self.bin / "mktemp"
+        mktemp.write_text(f'#!/bin/sh\nexec {shutil.which("mktemp")} "$@" "${{TMPDIR:?}}/tmp.XXXXXXXX"\n')
+        mktemp.chmod(0o755)
+        result = self.launch("serve", extra={"TMPDIR": str(scratch)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "ran 9.9.0 serve")
+        self.assertIn("falling back to compatible cached basemind", result.stderr)
+        self.assertEqual(list(scratch.iterdir()), [])
+
     def test_a_false_basemind_offline_downloads_as_usual(self) -> None:
         self.pin("9.9.0")
         self.publish("9.9.0")

@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:8f101b89e6790b0a1b5fd286bfb20064f6d5a6a6566dce73e2f34ef7a7321ce9",
+  "source_hash": "blake3:3558399856113d44188710b0b00eabafe60cf5d461701c198f0fbab412cfdb05",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:91988e847ee2ad5d46f042bee9a2176ba181f22d07329a6582ace40ef744646e",
@@ -591,7 +591,7 @@
       "mode": "0755"
     },
     "scripts/mcp-launch.sh": {
-      "content_hash": "blake3:67af7e2219338f8741f2c00181e4a96e45c26e744d313cb404c1737146fb57a2",
+      "content_hash": "blake3:e4b11cdbc6b8204780cf21507bb335242f005a150e8aa02c566c2a7314581c67",
       "mode": "0755"
     },
     "scripts/statusline.sh": {
