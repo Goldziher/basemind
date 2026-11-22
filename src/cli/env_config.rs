@@ -60,6 +60,12 @@ fn text(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Option<String
         .filter(|value| !value.trim().is_empty())
 }
 
+/// Whether `value` is an exported but empty variable: empty or whitespace only. A value that is
+/// not Unicode is never blank.
+fn is_blank(value: &OsString) -> bool {
+    value.to_str().is_some_and(|value| value.trim().is_empty())
+}
+
 /// The boolean variable `name`, `None` when it is unset or blank. A value that is not Unicode is
 /// read lossily, so it is refused like any other non-boolean instead of counting as unset.
 fn flag(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Result<Option<bool>, EngineError> {
@@ -82,7 +88,7 @@ pub fn engine_config_from(
     settings: &UserSettings,
 ) -> Result<EngineConfig, EngineError> {
     let mut config = EngineConfig::default();
-    if let Some(home) = lookup(DATA_HOME_ENV) {
+    if let Some(home) = lookup(DATA_HOME_ENV).filter(|value| !is_blank(value)) {
         config.data_root = data_root_from(home);
     }
     config.trust.allow_repo_credentials = flag(&lookup, ALLOW_REPO_CREDENTIALS_ENV)?.unwrap_or(false);
@@ -102,7 +108,7 @@ pub fn engine_config_from(
     config.grammars.offline = flag(&lookup, GRAMMAR_OFFLINE_ENV)?.unwrap_or(false) || offline_all;
     // Blank counts as unset, as the language pack reads it. ~keep
     config.grammars.cache_dir = lookup(GRAMMAR_CACHE_DIR_ENV)
-        .filter(|value| value.to_str().is_none_or(|value| !value.trim().is_empty()))
+        .filter(|value| !is_blank(value))
         .map(absolute);
     config.gc.budget = cache_budget_with(text(&lookup, CACHE_BUDGET_ENV).as_deref(), settings.cache.budget_mb);
     config.gc.grace = cache_grace_from(text(&lookup, CACHE_GRACE_ENV).as_deref());
@@ -245,7 +251,7 @@ pub fn ensure_env_data_home_installed() -> Result<(), String> {
 }
 
 fn check_data_home_installed(value: Option<OsString>, installed: &DataRoot) -> Result<(), String> {
-    let Some(value) = value else {
+    let Some(value) = value.filter(|value| !is_blank(value)) else {
         return Ok(());
     };
     let named = data_root_from(value);
@@ -345,12 +351,13 @@ mod tests {
             DataRoot::new(cwd.join("bm/data")),
             "a relative value is resolved against the current directory once"
         );
-        let empty = config_of(&[(DATA_HOME_ENV, "")]).data_root;
-        assert!(empty.path().is_absolute(), "{empty:?}");
-        assert!(
-            empty.same_home(&DataRoot::new(&cwd)),
-            "an empty value is the current directory"
-        );
+        for blank in ["", "  "] {
+            assert_eq!(
+                config_of(&[(DATA_HOME_ENV, blank)]).data_root,
+                DataRoot::platform_default(),
+                "a blank value counts as unset: {blank:?}"
+            );
+        }
         assert_eq!(config_of(&[]).data_root, DataRoot::platform_default());
     }
 
@@ -359,6 +366,9 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
         let installed = DataRoot::new(home.path());
         assert_eq!(check_data_home_installed(None, &installed), Ok(()));
+        for blank in ["", "  "] {
+            assert_eq!(check_data_home_installed(Some(blank.into()), &installed), Ok(()));
+        }
         assert_eq!(
             check_data_home_installed(Some(home.path().as_os_str().to_owned()), &installed),
             Ok(())

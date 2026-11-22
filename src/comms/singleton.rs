@@ -301,7 +301,7 @@ pub fn comms_base_dir() -> Result<PathBuf, SingletonError> {
 /// The [`COMMS_DIR_ENV`] override, when set.
 fn comms_dir_override() -> Option<PathBuf> {
     std::env::var_os(COMMS_DIR_ENV)
-        .filter(|dir| !dir.is_empty())
+        .filter(|dir| dir.to_str().is_none_or(|dir| !dir.trim().is_empty()))
         .map(PathBuf::from)
 }
 
