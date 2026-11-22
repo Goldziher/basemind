@@ -4,8 +4,12 @@ use super::*;
 use crate::intel::model::ImportEdge;
 
 fn imports_of(lang: LangId, src: &str) -> Option<Vec<ImportEdge>> {
+    let _ = crate::lang::ensure_grammars();
     if crate::lang::language(lang).is_err() {
-        eprintln!("skip: {lang} grammar unavailable in this environment");
+        crate::testing::unavailable(
+            "BASEMIND_TEST_ALLOW_NO_GRAMMAR",
+            &format!("the {lang} grammar is unavailable"),
+        );
         return None;
     }
     let mut out = FileResolvedRefs::new(lang);
