@@ -2021,7 +2021,6 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
     assert_eq!(paths, ["airship.md"], "the filter runs before the cut: {by_path}");
 
     for empty in [
-        json!({ "query": "harbour", "keywords": "no-document-has-this-keyword" }),
         json!({ "query": "harbour", "format": "pdf" }),
         json!({ "query": "harbour", "mime_type": "application/pdf" }),
     ] {
@@ -2032,6 +2031,18 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
             "an empty filter is not a cut: {answer}"
         );
     }
+
+    // The served config has keyword extraction off, so a keywords filter that finds nothing says how
+    // to turn it on instead of answering as if no document matched.
+    let no_extractor = call(json!({ "query": "harbour", "keywords": "no-document-has-this-keyword" }))
+        .await
+        .expect("docs_search");
+    assert_eq!(no_extractor.is_error, Some(true), "{no_extractor:?}");
+    assert!(
+        error_text(&no_extractor).contains("[documents.keywords]"),
+        "{}",
+        error_text(&no_extractor)
+    );
 
     let bad_format = call(json!({ "query": "harbour", "format": "slides" }))
         .await
