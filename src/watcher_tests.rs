@@ -519,7 +519,12 @@ fn batch(kind: EventKind, paths: &[&str]) -> DebounceEventResult {
 
 /// The gate of a default config rooted at `/repo`, whose paths need not exist.
 fn test_gate() -> EventGate {
-    let config = crate::config::default_for_root(Path::new("/repo"));
+    gate_with_excludes(&[])
+}
+
+fn gate_with_excludes(exclude: &[&str]) -> EventGate {
+    let mut config = crate::config::default_for_root(Path::new("/repo"));
+    config.scan.exclude = exclude.iter().map(|s| s.to_string()).collect();
     let filter =
         crate::scanner_filter::IndexFilter::new(Path::new("/repo"), &config, crate::retrieval_wiring::backend())
             .expect("filter builds");
@@ -820,4 +825,33 @@ fn should_drop_excluded_events_before_queueing_or_coalescing() {
     };
     let kept: Vec<&PathBuf> = events.iter().flat_map(|e| &e.event.paths).collect();
     assert_eq!(kept, vec![&PathBuf::from("/repo/src/a.rs")]);
+}
+
+/// `**/generated` constrains files, not subtrees: files under `a/generated/` stay indexed, so a
+/// rename that names only the directory must reach the consumer, while `P/**` excludes still drop.
+#[test]
+fn should_keep_a_directory_event_an_explicit_exclude_does_not_prune() {
+    let gate = gate_with_excludes(&["**/generated", "vendor/**"]);
+    let mut events = batch(MODIFY, &["/repo/a/generated", "/repo/vendor/x/y.rs"]).expect("batch is ok");
+    gate.retain(&mut events);
+    let kept: Vec<&PathBuf> = events.iter().flat_map(|e| &e.event.paths).collect();
+    assert_eq!(kept, vec![&PathBuf::from("/repo/a/generated")]);
+}
+
+/// The consumer's pre-stat check must not drop a directory the directory rules admit.
+#[test]
+fn should_keep_a_renamed_directory_matching_a_file_level_exclude() {
+    let root = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(root.path().join("a/generated")).expect("mkdir");
+    std::fs::write(root.path().join("a/generated/x.rs"), "fn x() {}").expect("write");
+    let mut config = crate::config::default_for_root(root.path());
+    config.scan.exclude = vec!["**/generated".to_string()];
+    let filter = crate::scanner_filter::IndexFilter::new(root.path(), &config, crate::retrieval_wiring::backend())
+        .expect("filter builds");
+    assert!(keep_event_path(
+        &filter,
+        root.path(),
+        &root.path().join("a/generated"),
+        true
+    ));
 }

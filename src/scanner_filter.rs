@@ -433,10 +433,19 @@ impl Filters {
         self.exclude.is_match(rel) || under_submodule(rel, &self.submodule_prefixes)
     }
 
-    /// Detach the exclusion half of [`Filters::allows`] as an owned gate.
+    /// True when `rel` is excluded whether it names a file or a directory: the file-level
+    /// excludes match it and the directory-level set (or a skipped submodule) prunes it. An
+    /// explicit `**/generated` constrains files only, so a path it matches may still be a directory
+    /// whose files are indexed.
+    pub(crate) fn excluded_as_any_kind(&self, rel: &str) -> bool {
+        under_submodule(rel, &self.submodule_prefixes) || (self.exclude.is_match(rel) && self.dir_exclude.is_match(rel))
+    }
+
+    /// Detach the kind-agnostic exclusion of [`Filters::allows`] as an owned gate.
     pub(crate) fn exclusion_gate(&self) -> ExclusionGate {
         ExclusionGate {
             exclude: self.exclude.clone(),
+            dir_exclude: Arc::clone(&self.dir_exclude),
             submodule_prefixes: Arc::clone(&self.submodule_prefixes),
         }
     }
@@ -498,12 +507,15 @@ impl Filters {
 #[derive(Clone)]
 pub(crate) struct ExclusionGate {
     exclude: globset::GlobSet,
+    dir_exclude: Arc<globset::GlobSet>,
     submodule_prefixes: Arc<[String]>,
 }
 
 impl ExclusionGate {
+    /// The gate sees no file kind, so a path is dropped only when it is excluded as a file and as a
+    /// directory (see [`Filters::excluded_as_any_kind`]).
     pub(crate) fn excludes(&self, rel: &str) -> bool {
-        self.exclude.is_match(rel) || under_submodule(rel, &self.submodule_prefixes)
+        under_submodule(rel, &self.submodule_prefixes) || (self.exclude.is_match(rel) && self.dir_exclude.is_match(rel))
     }
 }
 
@@ -682,9 +694,9 @@ impl IndexFilter {
         Arc::new(self.filters.exclusion_gate())
     }
 
-    /// Path-only: is `rel` dropped by the exclude globs or a skipped submodule root?
+    /// Path-only and kind-agnostic: is `rel` excluded as a file and as a directory?
     pub(crate) fn excluded(&self, rel: &str) -> bool {
-        self.filters.excluded(rel)
+        self.filters.excluded_as_any_kind(rel)
     }
 
     /// Borrow the underlying glob/submodule filters — `run_candidates` needs them and they were
