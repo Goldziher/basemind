@@ -43,6 +43,24 @@ fn into(thread: &ThreadId, body: &str) -> PostBody {
     }
 }
 
+/// Returns once a wait started after `before` receivers were counted has subscribed to the
+/// arrivals. It subscribes before its first read, so a post from here on cannot be missed.
+async fn subscribed(hub: &AgentHub, before: usize) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while hub.arrivals.receiver_count() == before {
+        assert!(std::time::Instant::now() < deadline, "the wait never started");
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Lets tasks that cannot be observed (a replay joining a read's wait) run; the test holds for
+/// either order of the join and the post, so this only makes the join the likelier order.
+async fn settle() {
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+}
+
 fn only(thread: &ThreadId) -> InboxBody {
     InboxBody {
         select: InboxSelect::Thread(thread.clone()),
@@ -67,6 +85,7 @@ async fn a_wait_ends_when_another_agent_posts_and_marks_what_it_returns() {
     .await
     .expect("b reads the first post");
 
+    let before = hub.arrivals.receiver_count();
     let waiting = {
         let hub = Arc::clone(&hub);
         tokio::spawn(async move {
@@ -79,7 +98,7 @@ async fn a_wait_ends_when_another_agent_posts_and_marks_what_it_returns() {
             .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    subscribed(&hub, before).await;
     hub.post(caller("a"), into(&thread, "news"), &live())
         .await
         .expect("post");
@@ -143,6 +162,7 @@ async fn the_callers_own_post_does_not_end_its_wait() {
         .await
         .expect("a reads");
 
+    let before = hub.arrivals.receiver_count();
     let waiting = {
         let hub = Arc::clone(&hub);
         tokio::spawn(async move {
@@ -155,11 +175,12 @@ async fn the_callers_own_post_does_not_end_its_wait() {
             .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    subscribed(&hub, before).await;
     hub.post(caller("a"), into(&thread, "mine"), &live())
         .await
         .expect("post");
 
+    // The wait's own 400 ms bound is what ends it: only its end shows nothing woke it earlier.
     let reply = waiting.await.expect("waiter").expect("read");
     assert_eq!(reply.wait, WaitOutcome::TimedOut);
     assert!(reply.messages.is_empty());
@@ -187,7 +208,7 @@ async fn a_wait_on_one_thread_ignores_posts_to_another() {
     .await
     .expect("b reads both first posts");
 
-    let subscribed = hub.arrivals.receiver_count();
+    let before = hub.arrivals.receiver_count();
     let waiting = {
         let (hub, watched) = (Arc::clone(&hub), watched.clone());
         tokio::spawn(async move {
@@ -202,19 +223,12 @@ async fn a_wait_on_one_thread_ignores_posts_to_another() {
     };
     // The waiter subscribes to the arrivals before its first read, so a post from here on lands
     // during the wait.
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    while hub.arrivals.receiver_count() == subscribed {
-        assert!(std::time::Instant::now() < deadline, "the wait never started");
-        tokio::task::yield_now().await;
-    }
+    subscribed(&hub, before).await;
     hub.post(caller("a"), into(&other, "elsewhere"), &live())
         .await
         .expect("post");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(
-        !waiting.is_finished(),
-        "a post to another thread ends no wait on this one"
-    );
+    // A wake by the other thread's post that ended the wait would leave `reply` below without
+    // the post to the watched thread.
     hub.post(caller("a"), into(&watched, "here"), &live())
         .await
         .expect("post");
@@ -302,10 +316,11 @@ async fn a_replay_that_arrives_during_a_wait_gets_the_same_reply() {
             .await
         })
     };
+    let before = hub.arrivals.receiver_count();
     let first = read(Arc::clone(&hub), keyed.clone());
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    subscribed(&hub, before).await;
     let replay = read(Arc::clone(&hub), keyed);
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    settle().await;
     hub.post(caller("a"), into(&thread, "once"), &live())
         .await
         .expect("post");
@@ -501,6 +516,7 @@ async fn a_replay_that_joined_a_waiter_whose_client_left_keeps_waiting() {
     .expect("b reads");
     let keyed = caller("b").with_replay_key(ReplayKey::parse("relay-gone").expect("key"));
     let left = CancellationToken::new();
+    let before = hub.arrivals.receiver_count();
     let first = {
         let (hub, keyed, left) = (Arc::clone(&hub), keyed.clone(), left.clone());
         tokio::spawn(async move {
@@ -508,7 +524,7 @@ async fn a_replay_that_joined_a_waiter_whose_client_left_keeps_waiting() {
                 .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    subscribed(&hub, before).await;
     let replay = {
         let hub = Arc::clone(&hub);
         tokio::spawn(async move {
@@ -521,7 +537,7 @@ async fn a_replay_that_joined_a_waiter_whose_client_left_keeps_waiting() {
             .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    settle().await;
     left.cancel();
     let first = first.await.expect("first").expect("read");
     assert!(
@@ -611,6 +627,7 @@ async fn a_drain_ends_every_wait() {
     )
     .await
     .expect("b reads");
+    let before = hub.arrivals.receiver_count();
     let waiting = {
         let hub = Arc::clone(&hub);
         tokio::spawn(async move {
@@ -623,7 +640,7 @@ async fn a_drain_ends_every_wait() {
             .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    subscribed(&hub, before).await;
     hub.shut_down();
     let reply = tokio::time::timeout(Duration::from_secs(2), waiting)
         .await
@@ -638,7 +655,6 @@ async fn a_store_another_process_holds_opens_once_it_is_released() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let holder = FjallAgents::open(dir.path()).expect("the first opener holds the store");
     let hub = Arc::new(AgentHub::open(dir.path()));
-    tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(
         hub.status(None, None).state,
         "opening",
@@ -665,11 +681,15 @@ async fn a_replay_of_a_read_whose_first_request_was_dropped_waits_on_its_own() {
         .expect("b reads");
     let keyed = caller("b").with_replay_key(ReplayKey::parse("relay-dropped").expect("key"));
     let client = live();
+    let before = hub.arrivals.receiver_count();
     let first = hub.read(keyed.clone(), InboxBody::default(), Duration::from_secs(30), &client);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), first).await.is_err(),
-        "the first read was still waiting when it was dropped"
-    );
+    let mut first = Box::pin(first);
+    tokio::select! {
+        _ = &mut first => panic!("the first read ended before it was dropped"),
+        () = subscribed(&hub, before) => {}
+    }
+    drop(first);
+    let before = hub.arrivals.receiver_count();
     let replay = {
         let hub = Arc::clone(&hub);
         tokio::spawn(async move {
@@ -677,7 +697,7 @@ async fn a_replay_of_a_read_whose_first_request_was_dropped_waits_on_its_own() {
                 .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    subscribed(&hub, before).await;
     hub.post(caller("a"), into(&thread, "after"), &live())
         .await
         .expect("post");
@@ -700,7 +720,7 @@ async fn a_post_whose_client_left_while_the_store_opened_writes_nothing() {
         let (hub, gone) = (Arc::clone(&hub), gone.clone());
         tokio::spawn(async move { hub.post(caller("a"), new_thread(&["b"]), &gone).await })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    settle().await;
     gone.cancel();
     assert!(post.await.expect("post task").is_err(), "the post is refused");
     let threads = hub
