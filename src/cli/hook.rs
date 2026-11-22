@@ -91,14 +91,15 @@ pub fn is_installed(hooks_dir: &Path) -> bool {
 }
 
 /// Write the hook into `hooks_dir`, creating it if needed. A foreign hook is an error without
-/// `force`; with it, the foreign hook is moved to the first free name of `pre-commit.bak`,
+/// `force`; a hook that merely contains [`HOOK_MARKER`] but differs from [`HOOK_BODY`] (the user added
+/// lines) counts as foreign. With `force`, the foreign hook is moved to the first free name of `pre-commit.bak`,
 /// `pre-commit.bak.1`, `pre-commit.bak.2`, ..., so no earlier backup is replaced.
 pub fn install_into(hooks_dir: &Path, force: bool) -> Result<(PathBuf, Installed)> {
     std::fs::create_dir_all(hooks_dir).with_context(|| format!("create {}", hooks_dir.display()))?;
     let hook_path = hooks_dir.join("pre-commit");
     let outcome = match std::fs::read_to_string(&hook_path) {
         Err(_) if !hook_path.exists() => Installed::Fresh,
-        Ok(existing) if existing.contains(HOOK_MARKER) => Installed::Refreshed,
+        Ok(existing) if existing == HOOK_BODY => Installed::Refreshed,
         _ if force => {
             let backup = free_backup_path(hooks_dir)?;
             std::fs::rename(&hook_path, &backup).with_context(|| format!("back up {}", hook_path.display()))?;
@@ -149,6 +150,30 @@ mod tests {
         assert_eq!(install_into(&hooks, false).unwrap().1, Installed::Fresh);
         assert!(is_installed(&hooks));
         assert_eq!(install_into(&hooks, false).unwrap().1, Installed::Refreshed);
+    }
+
+    #[test]
+    fn should_treat_an_edited_marker_hook_as_foreign() {
+        let dir = tempfile::tempdir().unwrap();
+        let hook = dir.path().join("pre-commit");
+        let edited = format!("{HOOK_BODY}echo my own check\n");
+        std::fs::write(&hook, &edited).unwrap();
+        let err = install_into(dir.path(), false).unwrap_err();
+        assert!(err.to_string().contains("--force"), "{err}");
+        assert_eq!(std::fs::read_to_string(&hook).unwrap(), edited, "left untouched");
+
+        let (_, outcome) = install_into(dir.path(), true).unwrap();
+        assert_eq!(
+            outcome,
+            Installed::ReplacedForeign {
+                backup: dir.path().join("pre-commit.bak")
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("pre-commit.bak")).unwrap(),
+            edited
+        );
+        assert_eq!(std::fs::read_to_string(&hook).unwrap(), HOOK_BODY);
     }
 
     #[test]

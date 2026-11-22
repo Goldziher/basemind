@@ -1030,6 +1030,9 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 - `basemind lang clean` refuses (exit 2) while grammars are offline (`BASEMIND_OFFLINE` or
   `BASEMIND_GRAMMAR_OFFLINE`) unless `--yes` is passed, so it no longer empties a hand-copied
   grammar cache that cannot be downloaded again.
+- `basemind hook install` refreshes the pre-commit hook in place only when it equals the shipped
+  hook byte for byte; a hook that carries the marker but has lines added is treated as foreign
+  (refused, or backed up with `--force`) instead of being overwritten.
 - On Linux, a directory the inotify watch limit refused a watch no longer goes stale without a
   word (#334). `index_status` gains `watches`: the watches the daemon holds (`held`) and, once
   `fs.inotify.max_user_watches` is exhausted, the directories left unwatched (`unwatched`), the
