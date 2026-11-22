@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:4e0c6129b75370eb731577681f361351d175605ae707936d9b445072cab00288
-Source-Hash: blake3:afa8c8c47fb244d2dbc7f0afd2322677bf22148e0020fc1ce662c373aa83bb0a
+Content-Hash: blake3:83b5000579dd4c2aaba6771417eda7ec8b4b2950c8c35f8cb1a3a2d7ab626e57
+Source-Hash: blake3:7cf46d1e1bc5b1e7e3626621108e4cc0491f3257da1d78e8c21cb3a3c193b15b
 Schema-Version: v1
 -->
 
@@ -69,7 +69,7 @@ neither. Both files live in this workspace's directory under the machine-global 
   session has them attached (if not, reconnect the client: step 4); it keeps the index fresh as you
   edit. For a file a result calls stale, run `index_rescan {"paths":["src/store.rs"]}` or
   `basemind rescan src/store.rs`; for an empty, `degraded` or `rescan_needed` index, or changed
-  `scan.extra_roots` files, `index_rescan {}`. If the session cannot call the tools, stop that
+  files under an extra scan root, `index_rescan {}`. If the session cannot call the tools, stop that
   `basemind serve`, run `basemind scan`, then reconnect.
 - If it is a standalone `basemind watch`, there is no MCP server to take an `index_rescan`, and
   `basemind rescan` exits 3 on the lock. The watcher re-indexes edits itself; to rescan or rebuild,

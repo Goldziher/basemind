@@ -92,7 +92,6 @@ const RESULT_VOCABULARY: &[(&str, &str)] = &[
 const NOT_TOOL_VOCABULARY: &[&str] = &[
     "bash_alt",
     "cache_root",
-    "grep_args",
     "grep_call",
     "mime_type",
     "open_store",

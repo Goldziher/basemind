@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:3dcb9a95242d64ce128f21b149456525786d6207d93809c94ec6db5376432187
-Source-Hash: blake3:afa8c8c47fb244d2dbc7f0afd2322677bf22148e0020fc1ce662c373aa83bb0a
+Content-Hash: blake3:d9c09e114acc790c3712e8ada019917c4ebe3ca89687193d05f7c284fc9e88cf
+Source-Hash: blake3:7cf46d1e1bc5b1e7e3626621108e4cc0491f3257da1d78e8c21cb3a3c193b15b
 Schema-Version: v1
 -->
 
@@ -65,7 +65,7 @@ format has it), the matched `text` with its neighbouring chunks (`context`), the
 its rank in each lane (`lanes`) and, when the reranker scored it, `rerank_score`. The page reports
 `lanes_ran`, `lanes_unavailable` with the reason, and `rerank`. `entity` and `keywords` keep the
 documents whose parent carries a matching entity category or keyword (AND-combined when both are
-set); `kind` filters by format and `path` by a glob over document paths.
+set); `format` filters by document format and `path` by a glob over document paths.
 
 ## Examples
 
@@ -77,7 +77,7 @@ docs_search {"query":"how is the index schema versioned","limit":5}
             "text":"…","score":0.03,"rerank_score":0.91,…}, …],
    "lanes_ran":["vector","lexical"],…}
 
-docs_search {"query":"…","kind":"pdf","path":"docs/**"}
+docs_search {"query":"…","format":"pdf","path":"docs/**"}
 ```
 
 ## Notes

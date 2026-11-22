@@ -68,7 +68,7 @@ format has it), the matched `text` with its neighbouring chunks (`context`), the
 its rank in each lane (`lanes`) and, when the reranker scored it, `rerank_score`. The page reports
 `lanes_ran`, `lanes_unavailable` with the reason, and `rerank`. `entity` and `keywords` keep the
 documents whose parent carries a matching entity category or keyword (AND-combined when both are
-set); `kind` filters by format and `path` by a glob over document paths.
+set); `format` filters by document format and `path` by a glob over document paths.
 
 ## Examples
 
@@ -80,7 +80,7 @@ docs_search {"query":"how is the index schema versioned","limit":5}
             "text":"…","score":0.03,"rerank_score":0.91,…}, …],
    "lanes_ran":["vector","lexical"],…}
 
-docs_search {"query":"…","kind":"pdf","path":"docs/**"}
+docs_search {"query":"…","format":"pdf","path":"docs/**"}
 ```
 
 ## Notes

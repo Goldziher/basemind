@@ -155,7 +155,8 @@ Grep)
   # Grep without a path searches its working directory, so scope to cwd as for an explicit ".".
   [ -n "${grep_path}" ] || grep_path="."
   grep_path="$(grep_scope "$(repo_relative "${grep_path}" "${grep_cwd}")" "${grep_glob}")"
-  grep_call="code_grep {\"pattern\":\"$(json_escape "${grep_pattern}")\",\"regex\":true"
+  escpat="$(json_escape "${grep_pattern}")"
+  grep_call="code_grep {\"pattern\":\"${escpat}\",\"regex\":true"
   [ -z "${grep_path}" ] || grep_call="${grep_call},\"path\":\"$(json_escape "${grep_path}")\""
   grep_call="${grep_call}}"
   alt="basemind ${grep_call} (indexed code, markdown, config and data files; a file the index leaves out still needs rg in Bash), code_symbols {\"name\":\"…\"} for a definition or code_refs {\"name\":\"…\"} for usages; a question by meaning: docs_search {\"query\":\"…\"}"
