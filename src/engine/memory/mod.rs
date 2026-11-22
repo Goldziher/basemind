@@ -10,6 +10,7 @@ pub(crate) mod ops;
 pub(crate) mod test_support;
 pub(crate) mod vectors;
 
+use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use self::ops::WireMemoryEntry;
@@ -81,10 +82,24 @@ fn embed_report(outcome: Option<Result<(), String>>) -> (bool, Option<String>) {
     }
 }
 
-/// The refusal for a memory call on a session that holds no index: another process holds the
-/// workspace's index lock and no daemon serves it. It names the fix, and is busy so the CLI exits
-/// `3`.
-pub(crate) fn index_unavailable() -> EngineError {
+/// The refusal for a memory call on a session that holds no index. A workspace nothing has scanned
+/// has no index to hold, so it is told to scan; otherwise another process holds the workspace's
+/// index lock and no daemon serves it, which names the fix and is busy so the CLI exits `3`.
+pub(crate) fn index_unavailable(root: &Path) -> EngineError {
+    index_refusal(
+        crate::store_layout::group_index_dir(root)
+            .join(crate::index::INDEX_DIR)
+            .is_dir(),
+    )
+}
+
+/// [`index_unavailable`] given whether the workspace's group index exists on disk.
+pub(crate) fn index_refusal(index_exists: bool) -> EngineError {
+    if !index_exists {
+        return EngineError::index_unavailable(
+            "memory: this workspace has no index yet. Run `basemind scan` first, then retry.",
+        );
+    }
     EngineError::busy(
         "memory: the memory_by_key index not available here: another basemind process holds this \
          workspace's index. Start the daemon (`basemind comms start`), which then serves memory to every \
@@ -170,7 +185,7 @@ impl Workspace {
         let key_lock = memory_put_lock(&self.scope, vis_byte, owner, key);
         let _put_guard = key_lock.lock().unwrap_or_else(PoisonError::into_inner);
         let store = self.store_read();
-        let idx = store.index_handle().ok_or_else(index_unavailable)?;
+        let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
         Ok(ops::put_core(&idx, &self.scope, vis_byte, owner, key, value, tags)?)
     }
 
@@ -188,7 +203,7 @@ impl Workspace {
         key: &str,
     ) -> Result<Option<WireMemoryEntry>, EngineError> {
         let store = self.store_read();
-        let idx = store.index_handle().ok_or_else(index_unavailable)?;
+        let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
         Ok(ops::get_core(&idx, &self.scope, vis_byte, owner, key)?)
     }
 
@@ -207,7 +222,7 @@ impl Workspace {
             let rest = &keys[entries.len()..];
             let chunk = &rest[..rest.len().min(ops::GET_MANY_MAX_KEYS)];
             let store = self.store_read();
-            let idx = store.index_handle().ok_or_else(index_unavailable)?;
+            let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
             entries.extend(ops::get_many_core(&idx, &self.scope, vis_byte, owner, chunk)?);
         }
         Ok(entries)
@@ -226,7 +241,7 @@ impl Workspace {
             let rest = &keys[stamps.len()..];
             let chunk = &rest[..rest.len().min(ops::STAMPS_MAX_KEYS)];
             let store = self.store_read();
-            let idx = store.index_handle().ok_or_else(index_unavailable)?;
+            let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
             stamps.extend(ops::stamps_core(&idx, &self.scope, vis_byte, owner, chunk)?);
         }
         Ok(stamps)
@@ -268,7 +283,7 @@ impl Workspace {
         cursor: Option<Vec<u8>>,
     ) -> Result<ops::ListResult, EngineError> {
         let store = self.store_read();
-        let idx = store.index_handle().ok_or_else(index_unavailable)?;
+        let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
         Ok(ops::list_core(
             &idx,
             &self.scope,
@@ -288,7 +303,7 @@ impl Workspace {
     pub(crate) fn memory_clear_group(&self) -> Result<MemoryClearResponse, EngineError> {
         let notes_removed = {
             let store = self.store_read();
-            let idx = store.index_handle().ok_or_else(index_unavailable)?;
+            let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
             ops::clear_core(&idx)?
         };
         let purge = vectors::purge_every_vector_row(self);
@@ -305,7 +320,7 @@ impl Workspace {
         let (vis_byte, owner) = self.memory_namespace(params.visibility);
         let deleted = {
             let store = self.store_read();
-            let idx = store.index_handle().ok_or_else(index_unavailable)?;
+            let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
             ops::delete_core(&idx, &self.scope, vis_byte, owner, &params.key)?
         };
         let purge = vectors::purge_vector_rows(self, params.visibility, owner, &params.key);

@@ -256,6 +256,26 @@ fn memory_clear_demands_yes_off_a_terminal_and_removes_every_note() {
     );
 }
 
+/// `memory put` in a workspace nothing has scanned is not a held lock: it exits `1` and says to run
+/// `basemind scan` (#430).
+#[test]
+fn memory_put_in_a_never_scanned_workspace_says_to_scan() {
+    if !cfg!(feature = "memory") {
+        return;
+    }
+    let env = Env::new();
+
+    let refused = env.run(&["memory", "put", "k1", "a note"]);
+
+    assert_eq!(code(&refused), 1, "{}", text(&refused));
+    assert!(text(&refused).contains("basemind scan"), "{}", text(&refused));
+    assert!(
+        !text(&refused).contains("another basemind process"),
+        "{}",
+        text(&refused)
+    );
+}
+
 /// With no daemon up, `memory clear` refuses busy while another process holds the index, names the
 /// fix, and leaves the notes.
 #[test]

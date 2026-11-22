@@ -1015,6 +1015,9 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   its two `Subproject commit <id>` lines, a tracked symlink as its link text on both sides (the
   file it points to is not read), and a directory is refused with an invalid-argument error that
   names `git_log` for its history.
+- `basemind memory put` and the other memory calls in a workspace nothing has scanned said another
+  process holds the index lock. They now say the workspace has no index and to run `basemind scan`;
+  a genuinely held index still exits `3` (#430).
 - On Linux, a directory the inotify watch limit refused a watch no longer goes stale without a
   word (#334). `index_status` gains `watches`: the watches the daemon holds (`held`) and, once
   `fs.inotify.max_user_watches` is exhausted, the directories left unwatched (`unwatched`), the
