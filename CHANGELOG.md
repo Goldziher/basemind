@@ -237,8 +237,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The plugin launcher downloads releases from a mirror when `BASEMIND_RELEASE_BASE_URL` is set
   (#207): `<base>/v<version>/` holds the platform archives and `basemind_<version>_checksums.txt`, as
   a GitHub release does, and the archive is verified against that checksums file before it is
-  installed. With a mirror set the launcher asks GitHub for nothing, and a mirror missing the pinned
+  installed. A mirror is `https://`, `file:///` or a loopback `http://` URL, since plain HTTP would let
+  a network attacker replace the archive and its checksums together. With a mirror set the launcher asks GitHub for nothing, and a mirror missing the pinned
   release is named in the error with the files it needs.
+- `BASEMIND_OFFLINE=1` turns every download off at runtime (#208): grammars, the Hugging Face embedding,
+  reranker and tokenizer models (basemind sets `HF_HUB_OFFLINE` for itself and the daemon it starts),
+  and the plugin launcher's binary download. The npm and pip installers run before basemind does and
+  still download a binary that is not cached. A missing grammar names the grammars and the cache to
+  copy them into, a missing model names its file and repository, and the launcher names the release
+  archive, runs a cached binary of the pinned minor when it has one, and points at `BASEMIND_BIN`.
+  `docs/network.md` lists every host basemind downloads from, what triggers each download, and the
+  variables that redirect it (`BASEMIND_RELEASE_BASE_URL`, `HF_ENDPOINT`,
+  `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL`).
 
 ### Changed
 
@@ -1121,6 +1131,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   written by an earlier release, whose rows carried the note's text, no longer keeps it. The
   `memory_save` description and the memory manual now say notes are plain text on local disk and
   must not hold secrets (#324).
+- Offline mode did not stop the grammar download a file in a language not yet cached triggers on
+  first use; only the scan's bootstrap and `basemind lang install` honoured it. The file's grammar is
+  now refused with the same error (#208).
 - A call site is recorded at its callee name, not where its call expression starts. In a method chain
   written over several lines (`target`, `.steal`, `.steal_into(..)`) `code_refs`, `code explain` and
   `code migration check` reported the receiver's line, up to several lines above the method name a

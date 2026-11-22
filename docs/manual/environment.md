@@ -53,6 +53,7 @@ and `queued` under `admission`.
 | Variable | Effect |
 |---|---|
 | `BASEMIND_OFFLINE` | Never download a grammar or a model, for this process and the daemon it starts; a missing one is an error naming it. Sets `HF_HUB_OFFLINE` for the models. `1`, `true`, `yes` or `on` turns it on and `0`, `false`, `no` or `off` leaves it off, in any case; blank is unset, and any other value stops basemind with an error naming the variable, as the plugin launcher reads it too. |
+| `BASEMIND_RELEASE_BASE_URL` | Plugin launcher: download releases from a mirror instead of GitHub (`https://`, `file:///` or a loopback `http://` URL; layout in `docs/network.md`). |
 | `HF_ENDPOINT` | The Hugging Face server the models are downloaded from (default `https://huggingface.co`), for a mirror. |
 | `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL` | Where the grammar manifest is fetched from, for a mirror (`https://` or `file://`). |
 
