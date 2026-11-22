@@ -73,10 +73,13 @@ fn rewrite(text: &str, spelling: &str, root: &Root) -> String {
     let mut rest = text;
     while let Some(at) = rest.find(spelling) {
         let consumed = text.len() - rest.len() + at;
-        let mid_path = text[..consumed]
-            .chars()
-            .next_back()
-            .is_some_and(|prev| prev.is_alphanumeric() || matches!(prev, '_' | '-' | '.' | '~' | '/' | '\\'));
+        let before = &text[..consumed];
+        let scheme_boundary = before.ends_with("://");
+        let mid_path = !scheme_boundary
+            && before
+                .chars()
+                .next_back()
+                .is_some_and(|prev| prev.is_alphanumeric() || matches!(prev, '_' | '-' | '.' | '~' | '/' | '\\'));
         if mid_path {
             let first = spelling.chars().next().map_or(1, char::len_utf8);
             out.push_str(&rest[..at + first]);
@@ -157,6 +160,20 @@ mod tests {
             redaction().apply("/mnt/home/someone/x and /home/someone/y"),
             "/mnt/home/someone/x and ~/y"
         );
+    }
+
+    #[test]
+    fn a_root_after_a_url_scheme_is_redacted() {
+        assert_eq!(
+            redaction().apply("file:///home/someone/x and sqlite:///home/someone/code/repo/db"),
+            "file://~/x and sqlite://db"
+        );
+    }
+
+    #[test]
+    fn a_root_after_a_tilde_or_dot_is_left_alone() {
+        let text = "~/home/someone/x and ./home/someone/y";
+        assert_eq!(redaction().apply(text), text);
     }
 
     #[test]
