@@ -43,7 +43,7 @@ fn bin() -> &'static str {
 }
 
 fn git(args: &[&str], cwd: &Path) {
-    let out = Command::new("git")
+    let out = basemind::testing::git_command()
         .args(args)
         .current_dir(cwd)
         .output()

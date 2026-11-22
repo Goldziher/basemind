@@ -10,7 +10,7 @@ fn bin() -> &'static str {
 }
 
 fn git(repo: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = basemind::testing::git_command()
         .args(args)
         .current_dir(repo)
         .status()
