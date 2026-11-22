@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:bfca36214b26e30be142464929b11cc46b02ec45001d406806459755b1392db6
-Source-Hash: blake3:fe6b745cadf09d25b5dd65b3ce73953d67a40a56509cf6f7797a155314abfc3a
+Content-Hash: blake3:d85b007c1d994f89748a775d619758e63105be84f62c2e5578ab1f193df5f526
+Source-Hash: blake3:8b875e6d7d71f67e0ed19a1cc45899e8986b3b96cfac0390b70f99641d6425e4
 Schema-Version: v1
 -->
 
@@ -18,8 +18,8 @@ Schema-Version: v1
 
 Run a team of subagents that coordinate in shared threads, driven by one orchestrator. Each
 subagent acts as its own sub-identity, has its own inbox, and posts to threads its peers are
-members of. The tools are the deferred `agent_post`, `agent_inbox` and `agent_threads` (find them
-by tool search); the `basemind-comms` skill has the full contract.
+members of. The tools are `agent_post`, `agent_inbox` and `agent_threads`, listed separately from
+the others; the `basemind-comms` skill has the full contract.
 
 ## When to use it
 

@@ -237,6 +237,23 @@ fn files(path: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// `source` up to its inline `#[cfg(test)] mod name {`, whose fixture names the product never reads.
+fn without_test_module(source: &str) -> &str {
+    let mut from = 0;
+    while let Some(at) = source[from..].find("\n#[cfg(test)]\nmod ") {
+        let start = from + at;
+        let line = source[start + "\n#[cfg(test)]\n".len()..]
+            .lines()
+            .next()
+            .unwrap_or_default();
+        if line.trim_end().ends_with('{') {
+            return &source[..start];
+        }
+        from = start + 1;
+    }
+    source
+}
+
 /// Every `BASEMIND_*` name in `text`. A name ending in `_` is a prefix, not a variable.
 fn variable_names(text: &str) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
@@ -379,7 +396,8 @@ fn read_variables() -> BTreeSet<String> {
             let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
             let text = String::from_utf8_lossy(&bytes);
             names.extend(if rust {
-                literal_variables(&text)
+                // Unit tests close each module; their fixture names are not read by the product.
+                literal_variables(without_test_module(&text))
             } else {
                 variable_names(&text)
             });
@@ -448,10 +466,8 @@ fn the_environment_table_documents_its_first_column_and_the_removed_settings() {
 
 #[test]
 fn variable_names_skips_a_wildcard_family() {
-    let names = variable_names(
-        "Set `BASEMIND_DATA_HOME`, any `BASEMIND_DOCUMENTS_*` switch, `BASEMIND_` or BASEMIND_LLM_2.",
-        false,
-    );
+    let names =
+        variable_names("Set `BASEMIND_DATA_HOME`, any `BASEMIND_DOCUMENTS_*` switch, `BASEMIND_` or BASEMIND_LLM_2.");
     assert_eq!(
         names.into_iter().collect::<Vec<_>>(),
         ["BASEMIND_DATA_HOME", "BASEMIND_LLM_2"]

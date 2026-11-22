@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:fe6b745cadf09d25b5dd65b3ce73953d67a40a56509cf6f7797a155314abfc3a",
+  "source_hash": "blake3:8b875e6d7d71f67e0ed19a1cc45899e8986b3b96cfac0390b70f99641d6425e4",
   "outputs": {
     ".claude-plugin/plugin.json": {
       "content_hash": "blake3:91988e847ee2ad5d46f042bee9a2176ba181f22d07329a6582ace40ef744646e",
@@ -47,7 +47,7 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/hermes.py": {
-      "content_hash": "blake3:a08ce6befad51c35d7d7d264edc5929474ce119ca3f07adc1f7b5c1c34650f47",
+      "content_hash": "blake3:fb6ff797d67ff5e52c439b60a2835337f452c577634f32b3e29afbc99c7aa4cd",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/plugin.yaml": {
@@ -71,11 +71,11 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-comms/SKILL.md": {
-      "content_hash": "blake3:65dd8c04e03993a1085f9d867ad7c87e4dfed8a760705cc296f8ceb09082732a",
+      "content_hash": "blake3:c531605b7fb374fee196d1e1aa84adc4367c910f688940427d96d6ea911f68cf",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-comms/index.md": {
-      "content_hash": "blake3:fc099d70b9c62fb9e01e975fbe1ee22de93f569246aaa7a0df371657f1ff3226",
+      "content_hash": "blake3:e27b52f8003f746a7d24dc8f3a9e9c8bf45ec69712ba79a4668d4a3f3d60d4bc",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-doctor/SKILL.md": {
@@ -103,7 +103,7 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-multi-agent-room/SKILL.md": {
-      "content_hash": "blake3:bfca36214b26e30be142464929b11cc46b02ec45001d406806459755b1392db6",
+      "content_hash": "blake3:d85b007c1d994f89748a775d619758e63105be84f62c2e5578ab1f193df5f526",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-multi-agent-room/index.md": {
@@ -127,7 +127,7 @@
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind/SKILL.md": {
-      "content_hash": "blake3:cb5f94e8d175d948fbe3c1c3377b297c2b04c8871680aec57bc29ef5efeae147",
+      "content_hash": "blake3:60734c8b746ff3ee862211ab7febcba3d91360cdb5fbda8ecae0343a4cb01608",
       "mode": "0644"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind/index.md": {
@@ -163,7 +163,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/hermes.py": {
-      "content_hash": "blake3:a08ce6befad51c35d7d7d264edc5929474ce119ca3f07adc1f7b5c1c34650f47",
+      "content_hash": "blake3:fb6ff797d67ff5e52c439b60a2835337f452c577634f32b3e29afbc99c7aa4cd",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/plugin.yaml": {
@@ -187,11 +187,11 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind-comms/SKILL.md": {
-      "content_hash": "blake3:65dd8c04e03993a1085f9d867ad7c87e4dfed8a760705cc296f8ceb09082732a",
+      "content_hash": "blake3:c531605b7fb374fee196d1e1aa84adc4367c910f688940427d96d6ea911f68cf",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind-comms/index.md": {
-      "content_hash": "blake3:fc099d70b9c62fb9e01e975fbe1ee22de93f569246aaa7a0df371657f1ff3226",
+      "content_hash": "blake3:e27b52f8003f746a7d24dc8f3a9e9c8bf45ec69712ba79a4668d4a3f3d60d4bc",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind-doctor/SKILL.md": {
@@ -219,7 +219,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind-multi-agent-room/SKILL.md": {
-      "content_hash": "blake3:bfca36214b26e30be142464929b11cc46b02ec45001d406806459755b1392db6",
+      "content_hash": "blake3:d85b007c1d994f89748a775d619758e63105be84f62c2e5578ab1f193df5f526",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind-multi-agent-room/index.md": {
@@ -243,7 +243,7 @@
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind/SKILL.md": {
-      "content_hash": "blake3:cb5f94e8d175d948fbe3c1c3377b297c2b04c8871680aec57bc29ef5efeae147",
+      "content_hash": "blake3:60734c8b746ff3ee862211ab7febcba3d91360cdb5fbda8ecae0343a4cb01608",
       "mode": "0644"
     },
     ".hermes/plugins/basemind/skills/basemind/index.md": {
@@ -255,7 +255,7 @@
       "mode": "0644"
     },
     ".opencode/ai-rulez-bundle.json": {
-      "content_hash": "blake3:35caa6fd14adf9a4b97c0b8c17c421766d89d64e82455e31fe34b903dabaf415",
+      "content_hash": "blake3:1de6de73d16be95a84199a57a9dc351955f0bb946c895031e24a2d1fbfc951d8",
       "mode": "0644"
     },
     ".opencode/ai-rulez-content.js": {
@@ -307,11 +307,11 @@
       "mode": "0644"
     },
     ".opencode/skills/basemind-comms/SKILL.md": {
-      "content_hash": "blake3:65dd8c04e03993a1085f9d867ad7c87e4dfed8a760705cc296f8ceb09082732a",
+      "content_hash": "blake3:c531605b7fb374fee196d1e1aa84adc4367c910f688940427d96d6ea911f68cf",
       "mode": "0644"
     },
     ".opencode/skills/basemind-comms/index.md": {
-      "content_hash": "blake3:fc099d70b9c62fb9e01e975fbe1ee22de93f569246aaa7a0df371657f1ff3226",
+      "content_hash": "blake3:e27b52f8003f746a7d24dc8f3a9e9c8bf45ec69712ba79a4668d4a3f3d60d4bc",
       "mode": "0644"
     },
     ".opencode/skills/basemind-doctor/SKILL.md": {
@@ -339,7 +339,7 @@
       "mode": "0644"
     },
     ".opencode/skills/basemind-multi-agent-room/SKILL.md": {
-      "content_hash": "blake3:bfca36214b26e30be142464929b11cc46b02ec45001d406806459755b1392db6",
+      "content_hash": "blake3:d85b007c1d994f89748a775d619758e63105be84f62c2e5578ab1f193df5f526",
       "mode": "0644"
     },
     ".opencode/skills/basemind-multi-agent-room/index.md": {
@@ -363,7 +363,7 @@
       "mode": "0644"
     },
     ".opencode/skills/basemind/SKILL.md": {
-      "content_hash": "blake3:cb5f94e8d175d948fbe3c1c3377b297c2b04c8871680aec57bc29ef5efeae147",
+      "content_hash": "blake3:60734c8b746ff3ee862211ab7febcba3d91360cdb5fbda8ecae0343a4cb01608",
       "mode": "0644"
     },
     ".opencode/skills/basemind/index.md": {
@@ -411,11 +411,11 @@
       "mode": "0644"
     },
     ".pi/skills/basemind-comms/SKILL.md": {
-      "content_hash": "blake3:65dd8c04e03993a1085f9d867ad7c87e4dfed8a760705cc296f8ceb09082732a",
+      "content_hash": "blake3:c531605b7fb374fee196d1e1aa84adc4367c910f688940427d96d6ea911f68cf",
       "mode": "0644"
     },
     ".pi/skills/basemind-comms/index.md": {
-      "content_hash": "blake3:fc099d70b9c62fb9e01e975fbe1ee22de93f569246aaa7a0df371657f1ff3226",
+      "content_hash": "blake3:e27b52f8003f746a7d24dc8f3a9e9c8bf45ec69712ba79a4668d4a3f3d60d4bc",
       "mode": "0644"
     },
     ".pi/skills/basemind-doctor/SKILL.md": {
@@ -443,7 +443,7 @@
       "mode": "0644"
     },
     ".pi/skills/basemind-multi-agent-room/SKILL.md": {
-      "content_hash": "blake3:bfca36214b26e30be142464929b11cc46b02ec45001d406806459755b1392db6",
+      "content_hash": "blake3:d85b007c1d994f89748a775d619758e63105be84f62c2e5578ab1f193df5f526",
       "mode": "0644"
     },
     ".pi/skills/basemind-multi-agent-room/index.md": {
@@ -467,7 +467,7 @@
       "mode": "0644"
     },
     ".pi/skills/basemind/SKILL.md": {
-      "content_hash": "blake3:cb5f94e8d175d948fbe3c1c3377b297c2b04c8871680aec57bc29ef5efeae147",
+      "content_hash": "blake3:60734c8b746ff3ee862211ab7febcba3d91360cdb5fbda8ecae0343a4cb01608",
       "mode": "0644"
     },
     ".pi/skills/basemind/index.md": {
@@ -543,7 +543,7 @@
       "mode": "0644"
     },
     "hooks/agent-as": {
-      "content_hash": "blake3:e3a714984571f33407f8d46e6d8ccd495b4e223bd10e57e91e985294f70388df",
+      "content_hash": "blake3:8feaf43148c1223669e799ab38769c5f66ce681a4b69a26b4eed342b3112743c",
       "mode": "0755"
     },
     "hooks/hooks.json": {
@@ -551,7 +551,7 @@
       "mode": "0644"
     },
     "hooks/inbox-notify": {
-      "content_hash": "blake3:d653a024528a2f668d071f6dbe19b6e8dd7e262299beb35637cd90aebcbf600e",
+      "content_hash": "blake3:b19567cab5258cd363d8f1dc15e82e35a5133e8cfae5b9d1dc2204420619706a",
       "mode": "0755"
     },
     "hooks/json-lib.sh": {
@@ -567,7 +567,7 @@
       "mode": "0755"
     },
     "hooks/session-start": {
-      "content_hash": "blake3:6979ea4c83bbe6b5a611adab04e721a688419c70b163d2cdcfede643fef8a1f0",
+      "content_hash": "blake3:118064fea00fef41233787f80d8979ad2ef00fef94f4610193b0b616b2472e88",
       "mode": "0755"
     },
     "kimi.plugin.json": {
@@ -591,7 +591,7 @@
       "mode": "0755"
     },
     "scripts/mcp-launch.sh": {
-      "content_hash": "blake3:1d3fd213a31d733b8a3fac24c9b6ddcbe245a54768341b526487357c73ca1620",
+      "content_hash": "blake3:67af7e2219338f8741f2c00181e4a96e45c26e744d313cb404c1737146fb57a2",
       "mode": "0755"
     },
     "scripts/statusline.sh": {
@@ -615,11 +615,11 @@
       "mode": "0644"
     },
     "skills/basemind-comms/SKILL.md": {
-      "content_hash": "blake3:65dd8c04e03993a1085f9d867ad7c87e4dfed8a760705cc296f8ceb09082732a",
+      "content_hash": "blake3:c531605b7fb374fee196d1e1aa84adc4367c910f688940427d96d6ea911f68cf",
       "mode": "0644"
     },
     "skills/basemind-comms/index.md": {
-      "content_hash": "blake3:fc099d70b9c62fb9e01e975fbe1ee22de93f569246aaa7a0df371657f1ff3226",
+      "content_hash": "blake3:e27b52f8003f746a7d24dc8f3a9e9c8bf45ec69712ba79a4668d4a3f3d60d4bc",
       "mode": "0644"
     },
     "skills/basemind-doctor/SKILL.md": {
@@ -647,7 +647,7 @@
       "mode": "0644"
     },
     "skills/basemind-multi-agent-room/SKILL.md": {
-      "content_hash": "blake3:bfca36214b26e30be142464929b11cc46b02ec45001d406806459755b1392db6",
+      "content_hash": "blake3:d85b007c1d994f89748a775d619758e63105be84f62c2e5578ab1f193df5f526",
       "mode": "0644"
     },
     "skills/basemind-multi-agent-room/index.md": {
@@ -671,7 +671,7 @@
       "mode": "0644"
     },
     "skills/basemind/SKILL.md": {
-      "content_hash": "blake3:cb5f94e8d175d948fbe3c1c3377b297c2b04c8871680aec57bc29ef5efeae147",
+      "content_hash": "blake3:60734c8b746ff3ee862211ab7febcba3d91360cdb5fbda8ecae0343a4cb01608",
       "mode": "0644"
     },
     "skills/basemind/index.md": {

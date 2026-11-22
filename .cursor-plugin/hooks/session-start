@@ -10,6 +10,8 @@
 # Output goes to stdout as the hook's JSON result; diagnostics would go to stderr.
 set -euo pipefail
 
+# Codex gives its plugin hooks PLUGIN_ROOT, which the next lines reuse for this plugin's root.
+HOST_PLUGIN_ROOT="${PLUGIN_ROOT:-}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # JSON is read and written without jq, which many machines lack.
@@ -85,8 +87,8 @@ SCHEMA_VER="$(json_get "${STATUS_FIELDS}" schema_version number)"
 
 # The always-loaded MCP tools this plugin's server advertises: the verb tools. Every definition
 # carries `_meta["anthropic/alwaysLoad"]`, so a host that defers MCP tools still loads these at
-# session start and no tool search is needed. The three agent tools of a `comms` build are deferred
-# and named separately below. Claude Code namespaces plugin MCP tools as
+# session start and no tool search is needed. The three agent tools of a `comms` build carry no
+# marker and are named separately below. Claude Code namespaces plugin MCP tools as
 # mcp__plugin_<plugin>_<server>__<tool>.
 TOOL_PREFIX="mcp__plugin_basemind_basemind__"
 TOOL_NAMES="code_outline code_symbols code_read code_grep code_search code_refs find_files docs_search git_log git_blame git_diff memory_save memory_search index_status index_rescan"
@@ -95,9 +97,15 @@ for t in ${TOOL_NAMES}; do
   TOOL_LIST="${TOOL_LIST:+${TOOL_LIST}, }${t}"
 done
 
+# Cursor, Copilot and Codex hooks may carry CLAUDE_PLUGIN_ROOT too; each also sets a marker of its own.
+claude_code() {
+  [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${CURSOR_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ] &&
+    [ -z "${HOST_PLUGIN_ROOT}" ] && [ -z "${CODEX_PLUGIN_ROOT:-}" ]
+}
+
 FALLBACK="Use ordinary file and git tools for now; run /bm-doctor to diagnose."
 CALL_TOOLS=" Its tools are always loaded, so call them directly with no tool search: ${TOOL_LIST}."
-if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${CURSOR_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
+if claude_code; then
   CALL_TOOLS="${CALL_TOOLS} Claude Code registers each one as ${TOOL_PREFIX}<tool>."
 fi
 
@@ -156,6 +164,11 @@ case "${STATUS_LINE}" in
 esac
 
 ROUTING="Use basemind before shell rg, grep, find and git, and before reading whole files. What a file contains: code_outline {\"path\":\"src/store.rs\"}, then code_read {\"path\":\"src/store.rs\",\"symbol\":\"open\"} for the one body you need. Where a name is defined: code_symbols {\"name\":\"open_store\"}. What calls, implements or imports it: code_refs {\"name\":\"open_store\"}. Exact text (a string, comment or config key) in indexed code, markdown, config and data files: code_grep {\"pattern\":\"cache_root(\"} (literal text; add \"regex\":true for a regex; a file the index leaves out still needs rg). Code by what it does: code_search {\"query\":\"retry a failed upload\"}. A file by name: find_files {\"query\":\"readme\"}. History: git_log {} for recent commits (add path, query, author, symbol or rev), git_blame {\"path\":\"src/store.rs\"}, git_diff {} for the working-tree status (add path, from, to). Documents by meaning, and PDFs, Office files, HTML, email and Jupyter notebooks: docs_search {\"query\":\"how releases are versioned\"}. Notes shared across sessions: memory_save {\"key\":\"decision/x\",\"value\":\"…\"} and memory_search {\"query\":\"…\"}. Lines are 1-based, an unknown argument is rejected, and a failure is a tool result that names the fix. A semantic miss does not establish absence: search exact text with code_grep. Fall back to ordinary tools when basemind cannot cover the task. The index follows your edits: if a result says stale or a new file is missing, run index_rescan {\"paths\":[\"src/store.rs\"]} for that file; run index_rescan {} only when index_status {} reports an empty index, degraded or rescan_needed, or after a change under an extra scan root."
+# Claude Code also shows the server's instructions, which route each question to its tool, so there
+# the hook points at them instead of repeating them.
+if claude_code; then
+  ROUTING="Use basemind before shell rg, grep, find and git, and before reading whole files; the basemind server instructions name the tool for each question."
+fi
 CONTEXT="${STATUS_LINE} ${ROUTING}"
 
 # 2. Append the status-line nudge only when a basemind status line isn't wired yet: the
@@ -175,7 +188,7 @@ if ! statusline_wired; then
 fi
 
 # 3. Agent messaging is opt-in and secondary to code navigation. In a build that has it (the
-#    `agent` command answers), name the deferred tools and, when the daemon already holds unread
+#    `agent` command answers), name the agent tools and, when the daemon already holds unread
 #    messages for the actor this session's tool calls act as, say how many. That actor is the one
 #    the agent-as hook names (`agent hook name`), or the principal on a host whose hook cannot
 #    rewrite a call. A peek moves no read position. Best-effort and time-boxed; comms never blocks
@@ -183,7 +196,7 @@ fi
 AGENT_RC=0
 NAME="$(printf '%s' "${STDIN_JSON}" | run_bounded 6 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" agent hook name 2>/dev/null | tr -cd 'a-z0-9_-')" || AGENT_RC=$?
 if [ "${AGENT_RC}" -eq 0 ]; then
-  CONTEXT="${CONTEXT} Agent messaging is opt-in through the deferred tools agent_post, agent_inbox and agent_threads (find them by tool search); a subagent that wants a separate inbox passes \`as\`."
+  CONTEXT="${CONTEXT} The agent tools agent_post, agent_inbox and agent_threads are listed separately; they are needed only when collaborating, and a subagent that wants a separate inbox passes \`as\`."
   AS=()
   [ -n "${NAME}" ] && AS=(--as "${NAME}")
   INBOX_JSON="$(run_bounded 8 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" agent inbox --peek ${AS[@]+"${AS[@]}"} --json --limit 5 --root "${WORKSPACE}" </dev/null 2>/dev/null || true)"

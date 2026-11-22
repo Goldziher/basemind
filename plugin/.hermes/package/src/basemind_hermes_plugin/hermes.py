@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:a08ce6befad51c35d7d7d264edc5929474ce119ca3f07adc1f7b5c1c34650f47
-# Source-Hash: blake3:fe6b745cadf09d25b5dd65b3ce73953d67a40a56509cf6f7797a155314abfc3a
+# Content-Hash: blake3:fb6ff797d67ff5e52c439b60a2835337f452c577634f32b3e29afbc99c7aa4cd
+# Source-Hash: blake3:8b875e6d7d71f67e0ed19a1cc45899e8986b3b96cfac0390b70f99641d6425e4
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -62,8 +62,9 @@ _DISCIPLINE = (
 )
 
 _COMMS_TOOLS = (
-    "Agent messaging is opt-in through three deferred tools, found by tool search: agent_post to "
-    "send (subject starts a thread, thread or reply_to continues one), agent_inbox to read unread "
+    "Agent messaging is opt-in through three tools listed separately, needed only when "
+    "collaborating: agent_post to send (subject starts a thread, thread or reply_to continues one), "
+    "agent_inbox to read unread "
     "messages (bodies inline; reading marks them read, peek does not) and agent_threads to find, "
     "join, leave, invite to or archive threads. A subagent that wants its own inbox passes as."
 )
@@ -170,7 +171,7 @@ def _register_hooks(ctx) -> None:
 
 
 def _session_start_context(cwd: str) -> str:
-    """Boot context: the operating discipline, the deferred agent tools, and a count of unread messages."""
+    """Boot context: the operating discipline, the agent tools, and a count of unread messages."""
     messages = _inbox_messages(cwd, ["--peek"], 5)
     if messages:
         return f"{_DISCIPLINE} {_COMMS_TOOLS} You have {len(messages)} unread agent message(s); read them with agent_inbox."
