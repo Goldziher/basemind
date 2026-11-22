@@ -84,7 +84,7 @@ blake3 = "ca31900137a90e5a655cd2d8f02b63a6144e86726ac01fc39e4680372fcd8c79"
 [adrs."docs/adr/0030-as-built-daemon-wire-and-store-rules.md"]
 number = 30
 status = "accepted"
-blake3 = "c9391bdf94c8b252431c8064cf62b3a5804da4c648d3cba1bb0c45a8782bf0dd"
+blake3 = "77c37a9f06b9148b8f30ae67d84f6cc0e66cfb69b81c48ace6d7e4defd784141"
 
 [adrs."docs/adr/0031-value-gate-by-job.md"]
 number = 31
@@ -166,6 +166,11 @@ number = 46
 status = "accepted"
 blake3 = "8a401042774da68b2c26959929eeaa90bf6d16c7f7849b534fc673aeba3bd6d2"
 
+[adrs."docs/adr/0047-analysis-commands-and-the-import-graph.md"]
+number = 47
+status = "accepted"
+blake3 = "612d61cfcfc654f86a691b8f276b88ce865356cf321fc1efc110b29cd9330cee"
+
 [adrs."docs/adr/0048-http-routes-and-client-calls.md"]
 number = 48
 status = "accepted"
@@ -174,7 +179,7 @@ blake3 = "4b13a83f54de0441cb14b9c3fd279f10767117cc98df70888721ff608d5b85ec"
 [adrs."docs/adr/0049-reading-outside-the-repository.md"]
 number = 49
 status = "accepted"
-blake3 = "4553a2a993a4eb60bde02a3d4c9185d66b7010f7556eebee4da48031cd22a05d"
+blake3 = "598158754f725e8ea9420c177d503c67e3d9eb1def3950dacce07e261dbea051"
 
 [adrs."docs/adr/0050-one-engine-configuration-per-process.md"]
 number = 50
