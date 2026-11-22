@@ -998,6 +998,10 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 - A detached server that outlived its session is reported (#201).
 - A repository group opens outside the global registry lock, so one slow open no longer blocks another,
   and a poisoned lock is recovered instead of propagating a panic (#221).
+- `git_diff` no longer fails on a submodule, a directory or a symlink (#302). A submodule diffs as
+  its two `Subproject commit <id>` lines, a tracked symlink as its link text on both sides (the
+  file it points to is not read), and a directory is refused with an invalid-argument error that
+  names `git_log` for its history.
 - On Linux, a directory the inotify watch limit refused a watch no longer goes stale without a
   word (#334). `index_status` gains `watches`: the watches the daemon holds (`held`) and, once
   `fs.inotify.max_user_watches` is exhausted, the directories left unwatched (`unwatched`), the

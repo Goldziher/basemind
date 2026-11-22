@@ -11,7 +11,7 @@ use std::process::Command;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use super::{Client, call_err, call_raw, json_of, serve_synced, text_of};
+use super::{Client, call, call_err, call_raw, json_of, serve_synced, text_of};
 
 const LIB_V1: &str = "pub fn alpha() -> u32 {\n    1\n}\n\npub fn beta() -> u32 {\n    2\n}\n";
 const LIB_V2: &str = "pub fn alpha() -> u32 {\n    10\n}\n\npub fn beta() -> u32 {\n    2\n}\n";
@@ -387,7 +387,7 @@ async fn every_git_refusal_keeps_its_exact_words() {
         (
             "git_diff",
             json!({ "path": "src" }),
-            r#"`git_diff`: `src` is a directory and a diff is of one file. Pass `src/` (with the trailing slash, and no `from`, `to` or `structural`) for the working-tree status under it, or the path of a file in it."#,
+            r#"`git_diff`: `src` is a directory and a diff is of one file. Pass `src/` (with the trailing slash, and no `from`, `to` or `structural`) for the working-tree status under it, the path of a file in it, or use `git_log` with `path: "src/"` for its history."#,
         ),
         (
             "git_diff",
@@ -526,4 +526,121 @@ error: unclosed group"#,
         rows.push((format!("git {args:?}"), cli(dir.path(), args), expected.to_string()));
     }
     assert_all(&rows);
+}
+
+/// `git rev-parse HEAD` in `repo`.
+fn head_of(repo: &Path) -> String {
+    let out = basemind::testing::git_command()
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo)
+        .output()
+        .expect("git in PATH");
+    String::from_utf8(out.stdout).expect("utf8").trim().to_string()
+}
+
+/// A repository holding a submodule `vendor/dep` (two commits in it, the first one recorded), a
+/// tracked symlink `link` to `src/lib.rs` and a tracked directory `src`.
+fn special_paths_repo() -> (TempDir, TempDir, String, String) {
+    let dir = dated_repo();
+    let root = dir.path();
+    let dep = tempfile::tempdir().expect("tempdir");
+    let dep_root = dep.path();
+    git_at(dep_root, "2024-02-01T00:00:00Z", &["init", "-q", "-b", "main"]);
+    git_at(dep_root, "2024-02-01T00:00:00Z", &["config", "commit.gpgsign", "false"]);
+    std::fs::write(dep_root.join("dep.txt"), "one\n").unwrap();
+    commit(dep_root, "2024-02-01T00:00:00Z", "dep one");
+    let first = head_of(dep_root);
+    git_at(
+        root,
+        "2024-02-02T00:00:00Z",
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            dep_root.to_str().unwrap(),
+            "vendor/dep",
+        ],
+    );
+    std::os::unix::fs::symlink("src/lib.rs", root.join("link")).unwrap();
+    commit(root, "2024-02-02T00:00:00Z", "add submodule and link");
+    std::fs::write(dep_root.join("dep.txt"), "two\n").unwrap();
+    commit(dep_root, "2024-02-03T00:00:00Z", "dep two");
+    let second = head_of(dep_root);
+    git_at(
+        &root.join("vendor/dep"),
+        "2024-02-03T00:00:00Z",
+        &["-c", "protocol.file.allow=always", "pull", "-q", "origin", "main"],
+    );
+    assert_eq!(head_of(&root.join("vendor/dep")), second);
+    commit(root, "2024-02-03T00:00:00Z", "bump submodule");
+    (dir, dep, first, second)
+}
+
+/// A submodule is a gitlink: its diff is the two commit ids, as `git diff` prints them, not an
+/// internal error for an object the superproject does not hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_diff_of_a_submodule_reports_the_commit_ids() {
+    let (dir, _dep, first, second) = special_paths_repo();
+    let (_dir, client) = serve_synced(dir).await;
+    let diff = call(
+        &client,
+        "git_diff",
+        json!({ "path": "vendor/dep", "from": "HEAD~1", "to": "HEAD" }),
+    )
+    .await;
+    let text = diff["hunks"][0]["text"].as_str().unwrap_or_default().to_string();
+    assert!(
+        text.contains(&format!("-Subproject commit {first}")) && text.contains(&format!("+Subproject commit {second}")),
+        "{diff}"
+    );
+    let worktree = call(&client, "git_diff", json!({ "path": "vendor/dep", "from": "HEAD~1" })).await;
+    let text = worktree["hunks"][0]["text"].as_str().unwrap_or_default().to_string();
+    assert!(
+        text.contains(&format!("-Subproject commit {first}")) && text.contains(&format!("+Subproject commit {second}")),
+        "{worktree}"
+    );
+}
+
+/// A tracked symlink diffs its link text, never the file it points to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_diff_of_a_symlink_diffs_the_link_text() {
+    let (dir, _dep, _first, _second) = special_paths_repo();
+    let root = dir.path().to_path_buf();
+    let (_dir, client) = serve_synced(dir).await;
+    let clean = call(&client, "git_diff", json!({ "path": "link" })).await;
+    assert_eq!(clean["hunks"], json!([]), "an untouched link is unchanged: {clean}");
+
+    std::fs::remove_file(root.join("link")).unwrap();
+    std::os::unix::fs::symlink("src/gamma.rs", root.join("link")).unwrap();
+    let diff = call(&client, "git_diff", json!({ "path": "link" })).await;
+    let text = diff["hunks"][0]["text"].as_str().unwrap_or_default().to_string();
+    assert!(text.contains("-src/lib.rs") && text.contains("+src/gamma.rs"), "{diff}");
+    assert!(!text.contains("gamma()"), "the pointed-to file is not read: {diff}");
+
+    let between = call(
+        &client,
+        "git_diff",
+        json!({ "path": "link", "from": "HEAD~2", "to": "HEAD" }),
+    )
+    .await;
+    assert_eq!(between["present_at_from"], false, "{between}");
+}
+
+/// A directory is refused as an invalid argument that names `git_log` for its history.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_diff_of_a_directory_points_to_git_log() {
+    let (dir, _dep, _first, _second) = special_paths_repo();
+    let (_dir, client) = serve_synced(dir).await;
+    for args in [
+        json!({ "path": "src" }),
+        json!({ "path": "src", "from": "HEAD~1", "to": "HEAD" }),
+    ] {
+        let message = call_err(&client, "git_diff", args).await;
+        assert!(
+            message.contains("is a directory") && message.contains("git_log"),
+            "{message}"
+        );
+    }
 }

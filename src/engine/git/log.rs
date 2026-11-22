@@ -318,16 +318,16 @@ fn directory_without_slash(
     to: Option<&str>,
 ) -> Option<EngineError> {
     let repo = require_git_repo(ws).ok()?;
-    let on_disk = crate::path::contained_file(repo.workdir(), path).is_ok_and(|file| file.is_dir());
-    let in_a_revision = [from.unwrap_or("HEAD")]
-        .into_iter()
-        .chain(to)
-        .any(|rev| repo.is_directory_at(rev, path.as_ref()));
+    let revisions: Vec<&str> = [from.unwrap_or("HEAD")].into_iter().chain(to).collect();
+    // A submodule's checkout is a directory on disk and a gitlink in the tree: its diff is its commit ids.
+    let submodule = revisions.iter().any(|rev| repo.is_gitlink_at(rev, path.as_ref()));
+    let on_disk = !submodule && crate::path::contained_file(repo.workdir(), path).is_ok_and(|file| file.is_dir());
+    let in_a_revision = revisions.iter().any(|rev| repo.is_directory_at(rev, path.as_ref()));
     (on_disk || in_a_revision).then(|| {
         EngineError::invalid_argument(format!(
             "`git_diff`: `{path}` is a directory and a diff is of one file. Pass `{path}/` (with the \
                  trailing slash, and no `from`, `to` or `structural`) for the working-tree status under it, \
-                 or the path of a file in it."
+                 the path of a file in it, or use `git_log` with `path: \"{path}/\"` for its history."
         ))
     })
 }

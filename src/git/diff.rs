@@ -99,7 +99,20 @@ enum Side {
     TooLarge,
 }
 
+/// The text git diffs for a submodule entry.
+fn gitlink_text(id: &str) -> Vec<u8> {
+    format!("Subproject commit {id}\n").into_bytes()
+}
+
 impl Side {
+    /// The bytes of a side that is a gitlink line, for a submodule that is not checked out.
+    fn as_gitlink_text(&self) -> Option<Vec<u8>> {
+        match self {
+            Self::Bytes(bytes) if bytes.starts_with(b"Subproject commit ") => Some(bytes.clone()),
+            _ => None,
+        }
+    }
+
     fn into_bytes(self) -> Option<Vec<u8>> {
         match self {
             Self::Bytes(bytes) => Some(bytes),
@@ -162,12 +175,41 @@ impl Repo {
     pub fn diff_file_worktree(&self, rev_old: &str, path: impl AsRef<Path>) -> Result<Option<FileDiff>, GitError> {
         let path = path.as_ref();
         let rel = crate::path::RelPath::from(path);
-        let on_disk =
-            crate::path::contained_file(self.workdir(), &rel).map_err(|_| GitError::OutsideRepo(rel.clone()))?;
-        Ok(FileDiff::of(
-            self.diff_side_at_rev(rev_old, path)?,
-            self.worktree_side(path, &on_disk)?,
-        ))
+        let outside = || GitError::OutsideRepo(rel.clone());
+        let joined = crate::path::lexical_file(self.workdir(), &rel).map_err(|_| outside())?;
+        let old = self.diff_side_at_rev(rev_old, path)?;
+        // A symlink is diffed as its link text, as git stores it, and never read through. One that
+        // leads out of the repository is still refused, as for any other working-tree read.
+        if std::fs::symlink_metadata(&joined).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            crate::path::contained_file(self.workdir(), &rel).map_err(|_| outside())?;
+            let new = std::fs::read_link(&joined)
+                .map(|target| Side::Bytes(target.to_string_lossy().into_owned().into_bytes()))
+                .unwrap_or(Side::Absent);
+            return Ok(FileDiff::of(old, new));
+        }
+        if joined.is_dir() && self.is_gitlink_at(rev_old, path) {
+            let new = self.submodule_side(&joined).or_else(|| old.as_gitlink_text());
+            return Ok(FileDiff::of(old, new.map_or(Side::Absent, Side::Bytes)));
+        }
+        let on_disk = crate::path::contained_file(self.workdir(), &rel).map_err(|_| outside())?;
+        Ok(FileDiff::of(old, self.worktree_side(path, &on_disk)?))
+    }
+
+    /// `Subproject commit <head>` for the submodule checked out at `dir`; `None` when it is not
+    /// checked out.
+    fn submodule_side(&self, dir: &Path) -> Option<Vec<u8>> {
+        let submodule = gix::open(dir).ok()?;
+        let head = submodule.head_id().ok()?.to_string();
+        Some(gitlink_text(&head))
+    }
+
+    /// Whether `rel` is a submodule (a gitlink) at `rev`.
+    pub fn is_gitlink_at(&self, rev: &str, rel: &Path) -> bool {
+        let local = self.local();
+        resolve_tree(&local, rev)
+            .ok()
+            .and_then(|tree| tree.lookup_entry_by_path(rel).ok().flatten())
+            .is_some_and(|entry| entry.mode().is_commit())
     }
 
     /// The working-tree file at `on_disk` in the form git stores for the repo-relative `rel`, held
@@ -204,6 +246,10 @@ impl Repo {
         else {
             return Ok(Side::Absent);
         };
+        // A gitlink's commit lives in the submodule, not here: its side is the line git prints.
+        if entry.mode().is_commit() {
+            return Ok(Side::Bytes(gitlink_text(&entry.object_id().to_string())));
+        }
         let header = local
             .find_header(entry.object_id())
             .map_err(|error| read_error(error.to_string()))?;
