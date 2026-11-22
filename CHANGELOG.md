@@ -888,6 +888,20 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   +4.1 MiB/min (footprint, Windows) over 18 minutes, each within the bound. The soak also records
   the daemon's descriptors by kind (`fd_kinds`), and R3t lists the kinds that moved over load.
 
+- The hardening harness compares each run with committed per-machine baselines
+  (`benchmarks/harden-baselines.json`, `scripts/harden_baseline.py`; a regression above 20% warns,
+  `BASEMIND_HARDEN_BASELINE_STRICT=1` fails), samples the same file and symbol on every run and
+  records them, and calls `code_refs` on a very common name on purpose (#159, #445).
+
+- The value gate's tooling: the `x` column prints four digits, a build's reported features are mapped to
+  its build flags, the gate refuses to count tokens as `o200k` unless the tokenizer proved itself on a
+  fixed probe, `dependents` has a gold-recall floor independent of the baseline, `docs-eval` fails under a
+  recall@10 floor, and the committed `run.tsv` header is tested (#158). `code_grep` `read_around` has its
+  own reducing floor of 1.4x (ADR-0055).
+
+- The README demos are re-recorded on the verb tools and the agent CLI, driven by `scripts/demo-record.sh`
+  (vhs); the semantic and code-review demos are gone, a comms demo replaces them (#235).
+
 ### Removed
 
 - **BREAKING: `ranges` on `code_grep`, `code_refs` and `code_read`** (#129), and the CLI's
@@ -1021,9 +1035,10 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   scan's per-source-byte ratios. `docs/UPGRADING.md` also says that a 0.33 daemon which touched a
   repository must be stopped before it is scanned, and that a forwarded scan reads the daemon's
   environment (#440).
-- `docs_search` refuses a `keywords` or `entity` filter while `[documents.keywords]` or `[documents.ner]` is
-  off, and an `entity` category the extractor never emits, naming the config key or the accepted
-  categories instead of returning no hits (#443).
+- `docs_search` with a `keywords` or `entity` filter that finds nothing says why when `[documents.keywords]`
+  or `[documents.ner]` is off, or when the `entity` category is one the extractor never emits, naming the
+  config key or the accepted categories instead of returning no hits (#443). A filter that finds hits is
+  never refused, so a scan run with CLI or environment overrides keeps working.
 - A detached server that outlived its session is reported (#201).
 - `code_read` of a span ending on the last line of a CRLF file no longer keeps that line's trailing `\r`.
 - Error text that names a path no longer rewrites a home or repository root that only appears inside
