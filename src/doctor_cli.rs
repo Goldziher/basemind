@@ -140,6 +140,11 @@ fn check_hook(root: &Path) -> Check {
         Ok(dir) if basemind::cli::hook::is_installed(&dir) => {
             Check::new("hook", Level::Ok, format!("pre-commit installed in {}", dir.display()))
         }
+        Ok(dir) if basemind::cli::hook::is_edited(&dir) => Check::new(
+            "hook",
+            Level::Warn,
+            "pre-commit hook was edited since `basemind hook install`; `basemind hook install --force` replaces it",
+        ),
         Ok(_) => Check::new(
             "hook",
             Level::Ok,

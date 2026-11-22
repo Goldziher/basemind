@@ -1031,8 +1031,11 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   `BASEMIND_GRAMMAR_OFFLINE`) unless `--yes` is passed, so it no longer empties a hand-copied
   grammar cache that cannot be downloaded again.
 - `basemind hook install` refreshes the pre-commit hook in place only when it equals the shipped
-  hook byte for byte; a hook that carries the marker but has lines added is treated as foreign
-  (refused, or backed up with `--force`) instead of being overwritten.
+  hook up to line endings (a CRLF copy from `core.autocrlf` still refreshes); a hook that carries the
+  marker but has lines added is treated as foreign (refused, or backed up with `--force`) instead of
+  being overwritten, and `basemind doctor` warns about it instead of reporting it installed.
+- A blank `BASEMIND_DATA_HOME` or `BASEMIND_COMMS_DIR` (empty or whitespace only) counts as unset, as
+  the other `BASEMIND_*` variables do, instead of naming the current directory.
 - In a repository without an `origin` remote, the memory scope (and the registry and comms repository
   key) is now the canonical main worktree path, so every worktree of it shares its notes; before, a
   linked worktree filed and read notes under its own path (#319). Notes saved earlier from a linked

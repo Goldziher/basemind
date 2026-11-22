@@ -85,9 +85,25 @@ pub fn resolve_hooks_dir(root: &Path) -> Result<PathBuf> {
     Ok(if path.is_absolute() { path } else { root.join(path) })
 }
 
-/// Whether the pre-commit hook in `hooks_dir` is the one `hook install` writes.
+/// `body` with CRLF line endings (what `core.autocrlf` leaves in a copy of our hook) as LF.
+fn normalize_newlines(body: &str) -> String {
+    body.replace("\r\n", "\n")
+}
+
+fn read_hook(hooks_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(hooks_dir.join("pre-commit")).ok()
+}
+
+/// Whether the pre-commit hook in `hooks_dir` is the one `hook install` writes, which is the
+/// notion [`install_into`] refreshes without `--force`: an edited copy is not.
 pub fn is_installed(hooks_dir: &Path) -> bool {
-    std::fs::read_to_string(hooks_dir.join("pre-commit")).is_ok_and(|body| body.contains(HOOK_MARKER))
+    read_hook(hooks_dir).is_some_and(|body| normalize_newlines(&body) == HOOK_BODY)
+}
+
+/// Whether the pre-commit hook in `hooks_dir` carries [`HOOK_MARKER`] but is not [`is_installed`]:
+/// ours once, since edited.
+pub fn is_edited(hooks_dir: &Path) -> bool {
+    read_hook(hooks_dir).is_some_and(|body| body.contains(HOOK_MARKER)) && !is_installed(hooks_dir)
 }
 
 /// Write the hook into `hooks_dir`, creating it if needed. A foreign hook is an error without
@@ -99,7 +115,7 @@ pub fn install_into(hooks_dir: &Path, force: bool) -> Result<(PathBuf, Installed
     let hook_path = hooks_dir.join("pre-commit");
     let outcome = match std::fs::read_to_string(&hook_path) {
         Err(_) if !hook_path.exists() => Installed::Fresh,
-        Ok(existing) if existing == HOOK_BODY => Installed::Refreshed,
+        Ok(existing) if normalize_newlines(&existing) == HOOK_BODY => Installed::Refreshed,
         _ if force => {
             let backup = free_backup_path(hooks_dir)?;
             std::fs::rename(&hook_path, &backup).with_context(|| format!("back up {}", hook_path.display()))?;
@@ -150,6 +166,29 @@ mod tests {
         assert_eq!(install_into(&hooks, false).unwrap().1, Installed::Fresh);
         assert!(is_installed(&hooks));
         assert_eq!(install_into(&hooks, false).unwrap().1, Installed::Refreshed);
+    }
+
+    #[test]
+    fn should_refresh_a_crlf_copy_of_the_hook_silently() {
+        let dir = tempfile::tempdir().unwrap();
+        let crlf = HOOK_BODY.replace('\n', "\r\n");
+        std::fs::write(dir.path().join("pre-commit"), &crlf).unwrap();
+        assert!(is_installed(dir.path()));
+        assert!(!is_edited(dir.path()));
+        assert_eq!(install_into(dir.path(), false).unwrap().1, Installed::Refreshed);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("pre-commit")).unwrap(),
+            HOOK_BODY
+        );
+    }
+
+    #[test]
+    fn an_edited_marker_hook_is_not_installed_but_is_edited() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pre-commit"), format!("{HOOK_BODY}echo mine\n")).unwrap();
+        assert!(!is_installed(dir.path()));
+        assert!(is_edited(dir.path()));
+        assert!(!is_edited(&dir.path().join("missing")));
     }
 
     #[test]
