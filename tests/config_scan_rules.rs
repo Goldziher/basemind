@@ -426,6 +426,13 @@ mod documents {
         let (dir, mut cfg) = doc_cfg();
         let root = dir.path();
         write(root, "big.eml", &csv(4000));
+        // An mtime outside the settle window arms the unchanged shortcut, which a fast run otherwise skips.
+        fs::File::options()
+            .write(true)
+            .open(root.join("big.eml"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+            .unwrap();
         let size = fs::metadata(root.join("big.eml")).unwrap().len();
         cfg.scan.max_file_bytes = 1024;
         cfg.documents.max_file_bytes = size + 1;

@@ -156,11 +156,13 @@ fn process_doc(
     };
     // The code lane's `(size, mtime)` shortcut: an unchanged document is neither read nor hashed, so
     // a scan does not re-read every document in the tree. The recorded stamp is a settled one (0
-    // when the read raced an edit), and 0 never matches.
+    // when the read raced an edit), and 0 never matches. A document over `documents.max_file_bytes`
+    // never takes it, so lowering the cap evicts an indexed one.
     if let Some(existing) = store.lookup_doc(rel)
         && existing.mtime != 0
         && let Ok(meta) = doc_stat(&abs, follow_symlinks)
         && meta.is_file()
+        && meta.len() <= filters.doc_max_file_bytes
         && meta.len() == existing.size_bytes
         && crate::scanner_file::mtime_nanos(&meta) == existing.mtime
         && unchanged(existing, &existing.hash_hex)

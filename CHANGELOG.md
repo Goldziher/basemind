@@ -1021,6 +1021,10 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 - `basemind memory put` and the other memory calls in a workspace nothing has scanned said another
   process holds the index lock. They now say the workspace has no index and to run `basemind scan`;
   a genuinely held index still exits `3` (#430).
+- An unknown `[languages.<name>]` key with no near match among the downloaded grammars now says
+  that suggestions come only from downloaded grammars and names `basemind lang install` (#432).
+- Lowering `[documents] max_file_bytes` below the size of an already indexed document now drops it
+  on the next scan instead of keeping it as unchanged (#433).
 - On Linux, a directory the inotify watch limit refused a watch no longer goes stale without a
   word (#334). `index_status` gains `watches`: the watches the daemon holds (`held`) and, once
   `fs.inotify.max_user_watches` is exhausted, the directories left unwatched (`unwatched`), the
