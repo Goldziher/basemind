@@ -347,18 +347,25 @@ fn a_scan_while_the_daemon_is_mid_rescan_waits_for_it() {
 fn a_lock_held_by_a_process_other_than_the_daemon_keeps_the_notice() {
     let env = Env::new();
     assert_eq!(code(&env.run(&["scan", "--quiet"])), 0);
-    let mut holder = env
-        .command(&["watch"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("watch");
-    // With no daemon yet, a direct scan exits busy (3) once the watcher owns the lock.
+    let spawn_watch = || {
+        env.command(&["watch"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("watch")
+    };
+    let mut holder = spawn_watch();
+    // With no daemon yet, a direct scan exits busy (3) once the watcher owns the lock. The polling
+    // scan holds the lock itself between polls, so a watcher that started during one has found the
+    // lock taken and exited; start another rather than wait on a process that is gone.
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let out = env.run(&["scan", "--quiet"]);
         if code(&out) == 3 {
             break;
+        }
+        if holder.try_wait().expect("poll").is_some() {
+            holder = spawn_watch();
         }
         assert!(Instant::now() < deadline, "watch never took the lock: {}", text(&out));
         std::thread::sleep(Duration::from_millis(250));
