@@ -2,9 +2,9 @@
 # Refresh it with `ai-rulez lock`; `ai-rulez generate --locked` fails when it is stale.
 
 version = 1
-ai_rulez_version = '5.14.0'
+ai_rulez_version = '5.14.1'
 scope = 'all'
-tree = 'sha256:1300f804f16f957581b798f82395e114f212f74fe448830224c6198ca68a7967'
+tree = 'sha256:3aa48711f6ec520825d3baa3d38c937871495190e2b823435fac08154677f795'
 
 [[served]]
 name = 'adr-workflow'
@@ -232,7 +232,7 @@ digest = 'sha256:a403f2754ff781dd8f5e8e80077ee141564fd59774194de0b4d78b15c89453c
 kind = 'context'
 id = 'mcp-surface'
 path = 'context/mcp-surface.md'
-digest = 'sha256:33b9790ed51e38fba432f1165b36074bbd15fad3875101af1e73fd45bff08792'
+digest = 'sha256:c4783238d7625979c88fb6c2888bea675e9681eb2ddf5241c9a808b5af9e382f'
 
 [[item]]
 kind = 'context'
@@ -262,7 +262,7 @@ digest = 'sha256:d43a23e2f32d56826ce1b59534711227d58024fa861745c184accb836e2c00d
 kind = 'rule'
 id = 'basemind-usage'
 path = 'rules/basemind-usage.md'
-digest = 'sha256:ac173551870917320370e1ded03790eec54ce4524336804d666a8f6b0349ea20'
+digest = 'sha256:afa215f7ecf95b0715cf1a3e4815f7ba657538235b9cd9e9bba6a2debf85be27'
 
 [[item]]
 kind = 'rule'

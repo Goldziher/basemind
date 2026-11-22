@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:0731507eaa473df5f79d98238ac1f3197dc5c0e01089dd8d0081af9576020144
-Source-Hash: blake3:a6c68a481d542a53e505749532735ddcb726e4d2c29eaac7fffe232cf5cf94fc
+Content-Hash: blake3:0fc4ab2923e8611c62542a28d4e99d3584b612be085defb4a800df46e34cf11d
+Source-Hash: blake3:afa8c8c47fb244d2dbc7f0afd2322677bf22148e0020fc1ce662c373aa83bb0a
 Schema-Version: v1
 -->
 
@@ -72,7 +72,7 @@ no tool covers the question.
 | "What imports module M?" | `code_refs {"name":"tokio::sync","relation":"importers"}` | `basemind code dependents tokio::sync` |
 | "Which definition does this reference bind to?" | `code_refs {"name":"open_store","relation":"definition","path":"src/main.rs","line":42}` | `basemind code definition src/main.rs 42 open_store` |
 | "Which file is named like X?" | `find_files {"query":"readme"}` | `basemind code find readme` |
-| "What files are indexed under a directory?" | `find_files {"path_prefix":"src/mcp/"}` | `basemind code files --path-prefix src/mcp/` |
+| "What files are indexed under a directory?" | `find_files {"path":"src/mcp/"}` | `basemind code files --path src/mcp/` |
 | "What's indexed?" | `index_status {}` | `basemind status` |
 | "A result says stale, or a new file is missing?" | `index_rescan {"paths":["src/store.rs"]}` | `basemind rescan src/store.rs` |
 | "Fetch the next page?" | pass the response's `next_cursor` back as `cursor` | `--cursor <next_cursor>` |
