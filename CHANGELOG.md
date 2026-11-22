@@ -828,11 +828,10 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 
 - cargo-deny checks the `full` dependency graph the release binaries are built from.
 
-- Release archives no longer bundle libheif or its codecs (#231; libde265, x265, libaom, libvmaf,
-  libsharpyuv): the macOS archive ships no libraries and the Linux archives ship only
-  `libstdc++.so.6`. CI no longer installs or builds libheif, and packaging a release fails, naming
-  each one, when a library outside the per-platform allowlist in `scripts/check-bundled-libs.sh`
-  would be bundled.
+- Packaging a release fails, naming each one, when a native library outside the per-platform
+  allowlist in `scripts/check-bundled-libs.sh` would be bundled (#231). The archives no longer carry
+  libaom, libvmaf, libsharpyuv or x265; the allowlist names only libheif and libde265 (below) and, on
+  Linux, `libstdc++.so.6`.
 
 - Release archives bundle libheif 1.23.7 and libde265 1.1.3 as shared libraries (LGPL-3.0-only),
   built with the libde265 decoder and no other codec, and no longer bundle x265 (a GPL HEVC
