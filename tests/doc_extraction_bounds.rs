@@ -59,12 +59,13 @@ fn guide() -> String {
         .collect()
 }
 
-/// Offline config with a 1 s per-file budget, which a stalled document always overruns.
+/// Offline config with a short per-file budget, which a stalled document always overruns.
 fn slow_config() -> ConfigV1 {
     basemind::store::init_isolated_cache();
     let mut cfg = ConfigV1::with_defaults();
     cfg.documents.embed = false;
-    cfg.documents.extraction_timeout_secs = 1;
+    // The stalled document overruns any budget; a guide that takes a second on a loaded runner must not.
+    cfg.documents.extraction_timeout_secs = 4;
     cfg.documents.plain_text_chunk_max_bytes = u64::MAX;
     cfg.documents.max_abandoned_extractions = 64;
     // One worker, so documents run one after another. The scan pool is process-wide and sized by the
@@ -110,7 +111,7 @@ fn a_timed_out_document_is_not_retried_until_the_file_or_the_limits_change() {
         .lookup_doc_tombstone("slow.txt")
         .cloned()
         .expect("tombstone recorded");
-    assert_eq!(tombstone.timeout_secs, 1);
+    assert_eq!(tombstone.timeout_secs, 4);
     assert!(
         open(root).lookup_doc("slow.txt").is_none(),
         "a timeout leaves no doc entry"
@@ -123,16 +124,16 @@ fn a_timed_out_document_is_not_retried_until_the_file_or_the_limits_change() {
     assert_eq!(second.stats.extract_failed, 0);
     assert_eq!(second.stats.docs_indexed, 0);
 
-    // A changed limit retries it: here the timeout is raised, and the stalled log overruns 2 s too.
+    // A changed limit retries it: here the timeout is raised, and the stalled log overruns 5 s too.
     let mut raised = cfg.clone();
-    raised.documents.extraction_timeout_secs = 2;
+    raised.documents.extraction_timeout_secs = 5;
     let third = scan_once(root, &raised);
     assert_eq!(
         third.stats.docs_tombstoned, 0,
         "raising the timeout retries the document"
     );
     assert_eq!(third.stats.doc_timeouts, 1);
-    assert_eq!(open(root).lookup_doc_tombstone("slow.txt").unwrap().timeout_secs, 2);
+    assert_eq!(open(root).lookup_doc_tombstone("slow.txt").unwrap().timeout_secs, 5);
 
     // Editing the file retries it too (same limits as the previous scan).
     fs::write(root.join("slow.txt"), slow_log(2)).unwrap();
