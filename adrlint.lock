@@ -200,3 +200,8 @@ blake3 = "a3e6312694be687f119a49deaa6c1916ce1bcdee92b76c68bd924c8c4343624c"
 number = 53
 status = "accepted"
 blake3 = "9a63b75f67766f21d5187b3a165642c55fabb8f99d1faf69e894916e00beac14"
+
+[adrs."docs/adr/0055-read-around-reducing-floor.md"]
+number = 55
+status = "accepted"
+blake3 = "b795239ed5ae14f61f2efa726e15a9f1309543a9133bd1b845e2ae4bc0265246"

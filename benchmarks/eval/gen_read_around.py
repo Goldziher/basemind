@@ -14,7 +14,7 @@ Baseline: what an agent without basemind runs, the literal output of
 keeps the gold's file set (the extension, as the old `git grep -- '*.EXT'` pathspec did); `-t`
 would widen `py` to `.pyi` and `ts` to `.tsx`, files the gold never holds. rg skips hidden and
 ignored files that `git grep` would search: such a miss is the baseline's recall, not dropped. It
-is a reducing kind (gated at 1.5x), scored as `grep_context`. rg is not pinned by the repository's
+is a reducing kind (gated at 1.4x, ADR-0055), scored as `grep_context`. rg is not pinned by the repository's
 mise toolchain, so `run_gate.sh` refuses to run this kind without it; when rg is on PATH this
 generator checks each task's rg output against the gold and warns on a difference.
 """

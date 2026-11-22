@@ -112,6 +112,23 @@ fn reducing_passes_at_credited_0_7_and_median_1_5_and_fails_just_below_either() 
 }
 
 #[test]
+fn read_around_has_a_1_4_floor_and_every_other_reducing_kind_keeps_1_5() {
+    let g = run(EvalMode::ReadAround, &seven_of_ten([143, 143, 143, 143, 200, 200, 200]));
+    assert_eq!(g.pass, Some(true), "{}", g.reason);
+
+    let g = run(EvalMode::ReadAround, &seven_of_ten([140, 140, 140, 140, 200, 200, 200]));
+    assert_eq!(g.pass, Some(true), "{}", g.reason);
+
+    let g = run(EvalMode::ReadAround, &seven_of_ten([139, 139, 139, 139, 200, 200, 200]));
+    assert_eq!(g.pass, Some(false));
+    assert!(g.reason.contains("median 1.39x < 1.40x"), "{}", g.reason);
+
+    let g = run(EvalMode::Read, &seven_of_ten([143, 143, 143, 143, 200, 200, 200]));
+    assert_eq!(g.pass, Some(false));
+    assert!(g.reason.contains("median 1.43x < 1.50x"), "{}", g.reason);
+}
+
+#[test]
 fn locating_passes_at_median_0_67_and_fails_at_0_66_where_reducing_fails_both() {
     let at = seven_of_ten([67, 67, 67, 67, 90, 90, 90]);
     let g = run(EvalMode::Symbols, &at);

@@ -433,6 +433,9 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   the digits that tell it from its floor, and the report's `build.features` names `code-intel` for a
   build with both its parts.
 
+- `admin eval`'s value gate holds `read_around` to a median ratio of 1.4 instead of the 1.5 of the other
+  reducing kinds: its rows keep their `## <symbol>` headers (ADR-0055).
+
 - **BREAKING:** every `code_refs` call site carries a `resolution` (#125, ADR-0047): `same_file`,
   `imported`, `scope_resolved`, `elsewhere`, `name_only` or `external`, in place of the `resolved`
   flag. A row leaves out the page's `resolution_default`; `resolution_counts` gives the rows per
