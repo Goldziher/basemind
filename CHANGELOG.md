@@ -311,6 +311,10 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 
 ### Changed
 
+- The watcher drops events under excluded paths (`node_modules`, `target`, `.git`, `.basemind`, skipped
+  submodules) in the debouncer callback, before they are queued or coalesced, and checks the exclude globs
+  before it stats an event path (#286).
+
 - The default cache budget fits the disk (#291). With `BASEMIND_CACHE_BUDGET_MB` unset, each sweep
   holds the cache to half of what it could occupy (its own size plus the free space on its volume),
   at most 20 GiB, instead of a fixed 20 GiB that on a disk with less free never evicted before the

@@ -429,8 +429,16 @@ impl Filters {
 
     /// True when `rel` is dropped by the exclude globs or a skipped submodule root — the shared
     /// gate behind [`Filters::allows`] (files).
-    fn excluded(&self, rel: &str) -> bool {
+    pub(crate) fn excluded(&self, rel: &str) -> bool {
         self.exclude.is_match(rel) || under_submodule(rel, &self.submodule_prefixes)
+    }
+
+    /// Detach the exclusion half of [`Filters::allows`] as an owned gate.
+    pub(crate) fn exclusion_gate(&self) -> ExclusionGate {
+        ExclusionGate {
+            exclude: self.exclude.clone(),
+            submodule_prefixes: Arc::clone(&self.submodule_prefixes),
+        }
     }
 
     pub(crate) fn allows(&self, rel: &str) -> bool {
@@ -481,6 +489,21 @@ impl Filters {
             submodule_prefixes: Arc::from([] as [String; 0]),
             base: Some(extra_root.to_path_buf()),
         }
+    }
+}
+
+/// The path-only part of [`Filters`] that says a path is never indexed: the exclude globs and the
+/// skipped submodule roots. Owned and `Send + Sync`, so the watcher's debouncer callback can drop
+/// such events before they are queued; it does no I/O.
+#[derive(Clone)]
+pub(crate) struct ExclusionGate {
+    exclude: globset::GlobSet,
+    submodule_prefixes: Arc<[String]>,
+}
+
+impl ExclusionGate {
+    pub(crate) fn excludes(&self, rel: &str) -> bool {
+        self.exclude.is_match(rel) || under_submodule(rel, &self.submodule_prefixes)
     }
 }
 
@@ -652,6 +675,16 @@ impl IndexFilter {
     /// must still be forwarded for pruning) and as the first gate everywhere else.
     pub(crate) fn allows_glob(&self, rel: &str) -> bool {
         self.filters.allows(rel)
+    }
+
+    /// The exclusion half of the glob gate, owned, for the watcher's debouncer callback.
+    pub(crate) fn exclusion_gate(&self) -> Arc<ExclusionGate> {
+        Arc::new(self.filters.exclusion_gate())
+    }
+
+    /// Path-only: is `rel` dropped by the exclude globs or a skipped submodule root?
+    pub(crate) fn excluded(&self, rel: &str) -> bool {
+        self.filters.excluded(rel)
     }
 
     /// Borrow the underlying glob/submodule filters — `run_candidates` needs them and they were

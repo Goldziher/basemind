@@ -517,6 +517,15 @@ fn batch(kind: EventKind, paths: &[&str]) -> DebounceEventResult {
         .collect())
 }
 
+/// The gate of a default config rooted at `/repo`, whose paths need not exist.
+fn test_gate() -> EventGate {
+    let config = crate::config::default_for_root(Path::new("/repo"));
+    let filter =
+        crate::scanner_filter::IndexFilter::new(Path::new("/repo"), &config, crate::retrieval_wiring::backend())
+            .expect("filter builds");
+    EventGate::new(Path::new("/repo"), filter.exclusion_gate())
+}
+
 fn drain(rx: &mpsc::Receiver<WatchMsg>) -> usize {
     std::iter::from_fn(|| rx.try_recv().ok()).count()
 }
@@ -527,8 +536,9 @@ fn drain(rx: &mpsc::Receiver<WatchMsg>) -> usize {
 fn should_deliver_batch_to_the_queue_when_it_has_room() {
     let (tx, rx) = mpsc::sync_channel::<WatchMsg>(DEBOUNCE_QUEUE_CAPACITY);
     let pending = PendingPaths::default();
+    let gate = test_gate();
 
-    dispatch_debounced(&tx, &pending, batch(MODIFY, &["/repo/a.rs", "/repo/b.rs"]));
+    dispatch_debounced(&tx, &pending, &gate, batch(MODIFY, &["/repo/a.rs", "/repo/b.rs"]));
 
     let Ok(WatchMsg::Batch(Ok(events))) = rx.try_recv() else {
         panic!("the batch must reach the consumer");
@@ -547,19 +557,31 @@ fn should_deliver_batch_to_the_queue_when_it_has_room() {
 fn should_coalesce_into_the_pending_set_when_the_queue_is_full() {
     let (tx, rx) = mpsc::sync_channel::<WatchMsg>(DEBOUNCE_QUEUE_CAPACITY);
     let pending = PendingPaths::default();
+    let gate = test_gate();
 
     for i in 0..DEBOUNCE_QUEUE_CAPACITY {
-        dispatch_debounced(&tx, &pending, batch(MODIFY, &[format!("/repo/queued_{i}.rs").as_str()]));
+        dispatch_debounced(
+            &tx,
+            &pending,
+            &gate,
+            batch(MODIFY, &[format!("/repo/queued_{i}.rs").as_str()]),
+        );
     }
     assert!(pending.take().is_empty(), "the queue had room for all of those");
 
     // Now full. `busy_b.rs` repeats across two batches, and a read is not a change at all.
-    dispatch_debounced(&tx, &pending, batch(MODIFY, &["/repo/busy_a.rs"]));
-    dispatch_debounced(&tx, &pending, batch(MODIFY, &["/repo/busy_b.rs", "/repo/busy_c.rs"]));
-    dispatch_debounced(&tx, &pending, batch(MODIFY, &["/repo/busy_b.rs"]));
+    dispatch_debounced(&tx, &pending, &gate, batch(MODIFY, &["/repo/busy_a.rs"]));
     dispatch_debounced(
         &tx,
         &pending,
+        &gate,
+        batch(MODIFY, &["/repo/busy_b.rs", "/repo/busy_c.rs"]),
+    );
+    dispatch_debounced(&tx, &pending, &gate, batch(MODIFY, &["/repo/busy_b.rs"]));
+    dispatch_debounced(
+        &tx,
+        &pending,
+        &gate,
         batch(EventKind::Access(notify::event::AccessKind::Any), &["/repo/read.rs"]),
     );
 
@@ -590,10 +612,11 @@ fn should_coalesce_into_the_pending_set_when_the_queue_is_full() {
 fn should_not_grow_the_queue_beyond_capacity_under_a_burst() {
     let (tx, rx) = mpsc::sync_channel::<WatchMsg>(DEBOUNCE_QUEUE_CAPACITY);
     let pending = PendingPaths::default();
+    let gate = test_gate();
     let paths = ["/repo/a.rs", "/repo/b.rs", "/repo/c.rs", "/repo/d.rs"];
 
     for _ in 0..10_000 {
-        dispatch_debounced(&tx, &pending, batch(MODIFY, &paths));
+        dispatch_debounced(&tx, &pending, &gate, batch(MODIFY, &paths));
     }
 
     assert_eq!(
@@ -759,3 +782,42 @@ mod rescan;
 
 #[path = "watcher_limit_tests.rs"]
 mod limit;
+
+/// `pnpm install` floods the debouncer with events under `node_modules`: none may be queued or
+/// coalesced, and none reaches a stat (the gate is path-only; the root does not exist, so a stat
+/// would have nothing to find). `.git` and `.basemind` events go the same way, a source file still
+/// passes, and a batch holding only excluded events never reaches the queue.
+#[test]
+fn should_drop_excluded_events_before_queueing_or_coalescing() {
+    let (tx, rx) = mpsc::sync_channel::<WatchMsg>(1);
+    let pending = PendingPaths::default();
+    let gate = test_gate();
+
+    let paths: Vec<String> = (0..100_000)
+        .map(|i| format!("/repo/node_modules/pkg/f{i}.js"))
+        .collect();
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    for _ in 0..3 {
+        dispatch_debounced(&tx, &pending, &gate, batch(MODIFY, &refs));
+    }
+    dispatch_debounced(
+        &tx,
+        &pending,
+        &gate,
+        batch(MODIFY, &["/repo/.git/index", "/repo/.basemind/x.msgpack"]),
+    );
+    assert_eq!(drain(&rx), 0, "excluded events must not be queued");
+    assert!(pending.take().is_empty(), "excluded events must not be coalesced");
+
+    dispatch_debounced(
+        &tx,
+        &pending,
+        &gate,
+        batch(MODIFY, &["/repo/node_modules/a.js", "/repo/src/a.rs"]),
+    );
+    let Ok(WatchMsg::Batch(Ok(events))) = rx.try_recv() else {
+        panic!("the source file must reach the consumer");
+    };
+    let kept: Vec<&PathBuf> = events.iter().flat_map(|e| &e.event.paths).collect();
+    assert_eq!(kept, vec![&PathBuf::from("/repo/src/a.rs")]);
+}

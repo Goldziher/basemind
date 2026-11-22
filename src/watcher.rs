@@ -207,9 +207,76 @@ enum WatchMsg {
     Shutdown,
 }
 
+/// Path-only gate the debouncer callback applies before queueing: the consumer's filter would drop
+/// these events anyway, but only after queueing them and, for an existing path, statting it.
+/// Shared with the consumer loop, which swaps in the gate of a rebuilt filter.
+struct EventGate {
+    root: PathBuf,
+    exclusion: Mutex<Arc<crate::scanner_filter::ExclusionGate>>,
+}
+
+impl EventGate {
+    fn new(root: &Path, exclusion: Arc<crate::scanner_filter::ExclusionGate>) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            exclusion: Mutex::new(exclusion),
+        }
+    }
+
+    fn replace(&self, exclusion: Arc<crate::scanner_filter::ExclusionGate>) {
+        *self.exclusion.lock().expect("event gate poisoned") = exclusion;
+    }
+
+    /// True for a path under the root that is never indexed. Out-of-root and root-level paths are
+    /// left to the consumer.
+    fn drops(&self, exclusion: &crate::scanner_filter::ExclusionGate, p: &Path) -> bool {
+        let Ok(rel) = p.strip_prefix(&self.root) else {
+            return false;
+        };
+        if rel
+            .components()
+            .any(|c| c.as_os_str() == crate::config::BASEMIND_DIR || c.as_os_str() == ".git")
+        {
+            return true;
+        }
+        let rel = rel.to_string_lossy();
+        if rel.is_empty() {
+            return false;
+        }
+        if rel.contains('\\') {
+            exclusion.excludes(&rel.replace('\\', "/"))
+        } else {
+            exclusion.excludes(&rel)
+        }
+    }
+
+    /// Remove excluded paths from the batch, and the events left with none.
+    fn retain(&self, events: &mut Vec<DebouncedEvent>) {
+        let exclusion = Arc::clone(&self.exclusion.lock().expect("event gate poisoned"));
+        events.retain_mut(|ev| {
+            if ev.event.paths.is_empty() {
+                return true;
+            }
+            ev.event.paths.retain(|p| !self.drops(&exclusion, p));
+            !ev.event.paths.is_empty()
+        });
+    }
+}
+
 /// Debouncer callback body: hand the batch to the consumer, or coalesce it when the queue is full.
-/// Never blocks, never discards a path.
-fn dispatch_debounced(tx: &std::sync::mpsc::SyncSender<WatchMsg>, pending: &PendingPaths, res: DebounceEventResult) {
+/// Never blocks, never discards a path the consumer could index; excluded paths are dropped first.
+fn dispatch_debounced(
+    tx: &std::sync::mpsc::SyncSender<WatchMsg>,
+    pending: &PendingPaths,
+    gate: &EventGate,
+    mut res: DebounceEventResult,
+) {
+    if let Ok(events) = &mut res {
+        gate.retain(events);
+        if events.is_empty() {
+            return;
+        }
+    }
     match tx.try_send(WatchMsg::Batch(res)) {
         Ok(()) => {}
         Err(std::sync::mpsc::TrySendError::Full(WatchMsg::Batch(Ok(events)))) => {
@@ -304,6 +371,9 @@ fn watch_with<W: notify::Watcher>(
     let stop_tx = tx.clone();
     let pending = Arc::new(PendingPaths::default());
     let pending_producer = Arc::clone(&pending);
+    let mut filter = crate::scanner_filter::IndexFilter::new(root, config, crate::retrieval_wiring::backend())?;
+    let gate = Arc::new(EventGate::new(root, filter.exclusion_gate()));
+    let gate_producer = Arc::clone(&gate);
     let debounce = Duration::from_millis(config.watch.debounce_ms);
     let rescans = Arc::new(RescanSignals::default());
     TAP_SIGNALS.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&rescans)));
@@ -319,13 +389,11 @@ fn watch_with<W: notify::Watcher>(
         DebounceConfig::default()
             .with_timeout(debounce)
             .with_notify_config(NotifyConfig::default()),
-        move |res| dispatch_debounced(&tx, &pending_producer, res),
+        move |res| dispatch_debounced(&tx, &pending_producer, &gate_producer, res),
         NoCache::new(),
     );
     TAP_SIGNALS.with(|slot| slot.borrow_mut().take());
     let mut debouncer = debouncer?;
-
-    let mut filter = crate::scanner_filter::IndexFilter::new(root, config, crate::retrieval_wiring::backend())?;
 
     #[cfg(target_os = "linux")]
     let mut dir_watches = DirWatches::default();
@@ -444,6 +512,7 @@ fn watch_with<W: notify::Watcher>(
             match crate::scanner_filter::IndexFilter::new(root, &fresh, crate::retrieval_wiring::backend()) {
                 Ok(rebuilt) => {
                     info!("config changed; watcher filter rebuilt");
+                    gate.replace(rebuilt.exclusion_gate());
                     filter = rebuilt;
                 }
                 Err(error) => warn!(%error, "config changed but its filter does not build; keeping the previous one"),
@@ -813,7 +882,7 @@ fn keep_event_path(filter: &crate::scanner_filter::IndexFilter, root: &Path, p: 
     } else {
         &rel_cow
     };
-    if rel.is_empty() {
+    if rel.is_empty() || filter.excluded(rel) {
         return false;
     }
     if std::fs::symlink_metadata(p).is_ok_and(|meta| meta.is_dir()) {
