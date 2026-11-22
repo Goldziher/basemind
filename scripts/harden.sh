@@ -114,6 +114,13 @@ echo "results: ${RESULTS}"
 echo "passed (${#passed[@]}): ${passed[*]:-<none>}"
 echo "failed (${#failed[@]}): ${failed[*]:-<none>}"
 
+# Scan and git-history build times against benchmarks/harden-baselines.json, for this machine class
+# only (BASEMIND_HARDEN_MACHINE overrides the label). A regression is printed and annotated, and
+# fails the run only with BASEMIND_HARDEN_BASELINE_STRICT=1.
+if [ -z "${BASEMIND_HARDEN_SKIP_SUITE:-}" ] && [ -s "${RESULTS}" ]; then
+  python3 "$(dirname "$0")/harden_baseline.py" "${RESULTS}" --features "${FEATURES}" || failed+=("baseline")
+fi
+
 if [ "${#failed[@]}" -gt 0 ]; then
   exit 1
 fi

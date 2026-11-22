@@ -64,6 +64,12 @@ Measured on an Apple M4 (10 cores — 4 P + 6 E, 16 GB), default-feature build (
 Indexed git queries are ~tens of µs flat; the index is 6–22 % of `.git`. Regressions beyond ~20% on
 the scan-time or build-time baselines should be investigated before merge.
 
+The machine-readable baselines are `benchmarks/harden-baselines.json`, keyed by machine label
+(`apple-m4`, `github-ubuntu-latest`) and feature set. `scripts/harden.sh` runs
+`scripts/harden_baseline.py` at the end: for a machine and features with a baseline it flags a scan
+or git-history build time more than 20% (and 500 ms) over it; otherwise it prints a candidate entry
+and passes. `BASEMIND_HARDEN_BASELINE_STRICT=1` makes a flag fail the run.
+
 #### Canary authoring
 
 See the `harness-canary-authoring` skill. Canaries must be lower bounds (`>=`), call-site-dense,

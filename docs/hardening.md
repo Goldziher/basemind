@@ -295,3 +295,16 @@ output. Read a failure from the summary row first, then the matching report as d
   anchor its sleeper to the run.
 - The daemon's own idle reap (10 minutes after the last client) is not waited for; `comms stop` is
   the shutdown exercised.
+
+## Harden harness baselines
+
+`scripts/harden.sh` (the `tests/harden.rs` real-OSS canary harness) ends by comparing each repository's
+scan time and git-history build time with `benchmarks/harden-baselines.json`. Baselines are keyed by a
+machine label (`BASEMIND_HARDEN_MACHINE`, else `github-ubuntu-latest` on a GitHub-hosted Linux runner
+or `apple-m4`) and by the cargo features they were measured with, because a CI runner and an Apple M4
+time different things. With no baseline for the current machine and features the script prints the
+measured numbers as a candidate entry and passes. With one, a time more than `threshold_pct` (20) and
+`min_abs_ms` (500) over it prints `REGRESSION` and a GitHub `::warning::`; it fails the run only with
+`BASEMIND_HARDEN_BASELINE_STRICT=1`, as shared runners vary by about that much run to run. To accept
+new numbers, paste the candidate entry over the machine's `repos`. The comparison is
+`scripts/harden_baseline.py`, tested by `scripts/tests/test_harden_baseline.py`.

@@ -1,0 +1,30 @@
+{
+  "threshold_pct": 20,
+  "min_abs_ms": 500,
+  "machines": {
+    "apple-m4": {
+      "features": "",
+      "source": "0.33-era runs on an Apple M4 (10 cores, 16 GB), default features",
+      "repos": {
+        "typescript": { "scan_ms": 18000, "git_build_ms": 3200 },
+        "django": { "scan_ms": 2400, "git_build_ms": 500 },
+        "react": { "scan_ms": 2000, "git_build_ms": 600 },
+        "tokio": { "scan_ms": 400, "git_build_ms": 900 }
+      }
+    },
+    "github-ubuntu-latest": {
+      "features": "full",
+      "source": "median of the nightly ci hardening jobs of 2026-11-19, 11-20 and 11-21 (runs 44525845410, 44737460110, 44903278856)",
+      "repos": {
+        "ripgrep": { "scan_ms": 2900, "git_build_ms": 269 },
+        "tokio": { "scan_ms": 3800, "git_build_ms": 792 },
+        "typescript": { "scan_ms": 40600, "git_build_ms": 19223 },
+        "react": { "scan_ms": 7600, "git_build_ms": 497 },
+        "django": { "scan_ms": 79900, "git_build_ms": 391 },
+        "requests": { "scan_ms": 1900, "git_build_ms": 503 },
+        "gin": { "scan_ms": 600, "git_build_ms": 214 },
+        "ripgrep-shallow": { "scan_ms": 300, "git_build_ms": 60 }
+      }
+    }
+  }
+}

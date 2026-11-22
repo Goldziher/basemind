@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.14.1'
 scope = 'all'
-tree = 'sha256:c9c0f3defb282c103880e3749895972a9d880ec0847a71469fa56aa215b5ba50'
+tree = 'sha256:aeeac9c77f84898d12b9d0a321d870c2bdf781be986d1cfbffb7018774d68c73'
 
 [[served]]
 name = 'adr-workflow'
@@ -220,7 +220,7 @@ digest = 'sha256:5b8d16f3ca3f1f625e15ed0ce6528545930512d5d972378118b8fa285748d10
 kind = 'context'
 id = 'harden-harness'
 path = 'context/harden-harness.md'
-digest = 'sha256:177b668e20ba2fc87d7634bd08d7c11828384e63ce7bc0b5ef4fcde915af2e36'
+digest = 'sha256:93661c5648db214ed2720bb6a042d66cd7e781803824a44c2457f7294503de4a'
 
 [[item]]
 kind = 'context'
