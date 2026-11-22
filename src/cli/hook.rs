@@ -100,14 +100,14 @@ pub fn is_installed(hooks_dir: &Path) -> bool {
     read_hook(hooks_dir).is_some_and(|body| normalize_newlines(&body) == HOOK_BODY)
 }
 
-/// Whether the pre-commit hook in `hooks_dir` carries [`HOOK_MARKER`] but is not [`is_installed`]:
+/// Whether the pre-commit hook in `hooks_dir` carries `HOOK_MARKER` but is not [`is_installed`]:
 /// ours once, since edited.
 pub fn is_edited(hooks_dir: &Path) -> bool {
     read_hook(hooks_dir).is_some_and(|body| body.contains(HOOK_MARKER)) && !is_installed(hooks_dir)
 }
 
 /// Write the hook into `hooks_dir`, creating it if needed. A foreign hook is an error without
-/// `force`; a hook that merely contains [`HOOK_MARKER`] but differs from [`HOOK_BODY`] (the user added
+/// `force`; a hook that merely contains `HOOK_MARKER` but differs from `HOOK_BODY` (the user added
 /// lines) counts as foreign. With `force`, the foreign hook is moved to the first free name of `pre-commit.bak`,
 /// `pre-commit.bak.1`, `pre-commit.bak.2`, ..., so no earlier backup is replaced.
 pub fn install_into(hooks_dir: &Path, force: bool) -> Result<(PathBuf, Installed)> {
