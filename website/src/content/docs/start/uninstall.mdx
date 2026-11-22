@@ -51,7 +51,9 @@ Everything else lives in the directories below. Removing them and the install re
   `.claude/settings.local.json` or `.claude/settings.json`.
 - The `.gitignore` lines covering those `.local` files.
 - The git `pre-commit` hook `basemind hook install` wrote. If `pre-commit.bak` exists it holds the
-  hook that was replaced: move it back over `pre-commit`. Otherwise delete only `pre-commit`.
+  hook that was replaced (a repeated `--force` keeps each earlier one as `pre-commit.bak.1`,
+  `pre-commit.bak.2`, and so on, the highest number being the newest): move the one you want back
+  over `pre-commit`. Otherwise delete only `pre-commit`.
 
 ## Removing basemind
 

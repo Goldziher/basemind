@@ -232,8 +232,9 @@ A 1000-line file becomes a 30-line table of contents.
 - `code_search` needs the `code-search` Cargo feature, `docs_search` needs `documents`, and the
   memory tools need `memory` (all in `--features full` and in the release binary). Without the
   feature the tool answers with an error naming it.
-- Memory is scoped by the normalised `origin` remote URL (`git@github.com:Foo/bar.git` and
-  `https://github.com/Foo/bar/` collapse to the same scope key): clones of the same repo share
-  memory; unrelated repos do not see each other's entries.
+- Memory is one store per repository, keyed by the path of its main worktree: its worktrees
+  share notes (per worktree when it has no `origin`); another clone, a moved repository or an
+  `origin` that normalises differently does not see them, and a re-clone at the same path with
+  the same `origin` does.
 - MCP resources are available for hosts that attach them: `basemind://status`,
   `basemind://outline/{path}` and `basemind://memory/{key}`.
