@@ -822,7 +822,7 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 
 - cargo-deny checks the `full` dependency graph the release binaries are built from.
 
-- Release archives no longer bundle libheif or its codecs (libde265, x265, libaom, libvmaf,
+- Release archives no longer bundle libheif or its codecs (#231; libde265, x265, libaom, libvmaf,
   libsharpyuv): the macOS archive ships no libraries and the Linux archives ship only
   `libstdc++.so.6`. CI no longer installs or builds libheif, and packaging a release fails, naming
   each one, when a library outside the per-platform allowlist in `scripts/check-bundled-libs.sh`
@@ -991,6 +991,9 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 
 ### Fixed
 
+- A detached server that outlived its session is reported (#201).
+- A repository group opens outside the global registry lock, so one slow open no longer blocks another,
+  and a poisoned lock is recovered instead of propagating a panic (#221).
 - On Linux, a directory the inotify watch limit refused a watch no longer goes stale without a
   word (#334). `index_status` gains `watches`: the watches the daemon holds (`held`) and, once
   `fs.inotify.max_user_watches` is exhausted, the directories left unwatched (`unwatched`), the
