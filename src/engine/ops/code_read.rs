@@ -181,6 +181,11 @@ fn read_lines(file: &std::path::Path, line: u32, end_line: u32) -> std::io::Resu
     })
 }
 
+/// `line` without the `\r` of a CRLF terminator, which the untruncated span drops too.
+fn without_cr(line: &[u8]) -> &[u8] {
+    line.strip_suffix(b"\r").unwrap_or(line)
+}
+
 /// `head`, the leading bytes of a span of `bytes` bytes that starts on `line`, as a response body.
 ///
 /// A span over [`EXPAND_BODY_CAP`] is cut after the last whole line that fits, so the body never
@@ -193,8 +198,8 @@ fn cap_body(head: &[u8], bytes: usize, line: u32) -> (String, bool, u32) {
         // The byte after the window decides whether its last line is whole.
         let ends_a_line = head.get(window.len()) == Some(&b'\n');
         match memchr::memrchr(b'\n', window) {
-            _ if ends_a_line => window,
-            Some(newline) => &window[..newline],
+            _ if ends_a_line => without_cr(window),
+            Some(newline) => without_cr(&window[..newline]),
             None => {
                 let mut end = window.len();
                 while end > 0 && head.get(end).is_some_and(|byte| byte & 0xC0 == 0x80) {
@@ -377,6 +382,22 @@ mod tests {
         );
         assert_eq!(last_line, 1_024);
         assert_eq!(body.lines().count(), 1_024);
+    }
+
+    #[test]
+    fn a_truncated_crlf_body_does_not_keep_the_last_carriage_return() {
+        let contents = "x".repeat(98) + "\r\n";
+        let contents = contents.repeat(2_000);
+        let (head, bytes, _) = span_of(contents.as_bytes(), 1, u32::MAX);
+        let (body, truncated, _) = cap_body(&head, bytes, 1);
+        assert!(truncated);
+        assert!(body.ends_with('x'), "no dangling CR: {:?}", &body[body.len() - 4..]);
+
+        let at_the_cap = "y".repeat(EXPAND_BODY_CAP - 1) + "\r\n" + &"z".repeat(100) + "\r\n";
+        let (head, bytes, _) = span_of(at_the_cap.as_bytes(), 1, u32::MAX);
+        let (body, truncated, _) = cap_body(&head, bytes, 1);
+        assert!(truncated);
+        assert!(body.ends_with('y'), "the line ending at the window's edge too");
     }
 
     #[test]
