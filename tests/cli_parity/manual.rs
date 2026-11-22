@@ -238,7 +238,11 @@ fn files(path: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// `source` up to its inline `#[cfg(test)] mod name {`, whose fixture names the product never reads.
-fn without_test_module(source: &str) -> &str {
+fn without_test_module(source: &str) -> std::borrow::Cow<'_, str> {
+    if source.contains("\r\n") {
+        let unix = source.replace("\r\n", "\n");
+        return std::borrow::Cow::Owned(without_test_module(&unix).into_owned());
+    }
     let mut from = 0;
     while let Some(at) = source[from..].find("\n#[cfg(test)]\nmod ") {
         let start = from + at;
@@ -247,11 +251,11 @@ fn without_test_module(source: &str) -> &str {
             .next()
             .unwrap_or_default();
         if line.trim_end().ends_with('{') {
-            return &source[..start];
+            return std::borrow::Cow::Borrowed(&source[..start]);
         }
         from = start + 1;
     }
-    source
+    std::borrow::Cow::Borrowed(source)
 }
 
 /// Every `BASEMIND_*` name in `text`. A name ending in `_` is a prefix, not a variable.
@@ -397,7 +401,7 @@ fn read_variables() -> BTreeSet<String> {
             let text = String::from_utf8_lossy(&bytes);
             names.extend(if rust {
                 // Unit tests close each module; their fixture names are not read by the product.
-                literal_variables(without_test_module(&text))
+                literal_variables(&without_test_module(&text))
             } else {
                 variable_names(&text)
             });

@@ -165,6 +165,8 @@ fn every_argument_key_in_a_skill_command_or_hook_is_one_the_tool_takes() {
             let Ok(text) = std::fs::read_to_string(file) else {
                 continue;
             };
+            // A Windows checkout converts line endings; the paragraph splitting reads `\n`.
+            let text = text.replace("\r\n", "\n");
             read += 1;
             let markdown = file.extension().is_some_and(|ext| ext == "md");
             let shown = file.strip_prefix(&root).unwrap_or(file).display().to_string();
