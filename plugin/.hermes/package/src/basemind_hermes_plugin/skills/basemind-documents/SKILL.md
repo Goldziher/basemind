@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:d9c09e114acc790c3712e8ada019917c4ebe3ca89687193d05f7c284fc9e88cf
-Source-Hash: blake3:dc0c4b23731f87bb12f058f6a7ea61508c344031a5e2018777876b1f3fec5295
+Content-Hash: blake3:19efbf649c5065c68c50c19b030b2a19d8a25605b0d73941cfd03a5ee567f8c8
+Source-Hash: blake3:fe6b745cadf09d25b5dd65b3ce73953d67a40a56509cf6f7797a155314abfc3a
 Schema-Version: v1
 -->
 
@@ -86,8 +86,11 @@ docs_search {"query":"…","format":"pdf","path":"docs/**"}
   or `prefix` (list by key prefix); with none it lists everything. `tags` (any of them) filters a
   search or a list. A list pages by `next_cursor`; `truncated` with `truncated_reason: "scan_cap"`
   means its `total` stopped counting and is a lower bound. Saving an existing `key` replaces the note.
-- Memory is scoped by the normalised git `origin` URL, so clones of the same repo share stored
-  entries and unrelated repos do not. `"visibility":"individual"` keeps a note to this agent.
+- Memory is one store per repository, keyed by the path of its main worktree: its worktrees
+  share notes (per worktree when it has no `origin`); another clone, a moved repository or an
+  `origin` that normalises differently does not see them, and a re-clone at the same path with
+  the same `origin` does.
+  `"visibility":"individual"` keeps a note to this agent.
 - `docs_search` returns 10 hits by default; lists take `limit` and page with `next_cursor` ->
   `cursor`. An argument a tool does not take is rejected with a did-you-mean and the accepted list.
 

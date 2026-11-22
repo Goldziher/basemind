@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:03728e8b6cf923f24209d3e0d5eef5f02c5705717025e4c0604933fdbc066415
-Source-Hash: blake3:dc0c4b23731f87bb12f058f6a7ea61508c344031a5e2018777876b1f3fec5295
+Content-Hash: blake3:cb5f94e8d175d948fbe3c1c3377b297c2b04c8871680aec57bc29ef5efeae147
+Source-Hash: blake3:fe6b745cadf09d25b5dd65b3ce73953d67a40a56509cf6f7797a155314abfc3a
 Schema-Version: v1
 -->
 
@@ -229,8 +229,9 @@ A 1000-line file becomes a 30-line table of contents.
 - `code_search` needs the `code-search` Cargo feature, `docs_search` needs `documents`, and the
   memory tools need `memory` (all in `--features full` and in the release binary). Without the
   feature the tool answers with an error naming it.
-- Memory is scoped by the normalised `origin` remote URL (`git@github.com:Foo/bar.git` and
-  `https://github.com/Foo/bar/` collapse to the same scope key): clones of the same repo share
-  memory; unrelated repos do not see each other's entries.
+- Memory is one store per repository, keyed by the path of its main worktree: its worktrees
+  share notes (per worktree when it has no `origin`); another clone, a moved repository or an
+  `origin` that normalises differently does not see them, and a re-clone at the same path with
+  the same `origin` does.
 - MCP resources are available for hosts that attach them: `basemind://status`,
   `basemind://outline/{path}` and `basemind://memory/{key}`.
