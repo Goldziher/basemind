@@ -268,6 +268,10 @@ fn reloaded_config_rebuilds_the_watcher_filter() {
             std::time::Instant::now() < deadline,
             "blocked.rs never surfaced after the reload"
         );
+        // A real reload is prompted by the config file's own event, which wakes the consumer loop;
+        // the callback gate drops excluded paths before they queue, so a write to the excluded file
+        // alone would never poll the reload.
+        std::fs::write(root.join("trigger.rs"), b"fn trigger() {}\n").expect("write trigger");
         std::fs::write(&blocked, b"fn b() {}\n").expect("rewrite blocked");
         if let Ok(paths) = path_rx.recv_timeout(Duration::from_millis(500)) {
             seen = paths.iter().any(|p| p.ends_with("blocked.rs"));

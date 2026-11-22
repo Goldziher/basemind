@@ -553,6 +553,9 @@ mod tests {
     #[test]
     fn a_process_start_names_one_process() {
         let own = process_start(std::process::id()).expect("this process has a start");
+        // Start times tick at 10 ms on Linux: a child spawned in the test process's first tick (each
+        // test is its own process under nextest) would read as the same start.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         let mut child = std::process::Command::new("sleep").arg("30").spawn().expect("spawn");
         let other = process_start(child.id());
         let _ = child.kill();
