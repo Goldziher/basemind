@@ -297,7 +297,7 @@ impl Workspace {
         let scope = repo
             .as_ref()
             .map(|r| crate::git::scope_key(r))
-            .unwrap_or_else(|| format!("path:{}", root.display()));
+            .unwrap_or_else(|| crate::git::path_scope_key(&root));
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
         let defer_warm = boot_plan(&store, &options).defer_warm;
         let cache = if defer_warm || options.lazy_cache {

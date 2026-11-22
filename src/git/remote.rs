@@ -26,8 +26,15 @@ impl Repo {
 pub fn scope_key(repo: &Repo) -> String {
     match repo.remote_url() {
         Some(url) => normalize_remote_url(&url),
-        None => format!("path:{}", repo.main_worktree_root().display()),
+        None => path_scope_key(&repo.main_worktree_root()),
     }
+}
+
+/// The scope of a root that is no git checkout, or of a checkout without `origin`: `path:<root>`.
+/// The one place the shape is spelled; a caller that has a [`Repo`] passes the main worktree root
+/// ([`scope_key`] does), one without leaves `root` as it was given.
+pub fn path_scope_key(root: &std::path::Path) -> String {
+    format!("path:{}", root.display())
 }
 
 /// Normalise a git remote URL to a stable key suitable for memory-scope lookups.
@@ -91,7 +98,53 @@ pub fn normalize_remote_url(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_remote_url;
+    use super::{Repo, normalize_remote_url, scope_key};
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let status = crate::testing::git_command()
+            .args(["-c", "user.name=t", "-c", "user.email=t@e.x"])
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .expect("run git");
+        assert!(status.success(), "git {args:?}");
+    }
+
+    fn repo_with_linked_worktree(tmp: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let main = tmp.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "--quiet"]);
+        std::fs::write(main.join("a.txt"), b"a\n").unwrap();
+        git(&main, &["add", "."]);
+        git(&main, &["commit", "--quiet", "-m", "init"]);
+        let linked = tmp.join("linked");
+        git(
+            &main,
+            &["worktree", "add", "--quiet", "-b", "side", linked.to_str().unwrap()],
+        );
+        (main, linked)
+    }
+
+    #[test]
+    fn linked_worktrees_of_a_repo_without_origin_share_one_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (main, linked) = repo_with_linked_worktree(tmp.path());
+        let from_main = scope_key(&Repo::discover(&main).unwrap());
+        let from_linked = scope_key(&Repo::discover(&linked).unwrap());
+        assert_eq!(from_main, from_linked);
+        let canonical = main.canonicalize().unwrap();
+        assert_eq!(from_main, format!("path:{}", canonical.display()));
+    }
+
+    #[test]
+    fn a_repo_with_origin_keeps_its_normalised_remote_as_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (main, linked) = repo_with_linked_worktree(tmp.path());
+        git(&main, &["remote", "add", "origin", "git@GitHub.com:Foo/bar.git"]);
+        for root in [&main, &linked] {
+            assert_eq!(scope_key(&Repo::discover(root).unwrap()), "github.com/Foo/bar");
+        }
+    }
 
     #[test]
     fn collapses_https_and_ssh_forms_to_same_key() {

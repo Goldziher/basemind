@@ -376,7 +376,7 @@ impl AgentHub {
         }
         let key = match crate::git::Repo::discover(root) {
             Ok(repository) => crate::git::scope_key(&repository),
-            Err(_) => format!("{}{}", super::v2::api::PATH_REPO_PREFIX, root.display()),
+            Err(_) => crate::git::path_scope_key(root),
         };
         let repo = RepoKey::parse(key)?;
         let mut repos = lock(&self.repos);

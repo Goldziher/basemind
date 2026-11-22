@@ -20,7 +20,7 @@ mod tracked;
 mod worktree;
 use commit::{build_commit_info, commit_files, commit_touches_path, decode_path};
 pub use diff::FileDiff;
-pub use remote::{normalize_remote_url, scope_key};
+pub use remote::{normalize_remote_url, path_scope_key, scope_key};
 pub use tracked::TrackedFiles;
 pub use worktree::{BranchInfo, WorktreeInfo};
 

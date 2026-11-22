@@ -481,7 +481,7 @@ pub(crate) fn derive_scope(root: &Path, source: &crate::scanner::ScanSource<'_>)
         }
         crate::scanner::ScanSource::WorkingTree => match crate::git::Repo::discover(root) {
             Ok(repo) => crate::git::scope_key(&repo),
-            Err(_) => format!("path:{}", root.display()),
+            Err(_) => crate::git::path_scope_key(root),
         },
     }
 }
