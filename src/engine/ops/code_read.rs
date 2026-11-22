@@ -132,6 +132,8 @@ fn read_lines(file: &std::path::Path, line: u32, end_line: u32) -> std::io::Resu
     let mut head: Vec<u8> = Vec::new();
     let (mut bytes, mut current, mut newlines) = (0usize, 1u32, 0u32);
     let mut last_byte = None;
+    // The last two bytes of the span so far: when it ends on `\n`, the one before it may be `\r`.
+    let (mut span_prev, mut span_last) = (0u8, 0u8);
     loop {
         let read = reader.read(&mut chunk)?;
         if read == 0 {
@@ -146,6 +148,12 @@ fn read_lines(file: &std::path::Path, line: u32, end_line: u32) -> std::io::Resu
             };
             if (line..=end_line).contains(&current) {
                 bytes += piece.len();
+                span_prev = if piece.len() >= 2 {
+                    piece[piece.len() - 2]
+                } else {
+                    span_last
+                };
+                span_last = piece[piece.len() - 1];
                 let room = (EXPAND_BODY_CAP + 1).saturating_sub(head.len());
                 head.extend_from_slice(&piece[..piece.len().min(room)]);
             }
@@ -161,6 +169,9 @@ fn read_lines(file: &std::path::Path, line: u32, end_line: u32) -> std::io::Resu
     let last = end_line.min(total_lines.max(1));
     if bytes > 0 && last <= newlines {
         bytes -= 1;
+        if span_prev == b'\r' && bytes > 0 {
+            bytes -= 1;
+        }
         head.truncate(bytes.min(head.len()));
     }
     Ok(LineSpan {
@@ -315,6 +326,16 @@ mod tests {
         assert_eq!(span_of(b"one\n\nthree\n", 2, 2), (Vec::new(), 0, 3));
         assert_eq!(span_of(b"", 1, 1), (Vec::new(), 0, 0));
         assert_eq!(span_of(b"one\n", 5, 6), (Vec::new(), 0, 1));
+    }
+
+    #[test]
+    fn a_crlf_span_excludes_its_last_carriage_return_too() {
+        assert_eq!(span_of(b"one\r\ntwo\r\nthree\r\n", 3, 3), (b"three".to_vec(), 5, 3));
+        assert_eq!(
+            span_of(b"one\r\ntwo\r\nthree\r\n", 1, 2),
+            (b"one\r\ntwo".to_vec(), 8, 3)
+        );
+        assert_eq!(span_of(b"one\r\ntwo\r\nthree", 3, 3), (b"three".to_vec(), 5, 3));
     }
 
     #[test]

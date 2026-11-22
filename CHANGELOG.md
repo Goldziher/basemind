@@ -1009,6 +1009,7 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 ### Fixed
 
 - A detached server that outlived its session is reported (#201).
+- `code_read` of a span ending on the last line of a CRLF file no longer keeps that line's trailing `\r`.
 - A repository group opens outside the global registry lock, so one slow open no longer blocks another,
   and a poisoned lock is recovered instead of propagating a panic (#221).
 - `git_diff` no longer fails on a submodule, a directory or a symlink (#302). A submodule diffs as
