@@ -1025,6 +1025,8 @@ and every file is re-extracted and every document and code chunk re-embedded onc
   that suggestions come only from downloaded grammars and names `basemind lang install` (#432).
 - Lowering `[documents] max_file_bytes` below the size of an already indexed document now drops it
   on the next scan instead of keeping it as unchanged (#433).
+- An exported but empty `BASEMIND_*` variable counts as unset everywhere the engine configuration
+  reads it; an empty `BASEMIND_CACHE_BUDGET_MB=` no longer turns cache-budget eviction off.
 - On Linux, a directory the inotify watch limit refused a watch no longer goes stale without a
   word (#334). `index_status` gains `watches`: the watches the daemon holds (`held`) and, once
   `fs.inotify.max_user_watches` is exhausted, the directories left unwatched (`unwatched`), the

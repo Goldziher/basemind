@@ -52,9 +52,12 @@ pub const GOPATH_ENV: &str = "GOPATH";
 /// The active Python virtual environment.
 pub const VIRTUAL_ENV_ENV: &str = "VIRTUAL_ENV";
 
-/// `lookup` with `std::env::var`'s reading: a value that is not Unicode counts as unset.
+/// `lookup` with `std::env::var`'s reading: a value that is not Unicode counts as unset, and so
+/// does a blank one (an exported but empty variable).
 fn text(lookup: &impl Fn(&str) -> Option<OsString>, name: &str) -> Option<String> {
-    lookup(name).and_then(|value| value.into_string().ok())
+    lookup(name)
+        .and_then(|value| value.into_string().ok())
+        .filter(|value| !value.trim().is_empty())
 }
 
 /// The boolean variable `name`, `None` when it is unset or blank. A value that is not Unicode is
@@ -514,6 +517,23 @@ mod tests {
             Some(CacheBudget::DiskAware),
             "neither: the disk-aware default"
         );
+    }
+
+    #[test]
+    fn a_blank_budget_variable_counts_as_unset() {
+        let mut settings = UserSettings::default();
+        settings.cache.budget_mb = Some(8192);
+        for blank in ["", "  "] {
+            let vars = [(CACHE_BUDGET_ENV, blank)];
+            assert_eq!(
+                config_with(&vars, &UserSettings::default()).gc.budget,
+                Some(CacheBudget::DiskAware)
+            );
+            assert_eq!(
+                config_with(&vars, &settings).gc.budget,
+                Some(CacheBudget::Fixed(8192 << 20))
+            );
+        }
     }
 
     #[test]
