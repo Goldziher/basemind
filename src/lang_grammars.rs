@@ -7,7 +7,7 @@ use std::sync::{Arc, OnceLock};
 use crate::lang::{LangError, LangId, OVERRIDE_LANGUAGES};
 
 /// Whether grammars may not be downloaded ([`crate::config::engine::GrammarPolicy::offline`]).
-fn grammars_offline() -> bool {
+pub fn grammars_offline() -> bool {
     crate::config::engine::with(|config| config.grammars.offline)
 }
 

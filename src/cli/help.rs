@@ -394,10 +394,12 @@ Next: `basemind lang list` to confirm.";
 pub const LANG_CLEAN: &str = "\
 When to use: a grammar is corrupt, or to reclaim its disk.
 
-Returns: the removed grammar cache. Grammars download again on next use.
+Returns: the removed grammar cache. Grammars download again on next use. With BASEMIND_OFFLINE or
+BASEMIND_GRAMMAR_OFFLINE set they cannot, so the command refuses (exit 2) unless `--yes` is passed.
 
 Example:
   basemind lang clean
+  basemind lang clean --yes
 
 Next: `basemind lang install` to download them now.";
 

@@ -45,7 +45,7 @@ prints a one-line summary of the daemon's active workspaces for a shell prompt.
 |---|---|
 | `basemind lang list` | Installed tree-sitter grammars and where they live. |
 | `basemind lang install` | Download every supported grammar now (otherwise each downloads on first use). |
-| `basemind lang clean` | Delete the grammar cache. |
+| `basemind lang clean` | Delete the grammar cache; offline it refuses (exit 2) unless `--yes` is passed. |
 | `basemind hook install` | Add a git pre-commit hook running `basemind scan --staged`; it never blocks a commit. |
 | `basemind cache stats` | Disk footprint per component and process memory. |
 | `basemind cache gc` | Reap the caches of deleted worktrees and their groups, then remove blobs no workspace on the machine references (`--dry-run` only counts). |

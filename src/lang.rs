@@ -27,7 +27,7 @@ pub fn parse_timeout() -> Duration {
 pub(crate) use crate::lang_grammars::configure_grammar_dir;
 pub use crate::lang_grammars::{
     BootstrapSummary, clean_grammar_cache, downloaded_languages, ensure_extra_grammars, ensure_grammars,
-    grammar_cache_dir,
+    grammar_cache_dir, grammars_offline,
 };
 
 #[derive(Debug, Clone, Error)]

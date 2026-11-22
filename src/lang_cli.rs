@@ -92,7 +92,13 @@ pub(crate) fn cmd_lang_install(root: &std::path::Path, verbosity: Verbosity, no_
     Ok(())
 }
 
-pub(crate) fn cmd_lang_clean() -> Result<()> {
+pub(crate) fn cmd_lang_clean(yes: bool) -> Result<()> {
+    if basemind::lang::grammars_offline() && !yes {
+        return Err(basemind::cli::exit::CliExit::usage(
+            "offline mode: the grammar cache cannot be downloaded again, so `lang clean` would leave every \
+             parse refused; pass --yes to delete it anyway",
+        ));
+    }
     basemind::lang::clean_grammar_cache().map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("grammar cache cleared");
     Ok(())

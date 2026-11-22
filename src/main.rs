@@ -311,7 +311,11 @@ enum LangCmd {
     Install,
     /// Delete the grammar cache. Next run will redownload.
     #[command(after_long_help = basemind::cli::help::LANG_CLEAN)]
-    Clean,
+    Clean {
+        /// Delete the cache while grammars are offline, where it cannot be downloaded again.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 /// Default tracing directive when `RUST_LOG` is unset, derived from the parsed
@@ -488,7 +492,7 @@ fn run() -> Result<()> {
         Cmd::Lang { action } => match action {
             LangCmd::List => lang_cli::cmd_lang_list(no_color),
             LangCmd::Install => lang_cli::cmd_lang_install(&root, verbosity, no_color),
-            LangCmd::Clean => lang_cli::cmd_lang_clean(),
+            LangCmd::Clean { yes } => lang_cli::cmd_lang_clean(yes),
         },
         Cmd::Serve { lead } => cmd_serve(&root, &view, lead),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
