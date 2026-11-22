@@ -101,3 +101,7 @@ runs:
         Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$root"
         Add-Content -Path $env:GITHUB_ENV -Value "VCPKGRS_DYNAMIC=1"
         Add-Content -Path $env:GITHUB_ENV -Value "VCPKGRS_TRIPLET=$triplet"
+        # ~keep The dynamic triplet puts heif.dll and libde265.dll in bin/. A step that runs
+        # ~keep target/release/basemind.exe or a test binary straight from the build tree finds them
+        # ~keep only through PATH (a packaged archive carries them beside the exe).
+        Add-Content -Path $env:GITHUB_PATH -Value ((Join-Path $root "installed/$triplet/bin") -replace '/', '\')
