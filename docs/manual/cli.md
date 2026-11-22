@@ -23,15 +23,15 @@ unquoted backslash as an escape, and PowerShell takes `'C:\work\checkout'` as wr
 ## How the root resolves
 
 - The directory named is widened to its workspace: the nearest directory at or above it holding a
-  `basemind.toml`, `.config/basemind.toml` or `.config/basemind/config.toml`, up to the top of its
+  `basemind.toml`, `<dir>/.config/basemind.toml` or `<dir>/.config/basemind/config.toml`, up to the top of its
   git repository, else that top. A subdirectory with none of those between it and that top therefore
   queries the whole checkout's index, one under a nested config file queries that workspace's, and
   each worktree has its own.
   `basemind doctor --root /work/checkout` prints the root it resolved.
 - A root must be a git repository or hold a `basemind.toml` (`basemind manual indexing`); a scan
   refuses any other directory, and so does a daemon a query is forwarded to.
-- Path arguments are relative to the root, not to the shell's directory: `src/a.rs` is
-  `<root>/src/a.rs` wherever the command runs. Write them with forward slashes.
+- Path arguments are relative to the root, not to the shell's directory: `src/lib.rs` is
+  `<root>/src/lib.rs` wherever the command runs. Write them with forward slashes.
 
 ## Reading the answer
 

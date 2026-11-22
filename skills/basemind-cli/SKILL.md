@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:73d4be3297a8487c425e73ce826798dd856419909ccd158886cb6b90875fc0b9
-Source-Hash: blake3:901b2c6e5d358b5d7fe1e351f01d28246c53b8552af866a08481e9de4b5b9690
+Content-Hash: blake3:439d48d0428b07e96e93af0a2b384652575fa82c960ff4f244cfa2c5aad95cc9
+Source-Hash: blake3:daac4d99df64a9e52e65c0770d4e10cc6b95bdb9aadec0e7f16d2e3d1a5f0fff
 Schema-Version: v1
 -->
 
@@ -139,15 +139,15 @@ unquoted backslash as an escape, and PowerShell takes `'C:\work\checkout'` as wr
 ### How the root resolves
 
 - The directory named is widened to its workspace: the nearest directory at or above it holding a
-  `basemind.toml`, `.config/basemind.toml` or `.config/basemind/config.toml`, up to the top of its
+  `basemind.toml`, `<dir>/.config/basemind.toml` or `<dir>/.config/basemind/config.toml`, up to the top of its
   git repository, else that top. A subdirectory with none of those between it and that top therefore
   queries the whole checkout's index, one under a nested config file queries that workspace's, and
   each worktree has its own.
   `basemind doctor --root /work/checkout` prints the root it resolved.
 - A root must be a git repository or hold a `basemind.toml` (`basemind manual indexing`); a scan
   refuses any other directory, and so does a daemon a query is forwarded to.
-- Path arguments are relative to the root, not to the shell's directory: `src/a.rs` is
-  `<root>/src/a.rs` wherever the command runs. Write them with forward slashes.
+- Path arguments are relative to the root, not to the shell's directory: `src/lib.rs` is
+  `<root>/src/lib.rs` wherever the command runs. Write them with forward slashes.
 
 ### Reading the answer
 

@@ -81,7 +81,7 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
   several definitions share is an error listing each until `line` picks one.
 - **Failures are results.** `BasemindServer::answer` (`src/mcp/tool_contract.rs`) turns an `McpError`
   into an `isError: true` result whose text names the fix and whose `structuredContent` carries its
-  `error` code and `retryable` flag (`src/mcp/error_kind.rs`); an overloaded server answers the same
+  `error` code and `retryable` flag (`src/engine/error_kind.rs`); an overloaded server answers the same
   way (`busy`, with `retry_after_ms`).
 - **Notices.** An empty index is never a plain empty result: a `notice` (`empty_index`,
   `warming_up`, `building_index`, `rescanning`) says why.
