@@ -197,6 +197,9 @@ pub fn run_cache(root: &Path, cmd: admin::CacheCmd, json: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(all(test, feature = "memory"))]
+mod memory_busy_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
