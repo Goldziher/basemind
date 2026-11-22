@@ -400,7 +400,6 @@ fn the_post_that_archives_a_thread_at_the_cap_carries_the_stores_notice_unchange
     assert_eq!(over.notices, [cap_archive_notice(&thread("t-aaaaaa")), own[0].clone()]);
     assert_eq!(
         refused(alice.post(&fake, json!({ "thread": "t-aaaaaa", "body": "still here?" }))),
-        "`agent_post`: thread t-aaaaaa is archived: read it with agent_inbox `thread`, or start a new thread by \
-         posting with `subject`"
+        "`agent_post`: thread t-aaaaaa was archived because its repository reached its limit of 256 active threads, and it takes no more posts: read what is left with agent_inbox `thread`, and continue in a new thread by posting with `subject`, naming its members in `to` (agent_threads `thread` lists them)"
     );
 }

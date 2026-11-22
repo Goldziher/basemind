@@ -87,7 +87,7 @@ command covers the question.
 | "Where's the churn?" | `basemind git churn [--window N --top-k K]` | CLI only. |
 | "Commits whose paths match a regex?" | `basemind git by-path "regex"` | CLI only. |
 | "What's indexed? What's HEAD / branch?" | `basemind status` | File count, languages, cache dir, branch, HEAD. `admin repo` prints the same. |
-| "Search documents by meaning (PDFs, Office, HTML, email)?" | `basemind memory documents "query" [--kind K --path GLOB --mime-type M --keywords K --entity E]` | Needs `documents` feature. |
+| "Search documents by meaning (PDFs, Office, HTML, email)?" | `basemind memory documents "query" [--format F --path GLOB --mime-type M --keywords K --entity E]` | Needs `documents` feature. |
 | "Recall something stored earlier?" | `basemind memory search "q"` / `get "key"` / `list [--prefix P --tag T]` | By meaning / one note / a listing. |
 | "Remember this for future sessions?" | `basemind memory put "key" "value" [--tag T]` | Delete with `memory delete "key"` (CLI only). |
 | "Cache size?" | `basemind cache stats` | On-disk size + orphan accounting. CLI only, like the other cache commands. |

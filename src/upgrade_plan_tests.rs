@@ -161,7 +161,7 @@ group g1: index 3.0MB replaced or kept (some of its worktrees are already upgrad
   workspace {app}: frees {two_maps}B, 10000 files, code map scan about 3s
     view staged: rebuilt (written under schema {older}), frees {map}B
     view working: rebuilt (written under schema {older}), frees {map}B
-    rebuild it alone: basemind scan --root {app}
+    rebuild it alone: basemind scan --root {app_arg}
   workspace {worktree}: frees 0B
     view rev-abc1234: refused, left in place (index written by a newer basemind (schema {newer}); this binary \
          understands {SCHEMA_VER} — upgrade basemind)
@@ -177,6 +177,7 @@ total: frees 2.0MB, needs 518.5MB, 40.0GB free
 ",
         home = fixture.data.path().display(),
         app = fixture.app.display(),
+        app_arg = shell_quote(&fixture.app.display().to_string()),
         worktree = fixture.worktree.display(),
         gone = fixture.gone.display(),
         two_maps = 2 * map,

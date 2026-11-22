@@ -317,7 +317,7 @@ fn a_refusal_prints_no_backtrace_under_rust_backtrace() {
     assert!(!stderr.contains("Stack backtrace"), "{stderr}");
     assert!(
         stderr.trim_end().ends_with(
-            "Error: git_by_path: `git_by_path`: `limit` must be at least 1; omit it for the default page size."
+            "Error: `basemind git by-path`: `--limit` must be at least 1; omit it for the default page size."
         ),
         "{stderr}"
     );

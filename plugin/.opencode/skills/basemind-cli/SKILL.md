@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:9f54361563a9725f2893edf5a6657bbaafac4ce372cf174335746ee0f0b4d441
-Source-Hash: blake3:8b875e6d7d71f67e0ed19a1cc45899e8986b3b96cfac0390b70f99641d6425e4
+Content-Hash: blake3:73d4be3297a8487c425e73ce826798dd856419909ccd158886cb6b90875fc0b9
+Source-Hash: blake3:8f101b89e6790b0a1b5fd286bfb20064f6d5a6a6566dce73e2f34ef7a7321ce9
 Schema-Version: v1
 -->
 
@@ -85,7 +85,7 @@ command covers the question.
 | "Where's the churn?" | `basemind git churn [--window N --top-k K]` | CLI only. |
 | "Commits whose paths match a regex?" | `basemind git by-path "regex"` | CLI only. |
 | "What's indexed? What's HEAD / branch?" | `basemind status` | File count, languages, cache dir, branch, HEAD. `admin repo` prints the same. |
-| "Search documents by meaning (PDFs, Office, HTML, email)?" | `basemind memory documents "query" [--kind K --path GLOB --mime-type M --keywords K --entity E]` | Needs `documents` feature. |
+| "Search documents by meaning (PDFs, Office, HTML, email)?" | `basemind memory documents "query" [--format F --path GLOB --mime-type M --keywords K --entity E]` | Needs `documents` feature. |
 | "Recall something stored earlier?" | `basemind memory search "q"` / `get "key"` / `list [--prefix P --tag T]` | By meaning / one note / a listing. |
 | "Remember this for future sessions?" | `basemind memory put "key" "value" [--tag T]` | Delete with `memory delete "key"` (CLI only). |
 | "Cache size?" | `basemind cache stats` | On-disk size + orphan accounting. CLI only, like the other cache commands. |

@@ -283,8 +283,7 @@ fn post_at_the_thread_cap_prints_the_stores_notice_then_the_sessions() {
     assert_eq!(code, ERROR);
     assert_eq!(
         message,
-        "agent post: thread t-aaaaaa is archived: read it with agent_inbox `thread`, or start a new thread by \
-         posting with `subject`"
+        "agent post: thread t-aaaaaa was archived because its repository reached its limit of 256 active threads, and it takes no more posts: read what is left with agent_inbox `thread`, and continue in a new thread by posting with `subject`, naming its members in `to` (agent_threads `thread` lists them)"
     );
 }
 

@@ -63,10 +63,10 @@ fn run_scan(root: &Path) {
     });
 }
 
-/// Serve the code map in-process over an in-memory duplex transport (the stdio child-process serve
-/// was removed with the stdio transport). Returns the client end for `().serve(...)`.
-async fn serve(root: &Path) -> tokio::io::DuplexStream {
-    basemind::mcp::serve_in_memory(root, "working")
+/// A server whose threshold no loaded CI runner reaches, so a call is inline unless offload is decided
+/// by the tool's name, which is the defect `a_fast_call_returns_inline_to_a_task_capable_client` guards.
+async fn serve_with_generous_threshold(root: &Path) -> tokio::io::DuplexStream {
+    basemind::mcp::serve_in_memory_with_task_threshold(root, "working", std::time::Duration::from_secs(600))
         .await
         .expect("in-memory serve")
 }
@@ -102,7 +102,10 @@ async fn a_fast_call_returns_inline_to_a_task_capable_client() {
     let root = dir.path();
     run_scan(root);
 
-    let client = tasks_client().serve(serve(root).await).await.expect("rmcp handshake");
+    let client = tasks_client()
+        .serve(serve_with_generous_threshold(root).await)
+        .await
+        .expect("rmcp handshake");
 
     let caps = client
         .peer_info()

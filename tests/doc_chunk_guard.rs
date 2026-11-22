@@ -188,8 +188,10 @@ fn scan_with_a_pathological_file_completes_and_counts_it_as_degraded() {
     let started = Instant::now();
     let report = scan_once(dir.path(), &offline_scan_config());
 
+    // The stall this guards took tens of minutes; the bound leaves room for a runner running
+    // thousands of tests at once.
     assert!(
-        started.elapsed() < Duration::from_secs(30),
+        started.elapsed() < Duration::from_secs(120),
         "scan took {:?}",
         started.elapsed()
     );
