@@ -24,7 +24,6 @@ SOURCE_SHIM = PLUGIN / ".ai-rulez" / SHIM
 # Each generated manifest, with the plugin-root prefix its host resolves the shim against.
 MANIFESTS = (
     (".claude-plugin/plugin.json", "${CLAUDE_PLUGIN_ROOT}/"),
-    (".cursor-plugin/plugin.json", "./"),
     (".mcp.json", "./"),
     ("mcp.json", "./"),
     ("kimi.plugin.json", "./"),

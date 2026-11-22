@@ -52,7 +52,7 @@ class RegistryArchiveTests(unittest.TestCase):
     def test_should_verify_all_real_registry_runtime_resources(self) -> None:
         """Both builders include their exact generated skill, prompt and adapter bytes."""
         self.assertEqual(self.helper.verify_wheel(self.wheel), 29)
-        self.assertEqual(self.helper.verify_npm(self.npm), 59)
+        self.assertEqual(self.helper.verify_npm(self.npm), 61)
 
     def test_should_reject_a_wheel_missing_a_public_skill(self) -> None:
         """A valid package identity cannot mask a dropped runtime resource."""

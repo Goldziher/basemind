@@ -57,6 +57,7 @@ class SandboxEnvTests(unittest.TestCase):
                     "BASEMIND_TEST_FAULT_LANE": "resolve:abort",
                     "BASEMIND_TEST_COMMS_STORE_OPEN_DELAY_MS": "3600000",
                     "BASEMIND_TEST_ACCOUNT_HOME": str(Path(root) / "test-account-home"),
+                    "BASEMIND_TEST_HOLD_SCAN": str(Path(root) / "hold-scan-gate"),
                 },
             )
 

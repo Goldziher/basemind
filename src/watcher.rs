@@ -36,7 +36,7 @@ pub struct WatchBatch<'a> {
     pub kind: BatchKind,
     pub report: &'a ScanReport,
     /// The batch's per-file outcomes. Carried explicitly because
-    /// [`ScanReport`](crate::scanner::ScanReport) no longer accumulates them: the standalone
+    /// [`ScanReport`] no longer accumulates them: the standalone
     /// watcher renders every line, so it is one of the few callers that genuinely wants the whole
     /// set and opts into a [`CollectObserver`] to get it.
     pub results: &'a [FileResult],

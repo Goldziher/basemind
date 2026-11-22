@@ -15,7 +15,6 @@ use super::show::{budget_commits, budget_commits_with_files, run_show};
 use crate::engine::budget::budget;
 use crate::engine::error::EngineError;
 use crate::engine::timing::elapsed_us;
-use crate::engine::types::{SPAN_LIMIT, UNINDEXED_SCAN};
 use crate::engine::types::git::{
     BlameFileParams, BlameSymbolParams, CommitView, CommitsTouchingParams, CommitsTouchingResponse, DiffFileParams,
     DiffOutlineParams, FindCommitsByPathParams, GitBlameParams, GitBlameResult, GitDiffParams, GitDiffResult,
@@ -23,6 +22,7 @@ use crate::engine::types::git::{
     RecentChangesResponse, SearchGitHistoryParams, SearchGitHistoryResponse, SymbolHistoryParams,
     WorkingTreeStatusView,
 };
+use crate::engine::types::{SPAN_LIMIT, UNINDEXED_SCAN};
 use crate::engine::workspace::Workspace;
 use crate::git::{CommitInfo, TouchingSpan};
 use crate::git_history::fts::{self, FtsScope};

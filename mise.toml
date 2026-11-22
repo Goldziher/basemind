@@ -13,7 +13,7 @@ uv = "0.13.9"
 node = "26.13.1"
 pnpm = "12.21.0"
 "github:taiki-e/cargo-hack" = "0.6.46"
-"github:nextest-rs/nextest" = { version = "0.9.150", version_prefix = "cargo-nextest-" }
+"github:nextest-rs/nextest" = { version = "0.9.152", version_prefix = "cargo-nextest-" }
 "github:EmbarkStudios/cargo-about" = "0.9.3"
 ripgrep = "15.2.0"
 
