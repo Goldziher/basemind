@@ -1,10 +1,10 @@
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:e27b52f8003f746a7d24dc8f3a9e9c8bf45ec69712ba79a4668d4a3f3d60d4bc
-Source-Hash: blake3:3558399856113d44188710b0b00eabafe60cf5d461701c198f0fbab412cfdb05
+Content-Hash: blake3:1f4c85e59d0f15815c557a01a4f4f34cac89c4d996444d7a515323d04876b3a6
+Source-Hash: blake3:901b2c6e5d358b5d7fe1e351f01d28246c53b8552af866a08481e9de4b5b9690
 Schema-Version: v1
 -->
 
 # Concepts
 
-- [Basemind Comms](SKILL.md) - Coordinate with other agents working the same repo through basemind's agent_post, agent_inbox and agent_threads tools — threads, a per-actor read position, bodies inline. Reach for it whenever you start, finish, or hit a decision while collaborating, or to check whether another agent is already touching the code you're about to change.
+- [basemind comms](SKILL.md) - Coordinate with other agents working the same repo through basemind's agent_post, agent_inbox and agent_threads tools — threads, a per-actor read position, bodies inline. Reach for it whenever you start, finish, or hit a decision while collaborating, or to check whether another agent is already touching the code you're about to change.

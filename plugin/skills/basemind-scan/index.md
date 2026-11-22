@@ -1,10 +1,10 @@
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:0f6aac8e9f484514acf693edd02bd714b17921c63d7e128f1c148765a5b9fd23
-Source-Hash: blake3:3558399856113d44188710b0b00eabafe60cf5d461701c198f0fbab412cfdb05
+Content-Hash: blake3:7899d48f30a536e88016ca3ea56712256508aa70836b3ac6a0de7ca4f43c3ce4
+Source-Hash: blake3:901b2c6e5d358b5d7fe1e351f01d28246c53b8552af866a08481e9de4b5b9690
 Schema-Version: v1
 -->
 
 # Concepts
 
-- [basemind scan](SKILL.md) - Build or refresh the basemind index by running `basemind scan` via the CLI. Use this when basemind reports "no index" / "no indexed files", when the MCP server isn't available, or after large changes when the index is stale. Works without the MCP server — it shells the basemind binary directly.
+- [basemind scan](SKILL.md) - Build or refresh the basemind index by running `basemind scan` via the CLI. Use this when basemind reports "no index" / "no indexed files", or when `index_status` reports `degraded` or `rescan_needed`. Works without the MCP server — it shells the basemind binary directly.
