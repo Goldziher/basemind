@@ -18,16 +18,15 @@ impl Repo {
 
 /// Derive the per-repo "scope" key used by the LanceDB tables, the registry and agent memory.
 ///
-/// The normalised `origin` remote URL, else `path:<workdir>` (this worktree's directory, so the
-/// worktrees of a repository without `origin` get distinct keys). For memory it is only a key
-/// prefix inside the store, and the store itself is per repository group
-/// (`crate::store_layout::repo_group_key`, the main worktree's path): two clones at different
-/// paths share a scope but not their notes, and an `origin` that normalises differently hides the
-/// notes filed under the old one.
+/// The normalised `origin` remote URL, else `path:<main worktree root>`, canonical, so every
+/// worktree of a repository without `origin` gets one key. For memory it is only a key prefix inside
+/// the store, and the store itself is per repository group (`crate::store_layout::repo_group_key`,
+/// the same main worktree root): two clones at different paths share a scope but not their notes,
+/// and an `origin` that normalises differently hides the notes filed under the old one.
 pub fn scope_key(repo: &Repo) -> String {
     match repo.remote_url() {
         Some(url) => normalize_remote_url(&url),
-        None => format!("path:{}", repo.workdir().display()),
+        None => format!("path:{}", repo.main_worktree_root().display()),
     }
 }
 

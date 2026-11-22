@@ -1033,6 +1033,10 @@ and every file is re-extracted and every document and code chunk re-embedded onc
 - `basemind hook install` refreshes the pre-commit hook in place only when it equals the shipped
   hook byte for byte; a hook that carries the marker but has lines added is treated as foreign
   (refused, or backed up with `--force`) instead of being overwritten.
+- In a repository without an `origin` remote, the memory scope (and the registry and comms repository
+  key) is now the canonical main worktree path, so every worktree of it shares its notes; before, a
+  linked worktree filed and read notes under its own path (#319). Notes saved earlier from a linked
+  worktree, or from a checkout reached through a symlink, stay under the old key.
 - On Linux, a directory the inotify watch limit refused a watch no longer goes stale without a
   word (#334). `index_status` gains `watches`: the watches the daemon holds (`held`) and, once
   `fs.inotify.max_user_watches` is exhausted, the directories left unwatched (`unwatched`), the
