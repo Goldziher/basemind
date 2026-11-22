@@ -41,6 +41,11 @@ impl Ratio {
     pub fn of(self, bytes: u64) -> u64 {
         (bytes / self.den).saturating_mul(self.num)
     }
+
+    /// The `bytes` that scaled by the ratio come to `bytes`'s own size: the inverse of [`Ratio::of`].
+    pub fn source_of(self, scaled: u64) -> u64 {
+        (scaled / self.num).saturating_mul(self.den)
+    }
 }
 
 /// `1.5x`: the ratio as a multiplier with one decimal.
@@ -75,6 +80,19 @@ pub struct SpaceEstimate {
 }
 
 impl SpaceEstimate {
+    /// The estimate of rebuilding a group index of `index_bytes` that a release left, when the
+    /// source is known only through the `prior_blob_bytes` its extraction wrote: the plan reads no
+    /// source, so it takes the source that blob set came from ([`BLOBS_PER_SOURCE`]). Everything
+    /// after that is [`SpaceEstimate::required_bytes`], the figure the scan's check refuses on.
+    pub fn for_rebuild(index_bytes: u64, prior_blob_bytes: u64, headroom_bytes: u64) -> Self {
+        Self {
+            index_bytes,
+            source_bytes: BLOBS_PER_SOURCE.source_of(prior_blob_bytes),
+            vectors: false,
+            headroom_bytes,
+        }
+    }
+
     /// Index growth: the rewrite of the existing index plus the rows of the new source.
     pub fn index_growth(&self) -> u64 {
         INDEX_REWRITE

@@ -9,6 +9,9 @@ const KIB: u64 = 1 << 10;
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 const HEADROOM: u64 = 512 * MIB;
+/// Index and blob growth of the source one of the fixture's two rebuilt groups is charged: half of
+/// the 2 MiB older namespace, as the source it came from (3.5x index rows, 2.5x blobs).
+const SHARED_SOURCE_GROWTH: u64 = (MIB / 5 * 2) / 2 * 7 + (MIB / 5 * 2) / 2 * 5;
 const FREE: u64 = 40 * GIB;
 const GROUP: &str = "g1";
 
@@ -157,7 +160,7 @@ fn the_plan_of_an_older_minor_home_names_each_rebuild_and_its_bytes() {
 
     let expected = format!(
         "upgrade plan for schema {SCHEMA_VER} (data home {home})
-group g1: index 3.0MB replaced or kept (some of its worktrees are already upgraded), frees {two_maps}B, needs 516.5MB
+group g1: index 3.0MB replaced or kept (some of its worktrees are already upgraded), frees {two_maps}B, needs 518.9MB
   workspace {app}: frees {two_maps}B, 10000 files, code map scan about 3s
     view staged: rebuilt (written under schema {older}), frees {map}B
     view working: rebuilt (written under schema {older}), frees {map}B
@@ -166,14 +169,14 @@ group g1: index 3.0MB replaced or kept (some of its worktrees are already upgrad
     view rev-abc1234: refused, left in place (index written by a newer basemind (schema {newer}); this binary \
          understands {SCHEMA_VER} — upgrade basemind)
     view working: kept
-no known group: frees {map}B, needs 512.0MB
+no known group: frees {map}B, needs 514.4MB
   workspace {gone}: frees {map}B, 4001 files, code map scan about 2s
     view working: rebuilt (written under schema {older}), frees {map}B
     its root is gone: the orphan sweep removes this cache
 blobs: frees 2.0MB once past the blob grace period, needs 2.0MB in v{SCHEMA_VER}
   v{older}: 2.0MB
   un-namespaced: 1.0KB
-total: frees 2.0MB, needs 518.5MB, 40.0GB free
+total: frees 2.0MB, needs 521.3MB, 40.0GB free
 ",
         home = fixture.data.path().display(),
         app = fixture.app.display(),
@@ -208,7 +211,7 @@ fn the_json_plan_carries_every_verdict_and_byte_count() {
                     "index_bytes": 3 * MIB,
                     "index_replaced": null,
                     "bytes_freed": 2 * map,
-                    "bytes_needed": 3 * MIB / 2 * 3 + HEADROOM,
+                    "bytes_needed": 3 * MIB / 2 * 3 + SHARED_SOURCE_GROWTH + HEADROOM,
                     "workspaces": [
                         {
                             "key": "a-app",
@@ -241,7 +244,7 @@ fn the_json_plan_carries_every_verdict_and_byte_count() {
                     "index_bytes": 0,
                     "index_replaced": false,
                     "bytes_freed": map,
-                    "bytes_needed": HEADROOM,
+                    "bytes_needed": SHARED_SOURCE_GROWTH + HEADROOM,
                     "workspaces": [
                         {
                             "key": "c-gone",
@@ -264,7 +267,7 @@ fn the_json_plan_carries_every_verdict_and_byte_count() {
                 "bytes_needed": 2 * MIB,
             },
             "bytes_freed": 3 * map + 2 * MIB + KIB,
-            "bytes_needed": 3 * MIB / 2 * 3 + HEADROOM + 2 * MIB,
+            "bytes_needed": 3 * MIB / 2 * 3 + 2 * SHARED_SOURCE_GROWTH + HEADROOM,
             "free_bytes": FREE,
         })
     );
@@ -520,4 +523,44 @@ fn the_rebuild_command_quotes_the_root_and_a_missing_root_is_told_from_an_unreco
     );
     assert!(text.contains("its root is not recorded"), "{text}");
     assert!(!text.contains("its root is gone"), "{text}");
+}
+
+/// The plan asks what the scan's free-space check asks (issue #439): for a group of an index of 0 B
+/// left by an older release, the check of the first scan refuses below the estimate of the source
+/// that release's blobs came from, charged at the scan's per-source-byte ratios, and the plan names
+/// that figure rather than 1.5x the index plus the headroom.
+#[test]
+fn the_plan_needs_what_the_scan_check_asks_for_the_same_group() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let data = DataRoot::new(home.path());
+    let app = home.path().join("repos").join("app");
+    std::fs::create_dir_all(&app).expect("mkdir app");
+    plant_workspace(
+        &data,
+        "a-app",
+        &app,
+        Some(GROUP),
+        Some(10),
+        &[("working", map_of_schema(SCHEMA_VER - 1))],
+    );
+    let prior_blobs = 5 * MIB;
+    write(
+        &data
+            .global_blobs_root()
+            .join(format!("v{}", SCHEMA_VER - 1))
+            .join("aa.fm.msgpack"),
+        &vec![0; prior_blobs as usize],
+    );
+
+    let planned = plan(&data, HEADROOM).expect("plan");
+    let scan_asks = crate::disk_space::SpaceEstimate {
+        index_bytes: 0,
+        source_bytes: crate::disk_space::BLOBS_PER_SOURCE.source_of(prior_blobs),
+        vectors: false,
+        headroom_bytes: HEADROOM,
+    }
+    .required_bytes();
+    assert!(scan_asks > HEADROOM, "the source is charged: {scan_asks}");
+    assert_eq!(planned.groups[0].bytes_needed, scan_asks);
+    assert_eq!(planned.bytes_needed, scan_asks);
 }

@@ -5,8 +5,9 @@
 //! a view's from `store::view_on_open`, the decision the writer open of [`crate::store::Store`]
 //! takes; the blob namespaces' from `store_gc_namespaces::superseded`, the predicate of the sweep
 //! that reaps them; the disk a group's rebuild needs from
-//! [`SpaceEstimate::required_bytes`], the estimate the scan's free-space check refuses on, here over
-//! the existing index alone: the plan reads no source. The
+//! [`SpaceEstimate::required_bytes`], the estimate the scan's free-space check refuses on
+//! ([`SpaceEstimate::for_rebuild`]): over the existing index and, because the plan reads no source,
+//! the source the superseded blobs came from. The
 //! group index has no verdict of its own that can be read without opening it, and opening a Fjall
 //! database writes; its schema and the file maps' both follow [`crate::version::RELEASE_MINOR`],
 //! so it is replaced exactly when one of the group's file maps is of an older schema.
@@ -151,8 +152,8 @@ pub struct BlobPlan {
     pub unnamespaced_bytes: u64,
     /// Bytes the sweep frees once they are past the blob grace period.
     pub bytes_freed: u64,
-    /// Bytes the rebuild writes into the current namespace: the largest superseded blob set, when a
-    /// view of an older schema is rebuilt.
+    /// Bytes the rebuild writes into the current namespace, estimated as the largest superseded blob
+    /// set, when a view of an older schema is rebuilt. Already part of the groups' `bytes_needed`.
     pub bytes_needed: u64,
 }
 
@@ -169,7 +170,7 @@ pub struct UpgradePlan {
     pub blobs: BlobPlan,
     /// Bytes freed in all.
     pub bytes_freed: u64,
-    /// Bytes needed in all: the free-space estimate over every rebuilt group's index, plus the blobs.
+    /// Bytes needed in all: every rebuilt group's free-space estimate, the headroom counted once.
     pub bytes_needed: u64,
     /// Free bytes on the data home's volume; `None` when the platform does not say.
     pub free_bytes: Option<u64>,
@@ -187,47 +188,39 @@ pub fn plan(data: &DataRoot, headroom_bytes: u64) -> Result<UpgradePlan, GcError
             .or_default()
             .push(workspace_plan(&dir)?);
     }
-    let groups: Vec<GroupPlan> = by_group
-        .into_iter()
-        .map(|((_, group), workspaces)| group_plan(data, group, workspaces, headroom_bytes))
-        .collect();
-    let any_older = groups
-        .iter()
-        .flat_map(|group| &group.workspaces)
+    let any_older = by_group
+        .values()
+        .flatten()
         .flat_map(|workspace| &workspace.views)
         .any(|view| view.older_schema.is_some());
     let blobs = blob_plan(&data.global_blobs_root(), schema, any_older)?;
-    let rebuilt_index_bytes: u64 = groups
+    let rebuilt_groups = by_group
+        .values()
+        .filter(|workspaces| workspaces.iter().any(WorkspacePlan::rebuilds))
+        .count() as u64;
+    // The blob store is shared by every group, so the source it came from is split among the
+    // groups that rebuild. ~keep
+    let prior_blob_share = blobs.bytes_needed.checked_div(rebuilt_groups).unwrap_or(0);
+    let groups: Vec<GroupPlan> = by_group
+        .into_iter()
+        .map(|((_, group), workspaces)| group_plan(data, group, workspaces, headroom_bytes, prior_blob_share))
+        .collect();
+    // Each rebuilt group's scan asks for the headroom on its own; the scans run one after another,
+    // so the total carries it once. ~keep
+    let index_needed = groups
         .iter()
-        .filter(|group| group.bytes_needed > 0)
-        .map(|group| group.index_bytes)
-        .sum();
-    let any_rebuild = groups.iter().any(|group| group.bytes_needed > 0);
-    let index_needed = if any_rebuild {
-        rebuild_required_bytes(rebuilt_index_bytes, headroom_bytes)
-    } else {
-        0
-    };
+        .map(|group| group.bytes_needed)
+        .sum::<u64>()
+        .saturating_sub(headroom_bytes.saturating_mul(rebuilt_groups.saturating_sub(1)));
     Ok(UpgradePlan {
         data_home: data.path().to_path_buf(),
         schema,
         bytes_freed: groups.iter().map(|group| group.bytes_freed).sum::<u64>() + blobs.bytes_freed,
-        bytes_needed: index_needed + blobs.bytes_needed,
+        bytes_needed: index_needed,
         groups,
         blobs,
         free_bytes: available_bytes(data.path()),
     })
-}
-
-/// The free-space check's estimate for a rebuilt group index of `index_bytes`, with `headroom` on top.
-fn rebuild_required_bytes(index_bytes: u64, headroom: u64) -> u64 {
-    SpaceEstimate {
-        index_bytes,
-        source_bytes: 0,
-        vectors: false,
-        headroom_bytes: headroom,
-    }
-    .required_bytes()
 }
 
 /// The plan for the workspace cache directory `basemind_dir`.
@@ -294,7 +287,13 @@ fn view_plan(view_dir: &Path) -> ViewPlan {
     }
 }
 
-fn group_plan(data: &DataRoot, group: Option<String>, mut workspaces: Vec<WorkspacePlan>, headroom: u64) -> GroupPlan {
+fn group_plan(
+    data: &DataRoot,
+    group: Option<String>,
+    mut workspaces: Vec<WorkspacePlan>,
+    headroom: u64,
+    prior_blob_bytes: u64,
+) -> GroupPlan {
     workspaces.sort_by(|a, b| (&a.root, &a.key).cmp(&(&b.root, &b.key)));
     let index_bytes = group.as_deref().map_or(0, |group| {
         dir_bytes(
@@ -307,7 +306,7 @@ fn group_plan(data: &DataRoot, group: Option<String>, mut workspaces: Vec<Worksp
     });
     let index_replaced = group.as_ref().map_or(Some(false), |_| index_replacement(&workspaces));
     let bytes_needed = if workspaces.iter().any(WorkspacePlan::rebuilds) {
-        rebuild_required_bytes(index_bytes, headroom)
+        SpaceEstimate::for_rebuild(index_bytes, prior_blob_bytes, headroom).required_bytes()
     } else {
         0
     };
