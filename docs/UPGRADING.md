@@ -696,6 +696,10 @@ as its live `.doc` blob.
   sweep itself and prints `cleanup: reclaimed N orphaned blob(s), B bytes`. In the daemon the same
   condition triggers a sweep one minute later. The hourly daemon sweep and `basemind cache gc` run it
   too; `cache gc` used to be a report-only no-op.
+- A 0.33 binary kept installed beside 0.34 still reads `cache/blobs/v33/`. The sweep keeps that
+  namespace while any live basemind process reads it and for 14 days after its last write
+  (`BASEMIND_PRUNE_AFTER_DAYS`), then removes it. A 0.33 CLI left unused longer than that finds its
+  blobs gone and needs a fresh `basemind scan` before its tools answer again.
 - The result is recorded in `gc-state.json` and shown as `last_gc` by `cache stats`; `orphan_blob_count` there is tier-aware and drops to `0` after the sweep.
 
 A second scan after the upgrade is a no-op: nothing is migrated, refreshed or reclaimed, and the blob
