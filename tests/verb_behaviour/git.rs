@@ -507,15 +507,15 @@ fn git_churn_and_by_path_print_byte_for_byte() {
         ),
         (
             &["by-path", "^src/", "--limit", "0"],
-            r#"Error: git_by_path: `git_by_path`: `limit` must be at least 1; omit it for the default page size."#,
+            r#"Error: `basemind git by-path`: `--limit` must be at least 1; omit it for the default page size."#,
         ),
         (
             &["by-path", "^src/", "--window", "0"],
-            r#"Error: git_by_path: `git_by_path`: `window` must be at least 1; omit it for the default of 200 commits."#,
+            r#"Error: `basemind git by-path`: `--window` must be at least 1; omit it for the default of 200 commits."#,
         ),
         (
             &["by-path", "("],
-            r#"Error: git_by_path: invalid regex: regex parse error:
+            r#"Error: `basemind git by-path`: invalid regex: regex parse error:
     (
     ^
 error: unclosed group"#,

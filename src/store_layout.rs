@@ -19,7 +19,7 @@ use crate::store_blob::write_bytes_atomic;
 pub const INDEX_FILE: &str = "index.msgpack";
 pub const BLOBS_DIR: &str = "blobs";
 pub const LOCK_FILE: &str = ".lock";
-/// Environment override for the data home ([`DataRoot`](crate::data_root::DataRoot)). The CLI maps
+/// Environment override for the data home ([`DataRoot`]). The CLI maps
 /// it onto the engine configuration; the test-isolation helper sets it so a child process inherits
 /// the per-process temp dir.
 pub const DATA_HOME_ENV: &str = "BASEMIND_DATA_HOME";

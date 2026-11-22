@@ -364,7 +364,9 @@ esac""",
                 with self.subTest(case=case, tier=tier):
                     self.assertEqual(self.status_line(BASEMIND_STATUSLINE=tier), DELEGATED + unread)
         args = (self.root / "basemind-args").read_text().splitlines()
-        self.assertEqual(args[args.index("statusline") : args.index("statusline") + 3], ["statusline", "--root", str(self.work)])
+        self.assertEqual(
+            args[args.index("statusline") : args.index("statusline") + 3], ["statusline", "--root", str(self.work)]
+        )
 
     def test_without_the_comms_daemon_the_delegated_line_stands_alone(self) -> None:
         self.assertEqual(self.status_line(PGREP_EXIT="1"), DELEGATED)

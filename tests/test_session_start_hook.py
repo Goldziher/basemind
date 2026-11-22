@@ -220,7 +220,7 @@ esac""",
         self.assertIn(
             'if a result says stale or a new file is missing, run index_rescan {"paths":["src/store.rs"]} '
             "for that file; run index_rescan {} only when index_status {} reports an empty "
-            "index, degraded or rescan_needed, or after a change under scan.extra_roots.",
+            "index, degraded or rescan_needed, or after a change under an extra scan root.",
             result,
         )
         self.assertNotIn("index_rescan {} after", result)

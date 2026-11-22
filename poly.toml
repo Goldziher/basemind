@@ -8,6 +8,8 @@ trim_trailing_whitespace = true
 
 [discovery]
 exclude = [
+  # Tests assert line positions inside these sources, so the formatter must not move them.
+  "/tests/fixtures/**",
   "/.mcp.json",
   "/opencode.json",
   "/plugin/**",
