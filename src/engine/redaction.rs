@@ -72,6 +72,17 @@ fn rewrite(text: &str, spelling: &str, root: &Root) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find(spelling) {
+        let consumed = text.len() - rest.len() + at;
+        let mid_path = text[..consumed]
+            .chars()
+            .next_back()
+            .is_some_and(|prev| prev.is_alphanumeric() || matches!(prev, '_' | '-' | '.' | '~' | '/' | '\\'));
+        if mid_path {
+            let first = spelling.chars().next().map_or(1, char::len_utf8);
+            out.push_str(&rest[..at + first]);
+            rest = &rest[at + first..];
+            continue;
+        }
         out.push_str(&rest[..at]);
         let after = &rest[at + spelling.len()..];
         match after.chars().next() {
@@ -137,6 +148,14 @@ mod tests {
         assert_eq!(
             redaction().apply("/home/someone/code/repo2/a.rs and /home/someonelse/b"),
             "~/code/repo2/a.rs and /home/someonelse/b"
+        );
+    }
+
+    #[test]
+    fn a_root_inside_a_longer_path_is_left_alone() {
+        assert_eq!(
+            redaction().apply("/mnt/home/someone/x and /home/someone/y"),
+            "/mnt/home/someone/x and ~/y"
         );
     }
 
