@@ -165,14 +165,22 @@ const BOOLEAN_ENVS: [&str; 8] = [
 /// treated as unset, as [`bool_env`](super::engine::bool_env) does for the other boolean variables:
 /// clap hands an empty environment value to the value parser, which refuses it.
 pub fn ignore_blank_boolean_env(command: clap::Command) -> clap::Command {
+    ignore_blank_boolean_env_in(command, &|name| std::env::var_os(name))
+}
+
+/// [`ignore_blank_boolean_env`] reading variables through `lookup`, so a test supplies them
+/// without touching the process environment.
+fn ignore_blank_boolean_env_in(
+    command: clap::Command,
+    lookup: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> clap::Command {
     let command = command.mut_args(|arg| {
         let blank = arg.get_env().and_then(std::ffi::OsStr::to_str).is_some_and(|name| {
-            BOOLEAN_ENVS.contains(&name)
-                && std::env::var_os(name).is_some_and(|value| value.to_string_lossy().trim().is_empty())
+            BOOLEAN_ENVS.contains(&name) && lookup(name).is_some_and(|value| value.to_string_lossy().trim().is_empty())
         });
         if blank { arg.env(None::<&'static str>) } else { arg }
     });
-    command.mut_subcommands(ignore_blank_boolean_env)
+    command.mut_subcommands(|sub| ignore_blank_boolean_env_in(sub, lookup))
 }
 
 impl DocumentsCliOverrides {
@@ -482,26 +490,30 @@ mod tests {
 
     #[test]
     fn a_blank_boolean_variable_counts_as_unset() {
-        let (flag, env, read) = BOOLEANS[0];
+        let (flag, env, _) = BOOLEANS[0];
+        let env_of = |command: &clap::Command| {
+            command
+                .get_arguments()
+                .find(|arg| arg.get_env().and_then(std::ffi::OsStr::to_str) == Some(env))
+                .unwrap_or_else(|| panic!("{flag} has no {env} source"))
+                .get_env()
+                .is_some()
+        };
         for blank in ["", "   "] {
-            // SAFETY: no other test reads or writes this variable.
-            unsafe { std::env::set_var(env, blank) };
-            let command = ignore_blank_boolean_env(Cli::command());
-            let matches = command.try_get_matches_from(["basemind"]);
-            unsafe { std::env::remove_var(env) };
-            let parsed = Cli::from_arg_matches(&matches.unwrap_or_else(|error| panic!("{env}={blank:?}: {error}")))
-                .expect("overrides")
-                .documents;
-            assert_eq!(read(&parsed), None, "{flag} with {env}={blank:?}");
+            let value = std::ffi::OsString::from(blank);
+            let command = ignore_blank_boolean_env_in(Cli::command(), &|name| (name == env).then(|| value.clone()));
+            assert!(
+                command
+                    .get_arguments()
+                    .all(|arg| arg.get_env().and_then(std::ffi::OsStr::to_str) != Some(env)),
+                "{flag} with {env}={blank:?} must drop its env source"
+            );
         }
-        // SAFETY: as above.
-        unsafe { std::env::set_var(env, "on") };
-        let matches = ignore_blank_boolean_env(Cli::command()).try_get_matches_from(["basemind"]);
-        unsafe { std::env::remove_var(env) };
-        let parsed = Cli::from_arg_matches(&matches.expect("a set value parses"))
-            .expect("overrides")
-            .documents;
-        assert_eq!(read(&parsed), Some(true), "a nonblank value still applies");
+        let value = std::ffi::OsString::from("on");
+        let command = ignore_blank_boolean_env_in(Cli::command(), &|name| (name == env).then(|| value.clone()));
+        assert!(env_of(&command), "a nonblank value keeps its env source");
+        let command = ignore_blank_boolean_env_in(Cli::command(), &|_| None);
+        assert!(env_of(&command), "an unset variable keeps its env source");
     }
 
     #[test]
