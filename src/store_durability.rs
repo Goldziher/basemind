@@ -168,6 +168,7 @@ impl Store {
             super::LockHolder::Rescan,
         )?;
         self.index = index;
+        self.file_map.force_full();
         self.index_rebuild_needed |= rebuild_needed;
         self.legacy_index_adopted |= legacy_adopted;
         self.hash_refs = HashRefs::of(&self.index.files);
@@ -204,6 +205,7 @@ impl Store {
             db.clear_for_rebuild()?;
         }
         self.index.empty_for_rebuild();
+        self.file_map.force_full();
         self.hash_refs = HashRefs::of(&self.index.files);
         self.index.generation = 0;
         self.flush()?;

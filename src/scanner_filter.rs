@@ -9,11 +9,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
-use globset::GlobSet;
 use ignore::WalkBuilder;
 
 use crate::config::Config;
-use crate::config::rules::{compile_patterns, expand_pattern};
+use crate::config::list_only::{ListKind, ListOnly, kind_of};
+use crate::config::rules::{RuleSet, compile_rules, expand_pattern};
 use crate::lang_rules::{Detection, LangRules};
 use crate::scanner::{ScanError, ScanSource, submodule_roots_for_source};
 
@@ -172,17 +172,17 @@ fn effective_floor(floor_allow: &[String], credentials_granted: bool) -> Vec<&'s
 /// always wins.
 #[derive(Default)]
 struct Gate {
-    include: Option<GlobSet>,
-    exclude: Option<GlobSet>,
+    include: Option<RuleSet>,
+    exclude: Option<RuleSet>,
 }
 
 impl Gate {
     fn build(include: &[String], exclude: &[String]) -> Result<Self, ScanError> {
-        let compile = |list: &[String]| -> Result<Option<GlobSet>, ScanError> {
+        let compile = |list: &[String]| -> Result<Option<RuleSet>, ScanError> {
             if list.is_empty() {
                 return Ok(None);
             }
-            compile_patterns(list.iter().map(String::as_str))
+            compile_rules(list.iter().map(String::as_str))
                 .map(Some)
                 .map_err(ScanError::BadGlob)
         };
@@ -204,6 +204,8 @@ pub(crate) struct Filters {
     pub(crate) retrieval: crate::scan_retrieval::Retrieval,
     include: globset::GlobSet,
     exclude: globset::GlobSet,
+    /// `[scan] list_only`: files recorded as present and never opened. See [`Filters::listed_kind`].
+    list_only: ListOnly,
     /// Directory-level view of `exclude`: every `P/**` pattern also present as bare `P`, so a
     /// directory can be pruned before its children are ever stat'd. See [`dir_exclude_patterns`].
     dir_exclude: Arc<globset::GlobSet>,
@@ -329,6 +331,7 @@ impl Filters {
             retrieval,
             include,
             exclude,
+            list_only: ListOnly::new(&config.scan.list_only).map_err(ScanError::BadGlob)?,
             dir_exclude: Arc::new(dir_exclude),
             max_file_bytes: config.scan.max_file_bytes,
             doc_max_file_bytes: config.documents.max_file_bytes,
@@ -456,17 +459,28 @@ impl Filters {
         }
     }
 
+    /// Is `rel` a candidate for extraction? A list-only file is not: it is never read, whichever
+    /// pass (full, incremental, staged, revision) asks.
     pub(crate) fn allows(&self, rel: &str) -> bool {
-        if self.excluded(rel) {
+        if self.excluded(rel) || self.list_only.is_match(rel) {
             return false;
         }
         self.include.is_match(rel)
     }
 
+    /// The kind of `rel` when it is list-only: it matches `[scan] list_only`, and the exclude floor,
+    /// `[scan] exclude`, a skipped submodule and `[scan] include` all admit it. A file those drop
+    /// stays invisible (credentials must not even be listed).
+    pub(crate) fn listed_kind(&self, rel: &str) -> Option<ListKind> {
+        (self.list_only.is_match(rel) && !self.excluded(rel) && self.include.is_match(rel)).then(|| kind_of(rel))
+    }
+
     /// [`Filters::allows`] for a path relative to an `extra_roots` entry: globs only. Submodule
     /// roots are repo-relative, so they say nothing about a tree outside the repository.
     pub(crate) fn allows_in_extra_root(&self, rel_to_extra_root: &str) -> bool {
-        !self.exclude.is_match(rel_to_extra_root) && self.include.is_match(rel_to_extra_root)
+        !self.exclude.is_match(rel_to_extra_root)
+            && !self.list_only.is_match(rel_to_extra_root)
+            && self.include.is_match(rel_to_extra_root)
     }
 
     /// Directory gate. A directory is kept iff it is NOT matched by the directory-level exclude

@@ -355,6 +355,9 @@ pub struct ScanReport {
     pub phase_peaks: Vec<crate::scan_phase_peaks::PhasePeak>,
     /// Dependencies `[documents.dependencies]` names whose documentation was not indexed, and why.
     pub deps_unavailable: Vec<crate::deps_docs::DepUnavailable>,
+    /// Bytes this pass wrote to the view's file map: the whole map for a full pass, the changed
+    /// entries for an incremental one.
+    pub file_map_bytes_written: u64,
 }
 
 /// Cooperative cancellation token for a scan.
@@ -488,7 +491,8 @@ pub fn scan_with_observer(
     filters.verify_blobs = crate::scan_evidence::blobs_need_verifying(&store.basemind_dir);
     filters.vector_rows_unsure = filters.verify_blobs;
     advance(&mut breadcrumb, &phase_peaks, PHASE_CANDIDATES, None);
-    let candidates = candidates_for_source(root, config, &filters, &source, cancel)?;
+    let walked = candidates_for_source(root, config, &filters, &source, cancel)?;
+    let (candidates, listed) = (walked.keys, walked.listed);
     debug!(count = candidates.len(), kind = source.label(), "scan candidates");
     crate::scanner_integrity::ensure_scan_space(store, root, &source, &filters, config, &candidates)?;
     store.reap_legacy_index()?;
@@ -496,6 +500,7 @@ pub fn scan_with_observer(
 
     let scope = derive_scope(root, &source);
     let mut report = ScanReport::default();
+    let file_map_before = store.file_map_bytes_written();
     let drive = ScanDrive {
         root,
         filters: &filters,
@@ -532,10 +537,20 @@ pub fn scan_with_observer(
         flush_vector_lanes(store, config, &filters, &scope, docs, code, REQUEUE_PER_INCREMENTAL)?;
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
+        report.file_map_bytes_written = store.file_map_bytes_written() - file_map_before;
         return Ok(report);
     }
 
     advance(&mut breadcrumb, &phase_peaks, PHASE_PURGE, None);
+    // The walk saw every list-only file of a whole working-tree pass, so its set replaces the
+    // recorded one: a deleted or newly indexed file leaves it. A staged or revision pass has no
+    // stat to record and leaves the working view's set alone.
+    if matches!(source, ScanSource::WorkingTree) {
+        store.index.listed = listed
+            .into_iter()
+            .map(|(rel, entry)| (crate::path::RelPath::from(rel), entry))
+            .collect();
+    }
     let working = store.view == crate::store::VIEW_WORKING && matches!(source, ScanSource::WorkingTree);
     report.deps_unavailable = crate::deps_docs::record(&store.basemind_dir, working, filters.dep_docs());
 
@@ -636,6 +651,7 @@ pub fn scan_with_observer(
         settle_cancelled_embed_progress(root, store, config, &filters, &source);
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
+        report.file_map_bytes_written = store.file_map_bytes_written() - file_map_before;
         return Ok(report);
     }
 
@@ -675,6 +691,7 @@ pub fn scan_with_observer(
     settle_embed_progress(root, store, config, &filters, &source);
     phase_peaks.sample_now();
     report.phase_peaks = phase_peaks.snapshot();
+    report.file_map_bytes_written = store.file_map_bytes_written() - file_map_before;
     Ok(report)
 }
 

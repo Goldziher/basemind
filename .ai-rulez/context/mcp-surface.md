@@ -96,7 +96,10 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
 - **No `output_schema`.** Nested response structs emit `$ref` into `$defs` (the construct that
   dropped the whole registry in GH #50) and inlining them breaks the byte ceiling;
   `tests/mcp_smoke.rs` asserts the absence.
-- **Text answers (ADR-0053).** `structured_content` is the JSON answer; the text block is
+- **Text answers (ADR-0053).** The tool builds its answer as JSON in `structured_content` (what the in-process CLI reads); on the
+  MCP wire a successful answer travels once, in the text block, and `structuredContent` is dropped
+  (`tool_contract::single_payload`, applied in `BasemindServer::route`; an `isError` result keeps its
+  `{error, retryable}`). The text block is
   `crate::wire::encode(tool, …)`, set in `src/mcp/adapter.rs`: `code_grep` rows as a plain block,
   `code_outline` / `git_diff` / a `find_files` list as TOON, the rest compact JSON.
   `crate::wire::decode` reads any of them back (the eval and the tests read answers with it). A

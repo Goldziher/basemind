@@ -74,7 +74,8 @@ src/
 │                             prose/data/config (md/json/yaml/toml, `lang::is_non_code`): the code map is code-only
 ├── scanner_policy.rs       — embed-policy reconciliation: vector rows follow `embed*` config changes
 ├── scanner_candidates.rs   — candidate enumeration + the [scan] max_candidates ceilings and
-│                             the BASEMIND_ALLOW_EXTRA_ROOTS grant for extra_roots
+│                             the BASEMIND_ALLOW_EXTRA_ROOTS grant for extra_roots, and the
+│                             stat-only list-only files ([scan] list_only) the walk records
 ├── scanner_index_batch.rs  — per-worker index write batch: commits on files OR staged bytes
 │                             OR the process-wide staging ceiling
 ├── scanner_drive.rs        — ScanObserver: per-file results are streamed, never accumulated
@@ -304,7 +305,9 @@ Key invariants:
 - **Atomic upsert** — `IndexWriter::upsert_file` is read-before-write: read
   existing primary entries first to derive secondary-index keys for deletion,
   then stage all deletes + inserts in one batch. No torn state on re-scan.
-- **Code-map persist barrier** — `Store::flush` (writing `index.msgpack`) runs
+- **Code-map persist barrier** — `Store::flush` (writing `index.msgpack`; an
+  incremental pass appends only its changed entries to `index.delta`, which a
+  reader replays over the base it is stamped to) runs
   immediately after extraction and the Fjall writes are done, BEFORE any optional
   lane. Everything after the barrier — resolved-reference stitching, LanceDB
   document/code embedding batches, BM25 corpus stats — is enrichment: each lane
@@ -622,7 +625,7 @@ which it cannot reference. A file map's version fields (`schema_ver`, `blob_layo
 own before the rest of it, so a newer map the binary cannot decode still reads as newer, and eviction
 treats a newer blob layout as a newer view. A map that does not decode is rebuilt by a writer open
 only when those fields read as this binary's; one whose fields cannot be read at all is renamed aside
-(`index.msgpack.unreadable-<time>`), never deleted, and a read-only open refuses both. The sweep of superseded namespaces needs no live
+(`index.msgpack.unreadable-<time>`), never deleted at once (a view keeps its newest two, and reaps older ones after a week), and a read-only open refuses both. The sweep of superseded namespaces needs no live
 set and runs even when the current namespace cannot be swept.
 
 A file map also records the layout of the blob store it was written for (`blob_layout`; `1` is

@@ -676,3 +676,41 @@ mod error_mapping {
         );
     }
 }
+
+mod single_payload {
+    use rmcp::model::{CallToolResult, ContentBlock};
+    use serde_json::json;
+
+    use super::super::tool_contract::{single_payload, tool_error};
+    use crate::engine::error_kind::ErrorKind;
+
+    #[test]
+    fn a_successful_answer_keeps_its_text_and_drops_the_structured_copy() {
+        let answered = single_payload(CallToolResult::structured(json!({ "total": 2, "hits": [1, 2] })));
+        assert_eq!(answered.structured_content, None);
+        let [ContentBlock::Text(text)] = answered.content.as_slice() else {
+            panic!("one text block: {:?}", answered.content);
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text.text).expect("JSON text"),
+            json!({ "total": 2, "hits": [1, 2] })
+        );
+    }
+
+    #[test]
+    fn a_refusal_keeps_its_code_and_retry_flag() {
+        let refused = single_payload(tool_error(ErrorKind::Busy, "busy"));
+        assert_eq!(refused.is_error, Some(true));
+        assert_eq!(
+            refused.structured_content,
+            Some(json!({ "error": "busy", "retryable": true }))
+        );
+    }
+
+    #[test]
+    fn an_answer_with_no_text_block_keeps_its_structured_content() {
+        let mut bare = CallToolResult::structured(json!({ "total": 1 }));
+        bare.content.clear();
+        assert_eq!(single_payload(bare).structured_content, Some(json!({ "total": 1 })));
+    }
+}

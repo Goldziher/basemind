@@ -166,6 +166,7 @@ impl Workspace {
                 embeddings,
                 total_size_bytes: 0,
                 languages: BTreeMap::new(),
+                listed: BTreeMap::new(),
                 large_files: None,
                 most_imported: Vec::new(),
                 cache_dir: self.cache_dir(),
@@ -221,6 +222,7 @@ impl Workspace {
             embeddings,
             total_size_bytes: total_size,
             languages: by_lang,
+            listed: listed_by_kind(&store.index.listed),
             large_files: Some(large_files),
             most_imported,
             cache_dir: self.cache_dir(),
@@ -297,6 +299,17 @@ struct RepoIdentity {
     branch: Option<String>,
     head_sha: Option<String>,
     head_short_sha: Option<String>,
+}
+
+/// How many list-only files the index holds of each kind.
+fn listed_by_kind(
+    listed: &ahash::AHashMap<crate::path::RelPath, crate::config::list_only::ListedEntry>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for entry in listed.values() {
+        *counts.entry(entry.kind.as_str().to_string()).or_insert(0) += 1;
+    }
+    counts
 }
 
 /// Where the tree-sitter grammars are cached; shared with every other user of the language pack.
@@ -446,6 +459,34 @@ mod tests {
         assert!(note.contains("scan"), "note suggests a rescan");
     }
 
+    #[test]
+    fn listed_files_are_counted_per_kind() {
+        use crate::config::list_only::{ListKind, ListedEntry};
+        let listed: ahash::AHashMap<crate::path::RelPath, ListedEntry> = [
+            ("a/Cargo.lock", ListKind::Lockfile),
+            ("b/Cargo.lock", ListKind::Lockfile),
+            ("c.zip", ListKind::Archive),
+        ]
+        .into_iter()
+        .map(|(path, kind)| {
+            (
+                crate::path::RelPath::from(path),
+                ListedEntry {
+                    kind,
+                    size_bytes: 1,
+                    mtime: 0,
+                },
+            )
+        })
+        .collect();
+        let counts = listed_by_kind(&listed);
+        assert_eq!(
+            counts.into_iter().collect::<Vec<_>>(),
+            [("archive".to_string(), 1), ("lockfile".to_string(), 2)]
+        );
+        assert!(listed_by_kind(&ahash::AHashMap::new()).is_empty());
+    }
+
     fn entry(lines: u32, bytes: u64) -> crate::store::FileEntry {
         crate::store::FileEntry {
             hash_hex: String::new(),
@@ -565,5 +606,25 @@ mod tests {
 
         crate::embed_progress::clear(&cache_dir);
         assert_eq!(ws.index_status(IndexStatusParams {}).expect("status").embeddings, None);
+    }
+
+    /// `rescanning` and a progress block are claims that a scan is running: with no pass holding the
+    /// workspace's rescan mark and no live scan breadcrumb, status carries neither.
+    #[test]
+    fn status_reports_rescanning_only_while_a_pass_holds_the_rescan_mark() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = unscanned_workspace(dir.path());
+        let state = |ws: &Workspace| {
+            let status = ws.index_status(IndexStatusParams {}).expect("status");
+            (status.notice.map(|notice| notice.state), status.scan_progress)
+        };
+
+        let mark = ws.mark_rescan();
+        assert_eq!(state(&ws).0, Some("rescanning"), "a pass holds the mark");
+
+        drop(mark);
+        let (notice, progress) = state(&ws);
+        assert_ne!(notice, Some("rescanning"), "no pass holds the mark");
+        assert_eq!(progress, None, "no scan runs, so there is nothing to report");
     }
 }

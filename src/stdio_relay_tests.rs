@@ -868,6 +868,19 @@ fn takeover_errors_decide_how_the_relay_reconnects() {
         through_context(SingletonError::NoDataDir).failure(),
         ReconnectFailure::Fatal
     );
+    let refused = through_context(SingletonError::DaemonBinaryRefused(
+        "it is not a `basemind` binary. Set BASEMIND_DAEMON_BINARY".to_string(),
+    ));
+    assert_eq!(
+        refused.failure(),
+        ReconnectFailure::Fatal,
+        "a renamed binary stays renamed"
+    );
+    assert!(
+        refused.reason().contains("BASEMIND_DAEMON_BINARY"),
+        "{}",
+        refused.reason()
+    );
     #[cfg(unix)]
     assert_eq!(
         through_context(SingletonError::SocketPathTooLong {

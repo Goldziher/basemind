@@ -186,6 +186,7 @@ fn scan_paths_inner(
 
     let scope = derive_scope(root, &source);
     let mut report = ScanReport::default();
+    let file_map_before = store.file_map_bytes_written();
     // The contents these paths hold now: once the pass has replaced or dropped them, a content no
     // other path holds leaves its grep bloom row too (a long-lived watcher never runs the full sweep).
     let mut retired: Vec<String> = rels
@@ -263,9 +264,9 @@ fn scan_paths_inner(
     crate::scanner_integrity::drop_unheld_grep_bloom_rows(store, &retired);
 
     if cancel.is_cancelled() || purge_failure.is_some() {
-        store.flush()?;
+        store.flush_delta()?;
     } else {
-        store.flush_ending_rows_pass()?;
+        store.flush_ending_rows_pass_delta()?;
     }
     store.write_status_sidecar();
     if let Some(error) = purge_failure {
@@ -287,6 +288,7 @@ fn scan_paths_inner(
             code_batches,
             REQUEUE_PER_INCREMENTAL,
         )?;
+        report.file_map_bytes_written = store.file_map_bytes_written() - file_map_before;
         return Ok(report);
     }
 
@@ -329,5 +331,10 @@ fn scan_paths_inner(
         maintain_lance_if_open(store, filter.filters())
     });
     crate::scanner_integrity::finish_index_writes(store);
+    report.file_map_bytes_written = store.file_map_bytes_written() - file_map_before;
     Ok(report)
 }
+
+#[cfg(test)]
+#[path = "scanner_file_map_tests.rs"]
+mod file_map_tests;
