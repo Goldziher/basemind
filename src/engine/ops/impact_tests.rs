@@ -244,6 +244,77 @@ mod scanned {
         );
     }
 
+    fn workspace_with_files(extra: &[(&str, &str)]) -> (tempfile::TempDir, Workspace) {
+        crate::store::init_isolated_cache();
+        let dir = tempfile::tempdir().expect("tempdir");
+        rust_crate(dir.path());
+        for (path, body) in extra {
+            write(dir.path(), path, body);
+        }
+        let ws = scanned_workspace(dir.path(), false);
+        (dir, ws)
+    }
+
+    fn symbol_impact(ws: &Workspace, name: &str) -> ImpactResponse {
+        ws.code_impact(ImpactParams {
+            symbol: Some(name.to_string()),
+            ..ImpactParams::default()
+        })
+        .expect("impact")
+    }
+
+    #[test]
+    fn depth_is_reported_only_when_a_boundary_definition_has_callers() {
+        let (_dir, ws) = workspace_for_answers();
+        // `dee` calls `sea` and nothing calls `dee`: depth 1 already lists every caller.
+        let complete = symbol_impact(&ws, "sea");
+        assert_eq!(complete.callers_truncated_reason, None, "{:?}", complete.callers);
+    }
+
+    #[test]
+    fn a_call_to_another_definition_of_the_same_name_is_a_callee_and_self_recursion_is_not() {
+        let (_dir, ws) = workspace_with_files(&[
+            ("src/e.rs", "pub fn bee() {\n    crate::b::bee();\n    bee();\n}\n"),
+            ("src/lib.rs", "mod a;\nmod b;\nmod c;\nmod d;\nmod e;\n"),
+        ]);
+        let impact = symbol_impact(&ws, "bee");
+        let from_e: Vec<_> = impact
+            .calls
+            .iter()
+            .filter(|callee| callee.from == RelPath::from("src/e.rs"))
+            .map(|callee| (callee.name.as_str(), callee.path.clone()))
+            .collect();
+        assert_eq!(from_e, [("bee", Some(RelPath::from("src/b.rs")))], "{:?}", impact.calls);
+        assert!(
+            impact
+                .calls
+                .iter()
+                .all(|callee| callee.from != RelPath::from("src/b.rs")),
+            "{:?}",
+            impact.calls
+        );
+    }
+
+    #[test]
+    fn a_definition_that_moved_since_the_scan_lists_no_calls_and_says_so() {
+        let (dir, ws) = workspace_for_answers();
+        write(
+            dir.path(),
+            "src/a.rs",
+            "use crate::b::bee;\npub fn other() { bee(); }\npub fn ay() { bee(); }\n",
+        );
+        let impact = symbol_impact(&ws, "ay");
+        assert!(impact.calls.is_empty(), "{:?}", impact.calls);
+        assert!(
+            impact
+                .notes
+                .iter()
+                .any(|note| note.contains("changed since the scan and no longer holds `ay` at line 2")),
+            "{:?}",
+            impact.notes
+        );
+    }
+
     #[test]
     fn a_file_target_lists_its_imports_and_no_call_level_rows() {
         let (_dir, ws) = workspace_for_answers();

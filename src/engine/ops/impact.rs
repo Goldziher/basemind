@@ -169,7 +169,7 @@ fn diff_target(ws: &Workspace, diff: &str) -> Result<Targets, EngineError> {
 /// The call-level answer of a symbol target: its callers over proven edges and the calls it makes.
 fn add_calls(ws: &Workspace, response: &mut ImpactResponse, name: &str, depth: u8) {
     let callers = upstream(ws, &response.definitions, name, depth);
-    let callees = downstream(ws, &response.definitions);
+    let callees = downstream(ws, &response.definitions, name);
     response.callers = callers.rows;
     response.callers_truncated_reason = callers.truncated;
     response.calls = callees.rows;

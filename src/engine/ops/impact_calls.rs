@@ -116,10 +116,29 @@ pub(super) fn upstream(ws: &Workspace, definitions: &[ImpactDefinition], name: &
         }
         frontier = next;
     }
-    if !frontier.is_empty() && walk.truncated.is_none() {
-        walk.truncated = Some("depth");
+    if walk.truncated.is_none() && !frontier.is_empty() {
+        walk.truncated = beyond_depth(ws, frontier, examined);
     }
     finish(walk)
+}
+
+/// Why the walk stops short at its last level: `depth` when a boundary definition has a proven
+/// caller the walk did not follow, `scan_cap` when the examined cap leaves that unchecked, and
+/// nothing when no boundary definition has one. A lookup that fails counts as a caller.
+fn beyond_depth(ws: &Workspace, frontier: Vec<Node>, mut examined: usize) -> Option<&'static str> {
+    for (path, name, line) in frontier {
+        if examined >= EXAMINED_MAX {
+            return Some("scan_cap");
+        }
+        examined += 1;
+        let followed = callers_page(ws, &path, &name, line, PAGE_LIMIT, None)
+            .map(|page| page.hits.iter().any(|hit| proven(hit.resolution)))
+            .unwrap_or(true);
+        if followed {
+            return Some("depth");
+        }
+    }
+    None
 }
 
 fn finish(mut walk: Callers) -> Callers {
@@ -131,10 +150,10 @@ fn finish(mut walk: Callers) -> Callers {
 
 /// The calls the bodies of `definitions` make, in definition then call order. A call the resolution
 /// facts bind is `proven`; one that is only a name is `name_only`.
-pub(super) fn downstream(ws: &Workspace, definitions: &[ImpactDefinition]) -> Callees {
+pub(super) fn downstream(ws: &Workspace, definitions: &[ImpactDefinition], name: &str) -> Callees {
     let mut out = Callees::default();
     for definition in definitions {
-        let callees = match callees_of(ws, &definition.path, definition.line) {
+        let callees = match callees_of(ws, &definition.path, name, definition.line) {
             Ok(callees) => callees,
             Err(reason) => {
                 note(

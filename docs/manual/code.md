@@ -97,8 +97,9 @@ These read the index (the daemon answers them when one runs) and have no MCP too
   also lists the files the target imports (`dependencies`). For a symbol it adds `callers`, the
   call sites that reach it, followed up to `--depth` hops, and `calls`, what its body calls. Every
   caller says how it was established: `same_file` or `imported` (`proven`, bound to the definition
-  by the resolution facts) or `name_only` (a callee named alike, listed but never followed and never
-  proven). Call sites that bind to another definition are not callers and are left out.
+  by the resolution facts), `name_only` (a callee named alike) or `path_match` (a call by a literal
+  route path), the last two listed but never followed and never proven. Call sites that bind to
+  another definition are not callers and are left out.
 - `basemind code cycles` lists import cycles, smallest first, each with an import chain that closes
   it; `--path` narrows to a file or directory and `--max-size` drops larger cycles.
   `basemind code cycles --check <from> <to>` says whether `from` importing `to` would close a cycle.

@@ -357,12 +357,24 @@ pub(in crate::engine::ops) struct Callee {
 }
 
 /// The distinct calls the definition holding 1-based `line` of `path` makes, each bound to its
-/// definition by the resolution facts when it has one. The reason, when the language has no call
-/// extraction, the file is not indexed or the index is held by another process. A file that changed
-/// since the scan gets no bindings.
-pub(in crate::engine::ops) fn callees_of(ws: &Workspace, path: &RelPath, line: u32) -> Result<Vec<Callee>, String> {
+/// definition by the resolution facts when it has one. A call to the definition itself is left out:
+/// by binding when the facts bind it, by name when they do not. The reason, when the language has no
+/// call extraction, the file is not indexed, the index is held by another process, or the file
+/// changed since the scan and no longer holds `name` at `line`. A file that changed since the scan
+/// gets no bindings.
+pub(in crate::engine::ops) fn callees_of(
+    ws: &Workspace,
+    path: &RelPath,
+    name: &str,
+    line: u32,
+) -> Result<Vec<Callee>, String> {
     let chosen = super::pick::symbol_at(ws, path.clone(), line).map_err(|error| error.to_string())?;
     let (loaded, symbol) = (&chosen.loaded, &chosen.loaded.l1.symbols[chosen.index]);
+    if loaded.stale && (symbol.name != name || symbol.start_row + 1 != line) {
+        return Err(format!(
+            "`{path}` changed since the scan and no longer holds `{name}` at line {line}: rescan"
+        ));
+    }
     let l2 = calls_and_docs(ws, path, loaded).ok_or_else(|| format!("no call extraction for {}", loaded.language))?;
     let view = ws
         .store_read()
@@ -375,13 +387,20 @@ pub(in crate::engine::ops) fn callees_of(ws: &Workspace, path: &RelPath, line: u
         .calls
         .iter()
         .filter(|site| symbol.start_byte <= site.start_byte && site.start_byte < symbol.end_byte)
-        .filter(|site| site.callee != symbol.name && !is_macro(&loaded.bytes, site.start_byte, &site.callee))
+        .filter(|site| !is_macro(&loaded.bytes, site.start_byte, &site.callee))
     {
-        let definition = bindings
+        let bound = bindings
             .then(|| view.definition_of(path, site.start_byte))
             .flatten()
-            .filter(|_| crate::engine::refs::intel::identifier_at(&loaded.bytes, site.start_byte) == site.callee)
-            .map(|(definition, _)| definition);
+            .filter(|_| crate::engine::refs::intel::identifier_at(&loaded.bytes, site.start_byte) == site.callee);
+        if site.callee == symbol.name
+            && bound
+                .as_ref()
+                .is_none_or(|(file, at)| file == path && (symbol.start_byte..symbol.end_byte).contains(at))
+        {
+            continue;
+        }
+        let definition = bound.map(|(definition, _)| definition);
         if seen.insert((site.callee.clone(), definition.clone())) {
             callees.push(Callee {
                 name: site.callee.clone(),
