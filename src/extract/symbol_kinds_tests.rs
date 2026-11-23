@@ -169,3 +169,67 @@ fn go_outlines_type_aliases_and_interface_methods() {
     assert_eq!(got, symbols(&want));
     assert_eq!(got_impls, Impls::new());
 }
+
+/// The `(kind, signature)` of the symbol `name` in `src`.
+fn signature_of(lang: &'static str, src: &str, name: &str) -> (SymbolKind, Option<String>) {
+    let map = extract_l1(lang, src.as_bytes()).expect("extract l1");
+    let sym = map
+        .symbols
+        .into_iter()
+        .find(|s| s.name == name)
+        .unwrap_or_else(|| panic!("no symbol named {name}"));
+    (sym.kind, sym.signature)
+}
+
+#[test]
+fn terraform_outlines_blocks_and_locals_but_not_nested_blocks() {
+    let (got, got_impls) = outline("terraform", include_str!("../../tests/fixtures/symbol_kinds/main.tf"));
+    let want = [
+        ("assume", Class),
+        ("aws", Namespace),
+        ("bucket_arn", Const),
+        ("logs", Class),
+        ("network", Module),
+        ("prefix", Variable),
+        ("region", Variable),
+        ("tags", Variable),
+        ("terraform", Namespace),
+    ];
+    assert_eq!(got, symbols(&want));
+    assert_eq!(got_impls, Impls::new());
+}
+
+#[test]
+fn hcl_outlines_terragrunt_include_dependency_terraform_locals_and_inputs() {
+    let (got, _) = outline("hcl", include_str!("../../tests/fixtures/symbol_kinds/terragrunt.hcl"));
+    let want = [
+        ("env", Variable),
+        ("include", Module),
+        ("inputs", Variable),
+        ("root", Module),
+        ("terraform", Namespace),
+        ("vpc", Module),
+    ];
+    assert_eq!(got, symbols(&want));
+}
+
+#[test]
+fn terraform_signatures_are_the_block_header() {
+    let src = include_str!("../../tests/fixtures/symbol_kinds/main.tf");
+    let cases = [
+        ("logs", Class, "resource \"aws_s3_bucket\" \"logs\""),
+        ("assume", Class, "data \"aws_iam_policy_document\" \"assume\""),
+        ("region", Variable, "variable \"region\""),
+        ("bucket_arn", Const, "output \"bucket_arn\""),
+        ("network", Module, "module \"network\""),
+        ("aws", Namespace, "provider \"aws\""),
+        ("terraform", Namespace, "terraform"),
+    ];
+    for (name, kind, signature) in cases {
+        assert_eq!(
+            signature_of("terraform", src, name),
+            (kind, Some(signature.to_string())),
+            "{name}"
+        );
+    }
+}
