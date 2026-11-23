@@ -24,10 +24,10 @@ use thiserror::Error;
 pub use code::CodeSearchConfig;
 pub use comms::CommsConfig;
 pub use documents::{
-    AGENT_CONFIG_GLOBS, LOCKFILE_GLOBS, TEST_PATH_GLOBS, VENDORED_BUILD_GLOBS, default_document_exclude,
-    ApiKey, DependenciesConfig, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig,
-    NerBackend, NerConfig, OcrBackend, OcrConfig, RerankerConfig, SecretString, SummarizationConfig,
-    SummarizationStrategy,
+    AGENT_CONFIG_GLOBS, ApiKey, DependenciesConfig, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm,
+    KeywordsConfig, LOCKFILE_GLOBS, LlmConfig, NerBackend, NerConfig, OcrBackend, OcrConfig, RerankerConfig,
+    SecretString, SummarizationConfig, SummarizationStrategy, TEST_PATH_GLOBS, VENDORED_BUILD_GLOBS,
+    default_document_exclude,
 };
 #[cfg(feature = "intelligence")]
 pub(crate) use documents_validate::MAX_ABANDONED_EXTRACTIONS;

@@ -38,7 +38,7 @@
           "type": "integer"
         },
         "changed": {
-          "description": "Files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
+          "description": "Changed since a rev (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
           "type": "string"
         }
       },
@@ -143,7 +143,7 @@
   {
     "name": "code_refs",
     "title": "Find call sites, implementations and importers",
-    "description": "Use for what calls, implements or imports X, or which definition a use binds to (`relation`). Callers are call sites, not type uses or `use` lines. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` if edited since. A row without `resolution` has the page's `resolution_default` (none: name_only). Resolutions: same_file, imported, scope_resolved (a local binding), elsewhere (not the pinned definition), name_only (unchecked; see `resolution_note`), external (not indexed), path_match (HTTP call by literal URL to route `name`, e.g. `GET /a/{id}`, or a pinned handler; `ambiguous`: routes tie). Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
+    "description": "Use for what calls, implements or imports X, or which definition a use binds to (`relation`). Callers are call sites, not type uses or `use` lines. `hits` maps files to rows: `line`, `callee` if not `name`, `stale` if edited since. A row without `resolution` has the page's `resolution_default` (none: name_only). Resolutions: same_file, imported, scope_resolved, elsewhere (not the pinned definition), name_only (unchecked; see `resolution_note`), external (not indexed), path_match (HTTP call by literal URL to route `name`, or a pinned handler; `ambiguous`: routes tie). Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
@@ -164,11 +164,11 @@
           ]
         },
         "path": {
-          "description": "`callers`: the file defining `name`, to pin it. `definition`: the reference's file (required).\n`importers`/`cycles`: that file (no `name`).",
+          "description": "`callers`: the file defining `name`, to pin it. `definition`: the reference's file (required). `importers`/`cycles`: that file (no `name`).",
           "type": "string"
         },
         "line": {
-          "description": "Needs `path`. `callers`: a 1-based line inside the definition meant. `definition`: the\nreference's line (required).",
+          "description": "Needs `path`. `callers`: a 1-based line inside the definition. `definition`: the reference's line (required).",
           "type": "integer"
         },
         "column": {
@@ -180,7 +180,7 @@
           "type": "integer"
         },
         "match": {
-          "description": "`exact` (default): the name or a path ending in it; `substring`: names holding it. Not with\n`importers`/`definition`.",
+          "description": "`exact` (default): the name or a path ending in it; `substring`: names containing it. Not with\n`importers`/`definition`.",
           "type": "string",
           "enum": [
             "exact",
@@ -259,7 +259,7 @@
           "type": "integer"
         },
         "changed": {
-          "description": "Files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
+          "description": "Changed since a rev (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
           "type": "string"
         }
       },
@@ -318,7 +318,7 @@
           "type": "integer"
         },
         "changed": {
-          "description": "Files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
+          "description": "Changed since a rev (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
           "type": "string"
         }
       },
@@ -379,6 +379,14 @@
         "max_tokens": {
           "description": "Default 6000.",
           "type": "integer"
+        },
+        "per_doc": {
+          "description": "Most hits one document contributes before the others rank ahead of its rest; 0 is no cap\n(default 2).",
+          "type": "integer"
+        },
+        "context": {
+          "description": "Add the chunk before and after each hit (default false).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -434,8 +442,21 @@
           "type": "integer"
         },
         "changed": {
-          "description": "Files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
+          "description": "Changed since a rev (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
           "type": "string"
+        },
+        "indexed": {
+          "description": "`true`: indexed files only; `false`: list-only ones (lockfiles, archives); `any` (default): both.",
+          "type": [
+            "boolean",
+            "string",
+            "null"
+          ],
+          "enum": [
+            true,
+            false,
+            "any"
+          ]
         }
       }
     },
@@ -543,21 +564,29 @@
   {
     "name": "git_log",
     "title": "Commit history",
-    "description": "Use instead of `git log`/`git show` for \"what changed recently\", \"what touched this file or function\" or \"which commit mentions X\". `{}` lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. Rows: `\"<sha> <summary>\"`, `[introduced]`/`[removed]` for a symbol; recent and directory lists add `files` (sha to path to change). `rev`: one commit whole. Symbol and directory history is read in commit batches: an empty page with `next_cursor` is not the end. Example: {\"path\":\"src/store.rs\",\"limit\":5}",
+    "description": "Use instead of `git log`/`git show` for \"what changed recently\", \"what touched this file or function\" or \"which commit mentions X\". `{}` lists recent commits; `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. Rows: sha (8), author, date, subject; `[introduced]`/`[removed]` for a symbol. Symbol and directory history is read in batches: an empty page with `next_cursor` is not the end. Example: {\"path\":\"src/store.rs\",\"limit\":5}",
     "inputSchema": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "path": {
-          "description": "Only commits touching this file, or a directory (trailing `/`; 200 commits a page). Not with\n`query` or `author`.",
+          "description": "Only commits touching this file, or a directory (trailing `/`); with `query`/`author`, narrows that search.",
           "type": "string"
         },
         "query": {
-          "description": "Words the commit message must all contain. Combines with `author` only.",
+          "description": "Words the commit message must all contain; typos, word parts (`KEY-123`) and a last-word prefix match too, after exact ones (`fuzzy`).",
           "type": "string"
         },
         "author": {
-          "description": "Words the author name or email must all contain; rows then name the author. Combines with\n`query` only.",
+          "description": "Words the author name or email must all contain, matched like `query`.",
+          "type": "string"
+        },
+        "since": {
+          "description": "With `query`/`author`: only commits since `YYYY-MM-DD` or `<N>d|w|m|y` ago.",
+          "type": "string"
+        },
+        "until": {
+          "description": "With `query`/`author`: only commits until then, same forms, day included.",
           "type": "string"
         },
         "symbol": {
@@ -569,7 +598,7 @@
           "type": "integer"
         },
         "rev": {
-          "description": "Show this one commit in full; `max_tokens` bounds its file list. Combines with nothing.",
+          "description": "Show this one commit in full; combines with nothing.",
           "type": "string"
         },
         "limit": {
@@ -583,6 +612,11 @@
         "max_tokens": {
           "description": "Default 6000.",
           "type": "integer"
+        },
+        "files": {
+          "description": "Also list each commit's changed files in a recent or directory list (capped; rest in `files_more`).",
+          "type": "boolean",
+          "default": false
         }
       }
     },

@@ -351,8 +351,10 @@ impl MapCache {
         }
         let (updated, removed) = self.files.diff(store);
         let doc_paths = doc_paths_of(store);
-        let unchanged =
-            removed.is_empty() && doc_paths == self.doc_paths && *listed_of(store) == *self.listed && updated.is_empty();
+        let unchanged = removed.is_empty()
+            && doc_paths == self.doc_paths
+            && *listed_of(store) == *self.listed
+            && updated.is_empty();
         if unchanged {
             return None;
         }

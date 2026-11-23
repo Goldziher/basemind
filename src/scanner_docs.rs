@@ -189,7 +189,8 @@ fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfi
     if ARCHIVE_MIME.iter().any(|entry| matches_mime(entry, mime_type)) {
         return true;
     }
-    !(cfg.ocr.enabled && crate::extract::doc_tiers::ocr_compiled()) && crate::extract::doc_tiers::is_ocr_only_mime(mime_type)
+    !(cfg.ocr.enabled && crate::extract::doc_tiers::ocr_compiled())
+        && crate::extract::doc_tiers::is_ocr_only_mime(mime_type)
 }
 
 /// Quick filter run before any xberg work happens. Returns the MIME type when the file should be

@@ -194,11 +194,7 @@ pub(super) async fn run_slow_tool(
     let work_slot = Arc::clone(&slot);
     let mut work = tokio::spawn(async move {
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
-        super::admission::holding(
-            work_admission,
-            CURRENT_TASK.scope(work_slot, server.route(tcc)),
-        )
-        .await
+        super::admission::holding(work_admission, CURRENT_TASK.scope(work_slot, server.route(tcc))).await
     });
 
     tokio::select! {

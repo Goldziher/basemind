@@ -33,7 +33,7 @@ pub struct CodeSearchParams {
     /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Only files changed since a rev (empty: HEAD; A..B, A...B); `+importers` adds importers.
+    /// Changed since a rev (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.
     #[serde(default)]
     pub changed: Option<String>,
 }
