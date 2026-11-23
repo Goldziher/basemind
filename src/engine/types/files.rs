@@ -33,16 +33,16 @@ pub struct FindFilesToolParams {
     /// Only code files of at least this many lines, largest first; `files` maps path to lines.
     #[serde(default)]
     pub min_lines: Option<u32>,
-    /// Files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.
+    /// Only files changed since a rev (empty: HEAD; A..B, A...B); `+importers` adds importers.
     #[serde(default)]
     pub changed: Option<String>,
-    /// `true`, `false` or `any` (default): indexed files only, list-only ones (lockfiles, archives) only, or both.
+    /// `true`: indexed files only; `false`: list-only ones (lockfiles, archives); `any` (default): both.
     #[serde(default)]
     pub indexed: Option<IndexedFilter>,
 }
 
 /// The `indexed` argument of `find_files`: which of the two groups of files to list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum IndexedFilter {
     /// `true`: files whose contents are indexed. `false`: list-only files.
@@ -52,10 +52,29 @@ pub enum IndexedFilter {
 }
 
 /// The one word `indexed` takes besides a boolean.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IndexedWord {
     Any,
+}
+
+impl schemars::JsonSchema for IndexedFilter {
+    /// Inlined: a `$ref`/`anyOf` at a property type is outside the `input_schema` subset hosts accept.
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "IndexedFilter".into()
+    }
+
+    /// A flat scalar: `true`, `false` or the string `"any"`.
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": ["boolean", "string"],
+            "enum": [true, false, "any"]
+        })
+    }
 }
 
 impl IndexedFilter {

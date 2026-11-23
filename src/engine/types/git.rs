@@ -12,23 +12,19 @@ use crate::path::RelPath;
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GitLogParams {
-    /// Only commits touching this file, or a directory (trailing `/`; 200 commits a page). With
-    /// `query` or `author`: narrows the search to that file or directory.
+    /// Only commits touching this file, or a directory (trailing `/`); with `query`/`author`, narrows that search.
     #[serde(default)]
     pub path: Option<RelPath>,
-    /// Words the commit message must all contain; typos, word parts (`BulkConfig`, `KEY-123`) and
-    /// the start of the last word still match, listed after exact matches and marked in `fuzzy`.
+    /// Words the commit message must all contain; typos, word parts (`KEY-123`) and a last-word prefix match too, after exact ones (`fuzzy`).
     #[serde(default)]
     pub query: Option<String>,
-    /// Words the author name or email must all contain, matched like `query` and also as a
-    /// subsequence.
+    /// Words the author name or email must all contain, matched like `query`.
     #[serde(default)]
     pub author: Option<String>,
-    /// With `query` or `author`: only commits since this author time, `YYYY-MM-DD` or `<N>d`,
-    /// `<N>w`, `<N>m`, `<N>y` ago.
+    /// With `query`/`author`: only commits since `YYYY-MM-DD` or `<N>d|w|m|y` ago.
     #[serde(default)]
     pub since: Option<String>,
-    /// With `query` or `author`: only commits until this author time, same forms, day included.
+    /// With `query`/`author`: only commits until then, same forms, day included.
     #[serde(default)]
     pub until: Option<String>,
     /// Commits that changed this symbol's body; needs `path`, combines only with `line`.
@@ -37,7 +33,7 @@ pub struct GitLogParams {
     /// With `symbol`: a 1-based line inside the definition meant.
     #[serde(default)]
     pub line: Option<u32>,
-    /// Show this one commit in full; `max_tokens` bounds its file list. Combines with nothing.
+    /// Show this one commit in full; combines with nothing.
     #[serde(default)]
     pub rev: Option<String>,
     /// Default 20.
@@ -49,8 +45,7 @@ pub struct GitLogParams {
     /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Also list what each commit changed, in a recent or directory list: capped per commit, the
-    /// rest counted in `files_more`. Default false.
+    /// Also list each commit's changed files in a recent or directory list (capped; rest in `files_more`).
     #[serde(default)]
     pub files: bool,
 }
