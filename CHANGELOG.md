@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A newer release minor no longer wipes the group index a running older release reads: from 0.35 on each minor keeps its group index in `cache/groups/<group>/v<minor>/`, the cache sweep reaps an older one once no process of that release runs and it has sat unwritten for `BASEMIND_PRUNE_AFTER_DAYS` (#447)
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33
