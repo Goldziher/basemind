@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A successful MCP `tools/call` answer carries its payload once, in the text block, instead of again as `structuredContent` (#481).
+### Fixed
+
+- Constant outline signatures read `const NAME = value` per member in TypeScript, TSX, JavaScript, Go and Python, and Go `const`/`var` group members each take their own span instead of repeating the group (#472).
 
 ## [0.34.0] - 2026-11-22
 

@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod call_position_tests;
+#[cfg(test)]
+mod const_signature_tests;
 #[cfg(feature = "documents")]
 pub mod doc;
 #[cfg(feature = "documents")]
@@ -115,7 +117,9 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 ///   records, annotation types, constructors and fields, Python annotated fields and `type` aliases,
 ///   Go type aliases and interface methods), and member-expression and generic bases become
 ///   implementations.
-pub const EXTRACT_EPOCH: u16 = 7;
+/// - 8: a constant's signature keeps its name (`const NAME = value`) and covers only that member;
+///   Go `const` and `var` members each take their own span instead of the whole group's.
+pub const EXTRACT_EPOCH: u16 = 8;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {
