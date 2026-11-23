@@ -101,6 +101,11 @@ pub(crate) struct StatusResponse {
     pub scan_progress: Option<crate::scan_evidence::ScanProgress>,
     pub total_size_bytes: u64,
     pub languages: BTreeMap<String, usize>,
+    /// List-only files (`[scan] list_only`: lockfiles, archives, captures, fonts, data) counted per
+    /// kind (`lockfile`, `archive`, `binary`, `data`). Known to exist, never read, and not in
+    /// `file_count`. Absent when there are none, or while a writer holds the store.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub listed: BTreeMap<String, usize>,
     /// Code files too long to read whole. Absent while a writer holds the store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub large_files: Option<LargeFiles>,

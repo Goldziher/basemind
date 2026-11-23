@@ -163,6 +163,7 @@ impl Workspace {
                 scan_progress,
                 total_size_bytes: 0,
                 languages: BTreeMap::new(),
+                listed: BTreeMap::new(),
                 large_files: None,
                 most_imported: Vec::new(),
                 cache_dir: self.cache_dir(),
@@ -217,6 +218,7 @@ impl Workspace {
             scan_progress,
             total_size_bytes: total_size,
             languages: by_lang,
+            listed: listed_by_kind(&store.index.listed),
             large_files: Some(large_files),
             most_imported,
             cache_dir: self.cache_dir(),
@@ -296,6 +298,17 @@ struct RepoIdentity {
 }
 
 /// Where the tree-sitter grammars are cached; shared with every other user of the language pack.
+/// How many list-only files the index holds of each kind.
+fn listed_by_kind(
+    listed: &ahash::AHashMap<crate::path::RelPath, crate::config::list_only::ListedEntry>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for entry in listed.values() {
+        *counts.entry(entry.kind.as_str().to_string()).or_insert(0) += 1;
+    }
+    counts
+}
+
 fn grammar_dir() -> Option<String> {
     crate::lang::grammar_cache_dir().map(|dir| dir.display().to_string())
 }
@@ -440,6 +453,34 @@ mod tests {
         let note = note.unwrap();
         assert!(note.contains("7 blob file"), "note reports the blob count");
         assert!(note.contains("scan"), "note suggests a rescan");
+    }
+
+    #[test]
+    fn listed_files_are_counted_per_kind() {
+        use crate::config::list_only::{ListKind, ListedEntry};
+        let listed: ahash::AHashMap<crate::path::RelPath, ListedEntry> = [
+            ("a/Cargo.lock", ListKind::Lockfile),
+            ("b/Cargo.lock", ListKind::Lockfile),
+            ("c.zip", ListKind::Archive),
+        ]
+        .into_iter()
+        .map(|(path, kind)| {
+            (
+                crate::path::RelPath::from(path),
+                ListedEntry {
+                    kind,
+                    size_bytes: 1,
+                    mtime: 0,
+                },
+            )
+        })
+        .collect();
+        let counts = listed_by_kind(&listed);
+        assert_eq!(
+            counts.into_iter().collect::<Vec<_>>(),
+            [("archive".to_string(), 1), ("lockfile".to_string(), 2)]
+        );
+        assert!(listed_by_kind(&ahash::AHashMap::new()).is_empty());
     }
 
     fn entry(lines: u32, bytes: u64) -> crate::store::FileEntry {

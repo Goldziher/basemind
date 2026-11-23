@@ -488,7 +488,8 @@ pub fn scan_with_observer(
     filters.verify_blobs = crate::scan_evidence::blobs_need_verifying(&store.basemind_dir);
     filters.vector_rows_unsure = filters.verify_blobs;
     advance(&mut breadcrumb, &phase_peaks, PHASE_CANDIDATES, None);
-    let candidates = candidates_for_source(root, config, &filters, &source, cancel)?;
+    let walked = candidates_for_source(root, config, &filters, &source, cancel)?;
+    let (candidates, listed) = (walked.keys, walked.listed);
     debug!(count = candidates.len(), kind = source.label(), "scan candidates");
     crate::scanner_integrity::ensure_scan_space(store, root, &source, &filters, config, &candidates)?;
     store.reap_legacy_index()?;
@@ -535,6 +536,15 @@ pub fn scan_with_observer(
     }
 
     advance(&mut breadcrumb, &phase_peaks, PHASE_PURGE, None);
+    // The walk saw every list-only file of a whole working-tree pass, so its set replaces the
+    // recorded one: a deleted or newly indexed file leaves it. A staged or revision pass has no
+    // stat to record and leaves the working view's set alone.
+    if matches!(source, ScanSource::WorkingTree) {
+        store.index.listed = listed
+            .into_iter()
+            .map(|(rel, entry)| (crate::path::RelPath::from(rel), entry))
+            .collect();
+    }
     let working = store.view == crate::store::VIEW_WORKING && matches!(source, ScanSource::WorkingTree);
     report.deps_unavailable = crate::deps_docs::record(&store.basemind_dir, working, filters.dep_docs());
 

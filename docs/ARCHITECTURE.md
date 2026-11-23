@@ -74,7 +74,8 @@ src/
 │                             prose/data/config (md/json/yaml/toml, `lang::is_non_code`): the code map is code-only
 ├── scanner_policy.rs       — embed-policy reconciliation: vector rows follow `embed*` config changes
 ├── scanner_candidates.rs   — candidate enumeration + the [scan] max_candidates ceilings and
-│                             the BASEMIND_ALLOW_EXTRA_ROOTS grant for extra_roots
+│                             the BASEMIND_ALLOW_EXTRA_ROOTS grant for extra_roots, and the
+│                             stat-only list-only files ([scan] list_only) the walk records
 ├── scanner_index_batch.rs  — per-worker index write batch: commits on files OR staged bytes
 │                             OR the process-wide staging ceiling
 ├── scanner_drive.rs        — ScanObserver: per-file results are streamed, never accumulated
