@@ -220,6 +220,24 @@ async fn call(client: &Client, tool: &'static str, arguments: Value) -> Value {
     basemind::wire::decode(&text).unwrap_or_else(|error| panic!("{tool}: unreadable payload ({error}): {text}"))
 }
 
+/// `call` repeated until `settled` accepts the answer, for a working-tree status read after an edit
+/// on disk: the status is cached until the file watcher reports the edit, a debounce later. The
+/// ceiling only stops a hang; the cache's own age bound ends a stale answer well before it.
+async fn call_until(client: &Client, tool: &'static str, arguments: Value, settled: impl Fn(&Value) -> bool) -> Value {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let answer = call(client, tool, arguments.clone()).await;
+        if settled(&answer) {
+            return answer;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{tool} {arguments} never settled: {answer}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 /// A call's tool result, error or not.
 async fn call_raw(client: &Client, tool: &'static str, arguments: Value) -> CallToolResult {
     client
@@ -730,7 +748,7 @@ async fn git_diff_without_revisions_describes_the_working_tree() {
     std::fs::write(root.join("src/outline.rs"), OUTLINE_RS.replace("    1\n", "    100\n")).unwrap();
     std::fs::write(root.join("new.rs"), "pub fn fresh() {}\n").unwrap();
 
-    let status = call(&client, "git_diff", json!({})).await;
+    let status = call_until(&client, "git_diff", json!({}), |status| status["is_clean"] == false).await;
     assert_eq!(status["is_clean"], false, "{status}");
     assert_eq!(status["modified"], json!(["src/outline.rs"]), "{status}");
     assert_eq!(status["untracked"], json!(["new.rs"]), "{status}");
