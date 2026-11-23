@@ -30,43 +30,7 @@ run = [
 
 [tasks."setup:sccache"]
 description = "Cache Rust compilation across worktrees with sccache: install it when missing, point cargo at it. Idempotent."
-run = """
-set -eu
-command -v sccache >/dev/null 2>&1 || mise install sccache
-bin="$(command -v sccache || mise which sccache)"
-home="${CARGO_HOME:-$HOME/.cargo}"
-mkdir -p "$home"
-# Cargo reads the extensionless file when both exist, so edit the one it reads.
-cfg="$home/config.toml"
-[ -f "$home/config" ] && cfg="$home/config"
-if grep -Eq '^[[:space:]]*(build\\.)?rustc-wrapper[[:space:]]*=' "$cfg" 2>/dev/null; then
-  echo "$cfg already sets a rustc-wrapper; left as it is"
-else
-  work="$(mktemp -d)"
-  trap 'rm -rf "$work"' EXIT
-  next="$work/config.toml"
-  src="$cfg"
-  [ -f "$src" ] || src=/dev/null
-  # sccache cannot cache incremental builds, so cargo's incremental mode is turned off with it.
-  # An existing [build] table gets the keys (a second table would be invalid TOML); else one is added.
-  if grep -Eq '^\\[build\\][[:space:]]*(#.*)?$' "$src"; then
-    awk -v bin="$bin" '
-      /^\\[/ { in_build = 0 }
-      in_build && /^[[:space:]]*incremental[[:space:]]*=/ { next }
-      { print }
-      /^\\[build\\][[:space:]]*(#.*)?$/ { in_build = 1; printf "rustc-wrapper = \\"%s\\"\\nincremental = false\\n", bin }
-    ' "$src" > "$next"
-  else
-    { cat "$src"; printf '\\n[build]\\nrustc-wrapper = "%s"\\nincremental = false\\n' "$bin"; } > "$next"
-  fi
-  # Cargo itself rejects a malformed file here, before it replaces the working one.
-  cargo --config "$next" metadata --no-deps --format-version 1 >/dev/null
-  cp "$next" "$cfg"
-  echo "cargo now builds through $bin ($cfg)"
-fi
-"$bin" --start-server >/dev/null 2>&1 || true
-"$bin" --show-stats | head -4
-"""
+run = "scripts/setup-sccache.sh"
 
 [tasks.build]
 description = "Build the basemind binary"
