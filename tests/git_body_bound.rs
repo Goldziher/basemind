@@ -136,7 +136,7 @@ async fn search_lists_no_commit_body() {
     for hit in hits {
         let sha = hit["sha"].as_str().expect("a commit row has a sha");
         let summary = hit["subject"].as_str().expect("a commit row has a subject");
-        assert_eq!(sha.len(), 8, "{hit}");
+        assert_eq!(sha.len(), 12, "{hit}");
         assert!(
             summary.len() < 200,
             "a hit names the commit and leaves its message to `rev`: {hit}"

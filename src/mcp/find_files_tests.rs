@@ -92,6 +92,16 @@ fn paths(payload: &Value) -> Vec<String> {
         .collect()
 }
 
+/// The path of every row of a page, whether the row is a bare path or a `{path, ...}` object.
+fn paths_or_rows(payload: &Value) -> Vec<String> {
+    payload["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .map(|f| f.as_str().or_else(|| f["path"].as_str()).expect("a path").to_string())
+        .collect()
+}
+
 async fn find(server: &BasemindServer, query: &str, language: Option<&str>) -> Vec<String> {
     let result = server
         .find_files_call(listing(Some(query), language))
@@ -168,6 +178,34 @@ async fn find_and_list_cover_files_git_tracks_that_are_not_indexed() {
 
     let listed = server.find_files_call(listing(None, None)).await.expect("files");
     assert!(paths(&json_of(&listed)).contains(&"assets/banner.png".to_string()));
+
+    // A tracked file that is neither indexed nor list-only belongs to no `indexed` group.
+    for (filter, query) in [
+        (Some(crate::engine::types::files::IndexedFilter::Flag(true)), None),
+        (
+            Some(crate::engine::types::files::IndexedFilter::Flag(true)),
+            Some("banner"),
+        ),
+        (Some(crate::engine::types::files::IndexedFilter::Flag(false)), None),
+        (
+            Some(crate::engine::types::files::IndexedFilter::Flag(false)),
+            Some("banner"),
+        ),
+    ] {
+        let mut params = listing(query, None);
+        params.indexed = filter;
+        let result = server.find_files_call(params).await.expect("files");
+        assert!(
+            !paths_or_rows(&json_of(&result)).contains(&"assets/banner.png".to_string()),
+            "{filter:?} {query:?}"
+        );
+    }
+    let mut params = listing(None, None);
+    params.indexed = Some(crate::engine::types::files::IndexedFilter::Word(
+        crate::engine::types::files::IndexedWord::Any,
+    ));
+    let any = server.find_files_call(params).await.expect("files");
+    assert!(paths_or_rows(&json_of(&any)).contains(&"assets/banner.png".to_string()));
     let rust = server
         .find_files_call(listing(None, Some("rust")))
         .await

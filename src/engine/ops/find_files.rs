@@ -215,7 +215,8 @@ fn run_list_files(
         .iter()
         .filter(|_| want_indexed)
         .map(|p| (p, Some(language_of_doc(p)), None));
-    let others = tracked.iter().filter(|_| want_indexed).map(|p| (p, None, None));
+    let want_tracked_only = IndexedFilter::lists_tracked_only(params.indexed);
+    let others = tracked.iter().filter(|_| want_tracked_only).map(|p| (p, None, None));
     let listed = cache
         .listed
         .iter()
@@ -369,7 +370,8 @@ fn run_find_files(
         .iter()
         .filter(|_| want_indexed)
         .map(|p| (p, Some(language_of_doc(p))));
-    let others = tracked.iter().filter(|_| want_indexed).map(|p| (p, None));
+    let want_tracked_only = IndexedFilter::lists_tracked_only(params.indexed);
+    let others = tracked.iter().filter(|_| want_tracked_only).map(|p| (p, None));
     let listed = cache.listed.iter().filter(|_| want_listed).map(|(p, _)| (p, None));
     let candidates: Vec<&RelPath> = code
         .chain(docs)

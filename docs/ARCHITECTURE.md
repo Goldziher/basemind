@@ -631,8 +631,12 @@ only when those fields read as this binary's; one whose fields cannot be read at
 set and runs even when the current namespace cannot be swept.
 
 A file map also records the layout of the blob store it was written for (`blob_layout`; `1` is
-the namespaced store). A map without it was written when blobs lay flat in `cache/blobs/`: it is
-discarded with the index built from it and the workspace is scanned again, whatever schema it carries.
+the namespaced store, `2` adds the delta log `index.delta`). A map without it was written when blobs
+lay flat in `cache/blobs/`: it is discarded with the index built from it and the workspace is
+scanned again, whatever schema it carries. The delta log is what a layout-2 base depends on, so the
+layout is also the mixed-version guard: a binary of layout 1 reads a layout-2 map as a newer
+basemind's and refuses it, instead of reading the base without its log or rewriting the base over
+the log's changes; this binary discards a layout-1 map and scans again over the blobs already stored.
 
 ### Durability
 

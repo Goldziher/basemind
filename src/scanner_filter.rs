@@ -581,6 +581,15 @@ impl Filters {
         (self.list_only.is_match(rel) && !self.excluded(rel) && self.include.is_match(rel)).then(|| kind_of(rel))
     }
 
+    /// [`Filters::listed_kind`] for a path relative to an `extra_roots` entry: globs only, no
+    /// submodule prefixes.
+    pub(crate) fn listed_kind_in_extra_root(&self, rel_to_extra_root: &str) -> Option<ListKind> {
+        (self.list_only.is_match(rel_to_extra_root)
+            && !self.exclude.is_match(rel_to_extra_root)
+            && self.include.is_match(rel_to_extra_root))
+        .then(|| kind_of(rel_to_extra_root))
+    }
+
     /// [`Filters::allows`] for a path relative to an `extra_roots` entry: globs only. Submodule
     /// roots are repo-relative, so they say nothing about a tree outside the repository.
     pub(crate) fn allows_in_extra_root(&self, rel_to_extra_root: &str) -> bool {
