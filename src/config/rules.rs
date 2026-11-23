@@ -386,6 +386,41 @@ mod tests {
     }
 
     #[test]
+    fn extended_test_globs_match_their_shape_and_not_look_alikes() {
+        let default = TestPaths::from_config(&ConfigV1::with_defaults());
+        for (positive, negative) in [
+            ("ci/run.bats", "ci/run.bat"),
+            ("ui/a.snap", "ui/a.snapshot"),
+            ("ui/a.stories.tsx", "ui/a.story.tsx"),
+            ("ui/a.mock.ts", "ui/a.mocking.ts"),
+            ("ui/a.mocks.ts", "ui/a.mockery.ts"),
+            ("ui/__mocks__/a.ts", "ui/__mock__/a.ts"),
+            ("ui/mock/a.ts", "ui/mockery/a.ts"),
+            ("pkg/testing/a.py", "pkg/contesting/a.py"),
+            ("web/playwright/a.ts", "web/playwrighty/a.ts"),
+            ("web/cypress/a.ts", "web/cypresses/a.ts"),
+            ("ui/stories/a.tsx", "ui/mystories/a.tsx"),
+            ("src/FooTest.java", "src/Contest.java"),
+            ("src/FooTests.java", "src/Attests.java"),
+            ("src/FooTest.kt", "src/Contest.kt"),
+            ("lib/foo_spec.rb", "lib/foo.rb"),
+            ("src/foo_tests.rs", "src/attestation.rs"),
+            ("pkg/test_utils/a.py", "pkg/test_utilsx/a.py"),
+            ("pkg/testutils/a.go", "pkg/contestutils/a.go"),
+            ("pkg/tests.py", "pkg/attests.py"),
+            ("web/a.e2e.ts", "web/e2e.ts"),
+            ("web/a.cy.ts", "web/a.cyan.ts"),
+            ("src/foo_test.py", "src/latest/x.py"),
+        ] {
+            assert!(default.is_test(positive), "{positive} is a test path");
+            assert!(!default.is_test(negative), "{negative} is not a test path");
+        }
+        for path in ["src/contest.py", "attestation.go", "src/latest/x.py"] {
+            assert!(!default.is_test(path), "{path} is not a test path");
+        }
+    }
+
+    #[test]
     fn doc_digest_ignores_reserved_fields_but_tracks_live_ones() {
         let resources = ResourcesConfig::default();
         let base = DocumentsConfig::default();

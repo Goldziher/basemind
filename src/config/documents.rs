@@ -8,9 +8,14 @@ use serde::{Deserialize, Serialize};
 
 use super::DeprecatedSection;
 
-/// Globs naming test, fixture, mock, snapshot and end-to-end paths. The single source for
-/// `[scan] test_globs` (which marks files `is_test` in the code map) and for the document tier's
-/// default `exclude`, so the two never drift.
+/// Globs naming test, fixture, mock, story, snapshot and end-to-end paths. The single source for
+/// two uses that never drift: `[scan] test_globs` only marks matching files `is_test` in the code
+/// map (they stay indexed for symbols, outlines, refs and grep), and the document tier's default
+/// `exclude` drops them from RAG (document indexing and embedding).
+///
+/// Patterns are anchored on a directory or a suffix. `**/test_*.*` can also hit a production
+/// module such as `test_runner.py`; that is accepted because the flag is advisory and a user can
+/// re-include with `!pattern` in `[documents] exclude`.
 pub const TEST_PATH_GLOBS: &[&str] = &[
     "**/tests/**",
     "**/test/**",
@@ -26,6 +31,27 @@ pub const TEST_PATH_GLOBS: &[&str] = &[
     "**/*.spec.*",
     "**/*.test.*",
     "**/conftest.py",
+    "**/*.bats",
+    "**/*.snap",
+    "**/*.stories.*",
+    "**/*.mock.*",
+    "**/*.mocks.*",
+    "**/__mocks__/**",
+    "**/mock/**",
+    "**/testing/**",
+    "**/playwright/**",
+    "**/cypress/**",
+    "**/stories/**",
+    "**/*Test.java",
+    "**/*Tests.java",
+    "**/*Test.kt",
+    "**/*_spec.rb",
+    "**/*_tests.rs",
+    "**/test_utils/**",
+    "**/testutils/**",
+    "**/tests.py",
+    "**/*.e2e.*",
+    "**/*.cy.*",
 ];
 
 /// Agent instruction and configuration files: they describe how agents should work, not the
