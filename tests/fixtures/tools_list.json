@@ -26,7 +26,7 @@
           "type": "integer"
         },
         "limit": {
-          "description": "Default 100.",
+          "description": "Default 100, max 1000.",
           "type": "integer"
         },
         "cursor": {
@@ -69,7 +69,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Default 500.",
+          "description": "Default 500, max 1000.",
           "type": "integer"
         },
         "cursor": {
@@ -188,7 +188,7 @@
           ]
         },
         "limit": {
-          "description": "Default 100.",
+          "description": "Default 100, max 1000.",
           "type": "integer"
         },
         "cursor": {
@@ -306,7 +306,7 @@
           "type": "boolean"
         },
         "limit": {
-          "description": "Default 100.",
+          "description": "Default 100, max 1000.",
           "type": "integer"
         },
         "cursor": {
@@ -426,7 +426,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Default 200.",
+          "description": "Default 200, max 5000.",
           "type": "integer"
         },
         "cursor": {
@@ -497,7 +497,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Merged hunks; default 100.",
+          "description": "Merged hunks; default 100, max 1000.",
           "type": "integer"
         },
         "cursor": {
@@ -602,7 +602,7 @@
           "type": "string"
         },
         "limit": {
-          "description": "Default 20.",
+          "description": "Default 20, max 100 (500 for a directory `path`).",
           "type": "integer"
         },
         "cursor": {
@@ -758,7 +758,7 @@
           ]
         },
         "limit": {
-          "description": "Max notes (default 10 for `query`, 100 for a listing). Not with `key`.",
+          "description": "Max notes: for `query` default 10, max 100; for a listing default 100, max 1000. Not with `key`.",
           "type": "integer"
         },
         "cursor": {

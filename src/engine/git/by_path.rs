@@ -65,6 +65,8 @@ pub(super) fn by_path(ws: &Workspace, tool: &str, params: FindCommitsByPathParam
                 return Ok(ByPathPage {
                     response: FindCommitsByPathResponse {
                         window_inspected: 0,
+                        commits_reached: 0,
+                        total_commits: None,
                         unmatched: None,
                         truncated: false,
                         truncated_reason: None,
@@ -92,10 +94,13 @@ pub(super) fn by_path(ws: &Workspace, tool: &str, params: FindCommitsByPathParam
     // ~keep A cursor cut from the live walk keeps paging it, so an index that catches up between two
     // ~keep pages does not cut the walk off; one cut from the index needs the index.
     let live_cursor = cursor_snapshot.is_some_and(|issued| issued & LIVE_WALK != 0);
-    let indexed = git_history_if_fresh(ws, &head)
-        .filter(|_| !live_cursor)
+    let view = git_history_if_fresh(ws, &head).filter(|_| !live_cursor);
+    let counted = view.as_ref().map(|index| index.commit_count() as u64);
+    let indexed = view
         .map(|index| index.recent_commits(start, fetch, true))
         .filter(|commits| !commits.is_empty());
+    // The live walk knows no total without walking all of it.
+    let total_commits = counted.filter(|_| indexed.is_some());
     let snapshot = snapshot_of(indexed.is_none());
     if cursor_snapshot.is_some_and(|issued| issued != snapshot) {
         return Err(crate::engine::cursor::walk_switched(tool));
@@ -142,6 +147,8 @@ pub(super) fn by_path(ws: &Workspace, tool: &str, params: FindCommitsByPathParam
     Ok(ByPathPage {
         response: FindCommitsByPathResponse {
             window_inspected: u32::try_from(commits.len()).unwrap_or(u32::MAX),
+            commits_reached: next_offset.unwrap_or(start + commits.len()) as u64,
+            total_commits,
             unmatched: None,
             truncated: window_edge,
             truncated_reason: window_edge.then_some(SPAN_LIMIT),

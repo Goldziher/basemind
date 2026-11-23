@@ -48,6 +48,15 @@ fn workspace(root: &Path, cache: &Path) -> Workspace {
 
 /// A workspace over the repository at `root`, whose git cache persists to `cache`.
 fn workspace_over(root: &Path, cache: &Path) -> Workspace {
+    workspace_with_index(root, cache, None)
+}
+
+/// [`workspace_over`] with `git_history` as its git-history index.
+fn workspace_with_index(
+    root: &Path,
+    cache: &Path,
+    git_history: Option<Arc<crate::git_history::GitHistoryIndex>>,
+) -> Workspace {
     let store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("store");
     let repo = crate::git::Repo::discover(root).expect("repo");
     Workspace::new(
@@ -56,7 +65,7 @@ fn workspace_over(root: &Path, cache: &Path) -> Workspace {
         Arc::new(crate::config::Config::with_defaults()),
         Some(Arc::new(repo)),
         Arc::new(crate::git_cache::GitCache::open(cache, 4, true).expect("git cache")),
-        None,
+        git_history,
         crate::engine::workspace::OpenOptions {
             background: true,
             read_only: false,
@@ -337,4 +346,67 @@ fn a_directory_history_holds_the_commit_that_moved_a_file_out() {
         .map(|commit| commit.summary.as_str())
         .collect();
     assert_eq!(summaries, ["move", "add"], "the move out of `old/` touches it");
+}
+
+/// A page says how many commits the walk has gone through, so a caller paging a rarely touched
+/// directory can tell progress from a stall. The live walk has no total.
+#[test]
+fn a_live_page_reports_how_far_into_the_history_it_reached() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let ws = workspace(repo_dir.path(), cache_dir.path());
+
+    let mut cursor = None;
+    let mut reached = Vec::new();
+    loop {
+        let page = by_path(&ws, "git_by_path", params(Some(WINDOW), None, cursor.take())).expect("page");
+        assert_eq!(
+            page.response.total_commits, None,
+            "the live walk counts nothing it has not walked"
+        );
+        reached.push(page.response.commits_reached);
+        match page.response.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(
+        reached,
+        [2, 4, 6, 7],
+        "each page ends where the next begins; the last at the history's end"
+    );
+}
+
+/// A page cut short by `limit` stops at the first match it left out, not at the end of its window.
+#[test]
+fn a_page_cut_by_its_limit_reports_the_offset_of_the_first_match_it_left_out() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let ws = workspace(repo_dir.path(), cache_dir.path());
+
+    let page = by_path(&ws, "git_by_path", params(Some(6), Some(1), None)).expect("page");
+    let summaries: Vec<&str> = page.response.commits.iter().map(|c| c.summary.as_str()).collect();
+    assert_eq!(summaries, ["round 5"]);
+    assert_eq!(
+        page.response.commits_reached, 3,
+        "round 3 is the next match, at offset 3"
+    );
+}
+
+/// With the git-history index serving the page, the total is the commits HEAD reaches.
+#[test]
+fn an_indexed_page_reports_the_total_commit_count() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let ws = workspace(repo_dir.path(), cache_dir.path());
+    drop(ws);
+    let history_dir = tempfile::tempdir().unwrap();
+    let index = crate::git_history::GitHistoryIndex::open(history_dir.path()).expect("open the index");
+    let repo = crate::git::Repo::discover(repo_dir.path()).expect("repo");
+    crate::git_history::builder::sync(&index, &repo, history_dir.path()).expect("build the index");
+    let ws = workspace_with_index(repo_dir.path(), cache_dir.path(), Some(Arc::new(index)));
+
+    let page = by_path(&ws, "git_by_path", params(Some(WINDOW), None, None)).expect("page");
+    assert_eq!(page.response.total_commits, Some(COMMITS as u64 + 1));
+    assert_eq!(page.response.commits_reached, 2);
 }

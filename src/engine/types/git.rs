@@ -36,7 +36,7 @@ pub struct GitLogParams {
     /// Show this one commit in full; combines with nothing.
     #[serde(default)]
     pub rev: Option<String>,
-    /// Default 20.
+    /// Default 20, max 100 (500 for a directory `path`).
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.
@@ -69,7 +69,7 @@ pub struct GitBlameParams {
     /// Revision to blame at (default HEAD).
     #[serde(default)]
     pub rev: Option<String>,
-    /// Merged hunks; default 100.
+    /// Merged hunks; default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.
@@ -716,6 +716,13 @@ pub(crate) struct BlameSymbolResponse {
 pub(crate) struct FindCommitsByPathResponse {
     /// Commits this page inspected, newest first from where its cursor starts.
     pub window_inspected: u32,
+    /// Where the next page starts: how many commits, newest first, this page and the ones before it
+    /// have gone through. A page that leaves matches out stops there, short of its window.
+    pub commits_reached: u64,
+    /// The commits in the whole history, so `commits_reached` reads as progress; absent when the
+    /// page was walked live, which has no count without walking the whole history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_commits: Option<u64>,
     /// Why `commits` is empty so far: no commit inspected up to this page touches the directory
     /// and it is not on disk either. The last page is then an error instead.
     #[serde(skip_serializing_if = "Option::is_none")]

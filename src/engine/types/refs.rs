@@ -36,7 +36,7 @@ pub struct CodeRefsParams {
     #[serde(default, rename = "match")]
     #[schemars(extend("enum" = ["exact", "substring"]))]
     pub match_mode: Option<String>,
-    /// Default 100.
+    /// Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.
