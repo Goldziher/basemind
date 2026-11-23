@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A package `__init__.py` with `from . import a, b` is no longer a one-file import cycle: the names resolve to the submodules, and a file is never its own import target (#476).
+### Fixed
+
+- A copy of the binary not named `basemind` no longer makes the MCP connect retry for about a minute.
+  The refusal to spawn a daemon from it ("not a `basemind` binary ... Set
+  `BASEMIND_DAEMON_BINARY`") is now fatal to the relay and is reported at once (#437).
 
 ## [0.34.0] - 2026-11-22
 
