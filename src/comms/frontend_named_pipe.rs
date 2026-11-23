@@ -159,8 +159,8 @@ mod imp {
     }
 
     /// The named-pipe front-end: owns the first server instance (created as the singleton lock)
-    /// and runs the connect/accept loop, minting the next instance before serving each client so
-    /// no client is refused during the hand-off.
+    /// and runs the connect/accept loop, holding a spare listening instance so no client is
+    /// refused while the replacement is created.
     pub struct NamedPipeFrontend {
         first: NamedPipeServer,
         pipe_name: OsString,
@@ -185,6 +185,13 @@ mod imp {
             let slots = accept_gate::connection_slots();
             let mut backoff = AcceptBackoff::new("pipe");
             let mut server = self.first;
+            // A created instance listens at once, so a spare minted ahead of time keeps the pipe
+            // connectable while the next spare is created; a starved daemon otherwise leaves a gap
+            // where clients get `ERROR_PIPE_BUSY` for as long as the create is delayed.
+            let Some(mut spare) = next_instance(&self.pipe_name, &mut backoff, &mut shutdown).await else {
+                broker.drain_links(crate::comms::daemon::DRAIN_GRACE).await;
+                return Ok(());
+            };
             loop {
                 let slot = tokio::select! {
                     slot = accept_gate::next_slot(&slots) => slot,
@@ -200,19 +207,20 @@ mod imp {
                         if let Err(error) = conn {
                             drop(slot);
                             backoff.failed(&error).await;
+                            server = spare;
                             let Some(next) = next_instance(&self.pipe_name, &mut backoff, &mut shutdown).await else {
                                 break;
                             };
-                            server = next;
+                            spare = next;
                             continue;
                         }
                         backoff.succeeded();
                         let connected = server;
-                        // A failed create used to end the front-end through `?`. ~keep
+                        server = spare;
                         let Some(next) = next_instance(&self.pipe_name, &mut backoff, &mut shutdown).await else {
                             break;
                         };
-                        server = next;
+                        spare = next;
                         let guard = broker.register_link();
                         let broker = broker.clone();
                         // ~keep Route a RELAY (rmcp) connection apart from a legacy comms link. Windows
