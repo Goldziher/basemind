@@ -16,7 +16,8 @@ use crate::engine::files::{IndexedFiles, Sweep};
 use crate::engine::filters::{Filters, parse_path};
 use crate::engine::grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
 use crate::engine::types::grep::{
-    CodeGrepParams, GREP_CONTEXT_MAX, GrepHit, GrepHits, GrepTruncation, WorkspaceGrepParams, WorkspaceGrepResponse,
+    CodeGrepParams, GREP_CONTEXT_MAX, GrepHit, GrepHits, GrepTruncation, SkippedBreakdown, WorkspaceGrepParams,
+    WorkspaceGrepResponse,
 };
 use crate::engine::workspace::Workspace;
 use crate::index::grep_bloom::GrepEntry;
@@ -114,6 +115,7 @@ fn workspace_grep(
                     stale: Vec::new(),
                     next_cursor: None,
                     skipped_files: 0,
+                    skipped_reasons: SkippedBreakdown::default(),
                     cursor_invalidated: true,
                     scope_files: None,
                     notice: ws.lifecycle_notice(),
@@ -223,7 +225,7 @@ fn workspace_grep(
     }
     let Counted {
         counts,
-        skipped: skipped_files,
+        skipped: skipped_reasons,
         stopped_early,
     } = counted;
 
@@ -272,7 +274,8 @@ fn workspace_grep(
         stale: hits.stale_files(),
         hits,
         next_cursor,
-        skipped_files,
+        skipped_files: skipped_reasons.total(),
+        skipped_reasons,
         cursor_invalidated: false,
         scope_files: None,
         notice: ws.lifecycle_notice(),
@@ -324,8 +327,8 @@ const COUNT_STEP_FILES: usize = 256;
 struct Counted {
     /// The match counts of the leading files of the window it reached, in window order.
     counts: Vec<u32>,
-    /// Files among them that could not be searched.
-    skipped: usize,
+    /// Files among them that could not be searched, by why.
+    skipped: SkippedBreakdown,
     /// It stopped before the end of the window because the page was full.
     stopped_early: bool,
 }
@@ -337,14 +340,14 @@ struct Counted {
 /// hits gets a cursor only when a further match is known. `skip_hits` applies to the first step.
 fn count_until_page_full(
     files: usize,
-    count_step: &dyn Fn(std::ops::Range<usize>, u32) -> (Vec<u32>, usize),
+    count_step: &dyn Fn(std::ops::Range<usize>, u32) -> (Vec<u32>, SkippedBreakdown),
     skip_hits: u32,
     limit: usize,
     cancelled: &dyn Fn() -> bool,
 ) -> Counted {
     let mut counted = Counted {
         counts: Vec::with_capacity(files.min(COUNT_STEP_FILES)),
-        skipped: 0,
+        skipped: SkippedBreakdown::default(),
         stopped_early: false,
     };
     let mut matches: u64 = 0;
@@ -371,8 +374,8 @@ fn count_until_page_full(
 /// `skip_hits` discounts the matches the caller already consumed inside the file it resumed in, so
 /// the totals mean "matches remaining from the cursor position", not "matches in the repo".
 ///
-/// Also returns how many files could not be searched: gone, leading out of the repository, or
-/// opened and found unreadable. Once `cancelled` says so, no further file is read.
+/// Also returns the files that could not be searched, by why: gone or leading out of the
+/// repository, grown past the size bound, or opened and found unreadable. Once `cancelled` says so, no further file is read.
 fn count_all(
     sweep: &Sweep<'_>,
     scanned: &[&RelPath],
@@ -381,21 +384,27 @@ fn count_all(
     literal: Option<&Finder<'static>>,
     skip_hits: u32,
     cancelled: &(dyn Fn() -> bool + Sync),
-) -> (Vec<u32>, usize) {
-    let searched: Vec<Option<u32>> = scanned
+) -> (Vec<u32>, SkippedBreakdown) {
+    let searched: Vec<Result<u32, SkipReason>> = scanned
         .par_iter()
         .enumerate()
         .map(|(i, path)| {
             if cancelled() || skip.is_some_and(|s| s.get(i).copied().unwrap_or(false)) {
-                return Some(0);
+                return Ok(0);
             }
             with_indexed_bytes(sweep.path(path), sweep.max_file_bytes(), |bytes| {
                 count_matches(bytes, re, literal)
             })
         })
         .collect();
-    let skipped = searched.iter().filter(|count| count.is_none()).count();
-    let mut counts: Vec<u32> = searched.into_iter().map(Option::unwrap_or_default).collect();
+    let mut skipped = SkippedBreakdown::default();
+    let mut counts = Vec::with_capacity(searched.len());
+    for outcome in searched {
+        counts.push(outcome.unwrap_or_else(|reason| {
+            reason.tally(&mut skipped);
+            0
+        }));
+    }
     if let Some(first) = counts.first_mut() {
         *first = first.saturating_sub(skip_hits);
     }
@@ -413,14 +422,46 @@ thread_local! {
     static READ_BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Why an indexed file could not be searched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkipReason {
+    /// Gone since the scan, or now leading out of the repository.
+    Unavailable,
+    /// Grown past `scan.max_file_bytes`.
+    TooLarge,
+    /// Present, but opening or reading it failed.
+    Unreadable,
+}
+
+impl SkipReason {
+    fn of(error: &std::io::Error) -> Self {
+        match error.kind() {
+            std::io::ErrorKind::NotFound => Self::Unavailable,
+            _ => Self::Unreadable,
+        }
+    }
+
+    fn tally(self, into: &mut SkippedBreakdown) {
+        match self {
+            Self::Unavailable => into.unavailable += 1,
+            Self::TooLarge => into.too_large += 1,
+            Self::Unreadable => into.unreadable += 1,
+        }
+    }
+}
+
 /// Read an indexed file's raw bytes into the calling thread's reusable buffer and hand them to `f`.
 /// Unreadable files (deleted since the scan, permission denied), a file that now leads out of
 /// the repository (`file` is `None`) and one grown past `max_bytes` (`scan.max_file_bytes`, which
-/// no indexed file exceeded when it was scanned) yield `None` and are skipped rather than failing
-/// the whole grep. Reading the bytes as text is the closure's concern, so a file that cannot match
-/// is rejected on raw bytes without paying for UTF-8 validation.
-fn with_indexed_bytes<R>(file: Option<std::path::PathBuf>, max_bytes: u64, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
-    let abs = file?;
+/// no indexed file exceeded when it was scanned) yield the [`SkipReason`] and are skipped rather
+/// than failing the whole grep. Reading the bytes as text is the closure's concern, so a file that
+/// cannot match is rejected on raw bytes without paying for UTF-8 validation.
+fn with_indexed_bytes<R>(
+    file: Option<std::path::PathBuf>,
+    max_bytes: u64,
+    f: impl FnOnce(&[u8]) -> R,
+) -> Result<R, SkipReason> {
+    let abs = file.ok_or(SkipReason::Unavailable)?;
     let read = |buf: &mut Vec<u8>| -> std::io::Result<bool> {
         let file = std::fs::File::open(&abs)?;
         buf.clear();
@@ -437,11 +478,11 @@ fn with_indexed_bytes<R>(file: Option<std::path::PathBuf>, max_bytes: u64, f: im
         let mut buf = cell.borrow_mut();
         let outcome = read(&mut buf);
         let result = match outcome {
-            Ok(true) => Some(f(&buf)),
-            Ok(false) => None,
+            Ok(true) => Ok(f(&buf)),
+            Ok(false) => Err(SkipReason::TooLarge),
             Err(e) => {
                 tracing::debug!(path = %abs.display(), error = %e, "workspace_grep: skipping unreadable file");
-                None
+                Err(SkipReason::of(&e))
             }
         };
         if buf.capacity() > RETAINED_BUF_CAP {

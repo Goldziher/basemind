@@ -522,7 +522,7 @@ fn the_read_buffer_does_not_retain_a_giant_files_capacity() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("big.txt"), vec![b'a'; RETAINED_BUF_CAP * 3]).expect("write");
     let len = with_indexed_bytes(Some(dir.path().join("big.txt")), u64::MAX, <[u8]>::len);
-    assert_eq!(len, Some(RETAINED_BUF_CAP * 3));
+    assert_eq!(len, Ok(RETAINED_BUF_CAP * 3));
     READ_BUF.with(|b| assert!(b.borrow().capacity() <= RETAINED_BUF_CAP, "scratch stays bounded"));
 }
 
@@ -531,8 +531,60 @@ fn a_file_over_the_size_bound_is_not_read() {
     let dir = tempfile::tempdir().expect("tempdir");
     let file = dir.path().join("f.txt");
     std::fs::write(&file, b"12345").expect("write");
-    assert_eq!(with_indexed_bytes(Some(file.clone()), 5, <[u8]>::len), Some(5));
-    assert_eq!(with_indexed_bytes(Some(file), 4, <[u8]>::len), None);
+    assert_eq!(with_indexed_bytes(Some(file.clone()), 5, <[u8]>::len), Ok(5));
+    assert_eq!(
+        with_indexed_bytes(Some(file), 4, <[u8]>::len),
+        Err(SkipReason::TooLarge)
+    );
+}
+
+#[test]
+fn a_file_that_cannot_be_read_says_why() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_eq!(
+        with_indexed_bytes(Some(dir.path().join("gone.txt")), u64::MAX, <[u8]>::len),
+        Err(SkipReason::Unavailable),
+        "deleted since the scan"
+    );
+    assert_eq!(
+        with_indexed_bytes(None, u64::MAX, <[u8]>::len),
+        Err(SkipReason::Unavailable),
+        "leads out of the repository"
+    );
+    assert_eq!(
+        with_indexed_bytes(Some(dir.path().to_path_buf()), u64::MAX, <[u8]>::len),
+        Err(SkipReason::Unreadable),
+        "a directory opens but cannot be read as a file"
+    );
+}
+
+#[test]
+fn a_sweep_tallies_each_skipped_file_under_its_reason() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("ok.txt"), "needle\n").expect("write");
+    std::fs::write(dir.path().join("big.txt"), "needle ".repeat(64)).expect("write");
+    let paths = [
+        RelPath::from("ok.txt"),
+        RelPath::from("big.txt"),
+        RelPath::from("gone.txt"),
+    ];
+    let refs: Vec<&RelPath> = paths.iter().collect();
+    let re = LineRegex::new(Regex::new("needle").expect("regex"));
+    let mut files = IndexedFiles::contained(dir.path());
+    files.max_file_bytes = 16;
+    let sweep = Sweep::new(files);
+
+    let (counts, skipped) = count_all(&sweep, &refs, None, &re, None, 0, &|| false);
+    assert_eq!(counts, vec![1, 0, 0]);
+    assert_eq!(
+        skipped,
+        SkippedBreakdown {
+            unavailable: 1,
+            too_large: 1,
+            unreadable: 0
+        }
+    );
+    assert_eq!(skipped.total(), 2);
 }
 
 /// The rows `code_grep` writes for every hit of `pattern` in `source` with `context` lines.
@@ -734,7 +786,7 @@ fn a_cancelled_sweep_reads_no_file() {
     assert!(live.iter().any(|&count| count > 0), "the corpus holds the needle");
     let (cancelled, skipped) = count_all(&sweep, &refs, None, &re, None, 0, &|| true);
     assert!(cancelled.iter().all(|&count| count == 0), "{cancelled:?}");
-    assert_eq!(skipped, 0);
+    assert_eq!(skipped, SkippedBreakdown::default());
 }
 
 /// Write `files` files under `dir`, the first holding `early` matches of `needle` and every other
@@ -786,7 +838,7 @@ fn the_sweep_stops_only_once_more_matches_than_the_limit_are_known() {
     let step = |range: std::ops::Range<usize>, skip_hits: u32| {
         steps.borrow_mut().push((range.clone(), skip_hits));
         let counts: Vec<u32> = range.map(|at| u32::from(at % COUNT_STEP_FILES == 0) * 10).collect();
-        (counts, 0)
+        (counts, SkippedBreakdown::default())
     };
 
     let counted = count_until_page_full(files, &step, 3, 10, &|| false);
