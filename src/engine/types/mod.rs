@@ -103,6 +103,7 @@ pub(crate) fn is_zero(count: &usize) -> bool {
 }
 
 /// `serde(default)` for a flag that is on unless the caller turns it off.
+#[cfg(feature = "memory")]
 pub(crate) fn default_true() -> bool {
     true
 }

@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use basemind::git::{ChangeKind, CommitInfo, Repo};
+use basemind::git::Repo;
 use basemind::git_history::GitHistoryIndex;
 use basemind::git_history::builder::{self, RebuildOutcome};
 use basemind::git_history::fts::FtsScope;

@@ -181,8 +181,8 @@ pub(crate) fn read_index_calls() -> usize {
     READ_INDEX_CALLS.with(std::cell::Cell::get)
 }
 
-/// Run between a read's apply of the delta log and its settle check, standing in for a compaction
-/// that lands there.
+// Run between a read's apply of the delta log and its settle check, standing in for a compaction
+// that lands there.
 #[cfg(test)]
 thread_local! {
     static BEFORE_SETTLE_CHECK: std::cell::Cell<Option<fn(&Path)>> = const { std::cell::Cell::new(None) };

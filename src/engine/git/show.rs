@@ -71,6 +71,9 @@ pub(super) fn cap_files(files: Vec<CommitFileView>) -> (Vec<CommitFileView>, usi
     (kept.into_iter().map(|(entry, _)| entry).collect(), omitted)
 }
 
+/// A commit's files held to the per-commit cap, with the count the cap left out.
+type CappedFiles = (Vec<CommitFileView>, usize);
+
 /// A commit list whose rows are written without their files, which go to the response's top-level
 /// `files: {"<sha>": {"<path>": "<change>"}}` when the commits carry them: keep the leading commits
 /// whose row and files fit `max_tokens` (default [`GIT_BUDGET_DEFAULT_TOKENS`]), and move each kept
@@ -82,7 +85,7 @@ pub(super) fn budget_commits_with_files(
 ) -> (Vec<CommitView>, FilesByCommit, FilesMore, bool) {
     // Each list is capped before the budget is spent: a commit changing thousands of files is
     // charged for the entries the response carries, not for every path.
-    let rows: Vec<(CommitView, Option<(Vec<CommitFileView>, usize)>)> = commits
+    let rows: Vec<(CommitView, Option<CappedFiles>)> = commits
         .into_iter()
         .map(|mut commit| {
             let capped = commit.files.take().map(cap_files);
