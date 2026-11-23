@@ -3,17 +3,18 @@
 //! under the line cap; every name is re-exported there.
 
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use serde::Deserialize;
 
+use super::file_map_log::BaseStamp;
 use super::{INDEX_FILE, Index, StoreError, VIEW_WORKING, VIEWS_DIR, ensure_dir};
 use crate::extract::SCHEMA_VER;
 
 /// Write `index` as the view's file map: a temporary file, fsynced, renamed over the old one, and
-/// the rename made durable. A failure leaves the previous file map in place.
-pub(super) fn write_file_map(view_dir: &Path, index: &Index) -> Result<(), StoreError> {
+/// the rename made durable. A failure leaves the previous file map in place. Returns the bytes written.
+pub(super) fn write_file_map(view_dir: &Path, index: &Index) -> Result<u64, StoreError> {
     let final_path = view_dir.join(INDEX_FILE);
     let tmp_path = view_dir.join(format!("{INDEX_FILE}.tmp"));
     let bytes = rmp_serde::to_vec_named(index)?;
@@ -45,7 +46,7 @@ pub(super) fn write_file_map(view_dir: &Path, index: &Index) -> Result<(), Store
     if let Err(error) = crate::store_layout::sync_directory(view_dir) {
         tracing::warn!(%error, "could not fsync the view directory after writing the file map");
     }
-    Ok(())
+    Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
 }
 
 /// How many set-aside file maps a view keeps whatever their age: the newest ones, in case one is
@@ -63,6 +64,7 @@ pub(super) fn set_aside_unreadable_map(view_dir: &Path) -> Result<(), StoreError
     let secs = unix_secs_now();
     let to = view_dir.join(format!("{INDEX_FILE}.unreadable-{secs}"));
     std::fs::rename(&from, &to).map_err(|source| StoreError::Io { path: from, source })?;
+    super::file_map_log::remove_log(view_dir);
     tracing::warn!(path = %to.display(), "file map unreadable; set aside, and the view is rebuilt");
     reap_set_aside_maps(view_dir, secs, KEEP_SET_ASIDE, SET_ASIDE_HOLD_SECS);
     Ok(())
@@ -110,6 +112,7 @@ pub(crate) fn wipe_view(view_dir: &Path) -> Result<(), StoreError> {
             source,
         })?;
     }
+    super::file_map_log::remove_log(view_dir);
     Ok(())
 }
 
@@ -164,15 +167,52 @@ pub(crate) fn written_by_newer(view_dir: &Path) -> bool {
     }
 }
 
+/// Reads of a map replaced by a compaction while it was read are retried this often.
+const READ_ATTEMPTS: u32 = 3;
+
+#[cfg(test)]
+thread_local! {
+    static READ_INDEX_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread called [`read_index`] since it started.
+#[cfg(test)]
+pub(crate) fn read_index_calls() -> usize {
+    READ_INDEX_CALLS.with(std::cell::Cell::get)
+}
+
+/// The view's file map: the base file with its delta log applied (see [`super::file_map_log`]).
 pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
+    #[cfg(test)]
+    READ_INDEX_CALLS.with(|calls| calls.set(calls.get() + 1));
     let path = view_dir.join(INDEX_FILE);
-    if !path.exists() {
-        return Ok(None);
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let (mut index, stamp) = read_base(&path)?;
+        super::file_map_log::apply_log(view_dir, stamp, &mut index)?;
+        // A compaction between the read and now replaced the base the log was applied to. ~keep
+        let settled = BaseStamp::of_path(&path) == Some(stamp);
+        if settled || attempt >= READ_ATTEMPTS {
+            return Ok(Some(index));
+        }
     }
-    let bytes = std::fs::read(&path).map_err(|source| StoreError::Io {
-        path: path.clone(),
+}
+
+/// Decode the base file at `path`, with the stamp of the very file read.
+fn read_base(path: &Path) -> Result<(Index, BaseStamp), StoreError> {
+    let io_error = |source| StoreError::Io {
+        path: path.to_path_buf(),
         source,
-    })?;
+    };
+    let mut file = std::fs::File::open(path).map_err(io_error)?;
+    let meta = file.metadata().map_err(io_error)?;
+    let stamp = BaseStamp::of(&meta);
+    let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
+    file.read_to_end(&mut bytes).map_err(io_error)?;
     // The version is read on its own first: a newer map need not decode as this one, and a decode
     // failure must not read as a damaged map that may be removed. Only a map whose version reads as
     // this binary's is rebuildable when the rest does not decode. ~keep
@@ -181,7 +221,9 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
         blob_layout,
     }) = rmp_serde::from_slice(&bytes)
     else {
-        return Err(StoreError::UnreadableFileMap { path });
+        return Err(StoreError::UnreadableFileMap {
+            path: path.to_path_buf(),
+        });
     };
     check_schema(schema_ver)?;
     if blob_layout > crate::store_layout::BLOB_LAYOUT {
@@ -204,7 +246,7 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
             expected: crate::store_layout::BLOB_LAYOUT,
         });
     }
-    Ok(Some(index))
+    Ok((index, stamp))
 }
 
 /// What a writer open ([`super::Store::open_with_holder`]) does with a view's file map. The one

@@ -305,7 +305,9 @@ Key invariants:
 - **Atomic upsert** — `IndexWriter::upsert_file` is read-before-write: read
   existing primary entries first to derive secondary-index keys for deletion,
   then stage all deletes + inserts in one batch. No torn state on re-scan.
-- **Code-map persist barrier** — `Store::flush` (writing `index.msgpack`) runs
+- **Code-map persist barrier** — `Store::flush` (writing `index.msgpack`; an
+  incremental pass appends only its changed entries to `index.delta`, which a
+  reader replays over the base it is stamped to) runs
   immediately after extraction and the Fjall writes are done, BEFORE any optional
   lane. Everything after the barrier — resolved-reference stitching, LanceDB
   document/code embedding batches, BM25 corpus stats — is enrichment: each lane

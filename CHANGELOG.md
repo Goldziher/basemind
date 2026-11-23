@@ -59,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The working-tree status is cached per worktree and served until the index, `HEAD` or a watcher batch changes it (or five seconds pass), so repeated `changed`-scoped and `git_diff` status calls on a large checkout run one status (#284).
+### Changed
+
+- An incremental pass appends the file-map entries it changed to a delta log (`index.delta`) instead of rewriting `index.msgpack`; a full write happens on the first flush, on a full scan and once the log outgrows a quarter of the base. `ScanReport::file_map_bytes_written` reports the bytes (#278).
+
+### Fixed
+
+- A watcher batch that retires a content no longer decodes every sibling worktree's file map: each view's holds are cached until that view writes again (#277).
+- A file map whose delta log exists but cannot be read is an error instead of the stale base, and the holds cache is invalidated when a log is replaced by one of the same length (#277, #278).
 
 ## [0.34.0] - 2026-11-22
 
