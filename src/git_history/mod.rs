@@ -264,6 +264,14 @@ pub enum GitHistoryError {
          set BASEMIND_GIT_DISCOVER_PARENTS=1 to index the ancestor repository's history anyway."
     )]
     ForeignHistory { root: PathBuf, workdir: PathBuf },
+    /// A forwarded read named a head the index cannot answer for in the live walk's order: the
+    /// index was never built, the head is no indexed tip, or it is a tip whose order is unproven
+    /// (see [`GitHistoryIndex::at`]). `None` is the latest indexed tip. The caller live-walks.
+    #[error(
+        "the git-history index has no ordered view of {}; read the history by the live walk",
+        .head.as_deref().unwrap_or("the latest indexed tip")
+    )]
+    NoOrderedView { head: Option<String> },
 }
 
 /// Name prefix of a git-history directory set aside by [`discard_dir`] and not yet deleted.
