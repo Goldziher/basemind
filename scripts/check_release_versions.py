@@ -70,6 +70,7 @@ SURFACES: list[tuple[str, Callable[[Path], str | None], bool]] = [
     ("plugin/kimi.plugin.json", _json_version, False),
     ("plugin/.claude-plugin/plugin.json", _json_version, False),
     ("plugin/.codex-plugin/plugin.json", _json_version, False),
+    ("plugin/.cursor-plugin/plugin.json", _json_version, False),
     ("plugin/.factory-plugin/plugin.json", _json_version, False),
     ("plugin/.hermes/package/pyproject.toml", TOML_VERSION, True),
     ("plugin/.hermes/package/src/basemind_hermes_plugin/__init__.py", PY_VERSION, False),

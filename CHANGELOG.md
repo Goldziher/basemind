@@ -177,6 +177,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved callers. An index stitched by the other resolver is re-stitched on its next scan (#455).
 - The value-gate corpus covers Python, TypeScript, Go and Java: `click`, `got`, `cobra`, `gson` and the polyglot `restate-examples` are pinned beside basemind and tokio, `gen_tasks.sh` emits each language's tasks (`gen_structural.py` adds TypeScript, Go and Java `symbols`, `references` and `dependents` gold, and `gate.py` requires them per language; TypeScript `impact` / `cycles` gold now follows barrels and `index` files), and `gate.py` reports recall per language (#313).
 - The hardening workflow soaks `llvm-project`, `kibana`, `tensorflow` and `terraform-provider-aws` at pinned commits with 20 worktrees and 30 sessions, judging resident memory, per-save cost, bytes per added worktree, lock waits, answer staleness, the retire sweep and `index.msgpack` writes (#211).
+### Fixed
+
+- The Cursor plugin is generated again: the plugin config lists the `cursor` runtime, so `plugin/.cursor-plugin/` exists and the publish step packages the Cursor team-marketplace index (`cursor-marketplace: "true"`). 0.34.0 omitted the runtime and the package step failed with "plugin has no .cursor-plugin/plugin.json" (#448).
 
 ## [0.34.0] - 2026-11-22
 

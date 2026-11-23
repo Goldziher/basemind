@@ -32,7 +32,7 @@ The tools are always loaded: call them directly. Drop to raw shell only when no 
 
 ## The discipline
 
-- **`code_outline` before you open a file.** A 1000-line file becomes a 30-line table of contents.
+- **`code_outline` before you open a file.** A 1000-line file becomes a 30-line outline.
   Then `code_read` the one symbol or line span you need, not the file.
 - **`code_symbols` instead of `grep` for a definition.** It matches indexed symbol names and skips
   the comment, string and test-name noise.

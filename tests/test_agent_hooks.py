@@ -487,9 +487,9 @@ class HookRootTests(unittest.TestCase):
             with self.subTest(manifest=manifest):
                 self.assertNotIn(":-.}", (ROOT / manifest).read_text())
 
-    def test_one_cursor_manifest_ships(self) -> None:
-        self.assertEqual(self.tracked("*.cursor-plugin/plugin.json"), [".cursor-plugin/plugin.json"])
-        self.assertEqual(self.tracked("*.cursor-plugin/hooks/hooks.json"), [".cursor-plugin/hooks/hooks.json"])
+    def test_the_repository_and_the_plugin_each_ship_a_cursor_manifest(self) -> None:
+        expected = [".cursor-plugin/plugin.json", "plugin/.cursor-plugin/plugin.json"]
+        self.assertEqual(self.tracked("*.cursor-plugin/plugin.json"), expected)
 
     def test_the_hosts_plugin_root_runs_the_plugins_script(self) -> None:
         hosts = {
