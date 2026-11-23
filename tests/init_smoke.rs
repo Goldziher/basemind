@@ -425,3 +425,42 @@ fn without_a_terminal_and_without_yes_init_writes_nothing() {
         assert!(root.join(file).is_file(), "--yes writes {file}");
     }
 }
+
+#[test]
+fn monorepo_layout_is_detected_applied_and_estimated() {
+    let dir = tmpdir();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".git")).expect("git dir");
+    let touch = |rel: &str| {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(path, "x").expect("write");
+    };
+    touch("WORKSPACE");
+    touch("infra/main.tf");
+    touch("infra/prod/terraform.tfstate");
+    for i in 0..10 {
+        touch(&format!("build/scripts/s{i}.sh"));
+    }
+
+    let out = run_init(root, &["--yes", "--no-rules"]);
+    assert!(
+        out.contains("monorepo layout: Bazel, Terraform (1 .tf files)"),
+        "got:\n{out}"
+    );
+    assert!(out.contains("expected index: about"), "got:\n{out}");
+
+    let config = std::fs::read_to_string(root.join("basemind.toml")).expect("read config");
+    let parsed: toml::Table = toml::from_str(&config).expect("config is valid toml");
+    let scan = parsed["scan"].as_table().expect("[scan] table");
+    assert_eq!(
+        scan["floor_allow"].as_array().expect("floor_allow").as_slice(),
+        [toml::Value::from("build")]
+    );
+    let exclude = scan["exclude"].as_array().expect("exclude");
+    assert!(exclude.contains(&toml::Value::from("**/*.tfstate")), "got:\n{config}");
+    assert!(
+        exclude.contains(&toml::Value::from("**/target/**")),
+        "defaults are kept: {config}"
+    );
+}

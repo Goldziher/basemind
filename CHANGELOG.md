@@ -87,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `basemind init` detects the document scope: it counts document-like files per extension, writes `[documents] include` and `exclude` as plain glob lists, and asks keep, exclude or skip for scratch-like directories (`--yes` excludes only the large ones) (#458).
 - `[documents.ocr] enabled`, off by default (#458).
 - `[scan] list_only`: lockfiles (by name, so `pnpm-lock.yaml` and `.terraform.lock.hcl` too), archives, packet captures, fonts, columnar data and other binaries get a stat-only file-map entry (path, size, mtime, kind) and are never opened. `find_files` lists them with `indexed: false`, a `kind` and `bytes`, takes `indexed: true|false|any`, and `index_status` counts them per kind in `listed`; no search tool returns them. Entries take `!pattern` re-includes (#493).
+- `basemind init` detects a monorepo layout (Bazel, Terraform, large data directories, tracked directories the exclude floor drops such as a committed `build/`), proposes `[scan] floor_allow`, extra `[scan] exclude` globs and `[documents] embed = false` where documents dominate, and prints the expected file count and a rough scan time before writing `basemind.toml` (#213).
 
 ### Changed
 

@@ -15,7 +15,7 @@ use crate::config::default_document_exclude;
 use crate::config::rules::{RuleSet, compile_rules};
 
 /// Extensions init counts: documentation, Office, markup, data and raster images.
-const COUNTED_EXTENSIONS: &[&str] = &[
+pub(crate) const COUNTED_EXTENSIONS: &[&str] = &[
     "md", "mdx", "rst", "adoc", "txt", "ipynb", "pdf", "doc", "docx", "pptx", "xlsx", "odt", "html", "htm", "csv",
     "tsv", "xml", "json", "yaml", "yml", "toml", "png", "jpg", "jpeg", "gif", "webp", "tiff", "bmp",
 ];
@@ -75,7 +75,7 @@ impl ScratchDir {
 
 /// `dir` as a literal glob: metacharacters become single-character classes, and a leading `!` is
 /// shielded with `./` (stripped when the glob expands) so the entry is not read as a re-include.
-fn escape_glob(dir: &str) -> String {
+pub(crate) fn escape_glob(dir: &str) -> String {
     let mut out = String::with_capacity(dir.len() + 2);
     if dir.starts_with('!') {
         out.push_str("./");
@@ -102,7 +102,7 @@ pub(crate) struct ScopeReport {
 }
 
 impl ScopeReport {
-    fn totals(&self) -> ExtCount {
+    pub(crate) fn totals(&self) -> ExtCount {
         self.by_ext.values().fold(ExtCount::default(), |acc, c| ExtCount {
             total: acc.total + c.total,
             kept: acc.kept + c.kept,
@@ -241,7 +241,7 @@ fn ask(describe: &str, input: &mut dyn BufRead, output: &mut dyn Write) -> Resul
     })
 }
 
-fn human_bytes(bytes: u64) -> String {
+pub(crate) fn human_bytes(bytes: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = KIB * 1024;
     if bytes >= MIB {

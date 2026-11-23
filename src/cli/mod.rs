@@ -40,6 +40,7 @@ pub mod hook;
 pub mod init;
 pub mod init_capability_prompt;
 pub mod init_gitignore;
+pub mod init_monorepo;
 pub mod init_rules;
 pub mod init_scope;
 pub mod init_settings;

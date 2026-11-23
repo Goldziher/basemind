@@ -8,6 +8,22 @@ capabilities to advertise (`--with`, `--without`, or every one with `--yes`), an
 block is delimited and replaced in place. `--print` shows what it would change and writes nothing;
 `--rules-target` picks the file and `--no-rules` skips it.
 
+On a large monorepo init also inspects the tree before it writes `basemind.toml` and prints what it
+found, the settings it applied and the expected file count with a rough first-scan time. It
+detects:
+
+- Bazel (`WORKSPACE`, `MODULE.bazel`, `BUILD` files) and Terraform (`*.tf`); Terraform state and
+  plan files, Terragrunt caches and `MODULE.bazel.lock` are added to `[scan] exclude` when present.
+- Data directories: a directory of at least 50 MB in which 95% of the files are data (csv, json,
+  parquet, ...) goes into `[scan] exclude`.
+- Tracked directories the exclude floor drops: a committed `build/`, `out/` (applied under `--yes`
+  with 10 or more files) or `vendor/` (suggested only) goes into `[scan] floor_allow`.
+- Document-heavy trees: with 2000 or more documents in scope, or 500 or more making up over half
+  the tree, it writes `[documents] embed = false`; keyword search over documents still works.
+
+Interactively each change is asked about; with `--yes` only the confident ones are written and the
+rest stay as commented suggestions in the `[scan]` section; without a terminal nothing is applied.
+
 ## Rolling out to a team
 
 A repository checks in what every teammate shares; each teammate's machine keeps the rest.

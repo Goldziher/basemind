@@ -188,6 +188,17 @@ fn repo_credentials_granted() -> bool {
 /// own state would corrupt the index.
 const FLOOR_PROTECTED: &[&str] = &["**/.git/**", "**/.basemind/**"];
 
+/// Directory names the always-on floor drops (`build`, `vendor`, `bazel-*`, ...): the `**/name/**`
+/// entries, minus the protected ones. `basemind init` uses them to tell a tracked directory the floor
+/// would hide from one that is simply source.
+pub(crate) fn floor_dir_names() -> impl Iterator<Item = &'static str> {
+    FLOOR_EXCLUDES
+        .iter()
+        .copied()
+        .filter(|p| !FLOOR_PROTECTED.contains(p) && p.starts_with("**/") && p.ends_with("/**"))
+        .map(floor_name)
+}
+
 /// The directory / file name a floor pattern targets: `**/build/**` -> `build`, `**/*.pyc` -> `*.pyc`.
 fn floor_name(pattern: &str) -> &str {
     let p = pattern.strip_prefix("**/").unwrap_or(pattern);
