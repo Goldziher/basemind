@@ -1,10 +1,11 @@
 //! Upgrade path: an index built by an OLDER released binary, opened by this build against the SAME
 //! data home.
 //!
-//! The old binaries come from `BASEMIND_UPGRADE_FROM_BIN` (a path list: `:` separated on Unix, `;` on
-//! Windows) or from the plugin launcher's per-version cache
+//! The old binaries come from `BASEMIND_UPGRADE_FROM_BIN` (a path list, `:` separated) or from the plugin launcher's per-version cache
 //! (`$XDG_CACHE_HOME|~/.cache/basemind/bin/<version>/basemind`, written by launchers up to 0.33;
-//! later launchers install under `versions/`, which holds no release this test drives). CI downloads
+//! later launchers install under `versions/`, which holds no release this test drives). It is Unix-only:
+//! `scripts/fetch-release-binaries.sh` fetches no Windows archive, so a Windows leg could never supply a
+//! binary. CI downloads
 //! checksum-verified release binaries into the variable (`scripts/fetch-release-binaries.sh`). With
 //! no binary the test
 //! checks nothing: locally it says so in a `SKIP:` line on stderr that the harness does not capture;
@@ -34,7 +35,7 @@
 //! that bumps the tree to the next minor first) requires every release upgraded from to be of an
 //! older minor.
 
-#![cfg(feature = "documents")]
+#![cfg(all(feature = "documents", unix))]
 
 use std::fs;
 use std::io::Write;

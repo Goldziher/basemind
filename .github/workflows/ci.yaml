@@ -186,7 +186,7 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.features }}
           cache-on-failure: true
-          cache-directories: ${{ (matrix.features == 'full' || matrix.features == 'comms documents' || matrix.features == 'comms documents code-intel memory') && (runner.os == 'macOS' && '~/Library/Caches/ort.pyke.io' || '~/.cache/ort.pyke.io') || '' }}
+          cache-directories: ${{ (matrix.features == 'full' || matrix.features == 'comms documents' || matrix.features == 'comms documents code-intel memory') && (runner.os == 'macOS' && '~/Library/Caches/ort.pyke.io' || runner.os == 'Windows' && '~\AppData\Local\ort.pyke.io' || '~/.cache/ort.pyke.io') || '' }}
 
       # ~keep Grammars are downloaded at test time; a cache keeps a slow or failed download from
       # ~keep deciding which tests can run. The language-pack version is in Cargo.lock.
@@ -199,9 +199,9 @@ jobs:
             ~\AppData\Local\tree-sitter-language-pack
           key: tslp-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
 
-      # ~keep tests/upgrade_from_release.rs is compiled only with `documents`, which is these two legs
-      # ~keep on Linux and macOS. It upgrades an index built by an older release, so it needs that
-      # ~keep release's binary; under CI an absent binary fails the test rather than skipping it. 0.28.0
+      # ~keep tests/upgrade_from_release.rs is compiled only with `documents` on Unix, which is these
+      # ~keep two legs on Linux and macOS; the Windows `documents` leg does not collect it.
+      # ~keep It upgrades an index built by an older release, so it needs that release's binary; under CI an absent binary fails the test rather than skipping it. 0.28.0
       # ~keep is the newest release that still code-maps prose (the migration path), `latest` the
       # ~keep same-shape upgrade.
       # ~keep The same legs compile tests/plugin_tool_skew.rs, whose second test checks the plugin
