@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A config edit that changes nothing a scan reads (a new `basemind.toml` holding the defaults, an `[mcp]` tweak, a comment) no longer sheds the daemon's read stack, so it no longer starts a whole-repository catch-up pass and `index_status` stays `ready`; a stack is rebuilt once a connection finds it built under scan settings or a `watch.debounce_ms` that have since changed (#459).
+### Fixed
+
+- A package `__init__.py` with `from . import a, b` is no longer a one-file import cycle: the names resolve to the submodules, and a file is never its own import target (#476).
 
 ## [0.34.0] - 2026-11-22
 
