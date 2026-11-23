@@ -53,6 +53,33 @@ const FLOOR_EXCLUDES: &[&str] = &[
     "**/.basemind/**",
     "**/.idea/**",
     "**/.DS_Store",
+    // Tool and package-manager caches: regenerated on demand and never authored. Judgment calls:
+    // `.yarn/cache` holds the zip archives of Yarn's zero-install layout, committed by some
+    // repositories but binary and unreadable either way; `.hypothesis` may carry committed
+    // example databases, which are opaque data, not source; `.cache` is the generic XDG-style
+    // cache directory. `floor_allow` re-includes any of them.
+    "**/.cache/**",
+    "**/.terragrunt-cache/**",
+    "**/.turbo/**",
+    "**/.parcel-cache/**",
+    "**/.nox/**",
+    "**/.hypothesis/**",
+    "**/.pnpm-store/**",
+    "**/.yarn/cache/**",
+    "**/.angular/**",
+    "**/.sass-cache/**",
+    "**/.ccache/**",
+    "**/.dart_tool/**",
+    "**/__pypackages__/**",
+    "**/.eggs/**",
+    "**/*.egg-info/**",
+    "**/.ipynb_checkpoints/**",
+    "**/.cargo/registry/**",
+    "**/.docusaurus/**",
+    "**/.vite/**",
+    "**/.cache-loader/**",
+    "**/.eslintcache",
+    "**/.coverage",
     // Credentials and key material: indexing them makes the secret searchable by every agent that
     // can query the index. `[scan] floor_allow` lists the entry (`.env.*`, `*.pem`) to opt back in,
     // but a repository's own file may only do so with the operator grant
@@ -77,6 +104,47 @@ const FLOOR_EXCLUDES: &[&str] = &[
     "**/*.jks",
     "**/*.keystore",
 ];
+
+/// Lockfiles: machine-written dependency pins that are never source. Parsing them floods the code
+/// map with meaningless symbols (a `.terraform.lock.hcl` is valid HCL) and fills the document store
+/// with chunks no one searches for. Part of the always-on floor (see [`floor_entries`]), so
+/// `[scan] floor_allow` re-includes one by name (`go.sum`, `*.lock`). Every entry is a file name
+/// or a suffix on one; `go.mod`, `Makefile.lock.py` and `lockdown.py` do not match.
+pub(crate) const LOCKFILE_GLOBS: &[&str] = &[
+    "**/.terraform.lock.hcl",
+    "**/*.lock",
+    "**/*.lockb",
+    "**/*.lockfile",
+    "**/*.lock.json",
+    "**/*.lock.hcl",
+    "**/*.lock.yaml",
+    "**/package-lock.json",
+    "**/npm-shrinkwrap.json",
+    "**/pnpm-lock.yaml",
+    "**/yarn.lock",
+    "**/bun.lock",
+    "**/go.sum",
+    "**/Cargo.lock",
+    "**/poetry.lock",
+    "**/uv.lock",
+    "**/Pipfile.lock",
+    "**/composer.lock",
+    "**/Gemfile.lock",
+    "**/Chart.lock",
+    "**/gradle.lockfile",
+    "**/flake.lock",
+    "**/pdm.lock",
+    "**/mix.lock",
+    "**/pubspec.lock",
+    "**/Podfile.lock",
+    "**/packages.lock.json",
+    "**/deno.lock",
+];
+
+/// Every always-on floor entry: [`FLOOR_EXCLUDES`] then [`LOCKFILE_GLOBS`].
+fn floor_entries() -> impl Iterator<Item = &'static str> {
+    FLOOR_EXCLUDES.iter().chain(LOCKFILE_GLOBS).copied()
+}
 
 /// The credential/key subset of [`FLOOR_EXCLUDES`]: a repository's own `[scan] floor_allow` may not
 /// remove one of these without the operator grant [`ALLOW_REPO_CREDENTIALS_ENV`]. Kept as an
@@ -137,7 +205,7 @@ fn floor_allow_names(entry: &str, pattern: &str) -> bool {
 /// entry is ignored with a warning and the secret stays excluded.
 fn effective_floor(floor_allow: &[String], credentials_granted: bool) -> Vec<&'static str> {
     for entry in floor_allow {
-        let matched = FLOOR_EXCLUDES.iter().any(|p| floor_allow_names(entry, p));
+        let matched = floor_entries().any(|p| floor_allow_names(entry, p));
         let protected = FLOOR_PROTECTED.iter().any(|p| floor_allow_names(entry, p));
         let credential = FLOOR_CREDENTIALS.iter().any(|p| floor_allow_names(entry, p));
         if protected {
@@ -156,9 +224,7 @@ fn effective_floor(floor_allow: &[String], credentials_granted: bool) -> Vec<&'s
             );
         }
     }
-    FLOOR_EXCLUDES
-        .iter()
-        .copied()
+    floor_entries()
         .filter(|p| {
             FLOOR_PROTECTED.contains(p)
                 || !floor_allow
@@ -166,6 +232,52 @@ fn effective_floor(floor_allow: &[String], credentials_granted: bool) -> Vec<&'s
                     .any(|e| floor_allow_names(e, p) && (!FLOOR_CREDENTIALS.contains(p) || credentials_granted))
         })
         .collect()
+}
+
+/// Globs (`**/<name>`) that re-include the lockfiles `[scan] floor_allow` names exactly. Removing
+/// `**/yarn.lock` from the floor is not enough while the broader `**/*.lock` still matches the
+/// file, so a named lockfile also gets an entry here; [`Excludes`] lets it cancel only the floor's
+/// lockfile patterns, never a user `[scan] exclude`. A wildcard entry (`*.lock`) removes its own
+/// floor pattern and re-includes nothing else.
+fn lockfile_reallow(floor_allow: &[String]) -> Vec<String> {
+    floor_allow
+        .iter()
+        .map(|e| e.trim().trim_matches('/'))
+        .filter(|e| !e.contains(['*', '?', '[', '{']))
+        .filter(|e| LOCKFILE_GLOBS.iter().any(|p| floor_name(p) == *e))
+        .map(|e| format!("**/{e}"))
+        .collect()
+}
+
+/// The file-level exclude patterns, in the three tiers that decide whether a lockfile exception
+/// applies: `always` (user excludes and every non-lockfile floor entry), `lockfiles` (the floor's
+/// lockfile patterns) and `reallowed` (named lockfiles that cancel `lockfiles` but not `always`).
+#[derive(Clone)]
+struct Excludes {
+    always: globset::GlobSet,
+    lockfiles: globset::GlobSet,
+    reallowed: globset::GlobSet,
+}
+
+impl Excludes {
+    fn build(floor: &[&str], reallowed: &[String], user: &[String]) -> Result<Self, ScanError> {
+        let is_lockfile = |p: &str| LOCKFILE_GLOBS.contains(&p);
+        Ok(Self {
+            always: compile_globs(
+                floor
+                    .iter()
+                    .copied()
+                    .filter(|p| !is_lockfile(p))
+                    .chain(user.iter().map(String::as_str)),
+            )?,
+            lockfiles: compile_globs(floor.iter().copied().filter(|p| is_lockfile(p)))?,
+            reallowed: compile_globs(reallowed.iter().map(String::as_str))?,
+        })
+    }
+
+    fn is_match(&self, rel: &str) -> bool {
+        self.always.is_match(rel) || (self.lockfiles.is_match(rel) && !self.reallowed.is_match(rel))
+    }
 }
 
 /// Include/exclude pair precompiled once per scan. An absent include means "everything"; exclude
@@ -203,7 +315,7 @@ pub(crate) struct Filters {
     #[cfg(any(feature = "documents", feature = "code-search"))]
     pub(crate) retrieval: crate::scan_retrieval::Retrieval,
     include: globset::GlobSet,
-    exclude: globset::GlobSet,
+    exclude: Excludes,
     /// `[scan] list_only`: files recorded as present and never opened. See [`Filters::listed_kind`].
     list_only: ListOnly,
     /// Directory-level view of `exclude`: every `P/**` pattern also present as bare `P`, so a
@@ -289,12 +401,14 @@ impl Filters {
     ) -> Result<Self, ScanError> {
         let include_patterns: Vec<String> = config.scan.include.iter().flat_map(|p| expand_pattern(p)).collect();
         let include = compile_globs(include_patterns.iter().map(String::as_str))?;
-        let exclude_patterns: Vec<String> = effective_floor(&config.scan.floor_allow, repo_credentials_granted())
-            .into_iter()
-            .map(str::to_string)
-            .chain(config.scan.exclude.iter().flat_map(|p| expand_pattern(p)))
+        let floor = effective_floor(&config.scan.floor_allow, repo_credentials_granted());
+        let user_excludes: Vec<String> = config.scan.exclude.iter().flat_map(|p| expand_pattern(p)).collect();
+        let exclude_patterns: Vec<String> = floor
+            .iter()
+            .map(|p| (*p).to_string())
+            .chain(user_excludes.iter().cloned())
             .collect();
-        let exclude = compile_globs(exclude_patterns.iter().map(String::as_str))?;
+        let exclude = Excludes::build(&floor, &lockfile_reallow(&config.scan.floor_allow), &user_excludes)?;
         let dir_exclude = compile_globs(dir_exclude_patterns(&exclude_patterns).iter().map(String::as_str))?;
         let submodule_prefixes: Arc<[String]> = if config.scan.skip_submodules {
             submodule_roots
@@ -520,7 +634,7 @@ impl Filters {
 /// such events before they are queued; it does no I/O.
 #[derive(Clone)]
 pub(crate) struct ExclusionGate {
-    exclude: globset::GlobSet,
+    exclude: Excludes,
     dir_exclude: Arc<globset::GlobSet>,
     submodule_prefixes: Arc<[String]>,
 }
