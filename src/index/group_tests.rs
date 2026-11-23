@@ -346,7 +346,7 @@ fn two_release_minors_keep_their_own_group_database_in_one_group_directory() {
         let group = open(&older);
         group
             .meta()
-            .insert(META_SCHEMA_VER, OLDER_RELEASES_SCHEMA.to_be_bytes())
+            .insert(crate::index::META_SCHEMA_VER, OLDER_RELEASES_SCHEMA.to_be_bytes())
             .expect("stamp the older release's schema");
         group.allocate_view_id("ws", "working").expect("allocate");
         group.incarnation()
