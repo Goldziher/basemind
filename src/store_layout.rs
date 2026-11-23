@@ -208,10 +208,12 @@ pub fn memory_vectors_dir(root: &Path) -> PathBuf {
 }
 
 /// The layout of the blob store, recorded in every file map ([`crate::store::Index::blob_layout`]).
-/// `0`: blobs flat in `cache/blobs/`. `1`: one namespace directory per blob schema. A file map of
-/// an earlier layout names blobs that are not where this binary looks, so it is discarded and the
-/// workspace scanned again, without waiting for a release to change the schema as well.
-pub const BLOB_LAYOUT: u8 = 1;
+/// `0`: blobs flat in `cache/blobs/`. `1`: one namespace directory per blob schema. `2`: the file
+/// map is the base file plus a delta log (`index.delta`) that a reader must apply. A file map of an
+/// earlier layout is discarded and the workspace scanned again, without waiting for a release to
+/// change the schema as well. A layout-1 binary refuses a layout-2 map as a newer basemind's, so it
+/// can neither read a base without its log nor rewrite one over the log's changes.
+pub const BLOB_LAYOUT: u8 = 2;
 
 /// Root of the global blob store: `<data home>/cache/blobs/`. Holds one namespace directory per
 /// blob schema; only [`global_blobs_dir`] is read or written by this binary.

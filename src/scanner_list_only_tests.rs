@@ -196,3 +196,23 @@ fn the_filters_list_only_what_the_floor_admits() {
     assert_eq!(filters.listed_kind("src/main.rs"), None);
     assert!(filters.allows("src/main.rs"));
 }
+
+/// A list-only file under an extra root is recorded like one under the repository: the extra-root
+/// gate names its kind from the root-relative path, and the floor still hides credentials.
+#[test]
+fn the_extra_root_gate_lists_what_the_floor_admits() {
+    let config = crate::config::default_for_root(Path::new("."));
+    let filters = crate::scanner_filter::Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert())
+        .expect("filters");
+
+    assert_eq!(
+        filters.listed_kind_in_extra_root("pkg/pnpm-lock.yaml"),
+        Some(ListKind::Lockfile)
+    );
+    assert_eq!(
+        filters.listed_kind_in_extra_root("captures/session.pcap"),
+        Some(ListKind::Data)
+    );
+    assert_eq!(filters.listed_kind_in_extra_root("node_modules/x/yarn.lock"), None);
+    assert_eq!(filters.listed_kind_in_extra_root("src/main.rs"), None);
+}

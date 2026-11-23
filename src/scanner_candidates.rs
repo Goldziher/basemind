@@ -473,6 +473,10 @@ fn walk_extra_roots(root: &Path, config: &Config, filters: &Filters, cancel: &Sc
             let Some(key) = key_str(path, &mut key_buf) else {
                 continue;
             };
+            if let Some(kind) = filters.listed_kind_in_extra_root(rel) {
+                budget.list(key, kind, &dent);
+                continue;
+            }
             if !filters.allows_in_extra_root(rel) {
                 continue;
             }

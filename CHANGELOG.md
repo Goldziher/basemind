@@ -21,15 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `find_files` with `indexed: true` or `false` no longer lists tracked files that are neither indexed nor list-only, and a list-only file under a `scan.extra_roots` entry is recorded like one in the repository (#495)
 - The daemon returns freed allocator pages to the OS after every rescan and every idle workspace or read-stack eviction, so an idle daemon settles at its live data instead of holding a scan's high-water mark; the hardening soak asserts a bounded idle memory swing (R6c) (#491)
 - a batch naming a path that is gone from disk finds the index entries under it by key range instead of walking every key, so the cost no longer grows with the size of the index (#405)
 
 ### Changed
 
+- The file map layout (`blob_layout`) is `2`: an older basemind refuses a map that depends on `index.delta` as a newer one instead of reading the base without its log, and this one rebuilds a layout-1 map over the blobs already stored (#468)
 - The `git_log` `symbol` description says a body comparison ignores comments and whitespace, so a formatter-only rewrite that `git log -L` lists is not reported; `hash_mode` on `symbol_history` is unchanged (#480)
 - Every `limit` argument's description states its maximum, so no limit is capped silently (#261)
 - The JS/TS resolver reads each `tsconfig.json` and `package.json` from disk once per stitch instead of once per importing file; the files are still recorded as probes for every importer (#315). Parsing is not yet shared across importers.
-- **BREAKING:** a `git_log` list row is `{sha, author, date, subject}` with an 8-digit sha, and no list names its files unless `files: true` is passed; `basemind git log` and `recent` take `--files` (#456)
+- **BREAKING:** a `git_log` list row is `{sha, author, date, subject}` with a 12-digit sha, and no list names its files unless `files: true` is passed; `basemind git log` and `recent` take `--files` (#456)
 - `git_log`, `git_blame`, `code_symbols`, `code_refs`, `docs_search` and `code_search` write their text block as TOON, or as compact JSON when that is shorter, so a commit list is one table (#456)
 ### Changed
 

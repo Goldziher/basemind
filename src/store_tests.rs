@@ -597,6 +597,32 @@ fn forge_flat_layout(view_dir: &std::path::Path) {
     std::fs::write(&path, rmp_serde::to_vec_named(&map).expect("encode")).expect("write");
 }
 
+/// A file map of the layout before the delta log (`index.delta`) is a base without the log its
+/// writer would have kept: it is stale for this binary, which rebuilds it rather than trust it. The
+/// same number is what makes an older binary refuse this binary's map (see `BLOB_LAYOUT`).
+#[test]
+fn a_file_map_of_the_layout_before_the_delta_log_is_stale() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let view_dir = scanned_view(tmp.path());
+    let mut map = read_index(&view_dir).expect("read").expect("a file map");
+    assert_eq!(
+        map.blob_layout, 2,
+        "a map this binary writes names the delta-log layout"
+    );
+    map.blob_layout = 1;
+    std::fs::write(
+        view_dir.join(INDEX_FILE),
+        rmp_serde::to_vec_named(&map).expect("encode"),
+    )
+    .expect("write");
+
+    assert!(matches!(
+        read_index(&view_dir),
+        Err(StoreError::StaleBlobLayout { found: 1, expected: 2 })
+    ));
+}
+
 /// A file map written when blobs lay flat in `cache/blobs/` names blobs that are not in this
 /// binary's namespace. Its schema is current, so nothing but the layout it records says so. The
 /// writer open must not call its files unchanged: it discards the map and the index built from

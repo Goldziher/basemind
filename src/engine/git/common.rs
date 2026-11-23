@@ -42,10 +42,10 @@ pub(super) const BLAME_LIMIT_MAX: u32 = 1000;
 /// Blame hunks per page when the caller passes no `limit`.
 pub(super) const BLAME_LIMIT_DEFAULT: u32 = 100;
 
-/// Hex digits of a commit sha in a `git_log` list. Eight name one commit in a repository of a few
-/// hundred thousand commits almost always, every tool that takes a revision resolves the prefix, and
-/// a longer one is bytes a list pays on every row.
-pub(super) const SHA_ABBREV: usize = 8;
+/// Hex digits of a commit sha in a `git_log` list. Twelve keep a listed prefix unique in a monorepo
+/// of millions of commits, so a row always opens its own commit through `rev`; a shorter prefix can
+/// collide and then fails to resolve or opens another commit. The same length a blame row uses.
+pub(super) const SHA_ABBREV: usize = 12;
 
 /// `sha` cut to [`SHA_ABBREV`] hex digits.
 pub(super) fn abbreviated_sha(mut sha: String) -> String {

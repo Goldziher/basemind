@@ -87,6 +87,12 @@ impl IndexedFilter {
     pub(crate) fn lists_listed(filter: Option<Self>) -> bool {
         !matches!(filter, Some(Self::Flag(true)))
     }
+
+    /// Whether git-tracked files that are neither indexed nor list-only are listed: only when no
+    /// group is selected, since they belong to neither.
+    pub(crate) fn lists_tracked_only(filter: Option<Self>) -> bool {
+        !matches!(filter, Some(Self::Flag(_)))
+    }
 }
 
 /// `find_files` without a `query`: the listing's own arguments.
