@@ -114,6 +114,14 @@ mod enabled {
             let notice = self.lifecycle_notice();
             if notice.is_some() {
                 page.notice = None;
+            } else if let Some(pending) = crate::embed_progress::status(
+                &crate::store::workspace_cache_dir(&self.root),
+                crate::embed_progress::now_unix_ms(),
+            ) {
+                page.notice = Some(match page.notice.take() {
+                    Some(existing) => format!("{existing}; {}", pending.notice()),
+                    None => pending.notice(),
+                });
             }
             Ok(DocsSearchResponse {
                 page,

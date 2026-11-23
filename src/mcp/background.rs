@@ -249,9 +249,11 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
         }
         let started = std::time::Instant::now();
         let outcome = writer.tree_pass(EmbedMode::Deferred);
+        let mut cancelled = false;
         let changed = match outcome {
             Ok(None) => {
                 tracing::debug!("catch-up cancelled: the daemon is draining");
+                cancelled = true;
                 false
             }
             Ok(Some((scanned, updated, removed))) => {
@@ -269,7 +271,11 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
                 false
             }
         };
-        if changed {
+        // The pass that just ended left the debt of every document still owed its vectors, as it
+        // does for one a killed process left: either way the embedding pass runs again.
+        let owes_vectors =
+            !cancelled && crate::embed_progress::read(&crate::store::workspace_cache_dir(&writer.ws.root)).is_some();
+        if changed || owes_vectors {
             spawn_scan_logged(writer.hosted(), "catch-up embedding pass task panicked", move || {
                 let _pin = pin;
                 if let Err(error) = writer.scan(None, EmbedMode::Inline) {
@@ -293,6 +299,30 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
     } else {
         spawn_scan_logged(hosted, "catch-up scan task panicked", catch_up);
     }
+}
+
+/// Boot-time resume of an embedding pass a killed process left unfinished: the documents its scan
+/// indexed by text and left owing vectors are embedded in the background, the keyword lane serving
+/// them meanwhile. A no-op unless [`crate::embed_progress::resume_due`] finds a record nothing writes.
+pub(super) fn spawn_embedding_resume(state: Arc<ServerState>) {
+    if !crate::embed_progress::resume_due(&crate::store::workspace_cache_dir(&state.shared.root)) {
+        return;
+    }
+    tracing::info!("an earlier embedding pass was interrupted; resuming it in the background");
+    let writer = Writer::of(&state);
+    let hosted = writer.hosted();
+    spawn_scan_logged(hosted, "embedding resume task panicked", move || {
+        let started = std::time::Instant::now();
+        match writer.scan(None, EmbedMode::Inline) {
+            Ok((scanned, updated, _)) => tracing::info!(
+                scanned,
+                updated,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "resumed embedding pass complete"
+            ),
+            Err(error) => tracing::warn!(%error, "resumed embedding pass failed"),
+        }
+    });
 }
 
 /// Boot-time in-RAM code-map preload, spawned once from `BasemindServer::new_with_options` when the

@@ -388,6 +388,10 @@ pub(crate) struct Filters {
     /// download): the rest of the pass indexes the keyword lane only instead of retrying per file.
     #[cfg(feature = "code-search")]
     pub(crate) code_embed_failed: std::sync::atomic::AtomicBool,
+    /// Documents this pass has given their vectors, bumped by the extraction workers. The pass's
+    /// embedding progress ([`crate::embed_progress`]) reads it once per drive chunk.
+    #[cfg(feature = "documents")]
+    pub(crate) docs_embedded: std::sync::atomic::AtomicUsize,
     /// The dependency documentation a full working-tree pass indexes under `deps/...` (ADR-0049),
     /// resolved once by its candidate walk; unset on every other pass.
     dep_docs: std::sync::OnceLock<crate::deps_docs::DepDocs>,
@@ -467,6 +471,8 @@ impl Filters {
             vector_rows_unsure: false,
             #[cfg(feature = "code-search")]
             code_embed_failed: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "documents")]
+            docs_embedded: std::sync::atomic::AtomicUsize::new(0),
             dep_docs: std::sync::OnceLock::new(),
         })
     }

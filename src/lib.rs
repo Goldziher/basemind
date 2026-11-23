@@ -18,6 +18,7 @@ pub mod daemon_lock;
 pub mod data_root;
 pub mod deps_docs;
 pub mod disk_space;
+pub mod embed_progress;
 #[cfg(feature = "intelligence")]
 pub mod embeddings;
 pub mod engine;

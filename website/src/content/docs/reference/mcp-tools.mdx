@@ -295,3 +295,9 @@ a `notice` as "retry shortly," not "no matches." See
 
 During a full scan, `index_status` reports `scan_progress`: `phase`, `files_done` of `files_total`
 candidate files and `eta_secs`, the seconds extraction has left at its rate so far.
+
+While documents still owe their embeddings, `index_status` reports `embeddings`: `done` of `total`
+documents embedded and, when known, `eta_secs`, the seconds the running pass has left (absent before
+the first document is embedded and while no pass is running). `docs_search` answers from its keyword
+lane meanwhile and carries a `notice` saying so; a lifecycle notice (a rescan, for example) takes
+its place while one applies, so a missing embeddings notice does not mean the embeddings are done.
