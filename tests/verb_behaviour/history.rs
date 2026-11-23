@@ -22,9 +22,25 @@ fn commit_as(root: &Path, name: &str, email: &str, message: &str) {
     assert!(status.success(), "git commit as {name} failed");
 }
 
-/// A search by `author` writes each row `"<sha> <author>: <summary>"`; this is the part after the sha.
+/// A search's subjects.
 fn summaries(body: &Value) -> Vec<String> {
     commit_summaries(&body["commits"])
+}
+
+/// A search's rows as `"<author>: <subject>"`.
+fn authored(body: &Value) -> Vec<String> {
+    body["commits"]
+        .as_array()
+        .expect("a list of commit rows")
+        .iter()
+        .map(|row| {
+            format!(
+                "{}: {}",
+                row["author"].as_str().expect("author"),
+                row["subject"].as_str().expect("subject")
+            )
+        })
+        .collect()
 }
 
 async fn assert_author_scoping(client: &Client) {
@@ -36,13 +52,13 @@ async fn assert_author_scoping(client: &Client) {
     );
 
     let hers = call(client, "git_log", json!({ "query": "parser", "author": "alice" })).await;
-    assert_eq!(summaries(&hers), ["alice: fix the parser"], "{hers}");
+    assert_eq!(authored(&hers), ["alice: fix the parser"], "{hers}");
 
     let by_bob = call(client, "git_log", json!({ "query": "alice", "author": "bob" })).await;
-    assert_eq!(summaries(&by_bob), ["bob: thanks alice for the review"], "{by_bob}");
+    assert_eq!(authored(&by_bob), ["bob: thanks alice for the review"], "{by_bob}");
 
     let author_only = call(client, "git_log", json!({ "author": "alice" })).await;
-    assert_eq!(summaries(&author_only), ["alice: fix the parser"], "{author_only}");
+    assert_eq!(authored(&author_only), ["alice: fix the parser"], "{author_only}");
 }
 
 /// A commit by bob whose message names alice is not a commit by alice. Checked on the live walk the

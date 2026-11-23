@@ -70,6 +70,7 @@ pub(super) fn by_path(ws: &Workspace, tool: &str, params: FindCommitsByPathParam
                         truncated_reason: None,
                         commits: Vec::new(),
                         files: Vec::new(),
+                        files_more: Vec::new(),
                         next_cursor: None,
                         budgeted: false,
                         cursor_invalidated: true,
@@ -125,10 +126,10 @@ pub(super) fn by_path(ws: &Workspace, tool: &str, params: FindCommitsByPathParam
             break;
         }
         offsets.push(start + index);
-        hits.push(commit_to_view(c.clone(), true));
+        hits.push(commit_to_view(c.clone(), params.include_files));
     }
     let matched = matched_earlier || !offsets.is_empty();
-    let (hits, files, budgeted) = budget_commits_with_files(hits, params.max_tokens);
+    let (hits, files, files_more, budgeted) = budget_commits_with_files(hits, params.max_tokens);
     // The next page starts at the first hit this one left out, or past the window when the window
     // held no more hits and the history goes on.
     let next_offset = offsets
@@ -146,6 +147,7 @@ pub(super) fn by_path(ws: &Workspace, tool: &str, params: FindCommitsByPathParam
             truncated_reason: window_edge.then_some(SPAN_LIMIT),
             commits: hits,
             files,
+            files_more,
             budgeted,
             next_cursor: next_offset
                 .map(|offset| crate::engine::cursor::Cursor::encode_in_memory(offset as u64 | carried, snapshot)),

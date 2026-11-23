@@ -16,10 +16,25 @@ arguments, paging, cuts, cursors, text encodings) are in the `mcp-surface` conte
 | `code_refs` | `name`, `relation?`, `path?`, `line?`, `column?`, `match?`, `limit?`, `cursor?`, `max_tokens?` | usages: call sites of a name (matched by name: `resolution` says so; type uses and `use` lines are not call sites), callers of one definition (`path`: returns `definition` and `resolved_total` + per-hit `resolved`, or a `resolution` note: `unsupported for <language>` / `no resolution facts for this file`; add `line` when several definitions share the name), `implementations`, `importers` (with `path`: `by_depth`, `in_cycle` counting importers in a cycle with the file, `deeper: true` when more lie past `depth`), or the `definition` a reference binds to; `match` is `exact` (default: the identifier is the name, or a qualified path ending in it) or `substring`; a call site or implementation in a file edited since the scan has `stale` |
 | `find_files` | `query?`, `path?`, `language?`, `limit?`, `cursor?`, `max_tokens?` | fuzzy file-name search, or a listing without `query`; code and documents; `files` is a list of paths (with `min_lines`, `{"<path>": <lines>}`, largest first) |
 | `docs_search` | `query`, `mime_type?`, `format?`, `path?`, `keywords?`, `entity?`, `limit?`, `cursor?`, `max_tokens?` | semantic search over indexed documents; `path` is a prefix, or a glob when it holds `*` |
-| `git_log` | `path?`, `query?`, `author?`, `symbol?`, `line?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | recent commits, a path's history, a commit search (`query` on the message, `author` on the author), a symbol's history (one window of commits per page, `next_cursor` continues past it), or one commit; a list row is `"<sha12> <summary>"` (`"<sha12> <author>: <summary>"` when `author` is given; `[introduced]` / `[removed]` after the sha in a symbol's history); the recent and directory lists add `files: {"<sha>": {"<path>": "<change>"}}`; author, time and body come from `rev` |
+| `git_log` | `path?`, `query?`, `author?`, `symbol?`, `line?`, `rev?`, `limit?`, `cursor?`, `max_tokens?`, `files?` | recent commits, a path's history, a commit search (`query` on the message, `author` on the author), a symbol's history (one window of commits per page, `next_cursor` continues past it), or one commit; a list row is `{sha, author, date, subject}` (sha of 8 hex digits, date as `YYYY-MM-DD`; a symbol's history row stays `"<sha8> <summary>"` with `[introduced]` / `[removed]` after the sha); `files: true` adds `files: {"<sha>": {"<path>": "<change>"}}` to the recent and directory lists, at most 8 entries a commit (a directory holding several changed files collapses to `"<dir>/": "<n> files"`) with the rest counted in `files_more: {"<sha>": <n>}`; email, time of day and body come from `rev` |
 | `git_blame` | `path`, `line?` + `end_line?`, `symbol?`, `rev?`, `limit?`, `cursor?`, `max_tokens?` | per-line authorship of a file, a span, or one symbol (located at `rev`); `hunks` are `"<line>[-<end_line>] <sha12>[ <source_path>]"`, adjacent lines of one commit merged (`limit` counts merged hunks), `commits` maps each sha to `author`, `time`, `summary` |
 | `git_diff` | `path?`, `from?`, `to?`, `structural?` | no arguments: working-tree status (200 paths per list; a `path` ending in `/` narrows it to that directory); `path`: that file's diff (`from` defaults to HEAD, `to` to the working tree); `structural`: symbols added and removed since `from` plus the `common` count, no `to`; at most 200 hunks or 128 KiB, then `truncated`; `binary` for a binary file; `lossy_text` when a hunk line is not UTF-8 (kept, its invalid bytes read as U+FFFD); a `path` in neither revision is an error |
 | `memory_save` | `key`, `value`, `tags?`, `visibility?` | write a durable note |
 | `memory_search` | `query?` or `key?` or `prefix?`, `tags?`, `visibility?`, `limit?`, `cursor?` | recall notes by meaning, by key, or by key prefix; a listing cut sets `scan_cap`; a `key` no note has answers `{"key":…,"found":false}` |
 | `index_status` | none | index health and repository identity (files per language, scan state, `cache_dir` for this workspace, `grammar_dir`, branch, HEAD) |
 | `index_rescan` | `paths?` | re-index the given files or directories (a directory's deleted files are pruned), or with none the whole workspace (unchanged files are skipped); a path neither on disk nor indexed, or outside the repository, is an error |
+
+## Tokens per answer
+
+A tool's text block is encoded per tool (ADR-0053); `structuredContent` and `--json` stay JSON. Tokens
+are bytes divided by four. `git_log`, `git_blame`, `code_symbols`, `code_refs`, `docs_search` and
+`code_search` write TOON, or compact JSON when that is shorter, so their text never exceeds the JSON.
+
+| Answer | Text block | Bytes | Tokens |
+| --- | --- | --- | --- |
+| `git_log {}`, 20 commits, a large monorepo, before: every commit with its files, compact JSON | JSON | ~22,000 | ~5,500 |
+| `git_log {}`, 20 commits, fixed fixture (`LOG_FIXTURE` in `src/wire_tests.rs`), `{sha, author, date, subject}` rows | JSON | 2,047 | ~512 |
+| the same rows | TOON `commits[20]{sha,author,date,subject}:` | 1,271 | ~318 |
+
+`a_twenty_commit_git_log_answer_stays_small` fails when that fixture's TOON answer passes 1,500 bytes,
+or stops being at least a third shorter than its JSON.

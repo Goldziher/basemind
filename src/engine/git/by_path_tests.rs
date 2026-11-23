@@ -76,6 +76,7 @@ fn params(window: Option<u32>, limit: Option<u32>, cursor: Option<Cursor>) -> Fi
         limit,
         cursor,
         max_tokens: None,
+        include_files: true,
     }
 }
 
@@ -204,6 +205,7 @@ fn log(path: Option<&str>, symbol: Option<&str>, cursor: Option<Cursor>) -> GitL
         limit: Some(LIMIT),
         cursor,
         max_tokens: None,
+        files: true,
     }
 }
 
@@ -250,11 +252,17 @@ fn every_git_log_list_lists_only_its_own_page_and_caches_nothing() {
                 "{key} page {page} listed the files of {listed} commits: {body}"
             );
             for entry in body[key].as_array().expect("list") {
-                let (_, row) = entry
-                    .as_str()
-                    .expect("a `<sha> <summary>` row")
-                    .split_once(' ')
-                    .expect("sha");
+                let row = match entry.get("subject").and_then(serde_json::Value::as_str) {
+                    Some(subject) => subject,
+                    None => {
+                        entry
+                            .as_str()
+                            .expect("a `<sha> <summary>` row")
+                            .split_once(' ')
+                            .expect("sha")
+                            .1
+                    }
+                };
                 let summary = row
                     .strip_prefix("[introduced] ")
                     .or(row.strip_prefix("[removed] "))

@@ -433,7 +433,7 @@ fn assert_old_stores_survive(env: &Env, new: &Path, old: &Path) {
         .map(|commits| {
             commits
                 .iter()
-                .filter_map(|row| row.as_str()?.split_once(' ').map(|(_, summary)| summary))
+                .filter_map(|row| row["subject"].as_str())
                 .collect()
         })
         .unwrap_or_default();

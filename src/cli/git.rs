@@ -64,6 +64,9 @@ pub enum GitCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
+        /// Also list the files each commit changed (recent and directory lists).
+        #[arg(long)]
+        files: bool,
     },
     /// Who last changed each line of a file, a 1-based line span, or one symbol.
     #[command(after_long_help = crate::cli::help_code::GIT_BLAME)]
@@ -117,6 +120,9 @@ pub enum GitCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
+        /// Also list the files each commit changed.
+        #[arg(long)]
+        files: bool,
     },
     /// Commits touching a path. Shorthand for `log --path <path>`.
     #[command(after_long_help = crate::cli::help_code::GIT_TOUCHING)]
@@ -245,6 +251,7 @@ fn log() -> GitLogParams {
         limit: None,
         cursor: None,
         max_tokens: None,
+        files: false,
     }
 }
 
@@ -261,6 +268,7 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
             limit,
             cursor,
             max_tokens,
+            files,
         } => {
             let p = GitLogParams {
                 path: path.map(|path| resolve_path(tools, &path)),
@@ -272,6 +280,7 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
                 limit,
                 cursor: cursor.map(Cursor),
                 max_tokens,
+                files,
             };
             (
                 "git_log",
@@ -284,11 +293,13 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
             limit,
             cursor,
             max_tokens,
+            files,
         } => {
             let p = GitLogParams {
                 limit,
                 cursor: cursor.map(Cursor),
                 max_tokens,
+                files,
                 ..log()
             };
             (
@@ -514,6 +525,7 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
                         limit,
                         cursor: cursor.map(Cursor),
                         max_tokens,
+                        include_files: false,
                     },
                     async |s, p| s.cli_op(p, Workspace::git_by_path).await,
                 )

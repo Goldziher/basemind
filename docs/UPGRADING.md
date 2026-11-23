@@ -394,6 +394,7 @@ and the CLI's `--json` output stay JSON for every tool, with the shapes above.
 | --- | --- |
 | `code_grep` (rows) | the other fields as `key: value` lines, then `# <path>`, `## <symbol>` (bare `##`: outside every symbol) and the rows as `"<line>: <text>"` rows read without the quotes; rows before any symbol header are outside every symbol |
 | `code_outline`, `git_diff`, `find_files` (a list) | [TOON](https://toonformat.dev): `key: value` lines, a list of flat objects as a table `name[N]{field,...}:` with one comma-separated row each, a list of scalars inline `name[N]: a,b` |
+| `git_log`, `git_blame`, `code_symbols`, `code_refs`, `docs_search`, `code_search` | the same TOON, or compact JSON when that is shorter |
 | every other tool, `find_files` with `min_lines` | compact JSON, as before |
 
 A client that parsed the text block as JSON reads `structuredContent` instead, or decodes the text

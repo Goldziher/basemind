@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `git_log` takes `files: true` to list what each commit changed in a recent or directory list: at most 8 entries a commit (a directory holding several changed files collapses to one `"<dir>/": "<n> files"` entry), the rest counted in `files_more` (#456)
+
+### Changed
+
+- **BREAKING:** a `git_log` list row is `{sha, author, date, subject}` with an 8-digit sha, and no list names its files unless `files: true` is passed; `basemind git log` and `recent` take `--files` (#456)
+- `git_log`, `git_blame`, `code_symbols`, `code_refs`, `docs_search` and `code_search` write their text block as TOON, or as compact JSON when that is shorter, so a commit list is one table (#456)
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

@@ -112,10 +112,9 @@ async fn indexed_search(service: &Session, extra: Value) -> (Value, usize) {
     }
 }
 
-/// The sha of a `"<sha> <summary>"` commit row.
+/// The sha of a `{sha, author, date, subject}` commit row.
 fn row_sha(row: &Value) -> String {
-    let row = row.as_str().expect("a commit is a `<sha> <summary>` row");
-    row.split_once(' ').expect("a sha and a summary").0.to_string()
+    row["sha"].as_str().expect("a commit row has a sha").to_string()
 }
 
 fn commits(value: &Value) -> &Vec<Value> {
@@ -135,9 +134,9 @@ async fn search_lists_no_commit_body() {
         "{COMMITS} hits with ~{BIG_BODY_BYTES}-byte bodies must stay small, got {size} bytes"
     );
     for hit in hits {
-        let row = hit.as_str().expect("a commit is a `<sha> <summary>` row");
-        let (sha, summary) = row.split_once(' ').expect("a sha and a summary");
-        assert_eq!(sha.len(), 12, "{hit}");
+        let sha = hit["sha"].as_str().expect("a commit row has a sha");
+        let summary = hit["subject"].as_str().expect("a commit row has a subject");
+        assert_eq!(sha.len(), 8, "{hit}");
         assert!(
             summary.len() < 200,
             "a hit names the commit and leaves its message to `rev`: {hit}"

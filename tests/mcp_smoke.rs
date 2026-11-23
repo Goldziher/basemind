@@ -395,10 +395,9 @@ async fn mcp_server_exercises_representative_tools() {
     let hits = body.get("commits").and_then(Value::as_array).expect("commits");
     assert_eq!(hits.len(), 1, "one commit summary contains 'tweak', got {hits:?}");
     assert!(
-        hits[0]
+        hits[0]["subject"]
             .as_str()
-            .and_then(|row| row.split_once(' '))
-            .is_some_and(|(_, summary)| summary.contains("tweak")),
+            .is_some_and(|summary| summary.contains("tweak")),
         "hit summary should contain the query token"
     );
     let body = decode_text(
@@ -1446,12 +1445,15 @@ async fn spawn_paging_server() -> (TempDir, rmcp::service::RunningService<rmcp::
     (dir, service)
 }
 
-/// The shas of a list of `"<sha> <summary>"` rows.
+/// The shas of a list of commit rows: `{sha, ...}` objects, or `"<sha> <summary>"` strings.
 fn row_shas(rows: Option<&Value>) -> Vec<String> {
     rows.and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
-                .filter_map(|row| row.as_str()?.split_once(' ').map(|(sha, _)| sha.to_string()))
+                .filter_map(|row| match row.as_str() {
+                    Some(row) => row.split_once(' ').map(|(sha, _)| sha.to_string()),
+                    None => row["sha"].as_str().map(str::to_string),
+                })
                 .collect()
         })
         .unwrap_or_default()

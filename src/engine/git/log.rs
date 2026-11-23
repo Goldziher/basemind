@@ -136,6 +136,7 @@ fn git_log(ws: &Workspace, p: GitLogParams) -> Result<GitLogResult, EngineError>
                     limit: Some(p.limit.unwrap_or(LOG_LIMIT_DEFAULT)),
                     cursor: p.cursor,
                     max_tokens,
+                    include_files: p.files,
                 },
             )?;
             // A directory is held to what a file is: no commit in the whole history and nothing on
@@ -169,7 +170,7 @@ fn git_log(ws: &Workspace, p: GitLogParams) -> Result<GitLogResult, EngineError>
             ws,
             RecentChangesParams {
                 limit: p.limit,
-                include_files: true,
+                include_files: p.files,
                 cursor: p.cursor,
                 max_tokens,
             },
@@ -529,6 +530,7 @@ fn run_recent(ws: &Workspace, params: RecentChangesParams) -> Result<RecentChang
         return Ok(RecentChangesResponse {
             commits: Vec::new(),
             files: Vec::new(),
+            files_more: Vec::new(),
             truncated: false,
             truncated_reason: None,
             next_cursor: None,
@@ -561,13 +563,14 @@ fn run_recent(ws: &Workspace, params: RecentChangesParams) -> Result<RecentChang
         .take(limit)
         .map(|c| commit_to_view(c, params.include_files))
         .collect();
-    let (page, files, budgeted) = budget_commits_with_files(page, params.max_tokens);
+    let (page, files, files_more, budgeted) = budget_commits_with_files(page, params.max_tokens);
     let next_cursor = (more || budgeted)
         .then(|| crate::engine::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
     let truncated = repo.is_shallow();
     Ok(RecentChangesResponse {
         commits: page,
         files,
+        files_more,
         budgeted,
         truncated,
         truncated_reason: truncated.then_some("shallow_clone"),
@@ -825,16 +828,7 @@ fn run_search(ws: &Workspace, params: SearchGitHistoryParams) -> Result<SearchGi
     let has_more = hits.len() > limit;
     hits.truncate(limit);
 
-    // `author` matches a substring of the name or the email, so it can select several people: each
-    // row then says whose commit it is.
-    let with_author = params.author.is_some() || scope == FtsScope::Author;
-    let commits = hits
-        .into_iter()
-        .map(|c| CommitView {
-            with_author,
-            ..commit_to_view(c, false)
-        })
-        .collect();
+    let commits = hits.into_iter().map(|c| commit_to_view(c, false)).collect();
     let (commits, budgeted) = budget_commits(commits, params.max_tokens);
     let has_more = has_more || budgeted;
     let kept = commits.len();
