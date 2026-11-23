@@ -98,7 +98,7 @@ fn is_indexed_key(index: &Index, rel: &str) -> bool {
 
 /// Every code file and document key the index holds beneath each of `dirs`, by key-range lookup
 /// in `keys`: the cost follows the entries found, not the size of the index.
-fn indexed_under<'k>(keys: &'k KeyOrder, dirs: &AHashMap<String, bool>) -> AHashMap<&'k str, Vec<&'k str>> {
+fn indexed_under<'k>(keys: &'k KeyOrder, dirs: &'k AHashMap<String, bool>) -> AHashMap<&'k str, Vec<&'k str>> {
     let mut out: AHashMap<&str, Vec<&str>> = AHashMap::new();
     for dir in dirs.keys() {
         let beneath: Vec<&str> = keys
