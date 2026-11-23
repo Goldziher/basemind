@@ -196,7 +196,7 @@ def msgpack_rule(v: Verdict, records: list[dict[str, Any]], args: argparse.Names
     v.add(
         "M9 index.msgpack written",
         per_hour <= args.msgpack_mib_h,
-        f"{watch['bytes'] / MIB:.1f} MiB in {watch['seconds'] / 60:.1f} min = {per_hour:.0f} MiB/h; "
+        f"at least {watch['bytes'] / MIB:.1f} MiB in {watch['seconds'] / 60:.1f} min = {per_hour:.0f} MiB/h; "
         f"{watch['rewrites']} rewrites of {watch['files']} files",
         f"{per_hour:.0f} MiB/h",
         f"<= {args.msgpack_mib_h:g} MiB/h",

@@ -141,6 +141,9 @@ def watcher_counts() -> tuple[int, int]:
         target.write_bytes(b"y" * 250)
         os.utime(target, ns=(2_000, 2_000))
         watcher.tick()
+        target.write_bytes(b"z" * 300)
+        os.utime(target, ns=(2_000, 2_000))
+        watcher.tick()
         return watcher.bytes, watcher.rewrites
 
 
@@ -207,13 +210,17 @@ CASES: list[tuple[str, Callable[[], object], object]] = [
     ("a depth of zero is refused", lambda: corpus_error(tab("d", "https://x", COMMIT, "0", "p")) != "", True),
     ("a non-https URL is refused", lambda: corpus_error(tab("d", "git://x", COMMIT, "1", "p")) != "", True),
     ("bytes rewritten since a time", rewritten_counts, {"total": 50, MSGPACK: 30}),
-    ("the watcher counts a rewrite once, not the first sight", watcher_counts, (250, 1)),
+    ("the watcher counts a rewrite once, not the first sight, and a same-mtime resize", watcher_counts, (550, 2)),
     (
         "a worktree is sparse, on branch a, with both branches",
         worktree_shape,
         (4, True, False, "soak-3-a", ["soak-3-a", "soak-3-b"], True, True),
     ),
-    ("a runnable setup", lambda: validation(), None),
+    (
+        "a runnable setup",
+        lambda: validation(),
+        "the large-monorepo soak runs on Linux and macOS only" if sys.platform == "win32" else None,
+    ),
     ("fewer sessions than worktrees", lambda: validation(sessions=5) is not None, True),
     ("retiring every worktree", lambda: validation(retire=20) is not None, True),
     ("a healthy run fails nothing", lambda: failing(healthy()), []),

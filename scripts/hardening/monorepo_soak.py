@@ -74,7 +74,7 @@ GIT_QUIET = (
 )
 SHARED_PY = '"""Identical in every worktree."""\n\n\ndef soak_shared():\n    return 0\n'
 MSGPACK = "index.msgpack"
-WATCH_EVERY_S = 5.0
+WATCH_EVERY_S = 0.5
 
 
 @dataclass(frozen=True)
@@ -130,13 +130,15 @@ def rewritten_bytes(root: Path, since_ns: int) -> dict[str, int]:
 
 
 class MsgpackWatcher(threading.Thread):
-    """Counts the bytes of every `index.msgpack` under the data home each time its mtime moves."""
+    """Counts the bytes of every `index.msgpack` under the data home each time a poll finds it replaced
+    or modified (a new inode, mtime or size). Rewrites that land between two polls collapse into one,
+    so the total is a lower bound on what was written, tighter the shorter the poll."""
 
     def __init__(self, root: Path, every: float = WATCH_EVERY_S) -> None:
         super().__init__(name="msgpack-watcher", daemon=True)
         self.root, self.every = root, every
         self.stop_event = threading.Event()
-        self.seen: dict[str, int] = {}
+        self.seen: dict[str, tuple[int, int, int]] = {}
         self.bytes = 0
         self.rewrites = 0
         self.started = time.monotonic()
@@ -151,8 +153,9 @@ class MsgpackWatcher(threading.Thread):
             except OSError:
                 continue
             previous = self.seen.get(path)
-            self.seen[path] = st.st_mtime_ns
-            if previous is not None and previous != st.st_mtime_ns:
+            signature = (st.st_ino, st.st_mtime_ns, st.st_size)
+            self.seen[path] = signature
+            if previous is not None and previous != signature:
                 self.bytes += st.st_size
                 self.rewrites += 1
 

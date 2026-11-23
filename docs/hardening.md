@@ -319,7 +319,7 @@ of #267).
 | M6 call errors | calls that fail under load | <= 1% |
 | M7 answer staleness | slowest time until a watched edit, and a concurrent branch switch, is answered | <= 30 s, <= 60 s; none unanswered |
 | M8 view retire and sweep | `cache gc` after removing 5 worktrees | exit 0, <= 120 s, all 5 workspaces reaped |
-| M9 `index.msgpack` written | bytes of `index.msgpack` rewritten per hour of load | <= 4096 MiB/h |
+| M9 `index.msgpack` written | bytes of `index.msgpack` rewritten per hour of load, polled every 0.5 s, so a lower bound | <= 4096 MiB/h |
 | M10 no survivors | processes of the run after `comms stop` | none |
 
 The daemon exposes no counter for lock waits, `read_index` calls or the bytes of one file map, so the soak reports
