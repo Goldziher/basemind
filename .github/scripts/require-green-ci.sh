@@ -99,7 +99,8 @@ log "ci run $run_id: $total of $total test legs succeeded"
 # The jobs of publish.yaml itself are not CI's verdict on the commit: a failed earlier attempt of
 # the release (a re-run or a dispatch for the same tag) leaves its failed jobs on the commit, and
 # counting them would refuse every retry. Their names come from the workflow, so a new job needs
-# no edit here.
+# no edit here. A reusable workflow's jobs are named "<caller job name> / <called job name>", so
+# the build's own jobs belong to the release too.
 publish_jobs="$(sed -n 's/^    name: //p' "$(dirname "${BASH_SOURCE[0]}")/../workflows/publish.yaml" | jq -R . | jq -s .)"
 [ "$(jq length <<<"$publish_jobs")" -gt 0 ] || die "found no job names in publish.yaml"
 # The docs site deploys from main; the tag's own docs run is not CI's verdict either.
@@ -107,7 +108,7 @@ publish_jobs="$(jq -c '. + ["deploy"]' <<<"$publish_jobs")"
 failing="$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?per_page=100" |
   jq -r --argjson own "$publish_jobs" '.check_runs[]
       | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required")
-      | select(.name as $n | $own | index($n) | not)
+      | select(.name as $n | $own | any(. as $o | $n == $o or ($n | startswith($o + " / "))) | not)
       | "\(.conclusion)\t\(.name)"')"
 [ -z "$failing" ] || die "check runs on $SHA did not pass:
 $failing"

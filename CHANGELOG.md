@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The publish gate ignores the failed jobs of the reusable build from an earlier attempt of a release, and `publish.yaml`'s job graph, release-notes cap and gate names are covered by tests (#449).
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33
