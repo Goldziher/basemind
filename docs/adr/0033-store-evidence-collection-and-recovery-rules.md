@@ -60,7 +60,7 @@ named here stands.
 8. **ADR-0025's file-map row, "rebuild / refused", becomes:** a map whose version fields read as
    this binary's schema and a blob layout no newer than its own, but which does not decode, is
    rebuilt by a writer open. A map whose version fields cannot be read is renamed aside to
-   `index.msgpack.unreadable-<time>` by a writer open, never deleted, and the view is rebuilt. A
+   `index.msgpack.unreadable-<time>` by a writer open, never deleted at once (the newest two are kept and older ones reaped after a week), and the view is rebuilt. A
    read-only open refuses both, so only `basemind scan` or the daemon heals them.
 9. **ADR-0030 rule 26 adds:** a scan into a store opened without the workspace lock takes the lock
    first and keeps it, or is refused while another process holds it (an `isError` result naming
