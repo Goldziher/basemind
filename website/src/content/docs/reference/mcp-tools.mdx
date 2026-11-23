@@ -71,7 +71,7 @@ See [Shared memory](/concepts/memory/).
 
 | Tool | Arguments | Use it for |
 |---|---|---|
-| `index_status` | none | Index health and repo identity: file counts per language, scan and degraded state, `cache_dir` (basemind's cache directory), `branch`, `head_sha`. |
+| `index_status` | none | Index health and repo identity: file counts per language and per path role, scan and degraded state, `cache_dir` (basemind's cache directory), `branch`, `head_sha`. |
 | `index_rescan` | `paths?` | Re-index the given paths, or with no arguments the whole workspace, skipping unchanged files. Writes only basemind's cache, never the repository. |
 
 CLI only, with no MCP tool: `basemind git churn`, `basemind git by-path <regex>`, `basemind code chunk`,

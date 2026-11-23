@@ -21,7 +21,7 @@ arguments, paging, cuts, cursors, text encodings) are in the `mcp-surface` conte
 | `git_diff` | `path?`, `from?`, `to?`, `structural?` | no arguments: working-tree status (200 paths per list; a `path` ending in `/` narrows it to that directory); `path`: that file's diff (`from` defaults to HEAD, `to` to the working tree); `structural`: symbols added and removed since `from` plus the `common` count, no `to`; at most 200 hunks or 128 KiB, then `truncated`; `binary` for a binary file; `lossy_text` when a hunk line is not UTF-8 (kept, its invalid bytes read as U+FFFD); a `path` in neither revision is an error |
 | `memory_save` | `key`, `value`, `tags?`, `visibility?` | write a durable note |
 | `memory_search` | `query?` or `key?` or `prefix?`, `tags?`, `visibility?`, `limit?`, `cursor?` | recall notes by meaning, by key, or by key prefix; a listing cut sets `scan_cap`; a `key` no note has answers `{"key":…,"found":false}` |
-| `index_status` | none | index health and repository identity (files per language, scan state, `cache_dir` for this workspace, `grammar_dir`, branch, HEAD) |
+| `index_status` | none | index health and repository identity (files per language and per path role, scan state, `cache_dir` for this workspace, `grammar_dir`, branch, HEAD) |
 | `index_rescan` | `paths?` | re-index the given files or directories (a directory's deleted files are pruned), or with none the whole workspace (unchanged files are skipped); a path neither on disk nor indexed, or outside the repository, is an error |
 
 ## Tokens per answer

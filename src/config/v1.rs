@@ -5,6 +5,7 @@ use super::code::CodeSearchConfig;
 use super::comms::CommsConfig;
 use super::documents::{DocumentsConfig, LlmConfig};
 use super::resources::ResourcesConfig;
+use super::roles::RolesConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -100,6 +101,12 @@ pub struct ScanConfig {
     #[serde(default = "ScanConfig::default_test_globs")]
     #[schemars(inner(length(min = 1)))]
     pub test_globs: Vec<String>,
+    /// Path roles beyond the built-in ones: `[scan.roles]` lists globs per role (`test`, `infra`,
+    /// `generated`, `vendored`, `example`). A role labels a file and never removes it from the code
+    /// map. Same syntax as `list_only`, ordered like a `.gitignore`: a later `!pattern` entry switches
+    /// off what an earlier one, built-in or not, marked.
+    #[serde(default, skip_serializing_if = "RolesConfig::is_empty")]
+    pub roles: RolesConfig,
     /// Globs naming files the scan records as present and never opens: lockfiles, archives, packet
     /// captures, fonts, columnar data and other binaries. A listed file gets a file-map entry (path,
     /// size, modification time, kind) that `find_files` shows with `indexed: false` and `index_status`
@@ -238,6 +245,7 @@ impl Default for ScanConfig {
             floor_allow: Vec::new(),
             respect_gitignore: Self::default_respect_gitignore(),
             test_globs: Self::default_test_globs(),
+            roles: RolesConfig::default(),
             list_only: Self::default_list_only(),
             follow_symlinks: Self::default_follow_symlinks(),
             max_file_bytes: Self::default_max_file_bytes(),

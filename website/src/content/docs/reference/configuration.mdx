@@ -96,9 +96,25 @@ matched against the path relative to that root.
 | `max_file_bytes` | integer | `2097152` | Skip files larger than this (2 MiB). Prevents minified-bundle stalls. |
 | `skip_submodules` | bool | `true` | Skip paths under submodule roots listed in `.gitmodules`. |
 | `eager_l2` | bool | `true` | Extract L2 (call sites) inline with the scan. `false` trades reference search for a faster scan. |
+| `roles` | table of glob arrays | built-in shapes (below) | Path roles: `[scan.roles]` takes `test`, `infra`, `generated`, `vendored` and `example` lists, applied after the built-in globs of each role (the `test` role's are `test_globs`). A role labels a file and never removes it from the code map; `index_status` counts files per role. Ordered like a `.gitignore`: a later `!pattern` switches off what an earlier entry, built-in or not, marked (`infra = ["!**/*.service"]`). A file can carry several roles. |
 | `list_only` | array of globs | named lockfiles, archives, captures, fonts, columnar data, binaries | Files recorded as present and never opened: a stat-only entry (path, size, mtime, kind: `lockfile`, `archive`, `binary`, `data`) that `find_files` lists with `indexed: false` and `index_status` counts per kind. No symbol, text, chunk or document search returns them. Matches file names and globs, so `pnpm-lock.yaml` is listed although it is YAML. Ordered like a `.gitignore`: a later `!pattern` re-includes a file (`["Cargo.lock", "!crates/app/Cargo.lock"]`). `exclude` and the exclude floor win, so a file they drop is not listed. `[]` lists nothing. Replaced whole by each full scan. |
 | `extra_roots` | array of absolute paths | `[]` | Index directories outside the repo root (e.g., a Bazel external cache). External files are keyed by absolute path; (re-)indexed on full `basemind scan` only (not live-watched); they count toward `max_candidates`. Ignored with a warning unless the operator grants it (see [Trust boundary](#trust-boundary)). Missing roots, roots inside the repo, filesystem roots and credential directories (`.ssh`, `.aws`, `.gnupg`, `/etc`) are skipped. |
 | `max_candidates` | integer | `500000` | Ceiling on files one scan may keep, across the repo walk and every extra root (minimum 0). Exceeding it aborts before any extraction or index write, and the error names the heaviest directories. The walk also aborts if it visits far more entries than this. `0` disables both bounds. Does not apply to `--staged` / `--rev` scans. |
+
+#### Path roles
+
+Without configuration, `infra` marks Terraform and HCL (`*.tf`, `*.tfvars`, `*.hcl`), Dockerfiles and
+Containerfiles, Helm charts and Kubernetes manifests (`helm`, `charts`, `k8s`, `kustomize`), Ansible
+roles and playbooks, CI workflows (`.github/workflows`, `.gitlab-ci.yml`, `Jenkinsfile`, ...), Bazel and
+Starlark build files, and cloud-init and systemd units. `generated` marks protobuf output and
+`*.generated.*` files, `vendored` marks `vendor`, `third_party` and `node_modules`, and `example` marks
+`examples` and `samples`.
+
+```toml
+[scan.roles]
+infra     = ["deploy/**", "!**/*.service"]
+generated = ["**/*_pb2.py"]
+```
 
 #### Exclude floor
 
