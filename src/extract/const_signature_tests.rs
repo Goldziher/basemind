@@ -75,6 +75,17 @@ fn go_single_const_and_var_keep_their_names() {
 }
 
 #[test]
+fn go_multi_name_spec_pairs_each_name_with_its_own_initializer() {
+    let src = "package p\n\nconst A, B = 1, 2\n\nvar X, Y int = f(1, 2), 4\n\nvar P, Q = pair()\n";
+    assert_eq!(const_entry("go", src, "A").0, "const A = 1");
+    assert_eq!(const_entry("go", src, "B").0, "const B = 2");
+    assert_eq!(const_entry("go", src, "X").0, "var X int = f(1, 2)");
+    assert_eq!(const_entry("go", src, "Y").0, "var Y int = 4");
+    assert_eq!(const_entry("go", src, "P").0, "var P");
+    assert_eq!(const_entry("go", src, "Q").0, "var Q");
+}
+
+#[test]
 fn python_assignment_reads_as_a_const_declaration() {
     let src = "MAX_RETRIES = 3\n\nclass Row:\n    identification_source = sa.Column(sa.String)\n";
     assert_eq!(const_entry("python", src, "MAX_RETRIES").0, "const MAX_RETRIES = 3");

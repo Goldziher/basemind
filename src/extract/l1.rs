@@ -271,9 +271,44 @@ fn const_member_signature(name_node: Node, source: &[u8]) -> Option<String> {
         }
         _ => return None,
     };
+    if matches!(declarator.kind(), "const_spec" | "var_spec")
+        && let Some(sig) = shared_spec_member_signature(keyword, name_node, declarator, source)
+    {
+        return Some(sig);
+    }
     let text = source.get(name_node.start_byte()..declarator.end_byte())?;
     let member = signature_slice(std::str::from_utf8(text).ok()?)?;
     Some(format!("{keyword} {member}"))
+}
+
+/// The signature of one name in a Go spec that declares several (`const A, B = 1, 2`), pairing the
+/// name with the initializer at its position so `B` reads `const B = 2` rather than the whole
+/// right-hand side. `None` for a single-name spec, which keeps the declarator slice, and when the
+/// initializers do not line up one-to-one with the names (a call returning several values).
+fn shared_spec_member_signature(keyword: &str, name_node: Node, spec: Node, source: &[u8]) -> Option<String> {
+    let mut cursor = spec.walk();
+    let names: Vec<Node> = spec.children_by_field_name("name", &mut cursor).collect();
+    if names.len() < 2 {
+        return None;
+    }
+    let index = names.iter().position(|n| n.id() == name_node.id())?;
+    let name = name_node.utf8_text(source).ok()?;
+    let ty = spec.child_by_field_name("type").and_then(|t| t.utf8_text(source).ok());
+    let mut head = format!("{keyword} {name}");
+    if let Some(ty) = ty {
+        head.push(' ');
+        head.push_str(ty);
+    }
+    let Some(value) = spec.child_by_field_name("value") else {
+        return Some(head);
+    };
+    let mut cursor = value.walk();
+    let values: Vec<Node> = value.named_children(&mut cursor).collect();
+    if values.len() != names.len() {
+        return Some(head);
+    }
+    let init = signature_slice(values[index].utf8_text(source).ok()?)?;
+    Some(format!("{head} = {init}"))
 }
 
 /// True when a field declaration's `modifiers` child holds both `static` and `final` (a Java
