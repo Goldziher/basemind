@@ -657,8 +657,9 @@ pub(crate) fn ignore_walk_builder(dir: &Path, respect_gitignore: bool, follow_li
 /// gitignore-allowed iff every path segment, from the repo root down, is yielded as a non-ignored
 /// child of its parent directory. A per-instance memo caches each directory's allowed-children set,
 /// so a batch touching K distinct directories costs at most K `max_depth(1)` walks. Composing
-/// level-by-level with `parents(false)` correctly rejects a path whose *ancestor* directory is
-/// itself gitignored — the case a single flat `Gitignore` matcher gets wrong.
+/// level-by-level correctly rejects a path whose *ancestor* directory is itself gitignored — the
+/// case a single flat `Gitignore` matcher gets wrong — while each level still reads the ignore
+/// files of its parent directories, so a root `*.log` rule reaches `sub/x.log`.
 pub(crate) struct IndexFilter {
     filters: Filters,
     root: PathBuf,
@@ -837,12 +838,12 @@ impl IndexFilter {
 }
 
 /// Non-ignored immediate children (files and directories) of `dir`, as absolute paths, per the
-/// `ignore` crate. `parents(false)` keeps each directory's `.gitignore` scoped to its own level so
-/// the caller can compose the hierarchy; `max_depth(1)` lists children without descending.
+/// `ignore` crate. The walk reads the ignore files of `dir`'s parents (up to the repository root),
+/// so a rule declared above `dir` applies to its children; `max_depth(1)` lists children without
+/// descending.
 fn shallow_allowed_children(dir: &Path, respect_gitignore: bool, follow_links: bool) -> AHashSet<PathBuf> {
     let mut set = AHashSet::new();
     let walker = ignore_walk_builder(dir, respect_gitignore, follow_links)
-        .parents(false)
         .max_depth(Some(1))
         .build();
     for dent in walker.flatten() {
