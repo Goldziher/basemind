@@ -56,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A view keeps only its newest two `index.msgpack.unreadable-<secs>` set-asides; older ones are reaped after a week (#434).
+### Changed
+
+- The working-tree status is cached per worktree and served until the index, `HEAD` or a watcher batch changes it (or five seconds pass), so repeated `changed`-scoped and `git_diff` status calls on a large checkout run one status (#284).
 
 ## [0.34.0] - 2026-11-22
 
