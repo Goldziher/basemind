@@ -167,7 +167,17 @@ const BINARY_SUFFIXES: &[&str] = &[
 pub fn kind_of(rel: &str) -> ListKind {
     let name = rel.rsplit('/').next().unwrap_or(rel).to_ascii_lowercase();
     let ends = |suffixes: &[&str]| suffixes.iter().any(|suffix| name.ends_with(suffix));
-    if LOCKFILES.iter().any(|lock| lock.eq_ignore_ascii_case(&name)) || ends(&[".lock", ".lock.hcl", ".sum"]) {
+    if LOCKFILES.iter().any(|lock| lock.eq_ignore_ascii_case(&name))
+        || ends(&[
+            ".lock",
+            ".lockb",
+            ".lockfile",
+            ".lock.json",
+            ".lock.hcl",
+            ".lock.yaml",
+            ".sum",
+        ])
+    {
         ListKind::Lockfile
     } else if ends(DATA_SUFFIXES) {
         ListKind::Data

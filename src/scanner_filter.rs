@@ -107,8 +107,9 @@ const FLOOR_EXCLUDES: &[&str] = &[
 
 /// Lockfiles: machine-written dependency pins that are never source. Parsing them floods the code
 /// map with meaningless symbols (a `.terraform.lock.hcl` is valid HCL) and fills the document store
-/// with chunks no one searches for. Part of the always-on floor (see [`floor_entries`]), so
-/// `[scan] floor_allow` re-includes one by name (`go.sum`, `*.lock`). Every entry is a file name
+/// with chunks no one searches for. Part of the always-on floor (see [`floor_entries`]) as list-only
+/// rules (see [`lockfile_list_rules`]): recorded as present, never opened. `[scan] floor_allow`
+/// re-includes one by name (`go.sum`, `*.lock`). Every entry is a file name
 /// or a suffix on one; `go.mod`, `Makefile.lock.py` and `lockdown.py` do not match.
 pub(crate) const LOCKFILE_GLOBS: &[&str] = &[
     "**/.terraform.lock.hcl",
@@ -236,48 +237,30 @@ fn effective_floor(floor_allow: &[String], credentials_granted: bool) -> Vec<&'s
 
 /// Globs (`**/<name>`) that re-include the lockfiles `[scan] floor_allow` names exactly. Removing
 /// `**/yarn.lock` from the floor is not enough while the broader `**/*.lock` still matches the
-/// file, so a named lockfile also gets an entry here; [`Excludes`] lets it cancel only the floor's
-/// lockfile patterns, never a user `[scan] exclude`. A wildcard entry (`*.lock`) removes its own
-/// floor pattern and re-includes nothing else.
+/// file, so a named lockfile also gets a `!` entry in [`lockfile_list_rules`]. A wildcard entry
+/// (`*.lock`) removes its own floor pattern and re-includes nothing else.
 fn lockfile_reallow(floor_allow: &[String]) -> Vec<String> {
     floor_allow
         .iter()
         .map(|e| e.trim().trim_matches('/'))
         .filter(|e| !e.contains(['*', '?', '[', '{']))
         .filter(|e| LOCKFILE_GLOBS.iter().any(|p| floor_name(p) == *e))
-        .map(|e| format!("**/{e}"))
+        .map(|e| format!("!**/{e}"))
         .collect()
 }
 
-/// The file-level exclude patterns, in the three tiers that decide whether a lockfile exception
-/// applies: `always` (user excludes and every non-lockfile floor entry), `lockfiles` (the floor's
-/// lockfile patterns) and `reallowed` (named lockfiles that cancel `lockfiles` but not `always`).
-#[derive(Clone)]
-struct Excludes {
-    always: globset::GlobSet,
-    lockfiles: globset::GlobSet,
-    reallowed: globset::GlobSet,
-}
-
-impl Excludes {
-    fn build(floor: &[&str], reallowed: &[String], user: &[String]) -> Result<Self, ScanError> {
-        let is_lockfile = |p: &str| LOCKFILE_GLOBS.contains(&p);
-        Ok(Self {
-            always: compile_globs(
-                floor
-                    .iter()
-                    .copied()
-                    .filter(|p| !is_lockfile(p))
-                    .chain(user.iter().map(String::as_str)),
-            )?,
-            lockfiles: compile_globs(floor.iter().copied().filter(|p| is_lockfile(p)))?,
-            reallowed: compile_globs(reallowed.iter().map(String::as_str))?,
-        })
-    }
-
-    fn is_match(&self, rel: &str) -> bool {
-        self.always.is_match(rel) || (self.lockfiles.is_match(rel) && !self.reallowed.is_match(rel))
-    }
+/// The ordered list-only rules the floor contributes: its lockfile patterns that `floor_allow` left
+/// in place, then the `!` entries re-including the lockfiles it names. They come before the user's
+/// `[scan] list_only`, so a user entry can list or re-index a lockfile either way. Lockfiles are
+/// listed, never read and never dropped outright, so an agent still sees where they are.
+fn lockfile_list_rules(floor: &[&str], floor_allow: &[String]) -> Vec<String> {
+    floor
+        .iter()
+        .copied()
+        .filter(|p| LOCKFILE_GLOBS.contains(p))
+        .map(str::to_string)
+        .chain(lockfile_reallow(floor_allow))
+        .collect()
 }
 
 /// Include/exclude pair precompiled once per scan. An absent include means "everything"; exclude
@@ -315,7 +298,7 @@ pub(crate) struct Filters {
     #[cfg(any(feature = "documents", feature = "code-search"))]
     pub(crate) retrieval: crate::scan_retrieval::Retrieval,
     include: globset::GlobSet,
-    exclude: Excludes,
+    exclude: globset::GlobSet,
     /// `[scan] list_only`: files recorded as present and never opened. See [`Filters::listed_kind`].
     list_only: ListOnly,
     /// Directory-level view of `exclude`: every `P/**` pattern also present as bare `P`, so a
@@ -409,10 +392,16 @@ impl Filters {
         let user_excludes: Vec<String> = config.scan.exclude.iter().flat_map(|p| expand_pattern(p)).collect();
         let exclude_patterns: Vec<String> = floor
             .iter()
-            .map(|p| (*p).to_string())
+            .copied()
+            .filter(|p| !LOCKFILE_GLOBS.contains(p))
+            .map(str::to_string)
             .chain(user_excludes.iter().cloned())
             .collect();
-        let exclude = Excludes::build(&floor, &lockfile_reallow(&config.scan.floor_allow), &user_excludes)?;
+        let exclude = compile_globs(exclude_patterns.iter().map(String::as_str))?;
+        let list_only_rules: Vec<String> = lockfile_list_rules(&floor, &config.scan.floor_allow)
+            .into_iter()
+            .chain(config.scan.list_only.iter().cloned())
+            .collect();
         let dir_exclude = compile_globs(dir_exclude_patterns(&exclude_patterns).iter().map(String::as_str))?;
         let submodule_prefixes: Arc<[String]> = if config.scan.skip_submodules {
             submodule_roots
@@ -445,7 +434,7 @@ impl Filters {
             retrieval,
             include,
             exclude,
-            list_only: ListOnly::new(&config.scan.list_only).map_err(ScanError::BadGlob)?,
+            list_only: ListOnly::new(&list_only_rules).map_err(ScanError::BadGlob)?,
             dir_exclude: Arc::new(dir_exclude),
             max_file_bytes: config.scan.max_file_bytes,
             doc_max_file_bytes: config.documents.max_file_bytes,
@@ -640,7 +629,7 @@ impl Filters {
 /// such events before they are queued; it does no I/O.
 #[derive(Clone)]
 pub(crate) struct ExclusionGate {
-    exclude: Excludes,
+    exclude: globset::GlobSet,
     dir_exclude: Arc<globset::GlobSet>,
     submodule_prefixes: Arc<[String]>,
 }
