@@ -21,7 +21,7 @@ pub struct FindFilesToolParams {
     /// Language filter, e.g. `rust`, `markdown`.
     #[serde(default)]
     pub language: Option<String>,
-    /// Default 200.
+    /// Default 200, max 5000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.

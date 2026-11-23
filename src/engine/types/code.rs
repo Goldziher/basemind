@@ -14,7 +14,7 @@ use crate::path::RelPath;
 pub struct CodeOutlineParams {
     /// Repo-relative file path.
     pub path: RelPath,
-    /// Default 500.
+    /// Default 500, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.
@@ -265,7 +265,7 @@ pub struct CodeSymbolsParams {
     /// Also match the name as a fuzzy subsequence, ranked last.
     #[serde(default)]
     pub fuzzy: Option<bool>,
-    /// Default 100.
+    /// Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.

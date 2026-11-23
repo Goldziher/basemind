@@ -106,6 +106,12 @@ impl HistoryAt<'_> {
         self.db.window_commits(&self.reach, window)
     }
 
+    /// How many commits this head reaches: the length of the newest-first list the paged reads
+    /// skip into.
+    pub fn commit_count(&self) -> usize {
+        self.reach.len()
+    }
+
     /// Whether the index still holds this view's head as the tip it was read from. The reads take no
     /// lock, so a sync that wipes and rebuilds the index while they run can make a path with history
     /// read as untouched: an answer counts only when this still holds after it.

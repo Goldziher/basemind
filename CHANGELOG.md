@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `code_grep` answers `skipped_reasons` beside `skipped_files`: how many files were skipped as `unavailable` (gone since the scan, or leading out of the repository), `too_large` (past `scan.max_file_bytes`) or `unreadable` (opening or reading failed) (#477)
+- A directory `git_log` page reports `commits_reached` and, when the git-history index serves it, `total_commits`, so an agent can tell how far into the history paging has got (#261)
+- The manual's paging page lists every `truncated_reason` with its next step (#261)
 - `git_log` takes `files: true` to list what each commit changed in a recent or directory list: at most 8 entries a commit (a directory holding several changed files collapses to one `"<dir>/": "<n> files"` entry), the rest counted in `files_more` (#456)
 
 ### Fixed
@@ -23,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The `git_log` `symbol` description says a body comparison ignores comments and whitespace, so a formatter-only rewrite that `git log -L` lists is not reported; `hash_mode` on `symbol_history` is unchanged (#480)
+- Every `limit` argument's description states its maximum, so no limit is capped silently (#261)
 - **BREAKING:** a `git_log` list row is `{sha, author, date, subject}` with an 8-digit sha, and no list names its files unless `files: true` is passed; `basemind git log` and `recent` take `--files` (#456)
 - `git_log`, `git_blame`, `code_symbols`, `code_refs`, `docs_search` and `code_search` write their text block as TOON, or as compact JSON when that is shorter, so a commit list is one table (#456)
 ### Changed

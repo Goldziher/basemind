@@ -27,7 +27,7 @@ pub struct CodeGrepParams {
     /// Lines before and after each hit, 0-10.
     #[serde(default)]
     pub context: Option<u32>,
-    /// Default 100.
+    /// Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.
