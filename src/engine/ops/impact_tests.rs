@@ -272,27 +272,19 @@ mod scanned {
     }
 
     #[test]
-    fn a_call_to_another_definition_of_the_same_name_is_a_callee_and_self_recursion_is_not() {
+    fn an_unbound_call_to_the_definitions_own_name_is_self_recursion_and_listed_nowhere() {
         let (_dir, ws) = workspace_with_files(&[
             ("src/e.rs", "pub fn bee() {\n    crate::b::bee();\n    bee();\n}\n"),
             ("src/lib.rs", "mod a;\nmod b;\nmod c;\nmod d;\nmod e;\n"),
         ]);
-        let impact = symbol_impact(&ws, "bee");
-        let from_e: Vec<_> = impact
-            .calls
+        let callees =
+            crate::engine::ops::explain::callees_of(&ws, &RelPath::from("src/e.rs"), "bee", 1).expect("callees");
+        let listed: Vec<_> = callees
             .iter()
-            .filter(|callee| callee.from == RelPath::from("src/e.rs"))
-            .map(|callee| (callee.name.as_str(), callee.path.clone()))
+            .map(|callee| (callee.name.as_str(), callee.definition.clone()))
             .collect();
-        assert_eq!(from_e, [("bee", Some(RelPath::from("src/b.rs")))], "{:?}", impact.calls);
-        assert!(
-            impact
-                .calls
-                .iter()
-                .all(|callee| callee.from != RelPath::from("src/b.rs")),
-            "{:?}",
-            impact.calls
-        );
+        // The facts do not bind a path-qualified call here, so the name decides: no callee.
+        assert!(listed.is_empty(), "{listed:?}");
     }
 
     #[test]
