@@ -577,6 +577,54 @@ async fn python_reexported_submodule_resolves_in_the_terminal_package() {
     service.cancel().await.expect("shutdown");
 }
 
+/// A project nested in a monorepo imports its own package by its own root (`from app.models import
+/// charge` in `services/billing/app/main.py`), which neither `src/` nor the repository root holds.
+/// ty's module resolver finds that root among the importer's ancestors, so the import is an edge of
+/// the import graph and the `charge()` call a resolved caller.
+#[cfg(feature = "code-intel-python")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn python_nested_project_import_resolves_through_ty() {
+    let dir = build_repo_with(&[
+        ("services/billing/app/__init__.py", "\n"),
+        ("services/billing/app/models.py", "def charge():\n    return 1\n"),
+        (
+            "services/billing/app/main.py",
+            "from app.models import charge\n\n\ndef run():\n    return charge()\n",
+        ),
+    ]);
+    let root = dir.path();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+
+    let models = "services/billing/app/models.py";
+    let body = importers(&service, models).await;
+    assert_eq!(
+        body["by_depth"],
+        json!({ "1": ["services/billing/app/main.py"] }),
+        "importers of {models}: {body}"
+    );
+
+    let callers = decode_text(
+        &service
+            .call_tool(call_params("code_refs", json!({ "name": "charge", "path": models })))
+            .await
+            .expect("code_refs callers"),
+    );
+    assert_eq!(
+        callers.get("resolved_total").and_then(Value::as_u64),
+        Some(1),
+        "{callers}"
+    );
+    assert!(
+        hit_rows(&callers)
+            .iter()
+            .any(|h| h["path"] == "services/billing/app/main.py" && h["line"] == 5 && h["resolution"] == "imported"),
+        "the charge() call in main.py must be a resolved caller: {callers}"
+    );
+
+    service.cancel().await.expect("shutdown");
+}
+
 /// Field vs. local: a local `value` inside `fieldVsLocal` shadows the class field of the same
 /// name, while `this.value` inside `readField` must resolve to the field. Java had zero
 /// resolution coverage before this engine landed.

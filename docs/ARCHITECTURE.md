@@ -137,6 +137,8 @@ src/
 │   ├── resolve.rs          — per-file dispatch: oxc → stack-graphs → locals fallback
 │   ├── resolve_pass.rs     — post-scan pass: caching, index staging, cross-file trigger
 │   ├── resolver.rs         — per-language SpecifierResolver (JS/TS, Python, Java)
+│   ├── resolver_python_ty.rs — Python imports via ty's module resolver
+│   │                         (feature code-intel-python)
 │   ├── xfile.rs            — cross-file stitch (importer binding → export site)
 │   ├── js.rs               — JS/TS via oxc (feature code-intel-js)
 │   ├── stackgraph.rs       — Python/Java via vendored .tsg stack-graphs
@@ -355,6 +357,7 @@ persists into the Fjall `refs_by_def` reverse index.
 |---|---|---|---|
 | JavaScript / TypeScript | oxc (`oxc_semantic` + `oxc_resolver`) | `code-intel-js` | Full scope + import/export resolution, intra- and cross-file. Self-contained — no tree-sitter grammar needed. |
 | Python, Java | vendored `.tsg` stack-graphs (`crates/stack-graphs`) | `code-intel-stack` | `.tsg` name-binding rules executed against the tree-sitter parse tree, per file, for intra-file resolution; cross-file resolution runs through the shared `SpecifierResolver` join (functions/classes/imports for both languages). Java qualified member calls are a known gap (see below). |
+| Python imports | ty's module resolver (`ty_module_resolver`) | `code-intel-python` (opt-in, adds `code-intel-stack`) | Cross-file import resolution only: the stitch's Python resolver asks ty first, over the indexed `.py`/`.pyi` files, and falls back to the path arithmetic. |
 | Every other language | tree-sitter `locals` query (`src/extract/locals.rs`) | none (always on) | Intra-file lexical scope binding only — the grammar-native fallback, no import resolution. |
 
 `[code_intel] precise_resolution` (default `true`) is the master switch: when `false`, the
@@ -372,7 +375,8 @@ oxc/stack-graphs engines are skipped and every language falls back to `locals`.
   each importer, it resolves the module specifier via a per-language
   `intel::resolver::SpecifierResolver` (JS/TS: Node/tsconfig resolution via `oxc_resolver`,
   including monorepo path aliases; Python: dotted/relative import path arithmetic over `src/`
-  and flat layouts; Java: fully-qualified-name resolution over Maven/Gradle source roots), then
+  and flat layouts, preceded under `code-intel-python` by ty's module resolver; Java:
+  fully-qualified-name resolution over Maven/Gradle source roots), then
   joins the imported name against the target file's export list — following re-export chains
   (package `__init__.py`; TS barrels built from re-imports, `export { a as b } from` or
   `export * from`) up to 8 files, cycle-guarded. The result is written straight to
@@ -385,6 +389,18 @@ oxc/stack-graphs engines are skipped and every language falls back to `locals`.
   `tsconfig.json` / `package.json` files it read. JS/TS probes are captured by wrapping oxc's
   `FileSystem` (the resolver's cache is cleared per importer so every probe reaches the recorder);
   Python and Java record each candidate path their path arithmetic tests.
+- **ty for Python imports** (`intel::resolver::python_ty`, feature `code-intel-python`). ty's
+  resolver runs over an in-memory file system holding the indexed `.py` and `.pyi` files under a
+  virtual `/`, with empty contents and an empty custom typeshed: a target is always an indexed
+  file, a standard-library import resolves to nothing, and a legacy `pkgutil` namespace package is
+  read as a regular package. The search roots are `src/` (when it holds Python files) and the
+  root; when they miss, ty searches the importer's ancestor directories that are not packages,
+  which finds a project nested in a monorepo. A runtime `.py` wins over its stub; a stub-only
+  module resolves to its `.pyi`. ty caches its queries for the whole stitch, so its probes are
+  derived rather than recorded: per search root, the stub-only package directory, and component
+  by component the module files and `__init__` files down to the first missing directory, which
+  is recorded as a directory; plus every ancestor's `__init__` files when the ancestor search
+  ran. A specifier ty misses falls back to the path arithmetic, whose probes are recorded too.
 - `intel::resolve_pass` has two entry points sharing this compute/stage machinery: `resolve_pass`
   (wholesale, after a full `scan`) and `resolve_pass_incremental` (the watcher path). The
   incremental pass restages the changed files' intra facts, then re-stitches the *changed paths

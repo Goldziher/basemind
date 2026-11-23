@@ -388,6 +388,9 @@ mod python {
         });
     }
 
+    /// The path arithmetic prefers the module file; ty's resolver (`code-intel-python`) follows
+    /// Python's finder, which prefers the package (see the next case).
+    #[cfg(not(feature = "code-intel-python"))]
     #[test]
     fn module_file_shadows_a_package_of_the_same_name() {
         assert_incremental_equals_full(&Case {
@@ -402,6 +405,54 @@ mod python {
                 needle: "def foo",
                 name: "foo",
                 use_file: "app.py",
+            }],
+        });
+    }
+
+    /// ty records the missing `pkg/mod` directory, so the package that appears there re-stitches
+    /// the importer of the module file it shadows.
+    #[cfg(feature = "code-intel-python")]
+    #[test]
+    fn package_shadows_a_module_file_of_the_same_name() {
+        assert_incremental_equals_full(&Case {
+            before: &[
+                ("pkg/mod.py", "def foo():\n    return 1\n"),
+                ("app.py", "from pkg.mod import foo\n\n\ndef run():\n    return foo()\n"),
+            ],
+            edits: &[Edit::Write(
+                "pkg/mod/__init__.py",
+                "PAD = 0\n\n\ndef foo():\n    return PAD\n",
+            )],
+            grammar_probe: "pkg/mod.py",
+            expect: &[Expect {
+                def_file: "pkg/mod/__init__.py",
+                needle: "def foo",
+                name: "foo",
+                use_file: "app.py",
+            }],
+        });
+    }
+
+    /// A project nested in the repository imports its package by its own root, which ty finds among
+    /// the importer's ancestors; a module that appears under that root re-stitches the importer.
+    #[cfg(feature = "code-intel-python")]
+    #[test]
+    fn module_appearing_under_a_nested_project_root() {
+        assert_incremental_equals_full(&Case {
+            before: &[
+                ("services/billing/app/__init__.py", "\n"),
+                (
+                    "services/billing/app/main.py",
+                    "from app.models import foo\n\n\ndef run():\n    return foo()\n",
+                ),
+            ],
+            edits: &[Edit::Write("services/billing/app/models.py", IMPL)],
+            grammar_probe: "services/billing/app/main.py",
+            expect: &[Expect {
+                def_file: "services/billing/app/models.py",
+                needle: "def foo",
+                name: "foo",
+                use_file: "services/billing/app/main.py",
             }],
         });
     }

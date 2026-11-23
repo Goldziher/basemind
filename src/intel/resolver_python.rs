@@ -16,6 +16,10 @@
 //!
 //! Conservative: a specifier that climbs above `root`, or resolves to no on-disk file, yields
 //! `None`.
+//!
+//! With feature `code-intel-python` the cross-file stitch builds the resolver with ty's module
+//! resolver over the indexed files (`resolver_python_ty.rs`): a specifier ty resolves takes its
+//! answer, and one it misses falls back to the path arithmetic here.
 
 use std::path::{Path, PathBuf};
 
@@ -27,9 +31,24 @@ use crate::path::RelPath;
 /// layout (`src`-layout packaging); the repo root covers flat layouts.
 const PACKAGE_ROOTS: &[&str] = &["src", ""];
 
-pub(crate) struct PythonResolver;
+#[derive(Default)]
+pub(crate) struct PythonResolver {
+    /// ty's module resolver over the indexed Python files, asked first; `None` resolves by path
+    /// arithmetic alone.
+    #[cfg(feature = "code-intel-python")]
+    ty: Option<Box<super::python_ty::TyResolver>>,
+}
 
 impl PythonResolver {
+    /// A resolver that asks ty's module resolver over `files` (the indexed repo-relative paths)
+    /// first, and falls back to path arithmetic when ty misses or cannot be built.
+    #[cfg(feature = "code-intel-python")]
+    pub(crate) fn with_ty<'a>(files: impl IntoIterator<Item = &'a str>) -> Self {
+        Self {
+            ty: super::python_ty::TyResolver::new(files).map(Box::new),
+        }
+    }
+
     /// Resolve `import`'s dotted-or-relative specifier to a repo-relative `.py` file.
     pub(crate) fn resolve(
         &self,
@@ -38,6 +57,14 @@ impl PythonResolver {
         import: &ImportEdge,
         probes: &mut ProbeSet,
     ) -> Option<RelPath> {
+        #[cfg(feature = "code-intel-python")]
+        if let Some(hit) = self
+            .ty
+            .as_ref()
+            .and_then(|ty| ty.resolve(importer_rel, &import.specifier, probes))
+        {
+            return Some(hit);
+        }
         self.resolve_specifier(root, importer_rel, &import.specifier, probes)
     }
 
@@ -57,6 +84,13 @@ impl PythonResolver {
         probes: &mut ProbeSet,
     ) -> Option<RelPath> {
         let name = import.imported.as_deref()?;
+        #[cfg(feature = "code-intel-python")]
+        if let Some(hit) = self.ty.as_ref().and_then(|ty| match package {
+            Some(package) => ty.submodule(package.as_str()?, name, probes),
+            None => ty.resolve(importer_rel, &submodule_specifier(&import.specifier, name), probes),
+        }) {
+            return Some(hit);
+        }
         if let Some(package) = package {
             if !is_package_init(package) {
                 return None;
@@ -64,12 +98,7 @@ impl PythonResolver {
             let package_dir = root.join(package.as_str()?).parent()?.to_path_buf();
             return module_file(root, &package_dir, &dotted_to_parts(name)?, true, probes);
         }
-        let module = import.specifier.as_str();
-        let specifier = if module.ends_with('.') {
-            format!("{module}{name}")
-        } else {
-            format!("{module}.{name}")
-        };
+        let specifier = submodule_specifier(&import.specifier, name);
         self.resolve_specifier(root, importer_rel, &specifier, probes)
     }
 
@@ -128,6 +157,16 @@ impl PythonResolver {
             dotted_to_parts(tail)?
         };
         module_file(root, &base, &parts, false, probes)
+    }
+}
+
+/// The specifier of submodule `name` of the module `module` names: `.views` for `from . import
+/// views`, `pkg.sub` for `from pkg import sub`.
+fn submodule_specifier(module: &str, name: &str) -> String {
+    if module.ends_with('.') {
+        format!("{module}{name}")
+    } else {
+        format!("{module}.{name}")
     }
 }
 

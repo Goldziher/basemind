@@ -40,6 +40,7 @@ run = [
   'cargo clippy --all-targets --features "comms memory" -- -D warnings',
   'cargo clippy --all-targets --features "comms documents memory" -- -D warnings',
   'cargo clippy --all-targets --features "documents documents-ocr documents-ner" -- -D warnings',
+  'cargo clippy --all-targets --features code-intel-python -- -D warnings',
 ]
 
 [tasks."check:msrv"]

@@ -382,7 +382,7 @@ pub fn stitch_cross_file_edges(
         };
         let resolver = resolvers
             .entry(language)
-            .or_insert_with_key(|lang| SpecifierResolver::for_language(lang));
+            .or_insert_with_key(|lang| SpecifierResolver::for_stitch(lang, store));
         let Some(resolver) = resolver.as_ref() else {
             continue;
         };

@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Python imports resolve through ty's module resolver (`ty_module_resolver` 0.0.23) behind the opt-in
+  `code-intel-python` feature, with the path arithmetic as the fallback: `src` layout, namespace and
+  stub-only packages, and a project nested in a monorepo (`services/billing/app/main.py` importing
+  `app.models`) now give import-graph edges, importers and resolved callers (#455).
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

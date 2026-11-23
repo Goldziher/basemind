@@ -12,7 +12,9 @@
 //! - [`SpecifierResolver::Js`] (feature `code-intel-js`) — Node/tsconfig-style resolution via
 //!   `oxc_resolver`. The single source of truth for the oxc config the whole crate uses.
 //! - [`SpecifierResolver::Python`] / [`SpecifierResolver::Java`] (feature `code-intel-stack`) —
-//!   pure path-arithmetic resolvers over conventional package/source-root layouts.
+//!   pure path-arithmetic resolvers over conventional package/source-root layouts. With feature
+//!   `code-intel-python`, the stitch's Python resolver asks ty's module resolver first
+//!   (`resolver_python_ty.rs`) and keeps the path arithmetic as its fallback.
 //!
 //! All resolvers are conservative: an ambiguous or unrecognized specifier resolves to `None` rather
 //! than a wrong guess. A miss simply leaves that import unstitched (the same fallback JS had for
@@ -105,11 +107,27 @@ impl SpecifierResolver {
             #[cfg(feature = "code-intel-js")]
             "javascript" | "typescript" | "tsx" => Some(Self::Js(Box::new(js::JsResolver::new()))),
             #[cfg(feature = "code-intel-stack")]
-            "python" => Some(Self::Python(python::PythonResolver)),
+            "python" => Some(Self::Python(python::PythonResolver::default())),
             #[cfg(feature = "code-intel-stack")]
             "java" => Some(Self::Java(java::JavaResolver)),
             _ => None,
         }
+    }
+
+    /// The resolver the cross-file stitch uses for `language`: [`for_language`](Self::for_language),
+    /// except that with feature `code-intel-python` a Python import is first resolved by ty's module
+    /// resolver over the files indexed in `store`. Build it once per stitch, like the JS resolver.
+    #[cfg_attr(
+        not(feature = "code-intel-python"),
+        allow(unused_variables, reason = "only the ty-backed Python resolver reads the index")
+    )]
+    pub(crate) fn for_stitch(language: &str, store: &crate::store::Store) -> Option<Self> {
+        #[cfg(feature = "code-intel-python")]
+        if language == "python" {
+            let files = store.index.files.keys().filter_map(RelPath::as_str);
+            return Some(Self::Python(python::PythonResolver::with_ty(files)));
+        }
+        Self::for_language(language)
     }
 
     /// Whether a resolver is compiled in for `language` — the capability check, with no resolver
@@ -452,6 +470,14 @@ pub(crate) mod python;
 #[cfg(all(test, feature = "code-intel-stack"))]
 #[path = "resolver_python_tests.rs"]
 mod python_tests;
+
+#[cfg(feature = "code-intel-python")]
+#[path = "resolver_python_ty.rs"]
+pub(crate) mod python_ty;
+
+#[cfg(all(test, feature = "code-intel-python"))]
+#[path = "resolver_python_ty_tests.rs"]
+mod python_ty_tests;
 
 #[cfg(feature = "code-intel-stack")]
 pub(crate) mod java {
