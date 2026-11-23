@@ -3,17 +3,18 @@
 //! under the line cap; every name is re-exported there.
 
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use serde::Deserialize;
 
+use super::file_map_log::BaseStamp;
 use super::{INDEX_FILE, Index, StoreError, VIEW_WORKING, VIEWS_DIR, ensure_dir};
 use crate::extract::SCHEMA_VER;
 
 /// Write `index` as the view's file map: a temporary file, fsynced, renamed over the old one, and
-/// the rename made durable. A failure leaves the previous file map in place.
-pub(super) fn write_file_map(view_dir: &Path, index: &Index) -> Result<(), StoreError> {
+/// the rename made durable. A failure leaves the previous file map in place. Returns the bytes written.
+pub(super) fn write_file_map(view_dir: &Path, index: &Index) -> Result<u64, StoreError> {
     let final_path = view_dir.join(INDEX_FILE);
     let tmp_path = view_dir.join(format!("{INDEX_FILE}.tmp"));
     let bytes = rmp_serde::to_vec_named(index)?;
@@ -45,20 +46,61 @@ pub(super) fn write_file_map(view_dir: &Path, index: &Index) -> Result<(), Store
     if let Err(error) = crate::store_layout::sync_directory(view_dir) {
         tracing::warn!(%error, "could not fsync the view directory after writing the file map");
     }
+    Ok(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+}
+
+/// How many set-aside file maps a view keeps whatever their age: the newest ones, in case one is
+/// a newer basemind's map that is still wanted.
+const KEEP_SET_ASIDE: usize = 2;
+
+/// How old (seconds) a set-aside file map beyond [`KEEP_SET_ASIDE`] must be to be reaped.
+const SET_ASIDE_HOLD_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Rename the file map of `view_dir` aside as `index.msgpack.unreadable-<unix seconds>`: its
+/// version cannot be read, so it may be a newer basemind's, which is never deleted at once. Older
+/// set-asides beyond the newest [`KEEP_SET_ASIDE`] are reaped once they are a week old.
+pub(super) fn set_aside_unreadable_map(view_dir: &Path) -> Result<(), StoreError> {
+    let from = view_dir.join(INDEX_FILE);
+    let secs = unix_secs_now();
+    let to = view_dir.join(format!("{INDEX_FILE}.unreadable-{secs}"));
+    std::fs::rename(&from, &to).map_err(|source| StoreError::Io { path: from, source })?;
+    super::file_map_log::remove_log(view_dir);
+    tracing::warn!(path = %to.display(), "file map unreadable; set aside, and the view is rebuilt");
+    reap_set_aside_maps(view_dir, secs, KEEP_SET_ASIDE, SET_ASIDE_HOLD_SECS);
     Ok(())
 }
 
-/// Rename the file map of `view_dir` aside as `index.msgpack.unreadable-<unix seconds>`: its
-/// version cannot be read, so it may be a newer basemind's, which is never deleted.
-pub(super) fn set_aside_unreadable_map(view_dir: &Path) -> Result<(), StoreError> {
-    let from = view_dir.join(INDEX_FILE);
-    let secs = std::time::SystemTime::now()
+fn unix_secs_now() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
-    let to = view_dir.join(format!("{INDEX_FILE}.unreadable-{secs}"));
-    std::fs::rename(&from, &to).map_err(|source| StoreError::Io { path: from, source })?;
-    tracing::warn!(path = %to.display(), "file map unreadable; set aside, and the view is rebuilt");
-    Ok(())
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// Delete the `index.msgpack.unreadable-<secs>` files of `view_dir` other than the newest `keep`,
+/// when they are at least `hold` seconds older than `now`. Best effort: a failure is logged, since
+/// a leftover costs only disk.
+fn reap_set_aside_maps(view_dir: &Path, now: u64, keep: usize, hold: u64) {
+    let prefix = format!("{INDEX_FILE}.unreadable-");
+    let Ok(entries) = std::fs::read_dir(view_dir) else {
+        return;
+    };
+    let mut set_aside: Vec<(u64, std::path::PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let secs = name.to_str()?.strip_prefix(&prefix)?.parse::<u64>().ok()?;
+            Some((secs, entry.path()))
+        })
+        .collect();
+    set_aside.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
+    for (secs, path) in set_aside.into_iter().skip(keep) {
+        if now.saturating_sub(secs) < hold {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_file(&path) {
+            tracing::warn!(%error, path = %path.display(), "could not reap a set-aside file map");
+        }
+    }
 }
 
 /// Delete the index file in a single view's directory.
@@ -70,6 +112,7 @@ pub(crate) fn wipe_view(view_dir: &Path) -> Result<(), StoreError> {
             source,
         })?;
     }
+    super::file_map_log::remove_log(view_dir);
     Ok(())
 }
 
@@ -124,15 +167,52 @@ pub(crate) fn written_by_newer(view_dir: &Path) -> bool {
     }
 }
 
+/// Reads of a map replaced by a compaction while it was read are retried this often.
+const READ_ATTEMPTS: u32 = 3;
+
+#[cfg(test)]
+thread_local! {
+    static READ_INDEX_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread called [`read_index`] since it started.
+#[cfg(test)]
+pub(crate) fn read_index_calls() -> usize {
+    READ_INDEX_CALLS.with(std::cell::Cell::get)
+}
+
+/// The view's file map: the base file with its delta log applied (see [`super::file_map_log`]).
 pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
+    #[cfg(test)]
+    READ_INDEX_CALLS.with(|calls| calls.set(calls.get() + 1));
     let path = view_dir.join(INDEX_FILE);
-    if !path.exists() {
-        return Ok(None);
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let (mut index, stamp) = read_base(&path)?;
+        super::file_map_log::apply_log(view_dir, stamp, &mut index)?;
+        // A compaction between the read and now replaced the base the log was applied to. ~keep
+        let settled = BaseStamp::of_path(&path) == Some(stamp);
+        if settled || attempt >= READ_ATTEMPTS {
+            return Ok(Some(index));
+        }
     }
-    let bytes = std::fs::read(&path).map_err(|source| StoreError::Io {
-        path: path.clone(),
+}
+
+/// Decode the base file at `path`, with the stamp of the very file read.
+fn read_base(path: &Path) -> Result<(Index, BaseStamp), StoreError> {
+    let io_error = |source| StoreError::Io {
+        path: path.to_path_buf(),
         source,
-    })?;
+    };
+    let mut file = std::fs::File::open(path).map_err(io_error)?;
+    let meta = file.metadata().map_err(io_error)?;
+    let stamp = BaseStamp::of(&meta);
+    let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
+    file.read_to_end(&mut bytes).map_err(io_error)?;
     // The version is read on its own first: a newer map need not decode as this one, and a decode
     // failure must not read as a damaged map that may be removed. Only a map whose version reads as
     // this binary's is rebuildable when the rest does not decode. ~keep
@@ -141,7 +221,9 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
         blob_layout,
     }) = rmp_serde::from_slice(&bytes)
     else {
-        return Err(StoreError::UnreadableFileMap { path });
+        return Err(StoreError::UnreadableFileMap {
+            path: path.to_path_buf(),
+        });
     };
     check_schema(schema_ver)?;
     if blob_layout > crate::store_layout::BLOB_LAYOUT {
@@ -164,7 +246,7 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
             expected: crate::store_layout::BLOB_LAYOUT,
         });
     }
-    Ok(Some(index))
+    Ok((index, stamp))
 }
 
 /// What a writer open ([`super::Store::open_with_holder`]) does with a view's file map. The one
@@ -221,5 +303,81 @@ pub(crate) fn check_schema(found: u16) -> Result<(), StoreError> {
             stored: found,
             current: SCHEMA_VER,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DAY: u64 = 24 * 60 * 60;
+
+    fn plant(dir: &Path, secs: u64) -> std::path::PathBuf {
+        let path = dir.join(format!("{INDEX_FILE}.unreadable-{secs}"));
+        std::fs::write(&path, b"x").expect("plant");
+        path
+    }
+
+    fn survivors(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("read dir")
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn reaping_keeps_the_newest_and_anything_inside_the_hold() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let now = 100 * DAY;
+        for age_days in [60, 30, 20, 10, 8, 3, 1] {
+            plant(tmp.path(), now - age_days * DAY);
+        }
+        std::fs::write(tmp.path().join(INDEX_FILE), b"live").expect("live map");
+        std::fs::write(tmp.path().join(format!("{INDEX_FILE}.unreadable-notasecs")), b"x").expect("odd");
+
+        reap_set_aside_maps(tmp.path(), now, 2, 7 * DAY);
+
+        let expect: Vec<String> = [
+            INDEX_FILE.to_string(),
+            format!("{INDEX_FILE}.unreadable-notasecs"),
+            format!("{INDEX_FILE}.unreadable-{}", now - DAY),
+            format!("{INDEX_FILE}.unreadable-{}", now - 3 * DAY),
+        ]
+        .into_iter()
+        .collect();
+        let mut expect = expect;
+        expect.sort();
+        assert_eq!(survivors(tmp.path()), expect);
+    }
+
+    #[test]
+    fn reaping_keeps_old_set_asides_within_the_keep_count() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let now = 100 * DAY;
+        let old = plant(tmp.path(), now - 90 * DAY);
+        let older = plant(tmp.path(), now - 95 * DAY);
+        reap_set_aside_maps(tmp.path(), now, 2, 7 * DAY);
+        assert!(old.exists() && older.exists());
+    }
+
+    #[test]
+    fn setting_a_map_aside_reaps_the_stale_ones_beyond_the_keep_count() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let now = unix_secs_now();
+        let stale: Vec<_> = (1..=3).map(|n| plant(tmp.path(), now - 30 * DAY - n)).collect();
+        std::fs::write(tmp.path().join(INDEX_FILE), b"torn").expect("map");
+
+        set_aside_unreadable_map(tmp.path()).expect("set aside");
+
+        let remaining = stale.iter().filter(|path| path.exists()).count();
+        assert_eq!(
+            remaining,
+            KEEP_SET_ASIDE - 1,
+            "the new set-aside and one old one are the kept two"
+        );
+        assert!(!tmp.path().join(INDEX_FILE).exists());
     }
 }

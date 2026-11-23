@@ -128,6 +128,34 @@ pub fn group_index_dir(root: &Path) -> PathBuf {
     DataRoot::current().group_index_dir(root)
 }
 
+/// The last release minor whose group index sits directly in the group directory
+/// (`cache/groups/<group>/index.fjall`). A later minor keeps its own under [`group_index_namespace`],
+/// so two installed releases never open, wipe or refuse each other's index.
+pub const LAST_UNNAMESPACED_GROUP_MINOR: u16 = 34;
+
+/// The directory the group database of release minor `minor` lives in, under the group directory
+/// `group_dir`: the group directory itself up to [`LAST_UNNAMESPACED_GROUP_MINOR`], `v<minor>/`
+/// after it. The group lock, the marker and the retrieval stores stay in `group_dir`, shared by
+/// every minor.
+pub fn group_index_namespace(group_dir: &Path, minor: u16) -> PathBuf {
+    if minor <= LAST_UNNAMESPACED_GROUP_MINOR {
+        group_dir.to_path_buf()
+    } else {
+        group_dir.join(format!("v{minor}"))
+    }
+}
+
+/// The database directory of this binary's group index within the group directory `group_dir`
+/// (the fjall database is [`crate::index::INDEX_DIR`] inside it).
+pub fn group_db_dir_in(group_dir: &Path) -> PathBuf {
+    group_index_namespace(group_dir, crate::version::RELEASE_MINOR)
+}
+
+/// The fjall directory of this binary's group index within the group directory `group_dir`.
+pub fn group_index_path_in(group_dir: &Path) -> PathBuf {
+    group_db_dir_in(group_dir).join(crate::index::INDEX_DIR)
+}
+
 /// Directory of a repository group's document retrieval stores, under its [`GROUPS_DIR`] entry:
 /// `cache/groups/<group>/lance/`, one store per embedding model (`crate::lance::docs`).
 pub const GROUP_LANCE_DIR: &str = "lance";
@@ -917,5 +945,41 @@ pub(crate) fn sync_directory(path: &Path) -> std::io::Result<()> {
     {
         let _ = path;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod group_namespace_tests {
+    use super::*;
+
+    #[test]
+    fn a_minor_after_the_last_unnamespaced_one_keeps_its_group_database_in_its_own_directory() {
+        let group = Path::new("/cache/groups/g");
+        let cases: [(&str, u16, &str); 4] = [
+            ("an old minor", 33, "/cache/groups/g"),
+            (
+                "the last unnamespaced minor",
+                LAST_UNNAMESPACED_GROUP_MINOR,
+                "/cache/groups/g",
+            ),
+            (
+                "the next minor",
+                LAST_UNNAMESPACED_GROUP_MINOR + 1,
+                "/cache/groups/g/v35",
+            ),
+            ("a major", 100, "/cache/groups/g/v100"),
+        ];
+        for (case, minor, expected) in cases {
+            assert_eq!(group_index_namespace(group, minor), Path::new(expected), "{case}");
+        }
+    }
+
+    #[test]
+    fn this_binarys_index_path_is_its_namespace_holding_the_fjall_directory() {
+        let group = Path::new("/cache/groups/g");
+        assert_eq!(
+            group_index_path_in(group),
+            group_index_namespace(group, crate::version::RELEASE_MINOR).join(crate::index::INDEX_DIR)
+        );
     }
 }

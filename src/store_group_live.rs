@@ -3,7 +3,9 @@
 //! The grep bloom and the BM25 postings are keyed by content, not by path. In a group index
 //! (ADR-0028) one such row serves every worktree of the group holding that content, so a sweep run
 //! by one worktree may drop a row only when no view of the group holds the content: its own
-//! in-memory file map, and the file map on disk of every other view. A file map that cannot be read
+//! in-memory file map, and what the file map of every other view names. Each sibling's map is
+//! decoded once and its holds kept, until that view writes its map again, so a sweep after a
+//! watcher batch decodes none of the siblings that did not write. A file map that cannot be read
 //! and is not provably of another schema makes the liveness unknowable, and the sweep is skipped.
 //!
 //! Symbol and call rows are keyed by content too, but read rather than swept here: a view reads them
@@ -12,13 +14,13 @@
 //! The document rows of the retrieval store (ADR-0029) are keyed the same way, by [`doc_key`]:
 //! [`Store::group_live_doc_keys`] lists the keys every view of the group names.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ahash::AHashSet;
 
 use crate::index::keys::ContentKey;
 use crate::index::live_keys::LiveKeys;
-use crate::store::{Index, Store, StoreError};
+use crate::store::{Index, Store, StoreError, ViewStamp};
 use crate::store_hash_refs::HashRefs;
 
 /// Why the group's liveness could not be established. A sweep given this must delete nothing.
@@ -61,49 +63,106 @@ fn doc_keys_of(index: &Index) -> impl Iterator<Item = String> + '_ {
         .map(|entry| doc_key(&entry.hash_hex, &entry.config_digest))
 }
 
-/// Call `each` with the file map under every one of `view_dirs`. A view with no file map holds
-/// nothing; one of an older or newer schema, or of an earlier blob layout, is rebuilt by its next
-/// scan before it is read again, so its rows are not a sweep's to keep.
-fn for_each_map(
-    view_dirs: impl IntoIterator<Item = PathBuf>,
-    mut each: impl FnMut(&Index),
-) -> Result<(), LivenessUnknown> {
-    for view_dir in view_dirs {
-        match crate::store::read_index(&view_dir) {
-            Ok(Some(index)) => each(&index),
-            Ok(None)
-            | Err(
-                StoreError::SchemaMismatch { .. } | StoreError::NewerSchema { .. } | StoreError::StaleBlobLayout { .. },
-            ) => {}
-            Err(source) => return Err(LivenessUnknown::UnreadableMap { path: view_dir, source }),
+/// What one sibling view's file map names, kept so a sweep reads each map once and again only when
+/// the view has written since. Contents are held by 8-byte digests ([`HashRefs`]): a collision can
+/// only keep a row, never drop one.
+#[derive(Debug, Default)]
+struct ViewHolds {
+    contents: HashRefs,
+    doc_keys: AHashSet<String>,
+    content_keys: AHashSet<ContentKey>,
+}
+
+impl ViewHolds {
+    fn of(index: &Index) -> Self {
+        let mut contents = HashRefs::default();
+        for hash in index
+            .files
+            .values()
+            .map(|entry| entry.hash_hex.as_str())
+            .chain(index.rebuild_pins.iter().map(String::as_str))
+        {
+            contents.acquire(hash);
+        }
+        Self {
+            contents,
+            doc_keys: doc_keys_of(index).collect(),
+            content_keys: index.files.values().filter_map(|entry| entry.content_key).collect(),
         }
     }
-    Ok(())
+}
+
+/// The most views the process-wide cache keeps before it starts over: a bound, not a working set.
+const HOLDS_CACHE_CAP: usize = 256;
+
+type HoldsCache = std::sync::Mutex<ahash::AHashMap<PathBuf, (ViewStamp, std::sync::Arc<ViewHolds>)>>;
+
+fn holds_cache() -> &'static HoldsCache {
+    static CACHE: std::sync::OnceLock<HoldsCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// What the file map under `view_dir` names. A view with no file map holds nothing; one of an older
+/// or newer schema, or of an earlier blob layout, is rebuilt by its next scan before it is read
+/// again, so its rows are not a sweep's to keep.
+///
+/// Served from the cache while the view's files are as they were when last decoded ([`ViewStamp`]);
+/// otherwise decoded again. A map that cannot be read is never cached.
+fn holds_of(view_dir: &Path) -> Result<std::sync::Arc<ViewHolds>, LivenessUnknown> {
+    // Taken before the read: a write during it leaves a stamp that no longer matches, so the next
+    // sweep decodes again. ~keep
+    let stamp = ViewStamp::of(view_dir);
+    let cached = holds_cache().lock().ok().and_then(|cache| {
+        cache
+            .get(view_dir)
+            .filter(|(known, _)| *known == stamp)
+            .map(|(_, holds)| holds.clone())
+    });
+    if let Some(holds) = cached {
+        return Ok(holds);
+    }
+    let holds = match crate::store::read_index(view_dir) {
+        Ok(Some(index)) => ViewHolds::of(&index),
+        Ok(None)
+        | Err(
+            StoreError::SchemaMismatch { .. } | StoreError::NewerSchema { .. } | StoreError::StaleBlobLayout { .. },
+        ) => ViewHolds::default(),
+        Err(source) => {
+            return Err(LivenessUnknown::UnreadableMap {
+                path: view_dir.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let holds = std::sync::Arc::new(holds);
+    if let Ok(mut cache) = holds_cache().lock() {
+        if cache.len() >= HOLDS_CACHE_CAP {
+            cache.clear();
+        }
+        cache.insert(view_dir.to_path_buf(), (stamp, holds.clone()));
+    }
+    Ok(holds)
+}
+
+/// The holds of every view under `view_dirs` (see [`holds_of`]).
+fn holds_of_all(
+    view_dirs: impl IntoIterator<Item = PathBuf>,
+) -> Result<Vec<std::sync::Arc<ViewHolds>>, LivenessUnknown> {
+    view_dirs.into_iter().map(|view_dir| holds_of(&view_dir)).collect()
 }
 
 /// The contents held by the views of a group other than the sweeping one, read from their file maps.
 #[derive(Debug, Default)]
-pub(crate) struct SiblingContents(HashRefs);
+pub(crate) struct SiblingContents(Vec<std::sync::Arc<ViewHolds>>);
 
 impl SiblingContents {
-    /// The contents named by the file maps under `view_dirs` (see [`for_each_map`]).
+    /// The contents named by the file maps under `view_dirs` (see [`holds_of`]).
     pub(crate) fn read(view_dirs: impl IntoIterator<Item = PathBuf>) -> Result<Self, LivenessUnknown> {
-        let mut refs = HashRefs::default();
-        for_each_map(view_dirs, |index| {
-            for hash in index
-                .files
-                .values()
-                .map(|entry| entry.hash_hex.as_str())
-                .chain(index.rebuild_pins.iter().map(String::as_str))
-            {
-                refs.acquire(hash);
-            }
-        })?;
-        Ok(Self(refs))
+        holds_of_all(view_dirs).map(Self)
     }
 
     fn holds(&self, hash_hex: &str) -> bool {
-        self.0.is_held(hash_hex)
+        self.0.iter().any(|view| view.contents.is_held(hash_hex))
     }
 }
 
@@ -182,9 +241,9 @@ impl Store {
             .values()
             .filter_map(|entry| entry.content_key)
             .collect();
-        for_each_map(self.sibling_view_dirs()?, |index| {
-            keys.extend(index.files.values().filter_map(|entry| entry.content_key));
-        })?;
+        for view in holds_of_all(self.sibling_view_dirs()?)? {
+            keys.extend(view.content_keys.iter().copied());
+        }
         Ok(keys)
     }
 
@@ -231,7 +290,9 @@ pub(crate) fn live_keys_of(index: &Index) -> LiveKeys {
 /// The document keys named by the file maps under `view_dirs`.
 fn sibling_doc_keys_in(view_dirs: impl IntoIterator<Item = PathBuf>) -> Result<AHashSet<String>, LivenessUnknown> {
     let mut keys = AHashSet::new();
-    for_each_map(view_dirs, |index| keys.extend(doc_keys_of(index)))?;
+    for view in holds_of_all(view_dirs)? {
+        keys.extend(view.doc_keys.iter().cloned());
+    }
     Ok(keys)
 }
 
@@ -321,6 +382,38 @@ mod tests {
 
         assert!(siblings.holds("only-in-b") && siblings.holds("only-in-c") && siblings.holds("shared"));
         assert!(!siblings.holds("in-no-map"));
+    }
+
+    #[test]
+    fn a_sibling_file_map_is_decoded_once_until_it_is_written_again() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (b, c) = (temp.path().join("b"), temp.path().join("c"));
+        write_map(&b, &["only-in-b"]);
+        write_map(&c, &["only-in-c"]);
+
+        let before = crate::store::read_index_calls();
+        let first = SiblingContents::read([b.clone(), c.clone()]).expect("readable");
+        assert_eq!(crate::store::read_index_calls() - before, 2);
+        let again = SiblingContents::read([b.clone(), c.clone()]).expect("readable");
+        assert_eq!(
+            crate::store::read_index_calls() - before,
+            2,
+            "the second sweep decodes nothing"
+        );
+        assert!(first.holds("only-in-b") && again.holds("only-in-c"));
+
+        write_map(&b, &["moved-to-b-and-longer"]);
+        let rewritten = SiblingContents::read([b, c]).expect("readable");
+        assert_eq!(
+            crate::store::read_index_calls() - before,
+            3,
+            "only the rewritten map is decoded again"
+        );
+        assert!(rewritten.holds("moved-to-b-and-longer") && rewritten.holds("only-in-c"));
+        assert!(
+            !rewritten.holds("only-in-b"),
+            "a cached answer does not outlive the write"
+        );
     }
 
     #[test]

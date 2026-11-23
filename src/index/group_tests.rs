@@ -327,3 +327,52 @@ fn a_bloom_sweep_keeps_the_rows_a_sibling_staged_until_its_map_names_them() {
     );
     assert!(!a.grep_bloom_current("fresh"));
 }
+
+/// Two release minors share one group directory: each keeps its own database in it, so neither
+/// opens, wipes nor refuses the other's. The older release's database keeps the stamp it was left with.
+#[test]
+fn two_release_minors_keep_their_own_group_database_in_one_group_directory() {
+    use crate::index::{INDEX_SCHEMA_VER, peek_index_schema_ver};
+    use crate::store_layout::{LAST_UNNAMESPACED_GROUP_MINOR, group_index_namespace};
+    const OLDER_RELEASES_SCHEMA: u32 = INDEX_SCHEMA_VER - 1;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let older = group_index_namespace(dir.path(), LAST_UNNAMESPACED_GROUP_MINOR);
+    let newer = group_index_namespace(dir.path(), LAST_UNNAMESPACED_GROUP_MINOR + 1);
+    assert_eq!(older, dir.path());
+    assert_eq!(newer, dir.path().join("v35"));
+
+    // The older release's database, stamped with a schema this build would wipe on open.
+    let older_incarnation = {
+        let group = open(&older);
+        group
+            .meta()
+            .insert(crate::index::META_SCHEMA_VER, OLDER_RELEASES_SCHEMA.to_be_bytes())
+            .expect("stamp the older release's schema");
+        group.allocate_view_id("ws", "working").expect("allocate");
+        group.incarnation()
+    };
+    assert_eq!(
+        peek_index_schema_ver(&older).expect("peek"),
+        Some(OLDER_RELEASES_SCHEMA)
+    );
+
+    let newer_group = open(&newer);
+    assert_ne!(
+        newer_group.incarnation(),
+        older_incarnation,
+        "the newer minor starts a database of its own"
+    );
+    assert_eq!(
+        newer_group.views().expect("views"),
+        Vec::new(),
+        "it holds none of the older rows"
+    );
+    drop(newer_group);
+
+    assert_eq!(
+        peek_index_schema_ver(&older).expect("peek"),
+        Some(OLDER_RELEASES_SCHEMA),
+        "the newer minor's open left the older database as it was"
+    );
+    assert_eq!(peek_index_schema_ver(&newer).expect("peek"), Some(INDEX_SCHEMA_VER));
+}

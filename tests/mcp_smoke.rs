@@ -231,17 +231,17 @@ fn error_text(result: &CallToolResult) -> String {
         .unwrap_or_default()
 }
 
-/// SEP-2106 contract: every tool result carries `structured_content` equal to the parsed JSON
-/// text mirror, so typed clients get the same payload without re-parsing the text block.
-fn assert_structured_matches_text(result: &CallToolResult) {
-    let structured = result
-        .structured_content
-        .as_ref()
-        .expect("tool result must carry SEP-2106 structured_content");
+/// A successful answer travels once: its payload is in the text block and `structuredContent` is
+/// absent, so a host that feeds both to the model does not pay twice.
+fn assert_single_payload(result: &CallToolResult) {
     assert_eq!(
-        structured,
-        &decode_text(result),
-        "structured_content must match the JSON text mirror"
+        result.structured_content, None,
+        "a successful answer must not repeat its payload as structuredContent"
+    );
+    assert_ne!(
+        decode_text(result),
+        Value::Null,
+        "the text block must carry the payload"
     );
 }
 
@@ -307,7 +307,7 @@ async fn mcp_server_exercises_representative_tools() {
         .call_tool(call_params("code_outline", json!({ "path": "a.rs" })))
         .await
         .expect("code_outline");
-    assert_structured_matches_text(&outline_result);
+    assert_single_payload(&outline_result);
     let body = decode_text(&outline_result);
     let symbols = body.get("symbols").and_then(Value::as_array).expect("symbols");
     let alpha = symbols
@@ -978,16 +978,13 @@ async fn mcp_server_exercises_representative_tools() {
         .expect("memory_search missing key");
     #[cfg(feature = "memory")]
     {
+        assert_eq!(decode_text(&read)["value"], json!("hello"));
         assert_eq!(
-            read.structured_content.as_ref().map(|note| &note["value"]),
-            Some(&json!("hello"))
+            decode_text(&missing),
+            json!({ "key": "decision/nope", "found": false }),
+            "a missing note is an object, never `null`"
         );
-        assert_eq!(
-            missing.structured_content,
-            Some(json!({ "key": "decision/nope", "found": false })),
-            "a missing note is an object, never `null`: MCP types structuredContent as an object"
-        );
-        assert_structured_matches_text(&missing);
+        assert_single_payload(&missing);
     }
     #[cfg(not(feature = "memory"))]
     let _ = (read, missing);
@@ -2067,10 +2064,10 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
     let _ = service.cancel().await;
 }
 
-/// MCP types `structuredContent` as an object. A host that validates the result schema rejects any
-/// other value, so every answer of every verb tool must be one, including "nothing found" answers.
+/// Every successful answer of every verb tool carries its payload once, as an object in the text
+/// block, including "nothing found" answers; `structuredContent` repeats none of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_answer_carries_an_object_as_structured_content() {
+async fn every_answer_carries_its_payload_once_in_the_text_block() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
@@ -2113,10 +2110,11 @@ async fn every_answer_carries_an_object_as_structured_content() {
             continue;
         }
         answered += 1;
+        assert_single_payload(&result);
         assert!(
-            result.structured_content.as_ref().is_some_and(Value::is_object),
-            "{tool} {args}: structuredContent must be an object: {:?}",
-            result.structured_content
+            decode_text(&result).is_object(),
+            "{tool} {args}: the text block must decode to an object: {:?}",
+            result.content
         );
     }
     assert!(

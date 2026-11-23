@@ -584,6 +584,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         max_tokens,
                         min_lines,
                         changed,
+                        indexed: None,
                     },
                     async |s, p| s.op(p, Workspace::find_files).await,
                 )
@@ -609,6 +610,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         max_tokens,
                         min_lines: None,
                         changed: None,
+                        indexed: None,
                     },
                     async |s, p| s.op(p, Workspace::find_files).await,
                 )

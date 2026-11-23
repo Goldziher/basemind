@@ -119,6 +119,10 @@ pub enum SingletonError {
         #[source]
         source: std::io::Error,
     },
+    /// The binary a daemon would be spawned from is not a `basemind` binary, so none can be started
+    /// from here. The same on every retry, so callers fail at once instead of backing off.
+    #[error("{0}")]
+    DaemonBinaryRefused(String),
     /// A live daemon already holds the socket.
     #[error("a comms daemon is already running at {0}")]
     AlreadyRunning(PathBuf),
@@ -599,9 +603,12 @@ async fn ensure_daemon_probing(
         });
     }
     check_socket_path_len(&paths.socket_path)?;
-    spawn(paths).map_err(|source| SingletonError::Io {
-        path: paths.socket_path.clone(),
-        source,
+    spawn(paths).map_err(|source| match spawn::binary_refusal(&source) {
+        Some(refusal) => SingletonError::DaemonBinaryRefused(refusal),
+        None => SingletonError::Io {
+            path: paths.socket_path.clone(),
+            source,
+        },
     })?;
     let deadline = std::time::Instant::now() + SPAWN_READY_TIMEOUT;
     loop {

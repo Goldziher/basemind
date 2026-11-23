@@ -190,7 +190,7 @@ A file whose grammar is disabled or unrecognised falls through to the document t
 in `basemind.toml` maps extra extensions and file names onto a grammar, disables a misdetected one
 (`.txt` as vimdoc, `.conf` as nginx), and can preload a grammar for `basemind lang install`.
 
-All languages with a `tags.scm` query in TSLP (~100) work out of the box. For richer extraction, add a `.scm` override at `src/queries/<pack-name>.scm`.
+All languages with a `tags.scm` query in TSLP (~100) work out of the box. For richer extraction, add a `.scm` override at `src/queries/<pack-name>.scm`. Hand-written overrides cover Rust, Python, TypeScript, TSX, JavaScript, Go, Java, Markdown and HCL/Terraform (blocks and `locals` entries; Terragrunt `include`, `dependency` and `inputs`).
 
 ## Git Layer
 

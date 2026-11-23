@@ -644,6 +644,10 @@ pub(crate) fn settled_mtime(mtime_ns: i64, now_ns: i64) -> i64 {
     }
 }
 
+/// Every path [`read_working_tree`] was asked to open, so a test can assert a file was never read.
+#[cfg(test)]
+pub(crate) static OPENED: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 pub(crate) fn read_working_tree(
     root: &Path,
     rel: &str,
@@ -651,6 +655,12 @@ pub(crate) fn read_working_tree(
     follow_symlinks: bool,
 ) -> Result<(Vec<u8>, u64, i64), FileStatus> {
     use std::io::Read;
+
+    #[cfg(test)]
+    OPENED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(root.join(rel));
 
     let read_failed = |e: std::io::Error| FileStatus::ReadFailed {
         kind: e.kind(),
