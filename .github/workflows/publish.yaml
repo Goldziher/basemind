@@ -281,6 +281,28 @@ jobs:
           VERSION: ${{ needs.meta.outputs.version }}
         run: python3 scripts/changelog_section.py "$VERSION" > "$RUNNER_TEMP/release-notes.md"
 
+      # GitHub refuses a release body over 125000 characters (HTTP 422), and a large release's
+      # section can pass it; cut at a line boundary and point at the full CHANGELOG at the tag.
+      - name: Cap the release notes at GitHub's body limit
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - "$RUNNER_TEMP/release-notes.md" <<'PY'
+          import os
+          import sys
+
+          limit = 120000
+          path = sys.argv[1]
+          text = open(path, encoding="utf-8").read()
+          if len(text) > limit:
+              cut = text[:limit].rsplit("\n", 1)[0]
+              link = f"https://github.com/{os.environ['REPO']}/blob/v{os.environ['VERSION']}/CHANGELOG.md"
+              text = f"{cut}\n\n_The notes are cut at GitHub's length limit; the full list is in [CHANGELOG.md]({link})._\n"
+              open(path, "w", encoding="utf-8").write(text)
+          print(f"release notes: {len(text)} characters")
+          PY
+
       - name: Ensure the GitHub release exists
         id: ensure
         env:
