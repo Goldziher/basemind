@@ -633,6 +633,7 @@ pub fn scan_with_observer(
             code_batches,
             REQUEUE_PER_INCREMENTAL,
         )?;
+        settle_cancelled_embed_progress(root, store, config, &filters, &source);
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
         return Ok(report);
@@ -671,7 +672,7 @@ pub fn scan_with_observer(
     if filters.verify_blobs && matches!(source, ScanSource::WorkingTree) {
         crate::scan_evidence::blobs_verified(&store.basemind_dir);
     }
-    settle_embed_progress(root, store, config, &filters, &source, embed);
+    settle_embed_progress(root, store, config, &filters, &source);
     phase_peaks.sample_now();
     report.phase_peaks = phase_peaks.snapshot();
     Ok(report)
@@ -713,33 +714,43 @@ fn begin_embed_reporter<'a>(
     None
 }
 
-/// The end of a whole working-tree pass settles the embedding record: a `Deferred` pass leaves it
-/// naming the documents still owed their vectors (the mark a restarted process resumes from), an
-/// `Inline` pass has paid what it could and removes it. A cancelled pass returns before this and
-/// leaves the record as it was.
-fn settle_embed_progress(
+/// Documents the store tracks that still owe their vectors; none without the document tier.
+fn docs_owed(store: &Store, config: &Config, filters: &Filters) -> usize {
+    #[cfg(feature = "documents")]
+    return crate::embed_progress::docs_owed(store, config, filters);
+    #[cfg(not(feature = "documents"))]
+    {
+        let _ = (store, config, filters);
+        0
+    }
+}
+
+/// The end of a whole working-tree pass settles the embedding record: it names the documents still
+/// owed their vectors (the mark a restarted process resumes from) and is removed once none are. An
+/// `Inline` pass that could not pay a document (no embedder, a budget) leaves it owed too.
+fn settle_embed_progress(root: &Path, store: &Store, config: &Config, filters: &Filters, source: &ScanSource<'_>) {
+    if !matches!(source, ScanSource::WorkingTree) {
+        return;
+    }
+    let cache_dir = crate::store_layout::workspace_cache_dir(root);
+    match docs_owed(store, config, filters) {
+        0 => crate::embed_progress::clear(&cache_dir),
+        owed => crate::embed_progress::record_owed(&cache_dir, owed),
+    }
+}
+
+/// A cancelled pass skips [`settle_embed_progress`]: when it had already paid every document, the
+/// record it wrote is removed; while any is owed it stays as written.
+fn settle_cancelled_embed_progress(
     root: &Path,
     store: &Store,
     config: &Config,
     filters: &Filters,
     source: &ScanSource<'_>,
-    embed: EmbedMode,
 ) {
-    if !matches!(source, ScanSource::WorkingTree) {
-        return;
+    if matches!(source, ScanSource::WorkingTree) && docs_owed(store, config, filters) == 0 {
+        crate::embed_progress::clear(&crate::store_layout::workspace_cache_dir(root));
     }
-    let cache_dir = crate::store_layout::workspace_cache_dir(root);
-    #[cfg(feature = "documents")]
-    if matches!(embed, EmbedMode::Deferred) {
-        match crate::embed_progress::docs_owed(store, config, filters) {
-            0 => crate::embed_progress::clear(&cache_dir),
-            owed => crate::embed_progress::record_owed(&cache_dir, owed),
-        }
-        return;
-    }
-    #[cfg(not(feature = "documents"))]
-    let _ = (store, config, filters, embed);
-    crate::embed_progress::clear(&cache_dir);
 }
 
 /// Move the pass's breadcrumb (and the per-phase memory tally) to `phase`, if one could be written at all. Folding the `Option` in

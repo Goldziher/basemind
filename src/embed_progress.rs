@@ -125,6 +125,7 @@ pub(crate) struct EmbedReporter<'a> {
 
 impl<'a> EmbedReporter<'a> {
     /// Start reporting a pass that embeds `total` documents, writing the first record at once.
+    #[cfg(any(feature = "documents", test))]
     pub(crate) fn begin(cache_dir: PathBuf, total: usize, embedded: &'a AtomicUsize) -> Self {
         let reporter = Self {
             cache_dir,
