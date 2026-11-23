@@ -19,7 +19,7 @@ from collections import Counter
 
 import _common as c
 
-LANGUAGES = {"py": "python", "ts": "typescript", "js": "javascript", "rs": "rust", "go": "go"}
+LANGUAGES = {"py": "python", "ts": "typescript", "js": "javascript", "rs": "rust", "go": "go", "java": "java"}
 THRESHOLDS = [200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000]
 # Per file `<lines> <path>`; awk counts a final line without `\n` as a record.
 AWK_COUNT = 'awk \'FNR==1&&NR>1{print n" "f} {n=FNR;f=FILENAME} END{if(NR)print n" "f}\''

@@ -90,7 +90,7 @@ run_log="${results}/run.tsv"
 printf 'corpus\tcommit\ttasks\tscan_s\teval_s\tload_before\tload_after\tbinary\tsource_commit\tbuild_id\tfeatures\trg\n' \
   >"${run_log}"
 
-while IFS=$'\t' read -r name _ commit _; do
+while IFS=$'\t' read -r name _ commit _ _ languages; do
   case "${name}" in '' | '#'*) continue ;; esac
   repo="${corpus}/${name}"
   tasks="${here}/tasks/${name}.jsonl"
@@ -98,20 +98,25 @@ while IFS=$'\t' read -r name _ commit _; do
   t0="$(date +%s)"
   "${bin}" --root "${repo}" -q scan >/dev/null
   t1="$(date +%s)"
-  # Without a Rust import resolver (`code-intel`) the graph is empty and every `impact` / `cycles`
-  # task scores 0 as if the tool were wrong; refuse instead of reporting that as a verdict. The
-  # probe reads the structured `coverage` of `code cycles`: Rust must have a resolver row and must
-  # not be listed under `without_resolver`.
+  # Without an import resolver for a language (`code-intel`) its graph is empty and every `impact` /
+  # `cycles` task scores 0 as if the tool were wrong; refuse instead of reporting that as a verdict.
+  # The probe reads the structured `coverage` of `code cycles`: each language the corpus has graph
+  # tasks for (rust, python, typescript) must have a resolver row and not be listed under
+  # `without_resolver`.
   if grep -q -E '"mode": *"(impact|cycles)"' "${tasks}"; then
-    if ! "${bin}" --root "${repo}" code cycles --json 2>/dev/null | python3 -c '
+    for language in rust python typescript; do
+      case ",${languages}," in *",${language},"*) ;; *) continue ;; esac
+      if ! "${bin}" --root "${repo}" code cycles --json 2>/dev/null | python3 -c '
 import json, sys
 cov = json.load(sys.stdin)["coverage"]
-rust = any(row["language"] == "rust" for row in cov["languages"])
-sys.exit(0 if rust and "rust" not in cov.get("without_resolver", []) else 1)
-'; then
-      echo "refusing to run: ${bin} resolves no ${name} Rust imports (build it with --features tokenizer,code-intel)" >&2
-      exit 2
-    fi
+language = sys.argv[1]
+has_row = any(row["language"] == language for row in cov["languages"])
+sys.exit(0 if has_row and language not in cov.get("without_resolver", []) else 1)
+' "${language}"; then
+        echo "refusing to run: ${bin} resolves no ${name} ${language} imports (build it with --features tokenizer,code-intel)" >&2
+        exit 2
+      fi
+    done
   fi
   "${bin}" --root "${repo}" admin eval --tasks "${tasks}" --min-recall 0.8 \
     --out "${results}/${name}.ndjson" --report "${results}/${name}.report.json" \

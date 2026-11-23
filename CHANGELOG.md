@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The value-gate corpus covers Python, TypeScript, Go and Java: `click`, `got`, `cobra`, `gson` and the polyglot `restate-examples` are pinned beside basemind and tokio, `gen_tasks.sh` emits each language's tasks (TypeScript `impact` / `cycles` gold now follows barrels and `index` files), and `gate.py` reports recall per language (#313).
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

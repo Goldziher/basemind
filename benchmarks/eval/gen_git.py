@@ -234,19 +234,22 @@ def gen_blame(repo: c.Repo, head_src: dict[str, list[str]], rng, n: int) -> list
     return tasks
 
 
-def modified_rs(repo: c.Repo, sha: str) -> list[str]:
+def modified_sources(repo: c.Repo, sha: str) -> list[str]:
+    """The files of `repo`'s `--ext` that commit `sha` modified."""
     out = repo.git("diff-tree", "--no-commit-id", "-r", "--diff-filter=M", "--name-only", sha)
-    return sorted(p for p in out.splitlines() if p.endswith(".rs") and not repo.excluded(p))
+    return sorted(p for p in out.splitlines() if p.endswith(repo.exts) and not repo.excluded(p))
 
 
 def gen_diffs(repo: c.Repo, head_paths: set[str], rng, n: int, recent: int) -> list[dict]:
     commits = full(repo, *NO_MERGES_LOG, f"-n{recent}", "HEAD")
     tasks: list[dict] = []
     diff_count = structural_count = 0
+    # `diff_structural` gold comes from `rust_gold`, so it exists for Rust only.
+    structural_wanted = repo.exts == (".rs",)
     for sha in c.sample(rng, commits, len(commits)):
-        if diff_count >= n and structural_count >= n:
+        if diff_count >= n and (structural_count >= n or not structural_wanted):
             break
-        paths = modified_rs(repo, sha)
+        paths = modified_sources(repo, sha)
         if not paths:
             continue
         path = rng.choice(paths)
@@ -268,7 +271,7 @@ def gen_diffs(repo: c.Repo, head_paths: set[str], rng, n: int, recent: int) -> l
                     }
                 )
                 diff_count += 1
-        if structural_count >= n or path not in head_paths:
+        if not structural_wanted or structural_count >= n or path not in head_paths:
             continue
         recs = blob_records(repo, [f"{parent}:{path}", f"HEAD:{path}"])
         before, now = recs.get(f"{parent}:{path}", []), recs.get(f"HEAD:{path}", [])

@@ -8,7 +8,8 @@ Kinds (task `mode`):
            or with `path` the files of the cycle holding it (variant `path`) (#135). A cycle is a
            strongly connected component of two or more files. Set scoring.
 
-`--ext rs` reads Rust through `rust_gold`, `--ext py` Python through `ast`; the edge rules and what
+`--ext rs` reads Rust through `rust_gold`, `--ext py` Python through `ast`, `--ext ts` (or `ts,tsx`) TypeScript
+from the source text, barrels included; the edge rules and what
 they miss are in `_edges.py`. Rust gold counts runtime imports only, as the graph answers by
 default (ADR-0047 decision 4): a `mod x;` declaration is no edge, and a path through the package's
 own name or a workspace crate is internal.
@@ -17,7 +18,8 @@ Baselines (ADR-0031 rule 5, the shell an agent would run):
 
   impact   one `git grep -l` per file whose importers the agent needs: the `use` lines naming the
            module's name as a path segment (for a crate root, every `use` through the crate), or for
-           Python the module's last name in an import line. Depth 2 adds one grep per depth-1
+           Python the module's last name in an import line, or for TypeScript the file's name (the
+           directory's for an `index`) in the specifier of an `import` / `export ... from` line. Depth 2 adds one grep per depth-1
            importer of the gold. Scored as paths.
   cycles   none. Finding a cycle means resolving every import to a file and walking the graph, which
            no shell command an agent would run does: the only shell answer is every import line of the
@@ -72,14 +74,22 @@ def python_importer_grep(path: str) -> str:
     return "git grep -l -E " + c.shell_quote(pattern) + " -- '*.py'"
 
 
+def typescript_importer_grep(path: str) -> str:
+    stem = path.rsplit("/", 1)[-1].split(".", 1)[0]
+    if stem == "index":
+        stem = path.rsplit("/", 2)[-2] if "/" in path else stem
+    pattern = f"(from|import|require)[^;]*['\"][^'\"]*(^|[^A-Za-z0-9_]){re.escape(stem)}(/index)?(\\.[A-Za-z]+)?['\"]"
+    return "git grep -l -E " + c.shell_quote(pattern) + " -- '*.ts' '*.tsx' '*.mts' '*.cts'"
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     c.add_common_args(p, ext_default="rs")
     p.add_argument("--kind", action="append", choices=["impact", "cycles"], help="kinds to emit (default both)")
     p.add_argument("--max-gold", type=int, default=60, help="largest importer set an impact task may have")
     a = p.parse_args()
-    if a.ext not in ("rs", "py"):
-        p.error("--ext must be rs or py")
+    if a.ext not in ("rs", "py", "ts", "ts,tsx"):
+        p.error("--ext must be rs, py, ts or ts,tsx")
     kinds = a.kind or ["impact", "cycles"]
 
     repo = c.Repo(a.repo, a.exclude, a.ext, a.max_bytes)
@@ -94,11 +104,16 @@ def main() -> None:
 
         def importer_grep(path: str) -> str | None:
             return rust_importer_grep(modpaths[path]) if path in modpaths else None
-    else:
+    elif a.ext == "py":
         edges = e.python_edges(repo.blobs(files))
 
         def importer_grep(path: str) -> str | None:
             return python_importer_grep(path)
+    else:
+        edges = e.typescript_edges(repo.blobs(files))
+
+        def importer_grep(path: str) -> str | None:
+            return typescript_importer_grep(path)
 
     tasks: list[dict] = []
     if "impact" in kinds:

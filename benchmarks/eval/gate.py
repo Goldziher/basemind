@@ -45,6 +45,55 @@ NOT_RUN = {
 
 
 CODE_INTEL_PARTS = {"code-intel-js", "code-intel-stack"}
+# The task-id suffix `gen_tasks.sh` gives a language's tasks in a corpus of several languages.
+EXT_LANGUAGE = {"rs": "rust", "py": "python", "ts": "typescript", "go": "go", "java": "java"}
+NO_LANGUAGE = "(whole repository)"
+
+
+def load_languages(corpus_tsv: Path) -> dict[str, list[str]]:
+    """Corpus name -> its languages, from the sixth column of `corpus.tsv`."""
+    out: dict[str, list[str]] = {}
+    for line in corpus_tsv.read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        cols = line.split("\t")
+        if len(cols) >= 6:
+            out[cols[0]] = [lang for lang in cols[5].split(",") if lang]
+    return out
+
+
+def row_language(task_id: str, languages: list[str]) -> str:
+    """The language a task belongs to: the corpus's only one, else the id's `-<ext>` suffix."""
+    if len(languages) == 1:
+        return languages[0]
+    return EXT_LANGUAGE.get(task_id.rsplit("-", 1)[-1], NO_LANGUAGE)
+
+
+def recall_by_language(data: dict[str, tuple[dict, list[dict]]], languages: dict[str, list[str]]) -> dict:
+    """language -> kind -> `{tasks, recall, baseline_recall}`: mean recall over every task of the
+    kind on the corpora holding that language, an errored task counting 0. `baseline_recall` is over
+    the tasks whose baseline was scored."""
+    sums: dict[str, dict[str, dict[str, float]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+    for corpus, (_, rows) in data.items():
+        langs = languages.get(corpus, [])
+        for row in rows:
+            acc = sums[row_language(row.get("id", ""), langs) if langs else NO_LANGUAGE][row["mode"]]
+            acc["tasks"] += 1
+            acc["recall"] += (row.get("score") or {}).get("recall", 0.0)
+            if row.get("baseline_score"):
+                acc["baselines"] += 1
+                acc["baseline_recall"] += row["baseline_score"]["recall"]
+    return {
+        lang: {
+            kind: {
+                "tasks": int(acc["tasks"]),
+                "recall": acc["recall"] / acc["tasks"],
+                "baseline_recall": acc["baseline_recall"] / acc["baselines"] if acc["baselines"] else None,
+            }
+            for kind, acc in sorted(kinds.items())
+        }
+        for lang, kinds in sorted(sums.items())
+    }
 
 
 def load(results: Path) -> dict[str, tuple[dict, list[dict]]]:
@@ -96,8 +145,10 @@ def check_listed(data: dict[str, tuple[dict, list[dict]]]) -> None:
                 )
 
 
-def verdicts(data: dict[str, tuple[dict, list[dict]]]) -> dict:
+def verdicts(data: dict[str, tuple[dict, list[dict]]], languages: dict[str, list[str]] | None = None) -> dict:
     check_listed(data)
+    languages = languages or {}
+    group = {corpus: tuple(languages.get(corpus, ())) for corpus in data}
     tools: dict[str, dict] = {}
     for tool, kinds in TOOLS.items():
         per: dict[str, dict] = defaultdict(dict)
@@ -108,7 +159,12 @@ def verdicts(data: dict[str, tuple[dict, list[dict]]]) -> dict:
                     per[kind][corpus] = row
         passes = [row["pass"] for kind in kinds for row in per[kind].values()]
         # `kind@corpus` pairs with no result, as one string so gate.json stays free of arrays.
-        missing = ", ".join(f"{k}@{corpus}" for k in kinds for corpus in sorted(data) if corpus not in per[k])
+        missing = ", ".join(
+            f"{k}@{corpus}"
+            for k in kinds
+            for corpus in sorted(data)
+            if corpus not in per[k] and any(group[other] == group[corpus] for other in per[k])
+        )
         if not kinds or not passes:
             verdict = "not run"
         elif any(p is False for p in passes):
@@ -155,7 +211,12 @@ def load_run(results: Path) -> list[dict]:
     return [dict(zip(names, row.split("\t"), strict=False)) for row in rows if row]
 
 
-def markdown(data: dict, tools: dict, run: list[dict] | None = None) -> str:
+def markdown(
+    data: dict,
+    tools: dict,
+    run: list[dict] | None = None,
+    languages: dict[str, list[str]] | None = None,
+) -> str:
     corpora = sorted(data)
     tokenizers = {c: data[c][0]["tokenizer"] for c in corpora}
     lines = [
@@ -206,6 +267,19 @@ def markdown(data: dict, tools: dict, run: list[dict] | None = None) -> str:
                     f" | {fmt(row['tool_tokens_median'], '.0f')} | {fmt(row['baseline_tokens_median'], '.0f')}"
                     f" | {fmt(row['median_ratio'], '.4f')} | {fmt(row['symbol_accuracy'], '.3f')} | {verdict} |"
                 )
+    lines += [
+        "",
+        "Recall per language: mean recall of every task of the kind on the corpora of that language, an errored",
+        "task counting 0; the baseline column is over the tasks whose shell baseline was scored.",
+        "",
+        "| language | kind | tasks | tool R | baseline R |",
+        "|---|---|---|---|---|",
+    ]
+    for lang, kinds in recall_by_language(data, languages or {}).items():
+        for kind, row in kinds.items():
+            lines.append(
+                f"| {lang} | {kind} | {row['tasks']} | {row['recall']:.3f} | {fmt(row['baseline_recall'], '.3f')} |"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -216,12 +290,13 @@ def main() -> None:
     data = load(results)
     if not data:
         sys.exit(f"no *.report.json in {results}")
+    languages = load_languages(Path(__file__).with_name("corpus.tsv"))
     try:
-        tools = verdicts(data)
+        tools = verdicts(data, languages)
     except ValueError as err:
         sys.exit(f"gate.py: {err}")
     (results / "gate.json").write_text(json.dumps(tools, indent=2, sort_keys=True) + "\n")
-    sys.stdout.write(markdown(data, tools, load_run(results)))
+    sys.stdout.write(markdown(data, tools, load_run(results), languages))
 
 
 if __name__ == "__main__":

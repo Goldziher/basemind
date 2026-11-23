@@ -35,6 +35,18 @@ Python (from `ast`):
   when that is a module, else to `a.b`. Relative imports resolve from the importer's package.
   `if TYPE_CHECKING:` imports count like any other.
 
+TypeScript (from the source text, no compiler):
+
+- Only relative specifiers (`./x`, `../x`) are edges; a bare specifier is a package, external to the
+  graph. The specifier sits in `import ... from`, `export ... from` (a barrel's `export * from`
+  and `export {a} from`), a side-effect `import '...'`, `import('...')` or `require('...')`; text
+  in comments is ignored.
+- A specifier resolves like the compiler's: the file itself, else the same path with `.js` /
+  `.jsx` / `.mjs` / `.cjs` read as the `.ts` / `.tsx` / `.mts` / `.cts` source beside it, else the
+  path plus an extension, else the directory's `index` file. An edge goes to the file the specifier
+  names, so an importer of a barrel points at the barrel, and the barrel points at what it
+  re-exports; no edge skips over the barrel.
+
 Both: an edge to the importer itself is dropped, and each `(importer, target)` pair is kept once
 at its first line. `#[cfg]` and other conditions are ignored.
 """
@@ -43,6 +55,7 @@ from __future__ import annotations
 
 import ast
 import posixpath
+import re
 import tomllib
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable
@@ -397,6 +410,40 @@ def python_edges(blobs: Iterable[tuple[str, str]]) -> Edges:
                     sub = f"{module}.{alias.name}" if module else alias.name
                     target = modules.get(sub) if alias.name != "*" else None
                     _add(edges, path, target or (deepest(module) if module else None), node.lineno)
+    return edges
+
+
+TS_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts")
+TS_JS_TO_SOURCE = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
+TS_SPECIFIER = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])(\.{1,2}(?:/[^'"\n]*)?)\1""")
+TS_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+TS_LINE_COMMENT = re.compile(r"(?m)(^|\s)//.*$")
+
+
+def _ts_resolve(importer: str, specifier: str, files: set[str]) -> str | None:
+    """The file `specifier` names from `importer`, by the compiler's rules for a relative path."""
+    base = posixpath.normpath(posixpath.join(posixpath.dirname(importer), specifier))
+    if base == ".." or base.startswith("../"):
+        return None
+    stem, ext = posixpath.splitext(base)
+    candidates = [base]
+    candidates += [stem + alt for alt in TS_JS_TO_SOURCE.get(ext, ())]
+    candidates += [base + e for e in TS_EXTENSIONS]
+    candidates += [f"{base}/index{e}" for e in TS_EXTENSIONS]
+    return next((cand for cand in candidates if cand in files), None)
+
+
+def typescript_edges(blobs: Iterable[tuple[str, str]]) -> Edges:
+    """Edges among the TypeScript files of `blobs` (`(path, source)` pairs)."""
+    sources = {p: s for p, s in blobs if p.endswith(TS_EXTENSIONS)}
+    files = set(sources)
+    edges: Edges = {}
+    for path, src in sorted(sources.items()):
+        # Blank the comments in place so a match's line number stays the file's.
+        text = TS_BLOCK_COMMENT.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), src)
+        text = TS_LINE_COMMENT.sub(lambda m: m.group(1), text)
+        for m in TS_SPECIFIER.finditer(text):
+            _add(edges, path, _ts_resolve(path, m.group(2), files), text.count("\n", 0, m.start()) + 1)
     return edges
 
 
