@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- While the inotify watch limit leaves directories unwatched, the Linux watcher re-checks them every 30 seconds: it stat-diffs their subtrees so an edit under one is still indexed, and retries arming them; `basemind doctor` gains a `watches` row that warns when a workspace has more directories than `fs.inotify.max_user_watches` allows (#287)
 - `git_log` takes `files: true` to list what each commit changed in a recent or directory list: at most 8 entries a commit (a directory holding several changed files collapses to one `"<dir>/": "<n> files"` entry), the rest counted in `files_more` (#456)
 
 ### Changed

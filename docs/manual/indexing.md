@@ -42,7 +42,10 @@ On Linux the daemon watches each directory of each workspace with its own inotif
 kernel caps one user's watches across every process with `fs.inotify.max_user_watches`. Many
 worktrees of a large repository can exhaust it: 20 worktrees of 20,000 directories each need about
 400,000 watches. A directory the kernel refuses a watch is not watched, so its edits are not
-indexed until a rescan.
+indexed until a rescan. While any directory is unwatched, the daemon re-checks those subtrees every
+30 seconds and re-extracts the files that changed, so edits there are indexed late rather than never;
+it also retries arming them. `basemind doctor` has a `watches` row that counts the directories the
+workspace needs and warns when that alone exceeds the limit.
 
 `index_status` reports the watches the daemon holds under `watches.held`, and once the limit is hit
 `watches.unwatched` (directories without a watch), `watches.limit` (the current value) and a
