@@ -10,6 +10,8 @@ use ahash::{AHashMap, AHashSet};
 
 use serde::{Deserialize, Serialize};
 
+use super::reach::Reach;
+use super::reader::HistoryAt;
 use super::{GitHistoryIndex, LocalDb, encoding, keys};
 use crate::git::CommitInfo;
 
@@ -145,24 +147,33 @@ pub fn commit_matches(info: &CommitInfo, query: &str, scope: FtsScope) -> bool {
 }
 
 impl GitHistoryIndex {
-    /// Full-text search over indexed commits. Tokenizes `query` the same way the index was built,
-    /// then returns the commits (newest-first) that contain EVERY query term in the scoped field
-    /// set — after skipping `skip` and taking at most `take`. Result [`CommitInfo`]s carry the full
-    /// body (read from `gh_commit_text_by_ord`). An empty query, or one that tokenizes to nothing,
-    /// returns no results.
+    /// [`HistoryAt::search_commits`] at the most recently synced tip: empty when there is none.
+    pub fn search_commits(&self, query: &str, scope: FtsScope, skip: usize, take: usize) -> Vec<CommitInfo> {
+        self.latest()
+            .map_or_else(Vec::new, |view| view.search_commits(query, scope, skip, take))
+    }
+}
+
+impl HistoryAt<'_> {
+    /// Full-text search over the commits this head reaches. Tokenizes `query` the same way the index
+    /// was built, then returns the commits (newest-first) that contain EVERY query term in the scoped
+    /// field set — after skipping `skip` and taking at most `take`. Result [`CommitInfo`]s carry the
+    /// full body (read from `gh_commit_text_by_ord`). An empty query, or one that tokenizes to
+    /// nothing, returns no results.
     ///
     /// Note: this rebuilds the full term intersection on every call (offset pagination, no scan
     /// cap), so a page-K request is O(|matching set|), not O(skip + take). Fine for typical
     /// queries; a very common single token over a huge repo pays for the whole posting list per
     /// page. Acceptable for now — revisit with a lazy/most-selective-term iterator if it bites.
     pub fn search_commits(&self, query: &str, scope: FtsScope, skip: usize, take: usize) -> Vec<CommitInfo> {
-        self.local().search_commits(query, scope, skip, take)
+        let (db, reach) = self.parts();
+        db.search_commits(reach, query, scope, skip, take)
     }
 }
 
 impl LocalDb {
-    /// The local half of [`GitHistoryIndex::search_commits`].
-    fn search_commits(&self, query: &str, scope: FtsScope, skip: usize, take: usize) -> Vec<CommitInfo> {
+    /// The local half of [`HistoryAt::search_commits`].
+    fn search_commits(&self, reach: &Reach, query: &str, scope: FtsScope, skip: usize, take: usize) -> Vec<CommitInfo> {
         let mut query_terms: AHashSet<String> = AHashSet::new();
         tokenize(query, &mut query_terms);
         if query_terms.is_empty() || take == 0 {
@@ -188,7 +199,7 @@ impl LocalDb {
             return Vec::new();
         };
 
-        let mut ords: Vec<u32> = matching.into_iter().collect();
+        let mut ords: Vec<u32> = matching.into_iter().filter(|ord| reach.contains(*ord)).collect();
         ords.sort_unstable_by(|a, b| b.cmp(a));
 
         let mut cache = AHashMap::new();
