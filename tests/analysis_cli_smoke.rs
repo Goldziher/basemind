@@ -212,6 +212,33 @@ fn impact_walks_from_a_file_a_symbol_and_the_uncommitted_change() {
     assert_eq!(nothing_imports_d["affected_files"], 0, "{nothing_imports_d}");
 }
 
+#[cfg(feature = "code-intel-js")]
+#[test]
+fn impact_grades_the_callers_and_lists_the_calls_of_a_typescript_symbol() {
+    let dir = typescript_repo("export function bee() {\n  return 1;\n}\n");
+    let impact = json(dir.path(), &["code", "impact", "--symbol", "ay"]);
+    assert_eq!(impact["callers"].as_array().map(Vec::len), Some(1), "{impact}");
+    let caller = &impact["callers"][0];
+    assert_eq!(
+        (&caller["path"], &caller["line"], &caller["depth"], &caller["calls"]),
+        (
+            &Value::from("c.ts"),
+            &Value::from(2),
+            &Value::from(1),
+            &Value::from("ay")
+        ),
+        "{impact}"
+    );
+    assert_eq!(
+        (&caller["resolution"], &caller["proven"]),
+        (&Value::from("imported"), &Value::from(true))
+    );
+    assert_eq!(impact["calls"][0]["name"], "bee", "{impact}");
+    assert_eq!(impact["calls"][0]["path"], "b.ts", "{impact}");
+    assert_eq!(impact["calls"][0]["resolution"], "imported", "{impact}");
+    assert_eq!(impact["dependencies"][0]["path"], "b.ts", "{impact}");
+}
+
 #[test]
 fn a_malformed_request_exits_with_a_usage_error() {
     let dir = crate_with_a_cycle();

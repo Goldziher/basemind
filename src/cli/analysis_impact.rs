@@ -1,5 +1,6 @@
 //! `basemind code impact <target>` (#121): the files that import a file, the files defining a
-//! symbol, or the files a change touches, transitively by depth. Engine op: `Workspace::code_impact`.
+//! symbol, or the files a change touches, transitively by depth, with a symbol's graded callers and
+//! its downstream dependencies. Engine op: `Workspace::code_impact`.
 
 use clap::Args;
 use rmcp::ErrorData as McpError;
@@ -27,7 +28,7 @@ pub struct ImpactArgs {
     /// The uncommitted changes: `--diff HEAD`.
     #[arg(long)]
     changed: bool,
-    /// Importer levels to walk, 1 to 5 (default 1).
+    /// Importer, import and caller levels to walk, 1 to 5 (default 1).
     #[arg(long)]
     depth: Option<u8>,
     /// Also follow type-only imports (`import type`).

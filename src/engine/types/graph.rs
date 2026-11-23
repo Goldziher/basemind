@@ -37,9 +37,10 @@ pub struct ImpactParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ImpactHit {
     pub path: RelPath,
-    /// Import hops from the nearest target: 1 for a direct importer.
+    /// Import hops from the nearest target: 1 for a direct importer (or, in `dependencies`, a
+    /// direct import).
     pub depth: u8,
-    /// The file one hop nearer the targets that it imports.
+    /// The file one hop nearer the targets through which it was reached.
     pub via: RelPath,
     /// The file is part of an import cycle.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -51,6 +52,45 @@ pub struct ImpactHit {
 pub struct ImpactDefinition {
     pub path: RelPath,
     pub kind: &'static str,
+    /// 1-based line the definition starts on.
+    pub line: u32,
+}
+
+/// One call site of a symbol target, or of a definition holding such a site.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImpactCaller {
+    pub path: RelPath,
+    /// 1-based line of the call site.
+    pub line: u32,
+    /// Call hops from the target: 1 for a direct caller.
+    pub depth: u8,
+    /// The callable definition holding the site; absent for a site outside any (module level).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    /// The definition the site calls: the target at depth 1, else the `symbol` one hop nearer.
+    pub calls: String,
+    /// How the site was established: `same_file` or `imported` (bound to `calls` by the resolution
+    /// facts), `path_match` (an HTTP call linked to a route by its path) or `name_only` (the callee
+    /// is named like `calls`, nothing more).
+    pub resolution: &'static str,
+    /// The site is proven to call `calls`: only `same_file` and `imported`. Only a proven caller
+    /// is followed to the next depth.
+    pub proven: bool,
+}
+
+/// One call a symbol target makes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImpactCallee {
+    /// The definition the call is in.
+    pub from: RelPath,
+    /// The name called.
+    pub name: String,
+    /// The file defining it, when the resolution facts bind the call to a definition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<RelPath>,
+    /// `same_file` or `imported` when `path` is set, else `name_only`.
+    pub resolution: &'static str,
+    pub proven: bool,
 }
 
 /// The answer of `basemind code impact`.
@@ -81,6 +121,23 @@ pub struct ImpactResponse {
     /// `depth` (files lie deeper) or `scan_cap` (more files than the walk reports).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
+    /// Symbol target: the call sites of its definitions, transitively to `depth` over proven
+    /// edges, by depth then path and line. A `name_only` row is listed and never followed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub callers: Vec<ImpactCaller>,
+    /// `depth` (callers lie deeper), `limit` (more callers than are listed) or `scan_cap` (more
+    /// definitions to look up than the walk examines).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callers_truncated_reason: Option<&'static str>,
+    /// The files the targets import, transitively to `depth`, by depth and then path.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<ImpactHit>,
+    /// `depth` or `scan_cap`, as for `truncated_reason`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dependencies_truncated_reason: Option<&'static str>,
+    /// Symbol target: the calls its definitions' bodies make, each graded like a caller.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<ImpactCallee>,
     pub coverage: GraphCoverage,
     /// What the graph cannot see that bears on this answer.
     #[serde(skip_serializing_if = "Vec::is_empty")]

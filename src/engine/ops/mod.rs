@@ -23,6 +23,7 @@ mod explain;
 pub(crate) mod find_files;
 mod graph_report;
 mod impact;
+mod impact_calls;
 pub(crate) mod index;
 mod memory;
 mod migration;

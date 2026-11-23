@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `basemind code impact --symbol` lists the callers of a symbol up to `--depth` hops, each graded by how it was resolved (a `name_only` match is never proven or followed), the calls the symbol makes, and the files the target imports (#121)
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

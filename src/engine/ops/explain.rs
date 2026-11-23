@@ -32,6 +32,8 @@ mod pick;
 #[path = "explain_symbol.rs"]
 mod symbol;
 
+pub(super) use symbol::{Callee, callees_of, callers_page, holding_callable};
+
 /// Rows per list section when the caller passes no `limit`, and the most it may ask for.
 const LIMIT_DEFAULT: u32 = 20;
 const LIMIT_MAX: u32 = 200;
