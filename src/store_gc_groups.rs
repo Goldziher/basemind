@@ -261,6 +261,13 @@ fn newest_write(dir: &Path) -> Option<std::time::SystemTime> {
     newest
 }
 
+/// Whether nothing has been written into `dir` for [`Holds::hold`] as of now.
+fn idle_for_hold(dir: &Path, holds: &Holds) -> bool {
+    newest_write(dir)
+        .map(|written| std::time::SystemTime::now().duration_since(written).unwrap_or_default())
+        .is_none_or(|age| age >= holds.hold)
+}
+
 /// Reap the group indexes of release minors older than `current` ([`crate::store_layout::group_index_namespace`]):
 /// two installed releases keep an index each in one group, and a superseded one is garbage only
 /// this sweep collects. As for a blob namespace ([`crate::store_gc_namespaces`]) one is kept while a
@@ -277,17 +284,12 @@ pub(crate) fn reap_superseded_group_indexes_in(
     if holds.unidentified || !groups_dir.is_dir() {
         return Ok(report);
     }
-    let now = std::time::SystemTime::now();
     for entry in crate::store_gc::read_dir(&groups_dir)?.flatten() {
         let group_dir = entry.path();
         let superseded: Vec<_> = superseded_indexes(&group_dir, current)
             .into_iter()
             .filter(|index| !(index.in_use)(holds, index.minor))
-            .filter(|index| {
-                newest_write(&index.path)
-                    .map(|written| now.duration_since(written).unwrap_or_default())
-                    .is_none_or(|age| age >= holds.hold)
-            })
+            .filter(|index| idle_for_hold(&index.path, holds))
             .collect();
         if superseded.is_empty() {
             continue;
@@ -297,7 +299,17 @@ pub(crate) fn reap_superseded_group_indexes_in(
             continue;
         };
         for index in superseded {
-            let bytes = dir_size(&index.path)?;
+            // A write may have landed between the filter above and the lock.
+            if !idle_for_hold(&index.path, holds) {
+                continue;
+            }
+            let bytes = match dir_size(&index.path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::warn!(index = %index.path.display(), %error, "could not measure the group index of an older release; kept");
+                    continue;
+                }
+            };
             match std::fs::remove_dir_all(&index.path) {
                 Ok(()) => {
                     report.reaped += 1;
@@ -723,6 +735,21 @@ mod tests {
             legacy.exists(),
             "up to the last unnamespaced minor the legacy index is the current one"
         );
+    }
+
+    /// The age is read again under the group lock, so it must track a write that lands after the
+    /// first read: an index is idle only once its newest write is a full hold old.
+    #[test]
+    fn an_index_is_idle_only_once_its_newest_write_is_a_full_hold_old() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache = tmp.path().join("cache");
+        let index = plant_index(&cache, "g", "index.fjall", DAY * 30);
+        let hold = holds(&[], 14);
+        assert!(idle_for_hold(&index, &hold), "30 days idle against a 14-day hold");
+
+        fs::write(index.join("late"), b"rows").expect("late write");
+
+        assert!(!idle_for_hold(&index, &hold), "a write just now restarts the hold");
     }
 
     #[test]
