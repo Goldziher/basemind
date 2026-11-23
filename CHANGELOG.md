@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The daemon returns freed allocator pages to the OS after every rescan and every idle workspace or read-stack eviction, so an idle daemon settles at its live data instead of holding a scan's high-water mark; the hardening soak asserts a bounded idle memory swing (R6c) (#491)
+- a batch naming a path that is gone from disk finds the index entries under it by key range instead of walking every key, so the cost no longer grows with the size of the index (#405)
 
 ### Changed
 

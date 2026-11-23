@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use super::{HashRefs, Index, LockHolder, Store, StoreError};
+use super::{HashRefs, Index, KeyOrder, LockHolder, Store, StoreError};
 use crate::index::IndexDb;
 
 /// Open the group index of `view` for a writer, reconciling the file map `index` with it (see
@@ -172,6 +172,7 @@ impl Store {
         self.index_rebuild_needed |= rebuild_needed;
         self.legacy_index_adopted |= legacy_adopted;
         self.hash_refs = HashRefs::of(&self.index.files);
+        self.key_order = KeyOrder::of(&self.index);
         self.index_db = Some(index_db);
         self.flush()
     }
@@ -207,6 +208,7 @@ impl Store {
         self.index.empty_for_rebuild();
         self.file_map.force_full();
         self.hash_refs = HashRefs::of(&self.index.files);
+        self.key_order = KeyOrder::of(&self.index);
         self.index.generation = 0;
         self.flush()?;
         Ok(true)

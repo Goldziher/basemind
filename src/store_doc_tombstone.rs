@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::path::RelPath;
 use crate::store::Store;
+use crate::store_key_order::KeyOrder;
 
 /// Why an unchanged document is not re-extracted: it already timed out under these limits.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,15 +36,18 @@ pub struct DocTombstone {
 impl Store {
     /// Record (or replace) the tombstone for `rel`.
     pub fn upsert_doc_tombstone(&mut self, rel: impl Into<RelPath>, tombstone: DocTombstone) {
-        self.index.doc_tombstones.insert(rel.into(), tombstone);
+        let rel = rel.into();
+        self.key_order.insert(&rel);
+        self.index.doc_tombstones.insert(rel, tombstone);
     }
 
     /// Drop the tombstone for `rel`; true when there was one.
     pub fn remove_doc_tombstone(&mut self, rel: impl AsRef<[u8]>) -> bool {
-        self.index
-            .doc_tombstones
-            .remove(bstr::BStr::new(rel.as_ref()))
-            .is_some()
+        let Some((rel, _)) = self.index.doc_tombstones.remove_entry(bstr::BStr::new(rel.as_ref())) else {
+            return false;
+        };
+        self.key_order.forget(&rel, &self.index);
+        true
     }
 
     /// True when `rel` has a tombstone, whatever content it was recorded for.
@@ -67,6 +71,7 @@ impl Store {
     /// no longer exists).
     pub fn retain_doc_tombstones(&mut self, mut keep: impl FnMut(&RelPath) -> bool) {
         self.index.doc_tombstones.retain(|rel, _| keep(rel));
+        self.key_order = KeyOrder::of(&self.index);
     }
 }
 
