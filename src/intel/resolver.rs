@@ -257,6 +257,7 @@ pub(crate) mod js {
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex, OnceLock};
 
+    use ahash::AHashMap;
     use oxc_resolver::{
         FileMetadata, FileSystem, FileSystemOs, ResolveError, ResolveOptions, ResolverGeneric, TsconfigDiscovery,
     };
@@ -289,9 +290,17 @@ pub(crate) mod js {
     /// this trait (`metadata` for existence probes, `read*` for `package.json` / `tsconfig.json`),
     /// so the log is the complete input set of a resolution. A successful directory `metadata` is
     /// not logged: directories carry no state beyond the files in them, and those are logged.
+    ///
+    /// Reads are memoised for the life of the resolver. [`JsResolver::begin_importer`] empties oxc's
+    /// own cache for every importer so its probes reach the log, which would otherwise make each
+    /// importer re-read every `package.json` and `tsconfig` `extends` chain from disk; the memo
+    /// serves those bytes again while the path is still logged on every read, so probes stay complete.
     struct RecordingFs {
         inner: FileSystemOs,
         log: ProbeLog,
+        /// Bytes of each file read so far, `None` for one that does not exist. Other errors are
+        /// not memoised.
+        reads: Mutex<AHashMap<PathBuf, Option<Arc<[u8]>>>>,
     }
 
     impl RecordingFs {
@@ -299,12 +308,40 @@ pub(crate) mod js {
             Self {
                 inner: <FileSystemOs as FileSystem>::new(),
                 log,
+                reads: Mutex::default(),
             }
         }
 
         fn note_unless_dir(&self, path: &Path, result: &io::Result<FileMetadata>) {
             if !result.as_ref().is_ok_and(|meta| meta.is_dir()) {
                 self.log.note(path);
+            }
+        }
+
+        /// The bytes at `path`, read from disk once per resolver.
+        fn read_memoised(&self, path: &Path) -> io::Result<Arc<[u8]>> {
+            self.log.note(path);
+            if let Some(known) = self.reads.lock().ok().and_then(|reads| reads.get(path).cloned()) {
+                return known.ok_or_else(|| io::ErrorKind::NotFound.into());
+            }
+            match FileSystem::read(&self.inner, path) {
+                Ok(bytes) => {
+                    let bytes: Arc<[u8]> = bytes.into();
+                    self.remember(path, Some(Arc::clone(&bytes)));
+                    Ok(bytes)
+                }
+                Err(err) => {
+                    if err.kind() == io::ErrorKind::NotFound {
+                        self.remember(path, None);
+                    }
+                    Err(err)
+                }
+            }
+        }
+
+        fn remember(&self, path: &Path, bytes: Option<Arc<[u8]>>) {
+            if let Ok(mut reads) = self.reads.lock() {
+                reads.insert(path.to_path_buf(), bytes);
             }
         }
     }
@@ -315,13 +352,13 @@ pub(crate) mod js {
         }
 
         fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-            self.log.note(path);
-            FileSystem::read(&self.inner, path)
+            self.read_memoised(path).map(|bytes| bytes.to_vec())
         }
 
         fn read_to_string(&self, path: &Path) -> io::Result<String> {
-            self.log.note(path);
-            FileSystem::read_to_string(&self.inner, path)
+            let bytes = self.read_memoised(path)?;
+            String::from_utf8(bytes.to_vec())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "stream did not contain valid UTF-8"))
         }
 
         fn metadata(&self, path: &Path) -> io::Result<FileMetadata> {
@@ -399,7 +436,8 @@ pub(crate) mod js {
 
         /// Forget everything oxc has cached and everything recorded so far. oxc memoises every stat
         /// and parsed config, so without this a second importer would hit the cache for the paths
-        /// the first one consulted and its probes would never reach the log.
+        /// the first one consulted and its probes would never reach the log. Config bytes stay
+        /// memoised in [`RecordingFs`], so each config file is read from disk once per resolver.
         pub(crate) fn begin_importer(&self) {
             self.inner.clear_cache();
             drop(self.log.drain());
@@ -854,6 +892,33 @@ mod js_tests {
         );
         assert!(probes.contains("tsconfig.json"));
         assert!(probes.contains("lib/thing.ts"));
+    }
+
+    /// A config file is read from disk once per resolver: a later importer is served the bytes read
+    /// for the first, yet still lists the file among its probes.
+    #[test]
+    fn a_config_is_read_once_but_recorded_for_every_importer() {
+        let tmp = TempDir::new().unwrap();
+        let alias = r#"{"compilerOptions":{"baseUrl":".","paths":{"@lib/*":["lib/*"]}}}"#;
+        write(tmp.path(), "tsconfig.json", alias);
+        write(tmp.path(), "lib/thing.ts", "export const x = 1;\n");
+        write(tmp.path(), "src/a.ts", "");
+        write(tmp.path(), "src/b.ts", "");
+        let resolver = SpecifierResolver::for_language("typescript").unwrap();
+
+        resolver.begin_importer();
+        let (first, _) = resolve(&resolver, tmp.path(), "src/a.ts", "@lib/thing");
+        assert!(first.is_some());
+
+        write(tmp.path(), "tsconfig.json", "{}");
+        resolver.begin_importer();
+        let (second, probes) = resolve(&resolver, tmp.path(), "src/b.ts", "@lib/thing");
+        assert_eq!(
+            second.and_then(|r| r.as_str().map(str::to_string)),
+            Some("lib/thing.ts".to_string()),
+            "the second importer must be served the tsconfig the first one read"
+        );
+        assert!(probes.contains("tsconfig.json"));
     }
 
     /// oxc memoises every stat. Without `begin_importer` a second importer's probes would silently
