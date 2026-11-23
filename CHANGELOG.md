@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Constant outline signatures read `const NAME = value` per member in TypeScript, TSX, JavaScript, Go and Python, and Go `const`/`var` group members each take their own span instead of repeating the group (#472).
 
+### Added
+
+- HCL and Terraform files expose symbols: `resource` and `data` blocks, `variable`, `output`, `module`, `provider` and `terraform` blocks and every `locals` entry in `*.tf` and `*.hcl`, with Terragrunt `include`, `dependency` and `inputs`; the signature is the block header (`resource "aws_s3_bucket" "logs"`). Existing indexes re-extract these files on the next scan (#215)
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

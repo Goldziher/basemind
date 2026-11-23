@@ -67,6 +67,8 @@ pub const OVERRIDE_LANGUAGES: &[LangId] = &[
     "go",
     "markdown",
     "java",
+    "hcl",
+    "terraform",
 ];
 
 /// Back-compat alias used by `basemind lang install` and tests that pre-warm the cache.
@@ -85,6 +87,7 @@ fn override_query_source(lang: LangId) -> Option<&'static str> {
         "go" => include_str!("queries/go.scm"),
         "markdown" => include_str!("queries/markdown.scm"),
         "java" => include_str!("queries/java.scm"),
+        "hcl" | "terraform" => include_str!("queries/hcl.scm"),
         _ => return None,
     })
 }
@@ -713,7 +716,7 @@ fn classify_combined_l1(lang: LangId) -> Result<ClassifiedOutcome, LangError> {
 /// and `Err` only on a compile error in source we do have.
 ///
 /// Language coverage is three concentric rings over TSLP's ~306-grammar registry:
-/// - **Override ring** ([`OVERRIDE_LANGUAGES`], 8 today): hand-written
+/// - **Override ring** ([`OVERRIDE_LANGUAGES`], 10 today): hand-written
 ///   `src/queries/<lang>.scm` with full symbol/import/call/doc sections.
 /// - **TSLP `tags.scm` ring** (~100 grammars in the published bundle — e.g. kotlin,
 ///   csharp, swift, cpp, scala, solidity): adapted on the fly via `adapt_tslp_tags`.

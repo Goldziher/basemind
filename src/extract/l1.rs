@@ -132,7 +132,7 @@ pub(super) fn run_combined(
     *partial |= dropped;
     let mut symbols = dedupe_symbols(symbols);
     for sym in &mut symbols {
-        trim_signature(sym);
+        trim_signature(sym, lang);
     }
     symbols.extend(routes.finish());
     Ok((symbols, imports, implementations))
@@ -406,16 +406,18 @@ const VALUE_SIGNATURE_MAX_CHARS: usize = 80;
 
 /// Drop signature text that costs tokens without adding information: for variables and fields the
 /// name is already a field of the entry, so `MAX_RETRIES = 3` is stored as `= 3`. A constant keeps
-/// its name (`const MAX_RETRIES = 3`), as it is read as a declaration. A long initialiser is cut at
-/// [`VALUE_SIGNATURE_MAX_CHARS`]. Definitions (functions, classes ...) keep their full header.
-fn trim_signature(sym: &mut Symbol) {
+/// its name (`const MAX_RETRIES = 3`), as it is read as a declaration, and so does an HCL header
+/// (`variable "region"`), whose name sits inside a label: removing it would leave `variable ""`. A
+/// long initialiser is cut at [`VALUE_SIGNATURE_MAX_CHARS`]. Definitions (functions, classes ...)
+/// keep their full header.
+fn trim_signature(sym: &mut Symbol, lang: LangId) {
     if !matches!(sym.kind, SymbolKind::Variable | SymbolKind::Const | SymbolKind::Field) {
         return;
     }
     let Some(sig) = sym.signature.as_deref() else {
         return;
     };
-    let keeps_name = matches!(sym.kind, SymbolKind::Const);
+    let keeps_name = matches!(sym.kind, SymbolKind::Const) || matches!(lang, "hcl" | "terraform");
     let mut out = match sig.find(sym.name.as_str()) {
         Some(i) if !keeps_name && whole_word(sig, i, sym.name.len()) => {
             let mut t = String::with_capacity(sig.len());
