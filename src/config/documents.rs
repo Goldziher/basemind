@@ -9,12 +9,12 @@ use serde::{Deserialize, Serialize};
 use super::DeprecatedSection;
 
 /// Globs naming test, fixture, mock, story, snapshot and end-to-end paths. The single source for
-/// two uses that never drift: `[scan] test_globs` only marks matching files `is_test` in the code
-/// map (they stay indexed for symbols, outlines, refs and grep), and the document tier's default
-/// `exclude` drops them from RAG (document indexing and embedding).
+/// two uses that never drift: `[scan] test_globs` names the test paths (they stay indexed in the
+/// code map for symbols, outlines, refs and grep), and the document tier's default `exclude`
+/// drops them from RAG (document indexing and embedding).
 ///
 /// Patterns are anchored on a directory or a suffix. `**/test_*.*` can also hit a production
-/// module such as `test_runner.py`; that is accepted because the flag is advisory and a user can
+/// module such as `test_runner.py`; that is accepted because a user can
 /// re-include with `!pattern` in `[documents] exclude`.
 pub const TEST_PATH_GLOBS: &[&str] = &[
     "**/tests/**",
@@ -694,9 +694,10 @@ pub enum SummarizationStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OcrConfig {
-    /// Run OCR on raster images (and scanned PDFs, where the binary has the tier). Off by default:
-    /// screenshots and diagrams add embedding time and rarely answer a question. Takes effect
-    /// only in a binary built with the `documents-ocr` feature.
+    /// Run OCR on raster images. Off by default: screenshots and diagrams add embedding time and
+    /// rarely answer a question. Takes effect only in a binary built with the `documents-ocr`
+    /// feature. It does not gate scanned PDFs: a build with the OCR tier compiled in always
+    /// OCRs them.
     #[serde(default)]
     pub enabled: bool,
     /// Reserved: parsed but currently has no effect (a load-time warning is logged when set to a

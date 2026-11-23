@@ -65,12 +65,33 @@ pub(crate) struct ScratchDir {
 impl ScratchDir {
     /// The glob that excludes the directory and everything beneath it.
     fn glob(&self) -> String {
-        format!("{}/**", self.dir)
+        format!("{}/**", escape_glob(&self.dir))
     }
 
     fn high_confidence(&self) -> bool {
         self.files >= HIGH_CONFIDENCE_MIN_DOCS
     }
+}
+
+/// `dir` as a literal glob: metacharacters become single-character classes, and a leading `!` is
+/// shielded with `./` (stripped when the glob expands) so the entry is not read as a re-include.
+fn escape_glob(dir: &str) -> String {
+    let mut out = String::with_capacity(dir.len() + 2);
+    if dir.starts_with('!') {
+        out.push_str("./");
+    }
+    for c in dir.chars() {
+        match c {
+            '*' | '?' | '[' | '{' => {
+                out.push('[');
+                out.push(c);
+                out.push(']');
+            }
+            '\\' => out.push_str("\\\\"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// What init found in the repository.
@@ -312,12 +333,35 @@ mod tests {
     }
 
     #[test]
+    fn scratch_glob_matches_the_literal_directory_whatever_its_name() {
+        for (dir, inside, outside) in [
+            ("legacy", "legacy/a.md", "other/a.md"),
+            ("docs/[draft]/legacy", "docs/[draft]/legacy/a.md", "docs/d/legacy/a.md"),
+            ("docs/[draft/legacy", "docs/[draft/legacy/a.md", "docs/d/legacy/a.md"),
+            ("!old/legacy", "!old/legacy/a.md", "old/legacy/a.md"),
+            ("a*b/legacy", "a*b/legacy/a.md", "axb/legacy/a.md"),
+            ("a?b/legacy", "a?b/legacy/a.md", "axb/legacy/a.md"),
+            ("{x,y}/legacy", "{x,y}/legacy/a.md", "x/legacy/a.md"),
+        ] {
+            let scratch = ScratchDir {
+                dir: dir.to_string(),
+                files: 1,
+                bytes: 1,
+            };
+            let glob = scratch.glob();
+            let rules = compile_rules([glob.as_str()]).unwrap_or_else(|e| panic!("{glob}: {e}"));
+            assert!(rules.is_match(inside), "{glob} must exclude {inside}");
+            assert!(!rules.is_match(outside), "{glob} must not exclude {outside}");
+        }
+    }
+
+    #[test]
     fn detect_counts_by_extension_and_applies_the_default_scope() {
         let tmp = repo();
         let report = detect(tmp.path()).expect("detect");
         assert_eq!(
             report.by_ext["md"],
-            ExtCount { total: 15, kept: 13 },
+            ExtCount { total: 14, kept: 13 },
             "CLAUDE.md is found but dropped"
         );
         assert_eq!(

@@ -93,9 +93,8 @@ pub struct ScanConfig {
     #[serde(default = "ScanConfig::default_respect_gitignore")]
     pub respect_gitignore: bool,
     /// Globs naming test, fixture, mock, snapshot and end-to-end paths, same syntax as `include`.
-    /// A file matching one is marked `is_test` in the code map; it stays indexed. The default
-    /// list is also the document tier's default test exclusion, so the two agree. Setting the key
-    /// replaces the default list.
+    /// Matching files stay indexed in the code map. The default list is also the document tier's
+    /// default test exclusion, so the two agree. Setting the key replaces the default list.
     #[serde(default = "ScanConfig::default_test_globs")]
     #[schemars(inner(length(min = 1)))]
     pub test_globs: Vec<String>,
