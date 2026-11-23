@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A package `__init__.py` with `from . import a, b` is no longer a one-file import cycle: the names resolve to the submodules, and a file is never its own import target (#476).
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

@@ -550,6 +550,41 @@ async fn python_from_import_of_a_bound_or_plain_module_names_no_submodule() {
     }
 }
 
+/// `from . import a, b` in `pkg/__init__.py` imports the submodules `pkg/a.py` and `pkg/b.py`, never
+/// the package's own `__init__.py`, so the package is no one-file import cycle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn python_package_init_importing_its_submodules_is_no_cycle() {
+    let dir = build_repo_with(&[
+        ("pkg/__init__.py", "from . import a, b\nfrom .sub import X\n"),
+        ("pkg/a.py", "A = 1\n"),
+        ("pkg/b.py", "B = 2\n"),
+        ("pkg/sub.py", "X = 3\n"),
+    ]);
+    let root = dir.path();
+    run_scan(root);
+    let service = spawn_serve(root).await;
+
+    for path in ["pkg/a.py", "pkg/b.py", "pkg/sub.py"] {
+        let body = importers(&service, path).await;
+        assert_eq!(
+            body["by_depth"],
+            json!({ "1": ["pkg/__init__.py"] }),
+            "importers of {path}: {body}"
+        );
+    }
+    let own = importers(&service, "pkg/__init__.py").await;
+    assert_eq!(own["by_depth"], json!({}), "importers of pkg/__init__.py: {own}");
+
+    let result = service
+        .call_tool(call_params("code_refs", json!({ "relation": "cycles" })))
+        .await
+        .expect("code_refs cycles");
+    let cycles = decode_text(&result);
+    assert_eq!(cycles["total"], json!(0), "cycles: {cycles}");
+
+    service.cancel().await.expect("shutdown");
+}
+
 /// `pkg/__init__.py` re-exports `sub` from `pkg/inner`, whose own `from . import sub` names
 /// `pkg/inner/sub.py`: `from pkg import sub` reaches that file, never the same-named `pkg/sub.py`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

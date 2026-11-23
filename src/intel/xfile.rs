@@ -394,7 +394,11 @@ pub fn stitch_cross_file_edges(
 
         for import in &importer_facts.imports {
             let resolved = resolver.resolve(root, importer_key, import, &mut probes);
-            let target_rel = resolved.clone().filter(|target| store.lookup(target).is_some());
+            // A file is never its own import target: `from . import a` in `pkg/__init__.py` resolves the
+            // package to the importer itself, and the name is read as a submodule below.
+            let target_rel = resolved
+                .clone()
+                .filter(|target| target.as_str() != Some(importer_key.as_str()) && store.lookup(target).is_some());
             let Some(target_rel) = target_rel else {
                 // The module's file decides whether it has submodules, indexed or not. ~keep
                 let package = resolved.as_ref();
