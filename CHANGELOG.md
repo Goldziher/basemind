@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A newer release minor no longer wipes the group index a running older release reads: from 0.35 on each minor keeps its group index in `cache/groups/<group>/v<minor>/`, the cache sweep reaps an older one once no process of that release runs and it has sat unwritten for `BASEMIND_PRUNE_AFTER_DAYS` (#447)
+### Fixed
+
+- A config edit that changes nothing a scan reads (a new `basemind.toml` holding the defaults, an `[mcp]` tweak, a comment) no longer sheds the daemon's read stack, so it no longer starts a whole-repository catch-up pass and `index_status` stays `ready`; a stack is rebuilt once a connection finds it built under scan settings or a `watch.debounce_ms` that have since changed (#459).
 
 ## [0.34.0] - 2026-11-22
 

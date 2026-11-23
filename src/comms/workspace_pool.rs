@@ -152,6 +152,10 @@ struct WorkspaceEntry {
     /// the store handle it sits next to (see [`WorkspacePool::evict_idle_read_stacks`]).
     #[cfg(all(feature = "comms", any(unix, windows)))]
     serve_state: tokio::sync::Mutex<Option<crate::mcp::HostedReadStack>>,
+    /// [`config::rules::read_stack_digest`] of the config the stack in `serve_state` was built from,
+    /// so a later connection can tell a stack built under superseded settings from a current one.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    serve_digest: Mutex<Option<String>>,
     /// Count of relay connections currently being served against this workspace's shared read
     /// stack. Eviction (LRU + idle sweep) skips any entry with a live connection so a hosted
     /// workspace is never dropped from under an in-flight rmcp session.
@@ -484,8 +488,10 @@ impl WorkspacePool {
     ///
     /// The stamp is advanced before the reload, so a file that fails to parse is reported once per
     /// edit rather than once per request, and the previous config stays in force until a good one
-    /// lands. A hosted read stack with no live connection is dropped so its next build picks the new
-    /// config up; live sessions keep theirs until they reconnect. The scanner's thread pool is sized
+    /// lands. A hosted read stack with no live connection is dropped, when the edit changes what a scan
+    /// reads or the watcher's debounce, so its next build picks the new config up; live sessions keep
+    /// theirs until they reconnect, and the first connection after they leave rebuilds a stack whose
+    /// recorded digest no longer matches ([`WorkspacePool::serve_conn`]). The scanner's thread pool is sized
     /// once per process, so a changed `scan_threads` only warns.
     fn refresh_config(&self, entry: &WorkspaceEntry) {
         let now = config::daemon::ConfigStamp::of(&entry.root);
@@ -511,9 +517,15 @@ impl WorkspacePool {
             );
         }
         tracing::info!(root = %entry.root.display(), stamp = %now, "config changed; reloaded");
+        #[cfg_attr(not(all(feature = "comms", any(unix, windows))), allow(unused_variables))]
+        let stack_inputs_changed = config::rules::read_stack_digest(&old) != config::rules::read_stack_digest(&new);
         *entry.config.write().unwrap_or_else(PoisonError::into_inner) = std::sync::Arc::new(new);
+        // A rebuilt stack owes a whole-tree catch-up pass, so an edit that changes nothing a scan reads
+        // (a new file holding the defaults, an `[mcp]` tweak) must not shed it: the daemon would report
+        // `rescanning` for a pass over the whole repository that finds nothing to do.
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        if entry.active_conns.load(std::sync::atomic::Ordering::Acquire) == 0
+        if stack_inputs_changed
+            && entry.active_conns.load(std::sync::atomic::Ordering::Acquire) == 0
             && let Ok(mut slot) = entry.serve_state.try_lock()
         {
             *slot = None;
@@ -580,6 +592,8 @@ impl WorkspacePool {
             last_full: Mutex::new(None),
             #[cfg(all(feature = "comms", any(unix, windows)))]
             serve_state: tokio::sync::Mutex::new(None),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            serve_digest: Mutex::new(None),
             active_conns: std::sync::atomic::AtomicUsize::new(0),
             busy: std::sync::atomic::AtomicUsize::new(0),
         });
