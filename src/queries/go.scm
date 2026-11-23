@@ -18,9 +18,9 @@
   type: (interface_type
     (method_elem name: (field_identifier) @symbol.name) @symbol.method))
 
-(const_declaration (const_spec name: (identifier) @symbol.name)) @symbol.const
+(const_declaration (const_spec name: (identifier) @symbol.name) @symbol.const)
 
-(var_declaration (var_spec name: (identifier) @symbol.name)) @symbol.const
+(var_declaration (var_spec name: (identifier) @symbol.name) @symbol.const)
 
 ;; section: implementations
 ;;

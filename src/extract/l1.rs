@@ -178,6 +178,7 @@ fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
 
 fn build_symbol(q: &Query, m: &QueryMatch, root: Node, source: &[u8], lang: LangId) -> Option<Symbol> {
     let mut name: Option<String> = None;
+    let mut name_node: Option<Node> = None;
     let mut kind: Option<SymbolKind> = None;
     let mut start_byte = 0u32;
     let mut end_byte = 0u32;
@@ -196,6 +197,7 @@ fn build_symbol(q: &Query, m: &QueryMatch, root: Node, source: &[u8], lang: Lang
         let node = cap.node;
         if cname == "symbol.name" {
             name = node.utf8_text(source).ok().map(|s| s.to_string());
+            name_node = Some(node);
         } else if cname == "symbol.decorator" {
             if let Ok(text) = node.utf8_text(source) {
                 let trimmed = text.trim();
@@ -230,6 +232,12 @@ fn build_symbol(q: &Query, m: &QueryMatch, root: Node, source: &[u8], lang: Lang
         }
     }
 
+    if matches!(kind, Some(SymbolKind::Const))
+        && let Some(sig) = name_node.and_then(|n| const_member_signature(n, source))
+    {
+        signature = Some(sig);
+    }
+
     Some(Symbol {
         name: name?,
         kind: kind.unwrap_or(SymbolKind::Unknown),
@@ -240,6 +248,32 @@ fn build_symbol(q: &Query, m: &QueryMatch, root: Node, source: &[u8], lang: Lang
         signature,
         decorators,
     })
+}
+
+/// The signature of one constant member, `const NAME = value`, read from the declarator that owns
+/// `name_node` so a declaration holding several members (`const a = 1, b = 2`, a Go `const ( ... )`
+/// group) gives each its own text instead of the whole declaration.
+///
+/// The keyword is the declaration's own (`const`, `let`, `var`); a Python assignment has none and
+/// reads as `const`. `None` for a name that is not inside a recognised declarator, which keeps the
+/// header-based signature.
+fn const_member_signature(name_node: Node, source: &[u8]) -> Option<String> {
+    let declarator = name_node.parent()?;
+    let keyword = match declarator.kind() {
+        "const_spec" => "const",
+        "var_spec" => "var",
+        "assignment" => "const",
+        "variable_declarator" => {
+            let text = declarator.parent()?.utf8_text(source).ok()?;
+            text.split_whitespace()
+                .next()
+                .filter(|w| matches!(*w, "const" | "let" | "var"))?
+        }
+        _ => return None,
+    };
+    let text = source.get(name_node.start_byte()..declarator.end_byte())?;
+    let member = signature_slice(std::str::from_utf8(text).ok()?)?;
+    Some(format!("{keyword} {member}"))
 }
 
 /// True when a field declaration's `modifiers` child holds both `static` and `final` (a Java
@@ -331,10 +365,10 @@ fn is_declarator_chain(function: Node, node: Node) -> bool {
 /// the whole initialiser, which can be a multi-line call; the outline only needs its shape.
 const VALUE_SIGNATURE_MAX_CHARS: usize = 80;
 
-/// Drop signature text that costs tokens without adding information: for value-like symbols the
-/// name is already a field of the entry, so `MAX_RETRIES = 3` is stored as `= 3`, and a long
-/// initialiser is cut at [`VALUE_SIGNATURE_MAX_CHARS`]. Definitions (functions, classes ...) keep
-/// their full header.
+/// Drop signature text that costs tokens without adding information: for variables and fields the
+/// name is already a field of the entry, so `MAX_RETRIES = 3` is stored as `= 3`. A constant keeps
+/// its name (`const MAX_RETRIES = 3`), as it is read as a declaration. A long initialiser is cut at
+/// [`VALUE_SIGNATURE_MAX_CHARS`]. Definitions (functions, classes ...) keep their full header.
 fn trim_signature(sym: &mut Symbol) {
     if !matches!(sym.kind, SymbolKind::Variable | SymbolKind::Const | SymbolKind::Field) {
         return;
@@ -342,8 +376,9 @@ fn trim_signature(sym: &mut Symbol) {
     let Some(sig) = sym.signature.as_deref() else {
         return;
     };
+    let keeps_name = matches!(sym.kind, SymbolKind::Const);
     let mut out = match sig.find(sym.name.as_str()) {
-        Some(i) if whole_word(sig, i, sym.name.len()) => {
+        Some(i) if !keeps_name && whole_word(sig, i, sym.name.len()) => {
             let mut t = String::with_capacity(sig.len());
             t.push_str(sig[..i].trim_end());
             if !t.is_empty() {
@@ -901,7 +936,7 @@ pub fn locked() {}
     }
 
     #[test]
-    fn value_signatures_drop_the_repeated_name_and_cap_length() {
+    fn const_signatures_keep_the_name_and_cap_length() {
         let long = "x".repeat(300);
         let src = format!("MAX_RETRIES = 3\nBIG = make({long})\n");
         let map = extract_l1("python", src.as_bytes()).expect("extract");
@@ -912,7 +947,7 @@ pub fn locked() {}
                 .and_then(|s| s.signature.clone())
                 .unwrap_or_default()
         };
-        assert_eq!(sig("MAX_RETRIES"), "= 3");
+        assert_eq!(sig("MAX_RETRIES"), "const MAX_RETRIES = 3");
         assert!(
             sig("BIG").chars().count() <= VALUE_SIGNATURE_MAX_CHARS + 1,
             "{}",
