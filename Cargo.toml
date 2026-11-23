@@ -167,7 +167,7 @@ code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitte
 # it adds salsa and ruff's parser and AST crates to the binary.
 code-intel-python = ["code-intel-stack", "dep:ruff_db", "dep:ruff_python_ast", "dep:salsa", "dep:ty_module_resolver"]
 
-code-intel = ["code-intel-js", "code-intel-stack"]
+code-intel = ["code-intel-js", "code-intel-stack", "code-intel-python"]
 
 full = ["documents", "documents-ocr", "documents-heic", "documents-ner", "memory", "comms", "code-intel", "code-search"]
 
