@@ -14,6 +14,9 @@ use tracing::{info, warn};
 /// The sysctl capping one user's inotify watches.
 pub const MAX_USER_WATCHES_SYSCTL: &str = "fs.inotify.max_user_watches";
 
+/// The value the docs and notes suggest for [`MAX_USER_WATCHES_SYSCTL`].
+pub const SUGGESTED_MAX_USER_WATCHES: u64 = 1_048_576;
+
 /// Where Linux exposes [`MAX_USER_WATCHES_SYSCTL`].
 #[cfg(target_os = "linux")]
 const MAX_USER_WATCHES_PATH: &str = "/proc/sys/fs/inotify/max_user_watches";
@@ -87,13 +90,19 @@ fn parse_limit(raw: &str) -> Option<u64> {
     raw.trim().parse().ok()
 }
 
+/// Whether a workspace of `demand` directories to watch already exceeds the watch `limit` on its
+/// own, before any other workspace or process takes a watch. False when the limit is unknown.
+pub fn demand_exceeds_limit(demand: usize, limit: Option<u64>) -> bool {
+    limit.is_some_and(|limit| u64::try_from(demand).is_ok_and(|demand| demand > limit))
+}
+
 /// What to tell the user when `unwatched` directories went unwatched under the watch `limit`.
 pub fn exhaustion_note(unwatched: usize, limit: Option<u64>) -> String {
     let current = limit.map_or_else(|| "unknown".to_string(), |limit| limit.to_string());
     format!(
         "the inotify watch limit is reached: {unwatched} directories are not watched, so their \
          edits are not indexed until a rescan; raise {MAX_USER_WATCHES_SYSCTL} (currently \
-         {current}), e.g. `sudo sysctl -w {MAX_USER_WATCHES_SYSCTL}=1048576`, then run \
+         {current}), e.g. `sudo sysctl -w {MAX_USER_WATCHES_SYSCTL}={SUGGESTED_MAX_USER_WATCHES}`, then run \
          `basemind comms stop` so the next call starts a daemon that watches them"
     )
 }
@@ -130,6 +139,13 @@ mod tests {
     fn the_limit_parses_as_proc_writes_it() {
         assert_eq!(parse_limit("65536\n"), Some(65536));
         assert_eq!(parse_limit("garbage"), None);
+    }
+
+    #[test]
+    fn a_workspace_larger_than_the_limit_exceeds_it() {
+        assert!(demand_exceeds_limit(8193, Some(8192)));
+        assert!(!demand_exceeds_limit(8192, Some(8192)));
+        assert!(!demand_exceeds_limit(1_000_000, None));
     }
 
     #[test]

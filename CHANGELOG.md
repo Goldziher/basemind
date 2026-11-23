@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A directory `git_log` page reports `commits_reached` and, when the git-history index serves it, `total_commits`, so an agent can tell how far into the history paging has got (#261)
 - The manual's paging page lists every `truncated_reason` with its next step (#261)
 - `[scan.roles]` marks files as `test`, `infra`, `generated`, `vendored` or `example` from built-in globs (Terraform and HCL, Dockerfiles, Helm and Kubernetes, Ansible, CI workflows, Bazel and Starlark, cloud-init and systemd for `infra`) plus the repository's own lists, with `!pattern` re-includes; a role labels a file and never drops it, and `index_status` reports `roles`, the file count per role. Role filters on the search tools, role-aware `code_refs`, RAG defaults and `basemind init` proposals are still to come (#490)
+- While the inotify watch limit leaves directories unwatched, the Linux watcher re-checks them every 30 seconds: it stat-diffs their subtrees so an edit under one is still indexed, and retries arming them; `basemind doctor` gains a `watches` row that warns when a workspace has more directories than `fs.inotify.max_user_watches` allows (#287)
 - `git_log` takes `files: true` to list what each commit changed in a recent or directory list: at most 8 entries a commit (a directory holding several changed files collapses to one `"<dir>/": "<n> files"` entry), the rest counted in `files_more` (#456)
 
 ### Fixed

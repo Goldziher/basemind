@@ -50,6 +50,7 @@ pub(crate) fn cmd_doctor(root: &Path, json_out: bool) -> Result<()> {
     checks.push(check_grammars());
     checks.push(check_hook(root));
     checks.push(check_daemon());
+    checks.push(check_watches(root));
     checks.push(check_cache_budget());
 
     let failed = checks.iter().any(|c| c.level == Level::Fail);
@@ -94,6 +95,53 @@ fn check_config(root: &Path) -> Check {
         ),
         Err(e) => Check::new("config", Level::Fail, e.to_string()),
     }
+}
+
+/// Whether the workspace's directories fit under the inotify watch limit. Linux only: macOS and
+/// Windows watch the tree with one recursive watch.
+#[cfg(target_os = "linux")]
+fn check_watches(root: &Path) -> Check {
+    let config = match basemind::config::overrides::load_with_overrides(root, None, None) {
+        Ok(loaded) => loaded.config,
+        Err(_) => basemind::config::default_for_root(root),
+    };
+    let demand = match basemind::watcher::watch_demand(root, &config) {
+        Ok(demand) => demand,
+        Err(e) => {
+            return Check::new(
+                "watches",
+                Level::Warn,
+                format!("cannot count the directories to watch: {e}"),
+            );
+        }
+    };
+    let limit = basemind::watch_health::max_user_watches();
+    let current = limit.map_or_else(|| "unknown".to_string(), |limit| limit.to_string());
+    if basemind::watch_health::demand_exceeds_limit(demand, limit) {
+        return Check::new(
+            "watches",
+            Level::Warn,
+            format!(
+                "{demand} directories to watch exceed {sysctl} ({current}), so some edits would go unindexed \
+                 until a rescan; raise it, e.g. `sudo sysctl -w {sysctl}={}`",
+                basemind::watch_health::SUGGESTED_MAX_USER_WATCHES,
+                sysctl = basemind::watch_health::MAX_USER_WATCHES_SYSCTL,
+            ),
+        );
+    }
+    Check::new(
+        "watches",
+        Level::Ok,
+        format!(
+            "{demand} directories to watch; {} is {current}",
+            basemind::watch_health::MAX_USER_WATCHES_SYSCTL
+        ),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn check_watches(_root: &Path) -> Check {
+    Check::new("watches", Level::Ok, "one recursive watch; no per-directory limit")
 }
 
 fn check_index(root: &Path) -> Check {
