@@ -46,10 +46,12 @@
 //! | `gh_path_to_ords` | `path_id:u32_be` | delta-varint ordinal posting list |
 //! | `gh_commit_text_by_ord` | `ord:u32_be` | full commit message body (FTS) |
 //! | `gh_term_to_ords` | `field:u8 ‖ term` | delta-varint ordinal posting list (FTS) |
+//! | `gh_term_dict` | `field:u8 ‖ term` | empty; the term dictionary a typo-tolerant query scans |
 
 pub mod builder;
 pub mod encoding;
 pub mod fts;
+pub mod fuzzy;
 pub mod keys;
 mod maintenance;
 pub mod proto;
@@ -91,7 +93,10 @@ use crate::path::RelPath;
 ///
 /// `+11` rebuilds the file list of a shallow clone's boundary commit, which is now listed as a root
 /// (its tree added), and stores the clone's `shallow` file so a deepened boundary is noticed.
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 11;
+///
+/// `+12` adds the `gh_term_dict` keyspace and indexes identifier parts (`BulkConfig` → `bulk`,
+/// `config`) beside the whole term, for typo-tolerant search.
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 12;
 
 /// Memtable ceiling of each keyspace, in bytes. At fjall's 64 MiB default, eight keyspaces with up
 /// to four sealed memtables queued behind each would let one database (the daemon keeps one per
@@ -318,6 +323,9 @@ pub(crate) struct LocalDb {
     /// `gh_term_to_ords`: `field:u8 ‖ term` → newest-first ordinal posting list. Backs
     /// `search_git_history`. See [`fts`].
     term_to_ords: Keyspace,
+    /// `gh_term_dict`: the keys of `gh_term_to_ords` with empty values, so a typo-tolerant query reads
+    /// the vocabulary without reading the posting lists. See [`fuzzy`].
+    term_dict: Keyspace,
     /// Serializes syncs of this database (see [`builder::sync`]): every holder of a clone of the
     /// handle (the daemon's socket path, each session it hosts) shares it, so N sessions asking at
     /// once produce one history walk and the rest find the index fresh.
@@ -417,6 +425,7 @@ impl GitHistoryIndex {
         let path_to_ords = db.keyspace("gh_path_to_ords", keyspace_options)?;
         let commit_text_by_ord = db.keyspace("gh_commit_text_by_ord", keyspace_options)?;
         let term_to_ords = db.keyspace("gh_term_to_ords", keyspace_options)?;
+        let term_dict = db.keyspace("gh_term_dict", keyspace_options)?;
         meta.insert(keys::META_SCHEMA_VER, GIT_HISTORY_SCHEMA.to_be_bytes())?;
         Ok(Self {
             db: LocalDb {
@@ -429,6 +438,7 @@ impl GitHistoryIndex {
                 path_to_ords,
                 commit_text_by_ord,
                 term_to_ords,
+                term_dict,
                 build_lock: std::sync::Arc::default(),
             },
         })
@@ -554,6 +564,7 @@ impl LocalDb {
             &self.path_to_ords,
             &self.commit_text_by_ord,
             &self.term_to_ords,
+            &self.term_dict,
         ] {
             ks.clear()?;
         }
@@ -779,6 +790,7 @@ impl GitHistoryWriter {
     pub fn put_term_posting(&mut self, term_key: &[u8], encoded: &[u8]) -> Result<(), GitHistoryError> {
         self.batch
             .insert(&self.db.term_to_ords, term_key.to_vec(), encoded.to_vec());
+        self.batch.insert(&self.db.term_dict, term_key.to_vec(), Vec::new());
         self.maybe_flush()
     }
 

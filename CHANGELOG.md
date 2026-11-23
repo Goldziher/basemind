@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `git_log` searches commit messages and authors tolerantly (typos, identifier parts, the start of the last word, authors by subsequence), lists exact matches first and the loose ones in `fuzzy`, combines `query` / `author` with `path`, `since` and `until`, and names the nearest paths of the history when `path` is not in it (#457). The git-history index schema moves, so the next scan rebuilds it.
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

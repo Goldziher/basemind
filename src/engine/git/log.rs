@@ -8,24 +8,23 @@
 
 use super::by_path::{LIVE_WALK, MATCHED_EARLIER, by_path};
 use super::common::{
-    LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, LOG_WALK_MAX, commit_to_view, git_history_if_fresh, head_sha, head_snapshot_id,
-    live_walk_span, require_git_repo,
+    LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, commit_to_view, git_history_if_fresh, head_sha, head_snapshot_id, live_walk_span,
+    require_git_repo,
 };
+use super::search::{no_such_path, run_search};
 use super::show::{budget_commits, budget_commits_with_files, run_show};
 use crate::engine::budget::budget;
 use crate::engine::error::EngineError;
 use crate::engine::timing::elapsed_us;
+use crate::engine::types::SPAN_LIMIT;
 use crate::engine::types::git::{
     BlameFileParams, BlameSymbolParams, CommitView, CommitsTouchingParams, CommitsTouchingResponse, DiffFileParams,
     DiffOutlineParams, FindCommitsByPathParams, GitBlameParams, GitBlameResult, GitDiffParams, GitDiffResult,
     GitLogParams, GitLogResult, HotFileEntry, HotFilesParams, HotFilesResponse, RecentChangesParams,
-    RecentChangesResponse, SearchGitHistoryParams, SearchGitHistoryResponse, SymbolHistoryParams,
-    WorkingTreeStatusView,
+    RecentChangesResponse, SearchGitHistoryParams, SymbolHistoryParams, WorkingTreeStatusView,
 };
-use crate::engine::types::{SPAN_LIMIT, UNINDEXED_SCAN};
 use crate::engine::workspace::Workspace;
 use crate::git::{CommitInfo, TouchingSpan};
-use crate::git_history::fts::{self, FtsScope};
 use crate::path::RelPath;
 
 /// The argument shapes `git_log` accepts, quoted in every shape error.
@@ -63,7 +62,14 @@ fn git_log(ws: &Workspace, p: GitLogParams) -> Result<GitLogResult, EngineError>
     let max_tokens = budget(p.max_tokens);
 
     if let Some(rev) = p.rev {
-        if p.path.is_some() || p.query.is_some() || p.author.is_some() || p.symbol.is_some() || p.line.is_some() {
+        if p.path.is_some()
+            || p.query.is_some()
+            || p.author.is_some()
+            || p.symbol.is_some()
+            || p.line.is_some()
+            || p.since.is_some()
+            || p.until.is_some()
+        {
             return Err(shape_error("`rev` shows one commit and combines with no other filter"));
         }
         if p.limit.is_some() || p.cursor.is_some() {
@@ -75,7 +81,7 @@ fn git_log(ws: &Workspace, p: GitLogParams) -> Result<GitLogResult, EngineError>
         let Some(path) = p.path else {
             return Err(shape_error("`symbol` needs the `path` of the file defining it"));
         };
-        if p.query.is_some() || p.author.is_some() {
+        if p.query.is_some() || p.author.is_some() || p.since.is_some() || p.until.is_some() {
             return Err(shape_error(
                 "`symbol` history does not combine with `query` or `author`",
             ));
@@ -99,11 +105,6 @@ fn git_log(ws: &Workspace, p: GitLogParams) -> Result<GitLogResult, EngineError>
         return Err(shape_error("`line` picks one definition of `symbol` and needs it"));
     }
     if p.query.is_some() || p.author.is_some() {
-        if p.path.is_some() {
-            return Err(shape_error(
-                "`query` / `author` search the whole history and do not combine with `path`",
-            ));
-        }
         // `query` is matched against the message and `author` against the author, each on its own
         // field: joined into one all-field search, `author: "alice"` matched a commit by bob that
         // mentioned alice.
@@ -121,9 +122,15 @@ fn git_log(ws: &Workspace, p: GitLogParams) -> Result<GitLogResult, EngineError>
                 cursor: p.cursor,
                 max_tokens,
                 author,
+                path: p.path.map(|path| as_directory(ws, path)),
+                since: p.since,
+                until: p.until,
             },
         )
         .map(GitLogResult::Search);
+    }
+    if p.since.is_some() || p.until.is_some() {
+        return Err(shape_error("`since` and `until` bound a `query` / `author` search"));
     }
     match p.path.map(|path| as_directory(ws, path)) {
         Some(path) if path.as_bytes().ends_with(b"/") => {
@@ -145,7 +152,7 @@ fn git_log(ws: &Workspace, p: GitLogParams) -> Result<GitLogResult, EngineError>
                 let repo = require_git_repo(ws)?;
                 if !repo.is_shallow() && !on_disk(repo, &path) {
                     if page.response.next_cursor.is_none() {
-                        return Err(no_such_path(&path));
+                        return Err(no_such_path(ws, &path));
                     }
                     page.response.unmatched = Some(format!(
                         "no commit inspected so far touches `{path}` and no such directory exists; `next_cursor` \
@@ -447,7 +454,7 @@ pub(super) fn history_page<T>(
 
 /// The commits touching `path` from offset `from` on, at most `take` of them, and the cursor
 /// snapshot of the list they come from. The index answers with offsets into its list of the
-/// commits touching the path. Without it the live walk tests at most [`LOG_WALK_MAX`] commits from
+/// commits touching the path. Without it the live walk tests at most [`super::common::LOG_WALK_MAX`] commits from
 /// position `from` of the whole history, so a path that rarely or never changed costs a bounded
 /// walk, and a span that runs out says where the next page resumes.
 pub(super) fn touching_page(
@@ -499,20 +506,6 @@ fn without_empty_components(path: &RelPath) -> RelPath {
         .filter(|c| !c.is_empty())
         .collect();
     RelPath::from(kept.join(&b'/').as_slice())
-}
-
-/// The refusal for a `path` that no commit reachable from HEAD touches and that is not on disk
-/// either. An empty history would not say the path is wrong.
-fn no_such_path(path: &RelPath) -> EngineError {
-    let kind = if path.as_bytes().ends_with(b"/") {
-        "directory"
-    } else {
-        "file"
-    };
-    EngineError::invalid_argument(format!(
-        "`git_log`: no commit reachable from HEAD touches `{path}` and no such {kind} exists. `path` is a \
-             repo-relative file path, or a directory when it ends with `/`; locate it with `find_files`."
-    ))
 }
 
 /// Whether `path` names something in the working tree.
@@ -603,7 +596,7 @@ fn run_touching(ws: &Workspace, params: CommitsTouchingParams) -> Result<Commits
         && !repo.is_shallow()
         && !on_disk(repo, &params.path)
     {
-        return Err(no_such_path(&params.path));
+        return Err(no_such_path(ws, &params.path));
     }
     Ok(touching_response(
         found,
@@ -709,146 +702,6 @@ fn run_churn(ws: &Workspace, params: HotFilesParams) -> Result<HotFilesResponse,
     })
 }
 
-/// Commits one indexed search round fetches while filtering by author.
-const AUTHOR_FILTER_CHUNK: usize = 500;
-/// Commits an author-filtered search inspects before it reports itself partial.
-const AUTHOR_FILTER_SCAN_MAX: usize = 20_000;
-
-/// Page `[skip, skip + take)` of the commits `fetch(offset, count)` yields whose AUTHOR also holds
-/// every one of `author_terms`. `fetch` is the message search, newest first; filtering its pages
-/// here keeps the two fields apart without a second index query shape. Returns the page and
-/// whether the scan stopped at [`AUTHOR_FILTER_SCAN_MAX`] before the search was exhausted.
-fn by_author(
-    mut fetch: impl FnMut(usize, usize) -> Vec<CommitInfo>,
-    author_terms: &ahash::AHashSet<String>,
-    skip: usize,
-    take: usize,
-) -> (Vec<CommitInfo>, bool) {
-    let mut page = Vec::new();
-    let mut matched = 0usize;
-    let mut offset = 0usize;
-    while offset < AUTHOR_FILTER_SCAN_MAX {
-        let chunk = fetch(offset, AUTHOR_FILTER_CHUNK);
-        let fetched = chunk.len();
-        for commit in chunk {
-            if !fts::commit_matches_terms(&commit, author_terms, FtsScope::Author) {
-                continue;
-            }
-            matched += 1;
-            if matched > skip {
-                page.push(commit);
-                if page.len() == take {
-                    return (page, false);
-                }
-            }
-        }
-        if fetched < AUTHOR_FILTER_CHUNK {
-            return (page, false);
-        }
-        offset += fetched;
-    }
-    (page, true)
-}
-
-/// The `search` operation: full-text search over git history. Uses the git-history inverted
-/// index when it is fresh (`last_indexed_head == HEAD`), searching author name + email + summary +
-/// full body; otherwise degrades to a bounded live walk over the recent window, flagged
-/// `truncated` with reason `unindexed_scan` (author + summary only, no body). Pagination and the HEAD-scoped cursor mirror `recent`.
-fn run_search(ws: &Workspace, params: SearchGitHistoryParams) -> Result<SearchGitHistoryResponse, EngineError> {
-    let repo = require_git_repo(ws)?;
-    let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
-    let scope = FtsScope::parse(params.field.as_deref());
-    let head = head_sha(repo)?;
-    let snapshot = head_snapshot_id(&head);
-
-    let skip = match params.cursor.as_ref() {
-        Some(cursor) => {
-            let (offset, snapshot_id) = cursor.decode_in_memory()?;
-            if snapshot_id != snapshot {
-                return Ok(SearchGitHistoryResponse {
-                    commits: Vec::new(),
-                    truncated: false,
-                    truncated_reason: None,
-                    next_cursor: None,
-                    budgeted: false,
-                    cursor_invalidated: true,
-                });
-            }
-            offset as usize
-        }
-        None => 0,
-    };
-
-    let want = limit.saturating_add(1);
-    let author_terms = params.author.as_deref().map(|author| {
-        let mut terms = ahash::AHashSet::new();
-        fts::tokenize(author, &mut terms);
-        terms
-    });
-    let (mut hits, truncated_reason) = match git_history_if_fresh(ws, &head) {
-        Some(index) => match author_terms.as_ref() {
-            None => (index.search_commits(&params.pattern, scope, skip, want), None),
-            Some(author_terms) => {
-                let (hits, capped) = by_author(
-                    |offset, chunk| index.search_commits(&params.pattern, scope, offset, chunk),
-                    author_terms,
-                    skip,
-                    want,
-                );
-                (hits, capped.then_some(crate::engine::types::SCAN_CAP))
-            }
-        },
-        None => {
-            let mut query_terms = ahash::AHashSet::new();
-            fts::tokenize(&params.pattern, &mut query_terms);
-            let window = LOG_WALK_MAX as u32;
-            let live = ws
-                .git_cache
-                .log(repo, &head, None, window, false)
-                .map_err(|e| EngineError::internal(format!("log: {e}")))?;
-            let matched: Vec<CommitInfo> = live
-                .iter()
-                .filter(|c| fts::commit_matches_terms(c, &query_terms, scope))
-                .filter(|c| {
-                    author_terms
-                        .as_ref()
-                        .is_none_or(|terms| fts::commit_matches_terms(c, terms, FtsScope::Author))
-                })
-                .skip(skip)
-                .take(want)
-                .cloned()
-                .collect();
-            (matched, Some(UNINDEXED_SCAN))
-        }
-    };
-
-    let has_more = hits.len() > limit;
-    hits.truncate(limit);
-
-    // `author` matches a substring of the name or the email, so it can select several people: each
-    // row then says whose commit it is.
-    let with_author = params.author.is_some() || scope == FtsScope::Author;
-    let commits = hits
-        .into_iter()
-        .map(|c| CommitView {
-            with_author,
-            ..commit_to_view(c, false)
-        })
-        .collect();
-    let (commits, budgeted) = budget_commits(commits, params.max_tokens);
-    let has_more = has_more || budgeted;
-    let kept = commits.len();
-    let next_cursor = has_more.then(|| crate::engine::cursor::Cursor::encode_in_memory((skip + kept) as u64, snapshot));
-    Ok(SearchGitHistoryResponse {
-        commits,
-        budgeted,
-        truncated: truncated_reason.is_some(),
-        truncated_reason,
-        next_cursor,
-        cursor_invalidated: false,
-    })
-}
-
 #[cfg(test)]
 #[path = "touching_tests.rs"]
 mod touching_tests;
@@ -868,23 +721,6 @@ mod tests {
             body: String::new(),
             files: Vec::new(),
         }
-    }
-
-    fn terms(text: &str) -> ahash::AHashSet<String> {
-        let mut terms = ahash::AHashSet::new();
-        fts::tokenize(text, &mut terms);
-        terms
-    }
-
-    /// Every third commit is by alice; all of them mention her in the message.
-    fn history(len: usize) -> Vec<CommitInfo> {
-        (0..len)
-            .map(|ordinal| commit(ordinal, if ordinal % 3 == 0 { "alice" } else { "bob" }))
-            .collect()
-    }
-
-    fn fetch_from(history: &[CommitInfo]) -> impl FnMut(usize, usize) -> Vec<CommitInfo> + '_ {
-        |offset, count| history.iter().skip(offset).take(count).cloned().collect()
     }
 
     #[test]
@@ -922,38 +758,5 @@ mod tests {
         let indexed = live & !LIVE_WALK;
         let refused = history_page("git_log", head, Some(indexed), None, walked).expect_err("index gone");
         assert!(refused.to_string().contains("git-history index"), "{refused}");
-    }
-
-    #[test]
-    fn author_terms_are_matched_against_the_author_not_the_message() {
-        let history = history(30);
-        let (page, capped) = by_author(fetch_from(&history), &terms("alice"), 0, 100);
-        assert!(!capped);
-        assert_eq!(page.len(), 10, "ten of thirty commits are by alice");
-        assert!(page.iter().all(|commit| commit.author == "alice"));
-        let (none, _) = by_author(fetch_from(&history), &terms("carol"), 0, 100);
-        assert!(none.is_empty());
-    }
-
-    #[test]
-    fn an_author_filtered_page_skips_and_takes_matches_across_fetch_chunks() {
-        let history = history(AUTHOR_FILTER_CHUNK * 3);
-        let all = by_author(fetch_from(&history), &terms("alice"), 0, usize::MAX).0;
-        let (page, capped) = by_author(fetch_from(&history), &terms("alice"), 200, 5);
-        assert!(!capped);
-        let shas: Vec<&str> = page.iter().map(|commit| commit.sha.as_str()).collect();
-        let expected: Vec<&str> = all[200..205].iter().map(|commit| commit.sha.as_str()).collect();
-        assert_eq!(shas, expected, "the page spans the first and second fetch");
-    }
-
-    #[test]
-    fn a_search_that_outruns_the_scan_cap_says_so() {
-        let history = history(AUTHOR_FILTER_SCAN_MAX + AUTHOR_FILTER_CHUNK);
-        let (page, capped) = by_author(fetch_from(&history), &terms("carol"), 0, 1);
-        assert!(page.is_empty());
-        assert!(
-            capped,
-            "the walk stopped at the cap, so an empty page is not a complete answer"
-        );
     }
 }

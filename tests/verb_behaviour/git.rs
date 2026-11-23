@@ -268,8 +268,8 @@ async fn every_git_refusal_keeps_its_exact_words() {
         ),
         (
             "git_log",
-            json!({ "query": "x", "path": "src/lib.rs" }),
-            r#"`git_log`: `query` / `author` search the whole history and do not combine with `path`; accepted shapes: {} (recent commits), {path} (commits touching a file, or a directory when it ends with `/`), {query} and/or {author} (search messages / authors), {path, symbol} (when a symbol's body changed; add `line` when several there share the name), {rev} (one commit in full); `limit`, `cursor` and `max_tokens` page every list"#,
+            json!({ "since": "2025-01-01" }),
+            r#"`git_log`: `since` and `until` bound a `query` / `author` search; accepted shapes: {} (recent commits), {path} (commits touching a file, or a directory when it ends with `/`), {query} and/or {author} (search messages / authors), {path, symbol} (when a symbol's body changed; add `line` when several there share the name), {rev} (one commit in full); `limit`, `cursor` and `max_tokens` page every list"#,
         ),
         (
             "git_log",
