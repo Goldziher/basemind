@@ -220,14 +220,22 @@ async fn call(client: &Client, tool: &'static str, arguments: Value) -> Value {
     basemind::wire::decode(&text).unwrap_or_else(|error| panic!("{tool}: unreadable payload ({error}): {text}"))
 }
 
-/// `call` repeated until `settled` accepts the answer, for a working-tree status read after an edit
+/// `call` repeated until `settled` accepts a successful answer, for a working-tree status read after an edit
 /// on disk: the status is cached until the file watcher reports the edit, a debounce later. The
 /// ceiling only stops a hang; the cache's own age bound ends a stale answer well before it.
 async fn call_until(client: &Client, tool: &'static str, arguments: Value, settled: impl Fn(&Value) -> bool) -> Value {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
-        let answer = call(client, tool, arguments.clone()).await;
-        if settled(&answer) {
+        let result = call_raw(client, tool, arguments.clone()).await;
+        // A refusal read from the stale status (a deleted directory it still sees as clean) settles
+        // with the next watcher report like any other stale answer.
+        let answer = if result.is_error == Some(true) {
+            Value::String(text_of(&result))
+        } else {
+            basemind::wire::decode(&text_of(&result))
+                .unwrap_or_else(|error| panic!("{tool}: unreadable payload ({error}): {}", text_of(&result)))
+        };
+        if result.is_error != Some(true) && settled(&answer) {
             return answer;
         }
         assert!(
