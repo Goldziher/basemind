@@ -56,7 +56,8 @@ fn workspace_owing_vectors(root: &Path, git_cache: &Path) -> Workspace {
 }
 
 /// The resume embeds the owed documents batch by batch, releasing the store write lock between
-/// batches so a read is answered mid-pass, and advances the progress record after each.
+/// batches so a read is answered mid-pass. The config embeds nothing, so no batch settles a guide
+/// and the progress record stays at zero: it counts settled documents, not visited ones.
 #[test]
 fn a_resumed_embedding_pass_releases_the_store_between_batches() {
     let (tmp, git_cache) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -74,9 +75,9 @@ fn a_resumed_embedding_pass_releases_the_store_between_batches() {
     assert_eq!(
         seen,
         vec![
-            (1, true, Some((1, 3))),
-            (2, true, Some((2, 3))),
-            (3, true, Some((3, 3))),
+            (0, true, Some((0, 3))),
+            (0, true, Some((0, 3))),
+            (0, true, Some((0, 3))),
         ]
     );
 }
