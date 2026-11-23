@@ -10,8 +10,15 @@ These use a duck-typed fake ``ctx`` — no Hermes dependency — and assert the 
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import importlib.util
 import json
+import os
+import shutil
+import socket
+import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -155,6 +162,7 @@ def fake_cli(monkeypatch, inbox, name="session-1a2b3c4d"):
         return None
 
     monkeypatch.setattr(hermes, "_run_basemind", run)
+    monkeypatch.setattr(hermes, "_daemon_is_up", lambda: True)
     return calls
 
 
@@ -242,3 +250,226 @@ def test_built_wheel_contains_manifest_and_skills(tmp_path):
     ep = next(n for n in names if n.endswith("entry_points.txt"))
     with zipfile.ZipFile(wheels[0]) as zf:
         assert "hermes_agent.plugins" in zf.read(ep).decode()
+
+
+@pytest.fixture(autouse=True)
+def fresh_process_state():
+    """The version check and the MCP sessions are per-process state: start each test without them."""
+    hermes._binary_notice.cache_clear()
+    hermes._sessions.clear()
+    yield
+    hermes._binary_notice.cache_clear()
+    hermes._sessions.clear()
+
+
+@pytest.fixture
+def comms_dir(monkeypatch):
+    """A short comms directory (a Unix socket path is limited to ~100 bytes) named by the override."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+        monkeypatch.setenv("BASEMIND_COMMS_DIR", directory)
+        yield Path(directory)
+
+
+needs_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="the daemon listens on a named pipe")
+
+
+@needs_unix_sockets
+def test_daemon_is_not_up_without_a_comms_directory(comms_dir):
+    assert hermes._daemon_is_up() is False
+
+
+@needs_unix_sockets
+def test_daemon_is_not_up_for_a_socket_nobody_listens_on(comms_dir):
+    (comms_dir / "g1").mkdir()
+    orphan = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    orphan.bind(str(comms_dir / "g1" / "comms.sock"))
+    orphan.close()
+    assert (comms_dir / "g1" / "comms.sock").exists()
+    assert hermes._daemon_is_up() is False
+
+
+@needs_unix_sockets
+def test_daemon_is_up_when_a_socket_accepts_connections(comms_dir):
+    (comms_dir / "g7").mkdir()
+    with contextlib.closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as listener:
+        listener.bind(str(comms_dir / "g7" / "comms.sock"))
+        listener.listen()
+        assert hermes._daemon_is_up() is True
+
+
+def test_delta_context_spawns_nothing_while_no_daemon_runs(monkeypatch):
+    calls = fake_cli(monkeypatch, {"messages": [{"subject": "hi", "from": "peer", "id": "t-abcdef.1"}]})
+    monkeypatch.setattr(hermes, "_daemon_is_up", lambda: False)
+    assert hermes._delta_context("/tmp") is None
+    assert calls == []
+
+
+def test_per_turn_inbox_read_has_a_short_timeout_and_session_start_keeps_its_own(monkeypatch):
+    timeouts = {}
+
+    def run(args, timeout, stdin=None):
+        timeouts["--announce" if "--announce" in args else "--peek"] = timeout
+        return json.dumps({"messages": []})
+
+    monkeypatch.setattr(hermes, "_run_basemind", run)
+    monkeypatch.setattr(hermes, "_daemon_is_up", lambda: True)
+    hermes._delta_context("/tmp")
+    hermes._session_start_context("/tmp")
+    assert timeouts == {"--announce": 2, "--peek": 6}
+
+
+def test_plugin_version_is_the_packages_version():
+    assert hermes._plugin_version() == basemind_hermes_plugin.__version__
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ("basemind 0.34.0\n", None),
+        ("basemind 0.34.9\n", None),
+        ("basemind 0.35.0\n", "the binary on PATH is 0.35.0 but this plugin is 0.34.0"),
+        ("basemind 1.34.0\n", "the binary on PATH is 1.34.0 but this plugin is 0.34.0"),
+        ("something else\n", "`basemind --version` gave no version"),
+        (None, "`basemind --version` gave no version"),
+    ],
+)
+def test_binary_notice_compares_minor_versions(monkeypatch, output, expected):
+    monkeypatch.setattr(hermes, "_plugin_version", lambda: "0.34.0")
+    monkeypatch.setattr(hermes, "_run_basemind", lambda args, timeout, stdin=None: output)
+    notice = hermes._binary_notice()
+    if expected is None:
+        assert notice is None
+    else:
+        assert expected in notice
+        assert "pnpm add -g basemind@0.34.0" in notice and "pip install basemind==0.34.0" in notice
+
+
+def test_binary_notice_runs_the_version_command_once(monkeypatch):
+    calls = []
+
+    def run(args, timeout, stdin=None):
+        calls.append(list(args))
+        return "basemind 0.35.0\n"
+
+    monkeypatch.setattr(hermes, "_plugin_version", lambda: "0.34.0")
+    monkeypatch.setattr(hermes, "_run_basemind", run)
+    assert hermes._binary_notice() == hermes._binary_notice()
+    assert calls == [["--version"]]
+
+
+def test_session_start_injects_the_version_notice_only_on_a_mismatch(monkeypatch):
+    fake_cli(monkeypatch, {"messages": []})
+    monkeypatch.setattr(hermes, "_binary_notice", lambda: "basemind: skew")
+    ctx = RecordingCtx()
+    hermes.register(ctx)
+    ctx.hooks["on_session_start"]()
+    assert [text for _, text in ctx.injected][0] == "basemind: skew"
+    assert hermes._DISCIPLINE in ctx.injected[1][1]
+
+    ctx.injected.clear()
+    monkeypatch.setattr(hermes, "_binary_notice", lambda: None)
+    ctx.hooks["on_session_start"]()
+    assert len(ctx.injected) == 1 and hermes._DISCIPLINE in ctx.injected[0][1]
+
+
+class FakeResult:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def model_dump(self, mode="json", exclude_none=False):
+        return self.payload
+
+
+@pytest.fixture
+def mcp_servers(monkeypatch):
+    """Replace the SDK's stdio client with fakes; the returned list holds one entry per server spawned."""
+    import mcp
+    import mcp.client.stdio
+
+    spawned = []
+
+    @contextlib.asynccontextmanager
+    async def stdio_client(server):
+        spawned.append(server)
+        yield None, None
+
+    class ClientSession:
+        def __init__(self, read, write, read_timeout_seconds=None):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def initialize(self):
+            return None
+
+        async def call_tool(self, tool, parameters):
+            if tool == "index_status":
+                raise OSError("the server went away")
+            return FakeResult({"tool": tool, "arguments": parameters, "cwd": os.getcwd()})
+
+        async def list_tools(self):
+            return FakeResult({"tools": ["code_outline"]})
+
+    monkeypatch.setattr(mcp.client.stdio, "stdio_client", stdio_client)
+    monkeypatch.setattr(mcp, "ClientSession", ClientSession)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/opt/{name}")
+    return spawned
+
+
+def call(tool, **tool_arguments):
+    return hermes.call_tool({"tool": tool, "tool_arguments": tool_arguments})
+
+
+def test_calls_in_one_directory_share_one_server(mcp_servers):
+    async def scenario():
+        first = await call("code_outline", path="a.rs")
+        second = await call("code_symbols", name="open")
+        discovered = await call("list_tools")
+        concurrent = await asyncio.gather(*(call("find_files", query=str(n)) for n in range(3)))
+        return first, second, discovered, concurrent
+
+    first, second, discovered, concurrent = asyncio.run(scenario())
+    assert first["tool"] == "code_outline" and first["arguments"] == {"path": "a.rs"}
+    assert second["tool"] == "code_symbols"
+    assert discovered == {"tools": ["code_outline"]}
+    assert [item["arguments"] for item in concurrent] == [{"query": "0"}, {"query": "1"}, {"query": "2"}]
+    assert len(mcp_servers) == 1
+    assert mcp_servers[0].command == "/opt/basemind" and mcp_servers[0].cwd == os.getcwd()
+
+
+def test_each_working_directory_gets_its_own_server(mcp_servers, tmp_path, monkeypatch):
+    async def scenario():
+        await call("code_outline")
+        monkeypatch.chdir(tmp_path)
+        await call("code_outline")
+        await call("code_outline")
+
+    start = os.getcwd()
+    asyncio.run(scenario())
+    assert len(mcp_servers) == 2
+    assert Path(mcp_servers[0].cwd) == Path(start)
+    assert Path(mcp_servers[1].cwd).resolve() == tmp_path.resolve()
+
+
+def test_a_failed_server_is_replaced_on_the_next_call(mcp_servers):
+    async def scenario():
+        await call("code_outline")
+        failed = await call("index_status")
+        recovered = await call("code_outline")
+        return failed, recovered
+
+    failed, recovered = asyncio.run(scenario())
+    assert failed == {"error": "basemind MCP request failed: the server went away"}
+    assert recovered["tool"] == "code_outline"
+    assert len(mcp_servers) == 2
+
+
+def test_a_new_event_loop_does_not_reuse_a_session_of_a_closed_one(mcp_servers):
+    first = asyncio.run(call("code_outline"))
+    second = asyncio.run(call("code_outline"))
+    assert first["tool"] == second["tool"] == "code_outline"
+    assert len(mcp_servers) == 2
