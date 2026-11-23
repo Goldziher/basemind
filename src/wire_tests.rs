@@ -47,6 +47,58 @@ const EDGE_FLOATS: &[f64] = &[
 /// Keys a generated table draws its columns from: bare, and ones a TOON header must quote.
 const TABLE_KEYS: &[&str] = &["name", "line", "a b", "a:b", "", "1", "-k", "#k", "k.k", "\"q\""];
 
+/// The tools whose answers are rows: TOON unless compact JSON is shorter.
+const ROW_TOOLS: [&str; 6] = [
+    "git_log",
+    "git_blame",
+    "code_symbols",
+    "code_refs",
+    "docs_search",
+    "code_search",
+];
+
+/// A `git_log` list of twenty commits: short sha, author, date and subject.
+const LOG_FIXTURE: [(&str, &str, &str, &str); 20] = [
+    (
+        "b6589fc6",
+        "Ana Weber",
+        "2024-01-01",
+        "Fix flaky retry in upload worker",
+    ),
+    ("356a192b", "Raj Patel", "2024-02-08", "Add pagination to the audit log"),
+    ("da4b9237", "Mei Lin", "2024-03-15", "Bump serde to the latest patch"),
+    ("77de68da", "Tomas Novak", "2024-01-22", "Drop the unused cache warmup"),
+    ("1b645389", "Ana Weber", "2024-02-01", "Handle empty config sections"),
+    ("ac3478d6", "Ana Weber", "2024-03-08", "Rename Row to Record in the API"),
+    ("c1dfd96e", "Raj Patel", "2024-01-15", "Tighten the cursor validation"),
+    ("902ba3cd", "Mei Lin", "2024-02-22", "Speed up outline for large files"),
+    (
+        "fe5dbbce",
+        "Tomas Novak",
+        "2024-03-01",
+        "Document the release checklist",
+    ),
+    ("0ade7c2c", "Ana Weber", "2024-01-08", "Guard against a zero limit"),
+    ("b1d57811", "Ana Weber", "2024-02-15", "Split the scanner into stages"),
+    ("17ba0791", "Raj Patel", "2024-03-22", "Cover the shallow clone path"),
+    ("7b52009b", "Mei Lin", "2024-01-01", "Remove a stale feature flag"),
+    ("bd307a3e", "Tomas Novak", "2024-02-08", "Log the index rebuild reason"),
+    ("fa35e192", "Ana Weber", "2024-03-15", "Make the walk stop at the root"),
+    ("f1abd670", "Ana Weber", "2024-01-22", "Reject a mistyped directory"),
+    ("1574bddb", "Raj Patel", "2024-02-01", "Stabilise the watcher test"),
+    ("0716d970", "Mei Lin", "2024-03-08", "Sort the symbol rows by rank"),
+    ("9e6a55b6", "Tomas Novak", "2024-01-15", "Cache the head snapshot id"),
+    ("b3f0c7f6", "Ana Weber", "2024-02-22", "Update the tool descriptions"),
+];
+
+fn log_fixture() -> Value {
+    let commits: Vec<Value> = LOG_FIXTURE
+        .iter()
+        .map(|(sha, author, date, subject)| json!({"sha": sha, "author": author, "date": date, "subject": subject}))
+        .collect();
+    json!({ "commits": commits })
+}
+
 fn round_trip(tool: &str, value: &Value) -> String {
     let text = encode(tool, value);
     let back = decode(&text).unwrap_or_else(|e| panic!("{tool}: {e}\n{text}"));
@@ -136,14 +188,7 @@ fn toon_tools_round_trip_strings_toon_must_quote() {
 #[test]
 fn json_tools_keep_json_text() {
     let value = json!({"results": ["src/a.rs:3: fn a()"], "next_cursor": "c"});
-    for tool in [
-        "code_symbols",
-        "code_refs",
-        "git_log",
-        "git_blame",
-        "code_read",
-        "index_status",
-    ] {
+    for tool in ["code_read", "index_status"] {
         assert_eq!(round_trip(tool, &value), value.to_string());
     }
     let sized = json!({"files": {"src/a.rs": 3000}});
@@ -302,7 +347,7 @@ proptest! {
     #[test]
     fn every_json_answer_reads_back_exactly(body in answer()) {
         let value = Value::Object(body);
-        let text = encode("code_symbols", &value);
+        let text = encode("code_read", &value);
         prop_assert_eq!(&text, &value.to_string());
         prop_assert_eq!(decode(&text), Ok(value));
     }
@@ -312,6 +357,15 @@ proptest! {
         let value = Value::Object(body);
         reads_back("code_outline", &value)?;
         reads_back("git_diff", &value)?;
+    }
+
+    #[test]
+    fn every_row_tool_answer_is_no_longer_than_its_json_and_reads_back(body in answer()) {
+        let value = Value::Object(body);
+        for tool in ROW_TOOLS {
+            reads_back(tool, &value)?;
+            prop_assert!(encode(tool, &value).len() <= value.to_string().len(), "{tool} grew");
+        }
     }
 
     #[test]
@@ -327,7 +381,10 @@ proptest! {
         body.insert("files".into(), any_value.clone());
         body.insert(HITS.into(), any_value);
         let answer = Value::Object(body);
-        for tool in ["code_symbols", "code_outline", "git_diff", "find_files", "code_grep"] {
+        for tool in [
+            "code_symbols", "code_outline", "git_diff", "find_files", "code_grep", "git_log", "git_blame",
+            "code_refs", "docs_search", "code_search",
+        ] {
             reads_back(tool, &answer)?;
         }
     }
@@ -350,5 +407,71 @@ fn a_malformed_list_or_hits_shape_reads_back() {
         ("code_grep", serde_json::json!({ "hits": { "a.rs": 3 } })),
     ] {
         reads_back(tool, &root).unwrap_or_else(|error| panic!("{error}"));
+    }
+}
+
+#[test]
+fn a_git_log_list_is_one_table_with_the_keys_written_once() {
+    let text = round_trip("git_log", &log_fixture());
+    let (header, first) = text.split_once('\n').expect("a header and rows");
+    assert_eq!(header, "commits[20]{sha,author,date,subject}:");
+    assert_eq!(
+        first.lines().next(),
+        Some("  b6589fc6,Ana Weber,2024-01-01,Fix flaky retry in upload worker")
+    );
+}
+
+/// A twenty-commit `git_log` answer stays within 1.5 KB, and under what its compact JSON takes: a
+/// change that makes a row longer, or brings back a per-row key, fails here.
+#[test]
+fn a_twenty_commit_git_log_answer_stays_small() {
+    let fixture = log_fixture();
+    let text = round_trip("git_log", &fixture);
+    assert!(text.len() <= 1_500, "{} bytes:\n{text}", text.len());
+    assert!(
+        text.len() * 3 < fixture.to_string().len() * 2,
+        "TOON no longer saves a third of the JSON: {} against {} bytes",
+        text.len(),
+        fixture.to_string().len()
+    );
+}
+
+#[test]
+fn row_tools_round_trip_their_row_shapes() {
+    let answers = [
+        (
+            "git_log",
+            json!({"commits": [{"sha": "12345678", "author": "a, b", "date": "2024-01-01", "subject": "x: y"}],
+            "files": {"12345678": {"src/a.rs": "modified", "d/": "3 files"}}, "files_more": {"12345678": 4},
+            "next_cursor": "c"}),
+        ),
+        (
+            "git_log",
+            json!({"history": ["0c2fe19c tune alpha", "3f38556b [introduced] init"]}),
+        ),
+        (
+            "git_blame",
+            json!({"hunks": ["1 3f38556b6d45", "2-3 0c2fe19c38a2 old.rs"],
+            "commits": {"3f38556b6d45": {"author": "t", "time": 1, "summary": "init"}}}),
+        ),
+        (
+            "code_symbols",
+            json!({"results": ["src/a.rs:3: fn a()", "src/b.rs:9: fn b()"], "total": 2}),
+        ),
+        (
+            "code_refs",
+            json!({"hits": {"src/a.rs": [{"line": 3, "callee": "x"}, {"line": 9, "callee": "y"}]}}),
+        ),
+        (
+            "docs_search",
+            json!({"hits": [{"path": "a.md", "line": 1, "end_line": 4, "score": 0.5}]}),
+        ),
+        (
+            "code_search",
+            json!({"hits": [{"path": "a.rs", "line": 1, "end_line": 4, "symbol": "a"}]}),
+        ),
+    ];
+    for (tool, answer) in answers {
+        round_trip(tool, &answer);
     }
 }

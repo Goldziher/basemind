@@ -470,12 +470,7 @@ fn assert_old_stores_survive(env: &Env, new: &Path, old: &Path) {
     let log = env.json(new, &["git", "log"]);
     let summaries: Vec<&str> = log["commits"]
         .as_array()
-        .map(|commits| {
-            commits
-                .iter()
-                .filter_map(|row| row.as_str()?.split_once(' ').map(|(_, summary)| summary))
-                .collect()
-        })
+        .map(|commits| commits.iter().filter_map(|row| row["subject"].as_str()).collect())
         .unwrap_or_default();
     assert!(
         summaries.iter().any(|s| s.contains("second upgrade fixture commit"))

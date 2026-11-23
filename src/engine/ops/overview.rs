@@ -268,6 +268,7 @@ impl Workspace {
             limit: Some(RECENT_COMMITS),
             cursor: None,
             max_tokens: None,
+            files: false,
         };
         let Ok(GitLogResult::Recent(log)) = self.git_log(params) else {
             return None;

@@ -338,19 +338,12 @@ fn symbol_rows(body: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The summaries of a `git_log` list, each commit being a `"<sha> <summary>"` row.
+/// The subjects of a `git_log` list, each commit being a `{sha, author, date, subject}` row.
 fn commit_summaries(rows: &Value) -> Vec<String> {
     rows.as_array()
         .expect("a list of commit rows")
         .iter()
-        .map(|row| {
-            row.as_str()
-                .expect("a row is a string")
-                .split_once(' ')
-                .expect("`<sha> <summary>`")
-                .1
-                .to_string()
-        })
+        .map(|row| row["subject"].as_str().expect("a row has a subject").to_string())
         .collect()
 }
 

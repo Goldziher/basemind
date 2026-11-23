@@ -5,7 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::default_true;
 use crate::engine::cursor::Cursor;
 use crate::path::RelPath;
 
@@ -22,7 +21,7 @@ pub struct GitLogParams {
     #[serde(default)]
     pub query: Option<String>,
     /// Words the author name or email must all contain, matched like `query` and also as a
-    /// subsequence; rows then name the author.
+    /// subsequence.
     #[serde(default)]
     pub author: Option<String>,
     /// With `query` or `author`: only commits since this author time, `YYYY-MM-DD` or `<N>d`,
@@ -50,6 +49,10 @@ pub struct GitLogParams {
     /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Also list what each commit changed, in a recent or directory list: capped per commit, the
+    /// rest counted in `files_more`. Default false.
+    #[serde(default)]
+    pub files: bool,
 }
 
 /// Arguments of `git_blame`.
@@ -146,8 +149,8 @@ pub struct RecentChangesParams {
     /// Number of commits to walk back from HEAD. Default 20, max 100.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// When true, include the per-file change list for each commit. Default true.
-    #[serde(default = "default_true")]
+    /// When true, include the per-file change list for each commit. Default false.
+    #[serde(default)]
     pub include_files: bool,
     /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
     /// the repo's HEAD sha at mint time; on HEAD movement the response carries
@@ -228,6 +231,9 @@ pub struct FindCommitsByPathParams {
     /// is set and `next_cursor` resumes at the first dropped commit.
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// When true, list what each commit changed. Default false.
+    #[serde(default)]
+    pub include_files: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -300,19 +306,15 @@ pub struct BlameSymbolParams {
     pub max_tokens: Option<u32>,
 }
 
-/// One commit of a `git_log` list, written as `git log --oneline` prints it: `"<sha> <summary>"`,
-/// or `"<sha> <author>: <summary>"` in a search by `author`, whose match is a substring of the name
-/// or email and so may hold several people. When it was written is `git_log {rev}`'s answer.
+/// One commit of a `git_log` list: its short sha, author, date and subject, which is what finding
+/// a commit takes. The whole message, the author's email and the changed files are
+/// `git_log {rev}`'s answer; a recent or directory list adds the files on request.
 #[derive(Debug, schemars::JsonSchema)]
 pub(crate) struct CommitView {
     pub sha: String,
     pub summary: String,
-    /// Written in the row only when `with_author`; `code explain` reads it.
     pub author: String,
-    /// The row names the author: the list was filtered by `author`.
-    #[schemars(skip)]
-    pub with_author: bool,
-    /// Not written in a list row; `code explain` reads it.
+    /// Written in the row as its UTC day, `YYYY-MM-DD`.
     pub author_time_unix: i64,
     /// The files the commit changed: each path with how (`added`, `modified`, `deleted`,
     /// `renamed`). A merge lists only what it changed against every parent. The recent list and a
@@ -322,12 +324,33 @@ pub(crate) struct CommitView {
 
 impl Serialize for CommitView {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.with_author {
-            serializer.serialize_str(&format!("{} {}: {}", self.sha, self.author, self.summary))
-        } else {
-            serializer.serialize_str(&format!("{} {}", self.sha, self.summary))
-        }
+        use serde::ser::SerializeStruct;
+
+        let mut row = serializer.serialize_struct("CommitView", 4)?;
+        row.serialize_field("sha", &self.sha)?;
+        row.serialize_field("author", &self.author)?;
+        row.serialize_field("date", &utc_day(self.author_time_unix))?;
+        row.serialize_field("subject", &self.summary)?;
+        row.end()
     }
+}
+
+/// `unix` seconds as a UTC `YYYY-MM-DD` day (proleptic Gregorian, after Hinnant's `civil_from_days`).
+pub(crate) fn utc_day(unix: i64) -> String {
+    let days = unix.div_euclid(86_400) + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days.rem_euclid(146_097);
+    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// The changed files of a directory's history: `{"<sha>": {"<path>": "<change>"}}`.
@@ -353,10 +376,25 @@ fn files_by_commit<S: serde::Serializer>(
 /// Each listed commit's changed files, keyed by its sha: a list response's top-level `files`.
 pub(crate) type FilesByCommit = Vec<(String, Vec<CommitFileView>)>;
 
+/// How many changed files each listed commit's entry in `files` leaves out: `{"<sha>": <count>}`.
+pub(crate) type FilesMore = Vec<(String, usize)>;
+
+/// A [`FilesMore`] written as the map it stands for.
+fn files_more<S: serde::Serializer>(more: &FilesMore, serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+
+    let mut map = serializer.serialize_map(Some(more.len()))?;
+    for (sha, count) in more {
+        map.serialize_entry(sha, count)?;
+    }
+    map.end()
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct CommitFileView {
     pub path: RelPath,
-    pub change: &'static str,
+    /// How the commit changed it; a collapsed directory says how many files it stands for.
+    pub change: std::borrow::Cow<'static, str>,
 }
 
 /// A file list written as `{"<path>": "<change>", ...}`: a path is a file's key, not a field
@@ -366,7 +404,7 @@ fn files_by_path<S: serde::Serializer>(files: &[CommitFileView], serializer: S) 
 
     let mut map = serializer.serialize_map(Some(files.len()))?;
     for file in files {
-        map.serialize_entry(&file.path.to_str_lossy(), file.change)?;
+        map.serialize_entry(&file.path.to_str_lossy(), &file.change)?;
     }
     map.end()
 }
@@ -464,12 +502,18 @@ pub(crate) struct WorkingTreeStatusView {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct RecentChangesResponse {
-    /// `"<sha> <summary>"` per commit, newest first.
+    /// One `{sha, author, date, subject}` row per commit, newest first.
     pub commits: Vec<CommitView>,
-    /// What each listed commit changed: `{"<sha>": {"<path>": "<change>"}}`; absent when empty.
+    /// What each listed commit changed, on request (`files`): `{"<sha>": {"<path>": "<change>"}}`.
+    /// A commit with many files lists a few, a directory standing for several (`"<n> files"`).
     #[serde(serialize_with = "files_by_commit", skip_serializing_if = "Vec::is_empty")]
     #[schemars(with = "serde_json::Value")]
     pub files: FilesByCommit,
+    /// The changed files a commit's entry in `files` leaves out: `{"<sha>": <count>}`; absent when
+    /// none.
+    #[serde(serialize_with = "files_more", skip_serializing_if = "Vec::is_empty")]
+    #[schemars(with = "serde_json::Value")]
+    pub files_more: FilesMore,
     /// `true` when the walk may have stopped early (today: shallow clone). Agents should
     /// treat the absence of an expected commit as inconclusive when this is set.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -688,12 +732,18 @@ pub(crate) struct FindCommitsByPathResponse {
     /// `span_limit` whenever `truncated` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
-    /// `"<sha> <summary>"` per commit, newest first.
+    /// One `{sha, author, date, subject}` row per commit, newest first.
     pub commits: Vec<CommitView>,
-    /// What each listed commit changed: `{"<sha>": {"<path>": "<change>"}}`; absent when empty.
+    /// What each listed commit changed, on request (`files`): `{"<sha>": {"<path>": "<change>"}}`.
+    /// A commit with many files lists a few, a directory standing for several (`"<n> files"`).
     #[serde(serialize_with = "files_by_commit", skip_serializing_if = "Vec::is_empty")]
     #[schemars(with = "serde_json::Value")]
     pub files: FilesByCommit,
+    /// The changed files a commit's entry in `files` leaves out: `{"<sha>": <count>}`; absent when
+    /// none.
+    #[serde(serialize_with = "files_more", skip_serializing_if = "Vec::is_empty")]
+    #[schemars(with = "serde_json::Value")]
+    pub files_more: FilesMore,
     /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
     /// resumes at the first dropped one.
     #[serde(skip_serializing_if = "std::ops::Not::not")]

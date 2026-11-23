@@ -42,10 +42,10 @@ pub(super) const BLAME_LIMIT_MAX: u32 = 1000;
 /// Blame hunks per page when the caller passes no `limit`.
 pub(super) const BLAME_LIMIT_DEFAULT: u32 = 100;
 
-/// Hex digits of a commit sha in a `git_log` list. Twelve is the abbreviation the Linux kernel
-/// settled on: a prefix that long names one commit in any repository of a realistic size, and every
-/// tool that takes a revision resolves it.
-pub(super) const SHA_ABBREV: usize = 12;
+/// Hex digits of a commit sha in a `git_log` list. Eight name one commit in a repository of a few
+/// hundred thousand commits almost always, every tool that takes a revision resolves the prefix, and
+/// a longer one is bytes a list pays on every row.
+pub(super) const SHA_ABBREV: usize = 8;
 
 /// `sha` cut to [`SHA_ABBREV`] hex digits.
 pub(super) fn abbreviated_sha(mut sha: String) -> String {
@@ -60,7 +60,7 @@ pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> 
                 .into_iter()
                 .map(|(path, kind)| CommitFileView {
                     path,
-                    change: kind.as_str(),
+                    change: kind.as_str().into(),
                 })
                 .collect(),
         )
@@ -71,7 +71,6 @@ pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> 
         sha: abbreviated_sha(c.sha),
         summary: c.summary,
         author: c.author,
-        with_author: false,
         author_time_unix: c.author_time_unix,
         files,
     }

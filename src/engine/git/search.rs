@@ -113,18 +113,9 @@ pub(super) fn run_search(
     let has_more = hits.len() > limit;
     hits.truncate(limit);
 
-    // `author` matches part of the name or the email, so it can select several people: each row
-    // then says whose commit it is.
-    let with_author = params.author.is_some() || scope == FtsScope::Author;
     let rows: Vec<(CommitView, bool)> = hits
         .into_iter()
-        .map(|hit| {
-            let view = CommitView {
-                with_author,
-                ..commit_to_view(hit.commit, false)
-            };
-            (view, hit.fuzzy)
-        })
+        .map(|hit| (commit_to_view(hit.commit, false), hit.fuzzy))
         .collect();
     let flags: Vec<bool> = rows.iter().map(|(_, fuzzy)| *fuzzy).collect();
     let (commits, budgeted) = budget_commits(rows.into_iter().map(|(view, _)| view).collect(), params.max_tokens);

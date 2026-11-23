@@ -7,6 +7,9 @@
 //!   rows under `# <path>` and `## <symbol>` headers, as `rg --heading` prints them. TOON alone
 //!   quotes nearly every line of code (a `:` forces it) and escapes its quotes.
 //! - `code_outline`, `git_diff` and a `find_files` list: TOON, whose tables drop the per-row keys.
+//! - `git_log`, `git_blame`, `code_symbols`, `code_refs`, `docs_search` and `code_search`: TOON when
+//!   it is no longer than compact JSON, so a list of uniform rows (`commits[20]{sha,author,date,subject}:`)
+//!   drops the per-row keys and a list of string rows never grows.
 //! - Every other answer, and a `code_grep` answer the row block cannot carry: compact JSON, which
 //!   TOON did not shorten.
 //!
@@ -32,8 +35,17 @@ pub fn encode(tool: &str, value: &Value) -> String {
         "code_grep" => encode_grep(value).unwrap_or_else(|| value.to_string()),
         "code_outline" | "git_diff" => toon(value),
         "find_files" if value.get("files").is_some_and(Value::is_array) => toon(value),
+        "git_log" | "git_blame" | "code_symbols" | "code_refs" | "docs_search" | "code_search" => shorter(value),
         _ => value.to_string(),
     }
+}
+
+/// `value` as TOON, or as compact JSON when that is shorter: a row list TOON quotes heavily (rows
+/// holding `:` or `,`) can come out longer than the JSON it replaces.
+fn shorter(value: &Value) -> String {
+    let json = value.to_string();
+    let toon = toon(value);
+    if toon.len() <= json.len() { toon } else { json }
 }
 
 /// `value` as TOON. Never fails for a JSON value; an encoder error falls back to compact JSON, which
