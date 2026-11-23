@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The default `[documents] exclude` also drops test, fixture, mock, snapshot and e2e paths, agent instruction files and directories (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.cursor/`, ...), and vendored or build output (`node_modules`, `vendor`, `dist`, `build`, `*.min.*`, `*.map`) (#458).
 - Images are no longer sent to OCR unless `[documents.ocr] enabled = true` (#458).
 - A malformed HTML file is no longer re-read as plain text, so markup is never chunked or embedded (#458).
+### Fixed
+
+- `code_search` with `lane: "semantic"` and `[code_search] embed` off is refused as unavailable, naming the setting, instead of returning an empty ranking that reports the vector lane as run (#473).
 
 ## [0.34.0] - 2026-11-22
 
