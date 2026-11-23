@@ -23,7 +23,7 @@ use crate::path::RelPath;
 /// no-op.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RebuildOutcome {
-    /// HEAD is already an indexed tip — nothing to do.
+    /// HEAD is already an indexed tip — no commit is walked.
     Fresh,
     /// HEAD became an indexed tip by appending the `added` commits reachable from it that were not
     /// stored yet (none when every commit was already stored for another head).
@@ -96,6 +96,13 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, Gi
 
     let deepened = root_deepened(index, repo);
     if !deepened && index.has_tip(&head) {
+        // Already indexed, perhaps for another worktree: make it the latest tip again, which a read
+        // at no head answers for, and renew its sync time so eviction drops older tips first.
+        if let Some(head20) = keys::sha_hex_to_raw(&head)
+            && index.last_indexed_head() != Some(head20)
+        {
+            index.touch_tip(&head20)?;
+        }
         return Ok(RebuildOutcome::Fresh);
     }
 
@@ -688,5 +695,41 @@ mod tests {
             .map(str::to_owned)
             .collect();
         assert_eq!(touching(&index, "a.rs"), expected);
+    }
+
+    /// Syncing A, a diverged B, then A again leaves A the latest tip: a read at no head answers for
+    /// the checkout that synced last.
+    #[test]
+    fn syncing_an_indexed_tip_again_makes_it_the_latest_tip() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let root = repo_dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        commit(root, "a.rs", "1", "c1");
+        let cache = tempfile::tempdir().expect("cache dir");
+        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
+        sync(&index, &Repo::discover(root).expect("discover"), cache.path()).expect("sync A");
+        let a = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+
+        git(root, &["checkout", "-q", "-b", "other"]);
+        commit(root, "b.rs", "1", "c2");
+        let b = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+        sync(&index, &Repo::discover(root).expect("rediscover"), cache.path()).expect("sync B");
+        assert_eq!(index.last_indexed_head_hex().as_deref(), Some(b.as_str()));
+
+        git(root, &["checkout", "-q", "main"]);
+        let outcome = sync(&index, &Repo::discover(root).expect("rediscover"), cache.path()).expect("sync A again");
+        assert_eq!(outcome, RebuildOutcome::Fresh);
+        assert_eq!(index.last_indexed_head_hex().as_deref(), Some(a.as_str()));
+        assert!(index.has_tip(&b), "B stays an indexed tip");
+        assert_eq!(
+            index
+                .latest()
+                .expect("a latest view")
+                .recent_commits(0, 10, false)
+                .len(),
+            1,
+            "a read at no head sees A's history, not B's"
+        );
     }
 }

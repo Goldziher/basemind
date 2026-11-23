@@ -110,8 +110,9 @@ fn reachable_ords(buf: &[u8], reach: &Reach, want: usize) -> Option<Vec<u32>> {
     loop {
         let ords = encoding::try_decode_ords_head(buf, window)?;
         let exhausted = ords.len() < window;
-        let kept: Vec<u32> = ords.into_iter().filter(|ord| reach.contains(*ord)).collect();
+        let mut kept: Vec<u32> = ords.into_iter().filter(|ord| reach.contains(*ord)).collect();
         if exhausted || kept.len() >= want {
+            kept.truncate(want);
             return Some(kept);
         }
         window = window.saturating_mul(WINDOW_GROWTH);
