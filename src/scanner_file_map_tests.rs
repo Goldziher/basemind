@@ -232,3 +232,47 @@ fn a_torn_delta_frame_ends_the_replay_at_the_last_whole_flush() {
     let read = crate::store::read_index(&view_dir).expect("read").expect("a file map");
     assert_eq!(read.files.get(bstr::BStr::new("alpha.rs")), Some(&whole));
 }
+
+/// A log that exists but cannot be read is an error: the base alone is not the map it was flushed as.
+#[test]
+fn an_unreadable_delta_log_fails_the_read_instead_of_returning_the_base() {
+    init_isolated_cache();
+    let dir = one_file_repo();
+    let root = dir.path();
+    let mut store = Store::open(root, VIEW_WORKING).expect("open");
+    full_scan(root, &mut store);
+    edit_and_scan(root, &mut store, "pub fn alpha() -> u32 { 2 }\n");
+    let view_dir = store.view_dir.clone();
+    drop(store);
+
+    let log = view_dir.join(crate::store::FILE_MAP_LOG);
+    std::fs::remove_file(&log).expect("remove the log");
+    std::fs::create_dir(&log).expect("a directory where the log was");
+
+    let error = crate::store::read_index(&view_dir).expect_err("the log cannot be read");
+    assert!(
+        matches!(error, crate::store::StoreError::Io { ref path, .. } if *path == log),
+        "{error:?}"
+    );
+}
+
+/// A log replaced by one of the same length is a different stamp, so a cached read of the old one
+/// is not served for it.
+#[test]
+fn a_view_stamp_differs_when_the_delta_log_is_replaced_by_one_of_the_same_length() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = dir.path().join(crate::store::FILE_MAP_LOG);
+    std::fs::write(&log, b"aaaa").expect("write");
+    let before = crate::store::ViewStamp::of(dir.path());
+    assert_eq!(before, crate::store::ViewStamp::of(dir.path()));
+
+    std::fs::remove_file(&log).expect("remove");
+    std::fs::write(&log, b"bbbb").expect("write");
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+    std::fs::File::options()
+        .write(true)
+        .open(&log)
+        .and_then(|file| file.set_modified(later))
+        .expect("set the modification time");
+    assert_ne!(before, crate::store::ViewStamp::of(dir.path()));
+}

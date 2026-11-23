@@ -153,7 +153,7 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
             return Ok(None);
         }
         let (mut index, stamp) = read_base(&path)?;
-        super::file_map_log::apply_log(view_dir, stamp, &mut index);
+        super::file_map_log::apply_log(view_dir, stamp, &mut index)?;
         // A compaction between the read and now replaced the base the log was applied to. ~keep
         let settled = BaseStamp::of_path(&path) == Some(stamp);
         if settled || attempt >= READ_ATTEMPTS {

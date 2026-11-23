@@ -67,11 +67,12 @@ impl BaseStamp {
 }
 
 /// The on-disk state of a view's file map (base file and delta log), cheap to take and to compare:
-/// two equal stamps of one view mean the file map has not been written in between.
+/// two equal stamps of one view mean the file map has not been written in between. The log is
+/// stamped by identity as well as length, so a log replaced by one of the same length differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ViewStamp {
     base: Option<BaseStamp>,
-    log_len: u64,
+    log: Option<BaseStamp>,
 }
 
 impl ViewStamp {
@@ -79,7 +80,7 @@ impl ViewStamp {
     pub(crate) fn of(view_dir: &Path) -> Self {
         Self {
             base: BaseStamp::of_path(&view_dir.join(INDEX_FILE)),
-            log_len: std::fs::metadata(view_dir.join(LOG_FILE)).map_or(0, |meta| meta.len()),
+            log: BaseStamp::of_path(&view_dir.join(LOG_FILE)),
         }
     }
 }
@@ -192,30 +193,36 @@ fn frames(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
 }
 
 /// Apply the delta log of `view_dir` to `index`, the file map read from the base file stamped
-/// `base`. A log of another base, or none, leaves `index` as read.
-pub(super) fn apply_log(view_dir: &Path, base: BaseStamp, index: &mut Index) {
-    let Ok(bytes) = std::fs::read(view_dir.join(LOG_FILE)) else {
-        return;
+/// `base`. A log of another base, or none, leaves `index` as read; a log that exists but cannot be
+/// read is an error, since the base alone would show files the log removed and miss the ones it
+/// added.
+pub(super) fn apply_log(view_dir: &Path, base: BaseStamp, index: &mut Index) -> Result<(), StoreError> {
+    let log_path = view_dir.join(LOG_FILE);
+    let bytes = match std::fs::read(&log_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => return Err(StoreError::Io { path: log_path, source }),
     };
     let mut payloads = frames(&bytes);
     let Some(stamp) = payloads
         .next()
         .and_then(|payload| rmp_serde::from_slice::<BaseStamp>(payload).ok())
     else {
-        return;
+        return Ok(());
     };
     if stamp != base {
-        return;
+        return Ok(());
     }
     for payload in payloads {
         match rmp_serde::from_slice::<DeltaIn>(payload) {
             Ok(delta) => delta.apply(index),
             Err(error) => {
                 tracing::warn!(%error, "file map delta frame does not decode; the log is replayed up to it");
-                return;
+                return Ok(());
             }
         }
     }
+    Ok(())
 }
 
 /// Remove the delta log of `view_dir`, if any. A log left behind is harmless (its stamp no longer
@@ -286,6 +293,7 @@ impl FileMapState {
         self.expected_files += usize::from(added);
     }
 
+    #[cfg(feature = "code-search")]
     pub(super) fn file_edited(&mut self, rel: RelPath) {
         self.dirty_files.insert(rel);
     }

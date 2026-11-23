@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A watcher batch that retires a content no longer decodes every sibling worktree's file map: each view's holds are cached until that view writes again (#277).
+- A file map whose delta log exists but cannot be read is an error instead of the stale base, and the holds cache is invalidated when a log is replaced by one of the same length (#277, #278).
 
 ## [0.34.0] - 2026-11-22
 
