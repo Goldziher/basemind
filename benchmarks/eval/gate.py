@@ -49,10 +49,14 @@ CODE_INTEL_PARTS = {"code-intel-js", "code-intel-stack"}
 EXT_LANGUAGE = {"rs": "rust", "py": "python", "ts": "typescript", "go": "go", "java": "java"}
 NO_LANGUAGE = "(whole repository)"
 # The structural kinds a language's corpora must report (#313: symbols, references and dependents on each
-# repository), whatever the other corpora report. A language with no entry has no such gold yet.
+# repository), whatever the other corpora report. Java has no `dependents`: basemind's Java query lists no
+# imports (`gen_structural.py`).
 REQUIRED_KINDS = {
     "rust": {"symbols", "references", "dependents"},
     "python": {"symbols", "references", "dependents"},
+    "typescript": {"symbols", "references", "dependents"},
+    "go": {"symbols", "references", "dependents"},
+    "java": {"symbols", "references"},
 }
 
 

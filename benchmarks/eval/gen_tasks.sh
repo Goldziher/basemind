@@ -12,8 +12,10 @@
 #   rust        symbols, outline, references, callers, implementations, dependents, read (`rust_gold`),
 #               every git kind, impact/cycles over `use`, explain
 #   python      symbols, outline, references, callers, dependents (`ast`), impact/cycles over `import`
-#   typescript  impact/cycles over relative imports and barrels
-#   go, java    none of the structural kinds yet
+#   typescript  symbols, references, dependents (`_langs.py`, from the text), impact/cycles over relative imports and
+#               barrels
+#   go          symbols, references, dependents (`_langs.py`)
+#   java        symbols, references (`_langs.py`; basemind indexes no Java imports, so no dependents)
 #   every one   grep, grep_changed, read_around, find_large, git_path, blame, diff (`git` and text only)
 #
 # `find` and `git_search` span the whole repository and are generated once. A corpus with several
@@ -85,7 +87,12 @@ structural() {
     files+=("${tmp}/symbols-${ext}.jsonl" "${tmp}/outline-${ext}.jsonl" "${tmp}/references-${ext}.jsonl"
       "${tmp}/dependents-${ext}.jsonl" "${tmp}/git-${ext}.jsonl")
     ;;
-  *)
+  typescript | go | java)
+    local kind
+    while IFS= read -r kind; do
+      gen gen_structural.py "${repo}" "${tmp}/${kind}-${ext}.jsonl" --lang "${language}" --kind "${kind}"
+      files+=("${tmp}/${kind}-${ext}.jsonl")
+    done < <(python3 "${here}/gen_structural.py" --lang "${language}" --list-kinds)
     gen gen_git.py "${repo}" "${tmp}/git-${ext}.jsonl" --ext "${ext}" --kind git_path --kind blame --kind diff
     files+=("${tmp}/git-${ext}.jsonl")
     ;;

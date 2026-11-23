@@ -52,6 +52,7 @@ tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `read` to `code_
 | `gen_outline.py` | `outline` | `path:line` of every module- and class-level def, class and assignment (never function locals) |
 | `gen_references.py` | `references`, `callers` | `path:line` of every `ast.Call` whose callee identifier is the name, cross-checked with `git grep -n -w` |
 | `gen_dependents.py` | `dependents` | files whose import statement text contains the module string |
+| `gen_structural.py` | `symbols`, `references`, `dependents` | TypeScript, Go and Java gold from `_langs.py`, a scanner over the text with comments and strings blanked (no parser is pinned): definitions outside function bodies, call sites at the line the expression starts, and import statements (TypeScript `import_statement`, Go `import_declaration`; Java has no `imports` section in basemind, so no `dependents`). A name with any ambiguous occurrence is not a candidate |
 | `gen_rust.py` | `symbols`, `outline`, `references`, `callers`, `implementations`, `dependents`, `read` | Rust gold from `rust_gold` (syn, not tree-sitter); see its docstring and `_rust.py` |
 | `gen_git.py` | `git_path`, `git_symbol`, `blame`, `blame_symbol`, `diff`, `diff_structural` | git's own output on the pinned commit; symbol bodies and names from `rust_gold` |
 | `gen_grep.py` | `grep` | `git grep -n -F` (literal) or `-E` (regex, `regex: true`) lines with the same path/language filters; Rust tasks also carry the enclosing definition per line (`annotations`) |
@@ -185,8 +186,12 @@ analysis kinds' gold, edge resolution and baselines on a fixture with a known mo
 
 - The AST generators (`gen_symbols.py`, `gen_outline.py`, `gen_references.py`, `gen_dependents.py`) emit Python gold only;
   `gen_rust.py` and `gen_git.py` (`git_symbol`, `blame_symbol`, `diff_structural`) cover Rust, and `gen_graph.py` covers
-  Rust, Python and TypeScript. Symbol, reference and dependent gold for TypeScript, Go and Java, and import gold for Go
-  and Java, needs a parser per language that is not pinned here; those corpora gate the language-agnostic kinds only.
+  Rust, Python and TypeScript. `gen_structural.py` gives TypeScript, Go and Java `symbols`, `references` and (not Java)
+  `dependents` from the source text, not a parser: it undercounts what it cannot read exactly (Go grouped `const` and
+  `var` specs, TypeScript interface members and object-literal methods, Java record components), which lowers a
+  tool's precision on those names and never its recall, and it has no `outline`, `callers` or `implementations` gold
+  for them. The first run after a pin moves should be compared with basemind's own listing for a few names
+  (`basemind code symbols NAME`) to confirm the line each node starts on.
 - The TypeScript edges read relative specifiers only: a path alias (`tsconfig` `paths`), a workspace package imported by
   name and a `package.json` `exports` map are not edges.
 - `outline`/`symbols` gold encodes basemind's Python symbol rules: module- and class-scope definitions and assignments only. Names bound inside a function or lambda (locals, nested defs) are not indexed, so the generators never descend into function bodies.
@@ -252,8 +257,8 @@ BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)" \
   a pin moves. Gold never comes from basemind: Rust structure from `rust_gold` (syn), Python structure from `ast`,
   import edges for Rust, Python and TypeScript from `_edges.py`, git, grep and find gold from git's own output on the
   pinned commit. Each language gets the kinds its gold covers: Rust all of them; Python `symbols`, `outline`,
-  `references`, `callers`, `dependents`, `impact` and `cycles`; TypeScript `impact` and `cycles`; Go and Java neither
-  (their `code_symbols` and `code_refs` kinds have no gold yet, so `gate.py` does not expect them there). Every language
+  `references`, `callers`, `dependents`, `impact` and `cycles`; TypeScript `symbols`, `references`, `dependents`, `impact` and `cycles`; Go `symbols`, `references` and
+  `dependents`; Java `symbols` and `references` (`gate.py` expects exactly these per language, `REQUIRED_KINDS`). Every language
   gets `grep`, `grep_changed`, `read_around`, `find_large`, `git_path`, `blame` and `diff`; `find` and `git_search` are
   generated once per repository. A corpus with several languages suffixes each task id with `-<ext>`.
 - `run_gate.sh` refuses to start unless `BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR` are set to existing, empty
