@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A nightly Windows CI leg tests the documents, code-intel, memory and comms features (#276).
+- A Windows CI leg on every pull request tests the documents, code-intel, memory and comms features (#276).
 
 ## [0.34.0] - 2026-11-22
 

@@ -105,9 +105,9 @@ jobs:
         os: [ubuntu-latest, macos-26, windows-latest]
         # ~keep `comms documents` is `documents` without `documents-ocr` / `documents-ner`: the only
         # ~keep leg that compiles and runs the tests gated on a missing tier.
-        # ~keep `comms documents code-intel memory` is the nightly Windows leg: the Windows archive
-        # ~keep ships `full`, but the only per-push Windows leg is `comms`, so this one runs the
-        # ~keep documents, code-intel, memory and comms tests there once a day (and on a manual run).
+        # ~keep `comms documents code-intel memory` is the Windows leg for the heavier tiers: the
+        # ~keep Windows archive ships `full`, so this runs the documents, code-intel, memory and comms
+        # ~keep tests there on every pull request, next to the `comms` leg.
         features: ["", "full", "comms documents", "comms", "comms documents code-intel memory"]
         exclude:
           - { os: ubuntu-latest, features: "comms" }
@@ -118,7 +118,6 @@ jobs:
           - { os: windows-latest, features: "comms documents" }
           - { os: ubuntu-latest, features: "comms documents code-intel memory" }
           - { os: macos-26, features: "comms documents code-intel memory" }
-          - features: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && 'comms documents code-intel memory' || 'none' }}
           - os: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'macos-26' || 'none' }}
           - os: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'windows-latest' || 'none' }}
           - features: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'full' || 'none' }}
