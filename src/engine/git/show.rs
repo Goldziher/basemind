@@ -30,6 +30,9 @@ pub(super) fn budget_commits<T: Serialize>(commits: Vec<T>, max_tokens: Option<u
 /// directories and counted; `git_log {rev}` lists them all.
 pub(super) const FILES_PER_COMMIT: usize = 8;
 
+/// Bytes a commit's `+N more` entry costs in the budget, beside its listed files.
+const FILES_MORE_BYTES: u64 = 16;
+
 /// `files` held to [`FILES_PER_COMMIT`] entries, and how many files that leaves out. A list longer
 /// than the cap collapses each directory holding several of its files into one `dir/` entry saying
 /// `"<n> files"`, in order of first appearance; the entries past the cap are counted, not listed.
@@ -77,29 +80,42 @@ pub(super) fn budget_commits_with_files(
     commits: Vec<CommitView>,
     max_tokens: Option<u32>,
 ) -> (Vec<CommitView>, FilesByCommit, FilesMore, bool) {
+    // Each list is capped before the budget is spent: a commit changing thousands of files is
+    // charged for the entries the response carries, not for every path.
+    let rows: Vec<(CommitView, Option<(Vec<CommitFileView>, usize)>)> = commits
+        .into_iter()
+        .map(|mut commit| {
+            let capped = commit.files.take().map(cap_files);
+            (commit, capped)
+        })
+        .collect();
     let budget = keep_prefix(
-        commits,
+        rows,
         Some(max_tokens.unwrap_or(GIT_BUDGET_DEFAULT_TOKENS)),
-        |commit| {
-            let files = commit.files.as_deref().map_or(0, |files| {
-                files
+        |(commit, capped)| {
+            let files = capped.as_ref().map_or(0, |(listed, omitted)| {
+                let more = if *omitted > 0 { FILES_MORE_BYTES } else { 0 };
+                listed
                     .iter()
                     .map(|file| file.path.as_bytes().len() as u64 + 16)
                     .sum::<u64>()
+                    + more
             });
             bytes_to_tokens(commit.sha.len() as u64 + commit.summary.len() as u64 + 8 + files).max(1)
         },
     );
-    let (mut commits, budgeted) = (budget.items, budget.budgeted);
+    let budgeted = budget.budgeted;
+    let mut commits = Vec::with_capacity(budget.items.len());
     let mut files = FilesByCommit::new();
     let mut more = FilesMore::new();
-    for commit in &mut commits {
-        let Some(listed) = commit.files.take() else { continue };
-        let (listed, omitted) = cap_files(listed);
-        if omitted > 0 {
-            more.push((commit.sha.clone(), omitted));
+    for (commit, capped) in budget.items {
+        if let Some((listed, omitted)) = capped {
+            if omitted > 0 {
+                more.push((commit.sha.clone(), omitted));
+            }
+            files.push((commit.sha.clone(), listed));
         }
-        files.push((commit.sha.clone(), listed));
+        commits.push(commit);
     }
     (commits, files, more, budgeted)
 }
@@ -232,6 +248,23 @@ mod tests {
         assert_eq!(listed[1], ("d0/only.rs".to_string(), "modified".to_string()));
         assert_eq!(listed[7], ("d6/only.rs".to_string(), "modified".to_string()));
         assert_eq!(omitted, 1, "the one single-file group past the cap");
+    }
+
+    /// The budget is spent on the capped list, so a commit changing thousands of files under one
+    /// directory does not push the commits after it off the page.
+    #[test]
+    fn a_huge_file_list_is_charged_as_capped() {
+        let paths: Vec<String> = (0..2_000).map(|n| format!("big/f{n}")).collect();
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let mut huge = commit("a", &[]);
+        huge.files = Some(changed(&refs));
+        let (kept, files, more, budgeted) = budget_commits_with_files(vec![huge, commit("b", &["1"])], Some(20));
+        assert_eq!((kept.len(), budgeted), (2, false));
+        assert_eq!(
+            listed(&files[0].1),
+            vec![("big/".to_string(), "2000 files".to_string())]
+        );
+        assert!(more.is_empty());
     }
 
     #[test]
