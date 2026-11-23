@@ -412,6 +412,30 @@ fn floor_allow_re_includes_a_lockfile_and_a_cache_directory() {
 }
 
 #[test]
+fn a_named_lockfile_is_re_included_despite_a_broader_lockfile_pattern() {
+    let build = |allow: &[&str], user_exclude: &[&str]| {
+        let mut config = crate::config::default_for_root(Path::new("."));
+        config.scan.floor_allow = allow.iter().map(|s| (*s).to_string()).collect();
+        config.scan.exclude = user_exclude.iter().map(|s| (*s).to_string()).collect();
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters")
+    };
+
+    let filters = build(&["yarn.lock", ".terraform.lock.hcl", "Cargo.lock"], &[]);
+    assert!(filters.allows("a/yarn.lock"));
+    assert!(filters.allows("infra/.terraform.lock.hcl"));
+    assert!(filters.allows("Cargo.lock"));
+    assert!(
+        !filters.allows("a/poetry.lock"),
+        "an unnamed lockfile stays excluded by the broad pattern"
+    );
+    assert!(!filters.allows("a/deps.lock.hcl"), "a lockfile the entry does not name");
+    assert!(!filters.allows(".git/config"));
+
+    let user = build(&["yarn.lock"], &["**/yarn.lock"]);
+    assert!(!user.allows("yarn.lock"), "a user exclude still wins");
+}
+
+#[test]
 fn should_reject_out_of_root_and_empty_rel() {
     let (filter, root, _tmp) = filter_for(|root| {
         fs::write(root.join("a.rs"), b"fn e() {}\n").unwrap();
