@@ -250,15 +250,20 @@ fn lockfile_reallow(floor_allow: &[String]) -> Vec<String> {
 }
 
 /// The ordered list-only rules the floor contributes: its lockfile patterns that `floor_allow` left
-/// in place, then the `!` entries re-including the lockfiles it names. They come before the user's
-/// `[scan] list_only`, so a user entry can list or re-index a lockfile either way. Lockfiles are
+/// in place, then the user's `[scan] list_only`, then the `!` entries re-including the lockfiles `floor_allow`
+/// names, so `floor_allow` wins over a default list entry. An empty user list lists nothing, the
+/// floor's lockfile patterns included. Lockfiles are
 /// listed, never read and never dropped outright, so an agent still sees where they are.
-fn lockfile_list_rules(floor: &[&str], floor_allow: &[String]) -> Vec<String> {
+fn lockfile_list_rules(floor: &[&str], floor_allow: &[String], user: &[String]) -> Vec<String> {
+    if user.is_empty() {
+        return Vec::new();
+    }
     floor
         .iter()
         .copied()
         .filter(|p| LOCKFILE_GLOBS.contains(p))
         .map(str::to_string)
+        .chain(user.iter().cloned())
         .chain(lockfile_reallow(floor_allow))
         .collect()
 }
@@ -398,10 +403,8 @@ impl Filters {
             .chain(user_excludes.iter().cloned())
             .collect();
         let exclude = compile_globs(exclude_patterns.iter().map(String::as_str))?;
-        let list_only_rules: Vec<String> = lockfile_list_rules(&floor, &config.scan.floor_allow)
-            .into_iter()
-            .chain(config.scan.list_only.iter().cloned())
-            .collect();
+        let list_only_rules: Vec<String> =
+            lockfile_list_rules(&floor, &config.scan.floor_allow, &config.scan.list_only);
         let dir_exclude = compile_globs(dir_exclude_patterns(&exclude_patterns).iter().map(String::as_str))?;
         let submodule_prefixes: Arc<[String]> = if config.scan.skip_submodules {
             submodule_roots
