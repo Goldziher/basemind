@@ -176,6 +176,7 @@ pub fn validate(cfg: &ConfigV1) -> Result<(), String> {
             format!("invalid glob in {name}: {e}{advice}")
         })?;
     }
+    super::roles::PathRoles::new(&cfg.scan)?;
     crate::lang_rules::LangRules::from_config(&cfg.languages)?;
     Ok(())
 }
@@ -659,6 +660,12 @@ mod tests {
                 .expect_err("bad glob")
                 .contains("[code_search] embed_exclude")
         );
+
+        let mut cfg = ConfigV1::with_defaults();
+        cfg.scan.roles.infra = vec!["!deploy/**".to_string()];
+        validate(&cfg).expect("a role list takes `!` entries");
+        cfg.scan.roles.generated = vec!["a/[".to_string()];
+        assert!(validate(&cfg).expect_err("bad glob").contains("[scan.roles] generated"));
     }
 
     #[test]

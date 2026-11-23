@@ -167,6 +167,7 @@ impl Workspace {
                 total_size_bytes: 0,
                 languages: BTreeMap::new(),
                 listed: BTreeMap::new(),
+                roles: BTreeMap::new(),
                 large_files: None,
                 most_imported: Vec::new(),
                 cache_dir: self.cache_dir(),
@@ -223,6 +224,10 @@ impl Workspace {
             total_size_bytes: total_size,
             languages: by_lang,
             listed: listed_by_kind(&store.index.listed),
+            roles: files_by_role(
+                &crate::config::PathRoles::from_scan(&self.config.scan),
+                store.index.files.keys(),
+            ),
             large_files: Some(large_files),
             most_imported,
             cache_dir: self.cache_dir(),
@@ -308,6 +313,22 @@ fn listed_by_kind(
     let mut counts = BTreeMap::new();
     for entry in listed.values() {
         *counts.entry(entry.kind.as_str().to_string()).or_insert(0) += 1;
+    }
+    counts
+}
+
+/// How many of `paths` carry each role; a path with two roles counts under both, and a path with
+/// none under neither.
+fn files_by_role<'a>(
+    roles: &crate::config::PathRoles,
+    paths: impl IntoIterator<Item = &'a crate::path::RelPath>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for path in paths {
+        let Some(path) = path.as_str() else { continue };
+        for role in roles.roles_of(path) {
+            *counts.entry(role.as_str().to_string()).or_insert(0) += 1;
+        }
     }
     counts
 }
@@ -485,6 +506,32 @@ mod tests {
             [("archive".to_string(), 1), ("lockfile".to_string(), 2)]
         );
         assert!(listed_by_kind(&ahash::AHashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn files_are_counted_per_role_and_plain_code_under_none() {
+        let roles = crate::config::PathRoles::from_scan(&crate::config::Config::with_defaults().scan);
+        let paths: Vec<crate::path::RelPath> = [
+            "src/lib.rs",
+            "deploy/main.tf",
+            "deploy/Dockerfile",
+            "tests/a.rs",
+            "tests/net/main.tf",
+            "api/user.pb.go",
+        ]
+        .into_iter()
+        .map(crate::path::RelPath::from)
+        .collect();
+        let counts = files_by_role(&roles, &paths);
+        assert_eq!(
+            counts.into_iter().collect::<Vec<_>>(),
+            [
+                ("generated".to_string(), 1),
+                ("infra".to_string(), 3),
+                ("test".to_string(), 2),
+            ]
+        );
+        assert!(files_by_role(&roles, &Vec::<crate::path::RelPath>::new()).is_empty());
     }
 
     fn entry(lines: u32, bytes: u64) -> crate::store::FileEntry {

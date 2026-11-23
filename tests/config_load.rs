@@ -166,6 +166,33 @@ fn assert_loads_everywhere(toml: &str) -> config::Config {
 }
 
 #[test]
+fn scan_roles_load_from_a_real_file_and_classify_paths() {
+    let cfg = assert_loads_everywhere(
+        r#"
+[scan.roles]
+test      = ["qa/**"]
+infra     = ["deploy/**", "!**/*.service"]
+generated = ["**/*.pb.go"]
+"#,
+    );
+    let roles = config::PathRoles::from_scan(&cfg.scan);
+    assert!(roles.has("qa/a.rs", config::Role::Test));
+    assert!(roles.has("deploy/run.sh", config::Role::Infra));
+    assert!(roles.has("main.tf", config::Role::Infra));
+    assert!(!roles.has("host/app.service", config::Role::Infra));
+    assert!(roles.has("api/user.pb.go", config::Role::Generated));
+}
+
+#[test]
+fn an_unknown_role_or_a_bad_role_glob_is_rejected() {
+    let dir = repo_with("[scan.roles]\nnetwork = [\"net/**\"]\n");
+    assert!(load_with_overrides(dir.path(), None, None).is_err());
+    let dir = repo_with("[scan.roles]\ninfra = [\"a/[\"]\n");
+    let err = load_with_overrides(dir.path(), None, None).expect_err("bad glob");
+    assert!(err.to_string().contains("[scan.roles] infra"), "{err}");
+}
+
+#[test]
 fn a_crawl_table_written_for_an_older_version_still_loads_and_is_ignored() {
     let empty = assert_loads_everywhere("[crawl]\n");
     assert!(empty.crawl.is_empty(), "`basemind init` used to write this empty table");

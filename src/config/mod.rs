@@ -9,6 +9,7 @@ pub(crate) mod layered;
 pub mod list_only;
 pub mod overrides;
 mod resources;
+pub mod roles;
 pub mod root_guard;
 pub mod rules;
 mod source;
@@ -33,6 +34,7 @@ pub use documents::{
 pub(crate) use documents_validate::MAX_ABANDONED_EXTRACTIONS;
 pub use layered::{ConfigLayers, LoadedConfig, NoOverrides, OverrideLayer, defaults_only, merge_layers};
 pub use resources::{DocumentModelProfile, FootprintKeyword, MaxFootprint, OnnxProvider, ResourcesConfig};
+pub use roles::{PathRoles, Role, RolesConfig};
 pub use source::{ConfigSource, ProvenanceMap};
 pub use v1::{CodeIntelConfig, ConfigV1, DeprecatedSection, LanguageConfig, Visibility};
 
