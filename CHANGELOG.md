@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `[documents]` lists (`include`, `exclude`, `embed_include`, `embed_exclude`) accept `!pattern` re-includes with gitignore semantics: the last matching entry decides (#458).
-- `[scan] test_globs`, the one list of test paths (`tests/`, `__tests__/`, `*_test.*`, `*.spec.*`, `conftest.py`, `e2e/`, `mocks/`, `fixtures/`, `*.stories.*`, `*.snap`, `*.bats`, `testing/`, `playwright/`, `*Test.java`, `*_spec.rb`, ...) that marks files `is_test` while keeping them in the code map, and that the document tier's default exclude reuses to keep them out of RAG (#458).
+- `[scan] test_globs`, the one list of test paths (`tests/`, `__tests__/`, `*_test.*`, `*.spec.*`, `conftest.py`, `e2e/`, `mocks/`, `fixtures/`, `*.stories.*`, `*.snap`, `*.bats`, `testing/`, `playwright/`, `*Test.java`, `*_spec.rb`, ...) that stays in the code map, and that the document tier's default exclude reuses to keep them out of RAG (#458).
 - `basemind init` detects the document scope: it counts document-like files per extension, writes `[documents] include` and `exclude` as plain glob lists, and asks keep, exclude or skip for scratch-like directories (`--yes` excludes only the large ones) (#458).
 - `[documents.ocr] enabled`, off by default (#458).
 
