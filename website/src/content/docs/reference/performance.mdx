@@ -53,10 +53,10 @@ The index builds in well under a second to a few seconds and costs **6–22 % of
 
 ### Index Freshness & Fallback
 
-The index is a pure accelerator: the tools use it **only when fresh** (`last_indexed_head == HEAD`) and otherwise walk history directly. This means:
+The index is a pure accelerator: the tools use it **only when fresh** (HEAD is an indexed tip) and otherwise walk history directly. This means:
 
 - The index can never serve stale results.
-- It rebuilds automatically when history is rewritten (filter-repo, rebase, force-push).
+- It follows history rewrites (filter-repo, rebase, force-push) by appending only the commits it has not stored, and one index serves every worktree of a clone.
 - There are no consistency risks — the index is optional.
 
 To measure: `cargo bench --bench git_history` or the git-ops block in `scripts/harden.sh`.

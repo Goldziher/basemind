@@ -281,6 +281,160 @@ fn should_apply_exclude_floor_even_with_a_narrow_user_exclude() {
     assert!(filter.allows_glob("src/lib.rs"), "real source file kept");
 }
 
+fn default_filters() -> Filters {
+    let config = crate::config::default_for_root(Path::new("."));
+    Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters")
+}
+
+#[test]
+fn cache_directories_and_files_are_in_the_exclude_floor() {
+    let filters = default_filters();
+    let excluded = [
+        ".cache/pip/a.py",
+        "app/.cache/x.json",
+        "infra/.terragrunt-cache/abc/main.tf",
+        ".turbo/log.json",
+        "web/.parcel-cache/data.json",
+        ".nox/py312/lib/m.py",
+        ".hypothesis/examples/a",
+        ".pnpm-store/v3/files/a.js",
+        ".yarn/cache/left-pad-npm-1.0.0.zip",
+        ".angular/cache/a.js",
+        ".sass-cache/a.scss",
+        ".ccache/tmp/a.o",
+        "pkg/.dart_tool/package_config.json",
+        "__pypackages__/3.12/lib/m.py",
+        ".eggs/a.py",
+        "src/mypkg.egg-info/PKG-INFO",
+        "nb/.ipynb_checkpoints/a-checkpoint.ipynb",
+        ".cargo/registry/src/a/lib.rs",
+        "site/.docusaurus/routes.js",
+        "web/.vite/deps/a.js",
+        ".cache-loader/a.js",
+        "web/.eslintcache",
+        ".coverage",
+        "pkg/.coverage",
+    ];
+    for path in excluded {
+        assert!(!filters.allows(path), "{path} must be excluded by the floor");
+    }
+    let kept = [
+        "src/cache.rs",
+        "src/cache/store.rs",
+        "docs/cache-notes.md",
+        "src/hypothesis.py",
+        ".yarn/releases/yarn-4.0.0.cjs",
+        ".yarn/plugins/plugin.cjs",
+        ".cargo/config.toml",
+        "src/mypkg_egg-info.md",
+        "src/coverage.py",
+        "src/eslintcache.ts",
+        "src/vite.config.ts",
+        ".github/workflows/ci.yml",
+    ];
+    for path in kept {
+        assert!(filters.allows(path), "{path} must stay indexable");
+    }
+}
+
+#[test]
+fn lockfiles_are_in_the_exclude_floor() {
+    let filters = default_filters();
+    let excluded = [
+        ".terraform.lock.hcl",
+        "infra/prod/.terraform.lock.hcl",
+        "a/b/foo.lock",
+        "a/bun.lockb",
+        "a/x.lockfile",
+        "a/gradle.lockfile",
+        "a/schema.proto.lock.json",
+        "a/deps.lock.hcl",
+        "a/deps.lock.yaml",
+        "package-lock.json",
+        "a/npm-shrinkwrap.json",
+        "a/pnpm-lock.yaml",
+        "yarn.lock",
+        "a/bun.lock",
+        "a/go.sum",
+        "Cargo.lock",
+        "a/poetry.lock",
+        "a/uv.lock",
+        "a/Pipfile.lock",
+        "a/composer.lock",
+        "a/Gemfile.lock",
+        "charts/app/Chart.lock",
+        "a/flake.lock",
+        "a/pdm.lock",
+        "a/mix.lock",
+        "a/pubspec.lock",
+        "ios/Podfile.lock",
+        "a/packages.lock.json",
+        "a/deno.lock",
+    ];
+    for path in excluded {
+        assert!(!filters.allows(path), "{path} must be excluded by the floor");
+    }
+    let kept = [
+        "go.mod",
+        "lockdown.py",
+        "block.lock.py",
+        "src/lock.rs",
+        "src/locks/mod.rs",
+        "package.json",
+        "pnpm-workspace.yaml",
+        "a/main.tf",
+        "a/Chart.yaml",
+        "a/requirements.txt",
+        "a/sum.go",
+    ];
+    for path in kept {
+        assert!(filters.allows(path), "{path} must stay indexable");
+    }
+}
+
+#[test]
+fn floor_allow_re_includes_a_lockfile_and_a_cache_directory() {
+    let mut config = crate::config::default_for_root(Path::new("."));
+    config.scan.floor_allow = vec!["go.sum".to_string(), ".cache".to_string(), "*.lock".to_string()];
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
+    assert!(filters.allows("a/go.sum"));
+    assert!(filters.allows(".cache/a.py"));
+    assert!(filters.allows("a/foo.lock"));
+    assert!(
+        !filters.allows("a/yarn.lock"),
+        "an unnamed lockfile entry stays excluded"
+    );
+    assert!(
+        !filters.allows(".turbo/a.json"),
+        "an unnamed cache entry stays excluded"
+    );
+}
+
+#[test]
+fn a_named_lockfile_is_re_included_despite_a_broader_lockfile_pattern() {
+    let build = |allow: &[&str], user_exclude: &[&str]| {
+        let mut config = crate::config::default_for_root(Path::new("."));
+        config.scan.floor_allow = allow.iter().map(|s| (*s).to_string()).collect();
+        config.scan.exclude = user_exclude.iter().map(|s| (*s).to_string()).collect();
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters")
+    };
+
+    let filters = build(&["yarn.lock", ".terraform.lock.hcl", "Cargo.lock"], &[]);
+    assert!(filters.allows("a/yarn.lock"));
+    assert!(filters.allows("infra/.terraform.lock.hcl"));
+    assert!(filters.allows("Cargo.lock"));
+    assert!(
+        !filters.allows("a/poetry.lock"),
+        "an unnamed lockfile stays excluded by the broad pattern"
+    );
+    assert!(!filters.allows("a/deps.lock.hcl"), "a lockfile the entry does not name");
+    assert!(!filters.allows(".git/config"));
+
+    let user = build(&["yarn.lock"], &["**/yarn.lock"]);
+    assert!(!user.allows("yarn.lock"), "a user exclude still wins");
+}
+
 #[test]
 fn should_reject_out_of_root_and_empty_rel() {
     let (filter, root, _tmp) = filter_for(|root| {
@@ -473,12 +627,133 @@ fn default_document_excludes_drop_vectors_lockfiles_and_test_data() {
         "svc/testdata/a.json",
         "pkg/fixtures/b.json",
         "ui/__snapshots__/c.snap",
+        "svc/tests/report.html",
+        "web/__tests__/page.html",
+        "e2e/shots/flow.pdf",
+        "app/mocks/response.xml",
+        "docs/api.test.html",
+        "CLAUDE.md",
+        "svc/CLAUDE.local.md",
+        "AGENTS.md",
+        "GEMINI.md",
+        ".claude/skills/x/SKILL.md",
+        ".cursor/rules/a.mdc",
+        ".ai-rulez/rules/b.md",
+        ".github/copilot-instructions.md",
+        "web/node_modules/pkg/README.md",
+        "vendor/lib/LICENSE.md",
+        "third_party/x/CHANGELOG.md",
+        "web/dist/index.html",
+        "build/out/page.html",
+        "static/app.min.js",
+        "static/app.js.map",
     ] {
         assert!(!filters.doc_allowed(dropped), "{dropped} is excluded by default");
     }
-    for kept in ["README.md", "docs/guide.md", "config/settings.yaml", "data/report.csv"] {
+    for kept in [
+        "README.md",
+        "docs/guide.md",
+        "config/settings.yaml",
+        "data/report.csv",
+        ".github/workflows/ci.yml",
+        "docs/adr/0001.md",
+    ] {
         assert!(filters.doc_allowed(kept), "{kept} stays indexable");
     }
+}
+
+#[test]
+fn default_document_exclude_list_is_the_one_named_constant() {
+    let config = crate::config::default_for_root(Path::new("."));
+    assert_eq!(
+        config.documents.exclude,
+        crate::config::default_document_exclude(),
+        "the loaded default is the constant `init` writes out"
+    );
+}
+
+/// Several patterns per list, `**`, directory patterns, per-extension rules, exclude beating
+/// include, and `!` entries re-including in list order.
+#[test]
+fn document_glob_lists_take_many_patterns_directories_and_negations() {
+    let build = |include: &[&str], exclude: &[&str]| {
+        let mut config = crate::config::default_for_root(Path::new("."));
+        config.documents.include = include.iter().map(|s| (*s).to_string()).collect();
+        config.documents.exclude = exclude.iter().map(|s| (*s).to_string()).collect();
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters")
+    };
+
+    let filters = build(&["docs", "adr/**", "**/*.rst"], &["docs/drafts", "**/*.html"]);
+    for (path, allowed) in [
+        ("docs/guide.md", true),
+        ("docs/deep/er/guide.md", true),
+        ("adr/0001.md", true),
+        ("pkg/readme.rst", true),
+        ("other/guide.md", false),
+        ("docs/drafts/a.md", false),
+        ("docs/drafts/deep/a.md", false),
+        ("docs/page.html", false),
+    ] {
+        assert_eq!(filters.doc_allowed(path), allowed, "{path}");
+    }
+
+    let filters = build(&[], &["**/*.html", "!docs/**/*.html"]);
+    for (path, allowed) in [
+        ("docs/site/page.html", true),
+        ("tests/page.html", false),
+        ("web/page.html", false),
+    ] {
+        assert_eq!(filters.doc_allowed(path), allowed, "per-extension: {path}");
+    }
+
+    let filters = build(&[], &["!docs/**/*.html", "**/*.html"]);
+    assert!(
+        !filters.doc_allowed("docs/site/page.html"),
+        "the last matching entry decides, so a later exclude wins over an earlier `!`"
+    );
+
+    let filters = build(&["**/*.md"], &["**/tests/**", "!tests/docs/**"]);
+    assert!(
+        filters.doc_allowed("tests/docs/howto.md"),
+        "`!` re-includes under a dropped dir"
+    );
+    assert!(!filters.doc_allowed("tests/unit/notes.md"));
+}
+
+#[test]
+fn a_user_negation_overrides_the_default_floor_in_every_list() {
+    let mut config = crate::config::default_for_root(Path::new("."));
+    config.documents.exclude.push("!tests/docs/**".to_string());
+    config.documents.embed_exclude.push("!data/prose.csv".to_string());
+    config.documents.embed_include = vec!["**/*.csv".to_string(), "!data/skip.csv".to_string()];
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
+    assert!(filters.doc_allowed("tests/docs/guide.md"));
+    assert!(!filters.doc_allowed("tests/unit/guide.md"));
+    assert!(
+        filters.doc_embed_allowed("data/prose.csv"),
+        "re-included by `!` in embed_exclude"
+    );
+    assert!(
+        !filters.doc_embed_allowed("data/other.csv"),
+        "still in the embed_exclude default"
+    );
+    assert!(!filters.doc_embed_allowed("data/skip.csv"));
+}
+
+#[test]
+fn a_gitignored_document_is_never_a_candidate() {
+    let (filter, root, _tmp) = filter_for(|root| {
+        fs::write(root.join(".gitignore"), b"private/\n*.secret.pdf\n").unwrap();
+        fs::create_dir_all(root.join("private")).unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("private/plan.pdf"), b"%PDF").unwrap();
+        fs::write(root.join("docs/a.secret.pdf"), b"%PDF").unwrap();
+        fs::write(root.join("docs/guide.md"), b"# guide\n").unwrap();
+    });
+    assert!(!filter.is_indexable(&root.join("private/plan.pdf")));
+    assert!(!filter.is_indexable(&root.join("docs/a.secret.pdf")));
+    assert!(filter.is_indexable(&root.join("docs/guide.md")));
 }
 
 #[test]

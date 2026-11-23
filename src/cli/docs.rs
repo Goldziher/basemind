@@ -52,6 +52,13 @@ pub struct DocsSearchArgs {
     /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
     #[arg(long)]
     max_tokens: Option<u32>,
+    /// Most hits one document contributes before other documents rank ahead of its rest; 0 is no
+    /// cap (default 2).
+    #[arg(long)]
+    per_doc: Option<u32>,
+    /// Add the chunk before and after each hit.
+    #[arg(long)]
+    context: bool,
 }
 
 /// Dispatch a `docs` subcommand through the in-process server.
@@ -73,6 +80,8 @@ pub(super) async fn search(tools: &Tools, args: DocsSearchArgs, opts: &Emit, out
         limit: args.limit,
         cursor: args.cursor.map(Cursor),
         max_tokens: args.max_tokens,
+        per_doc: args.per_doc,
+        context: args.context.then_some(true),
     };
     let result = tools
         .call("docs_search", p, async |s, p| s.docs_search_call(p).await)

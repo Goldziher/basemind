@@ -79,7 +79,9 @@ pub struct ScanConfig {
     /// or by the floor pattern itself (`**/build/**`). Use it to index a tree the floor otherwise
     /// drops. The default `exclude` list is separate: a directory also listed there (`dist`,
     /// `target`) must be removed from `exclude` too. The floor also drops credential files (`.env`,
-    /// `.env.*`, `.aws`, `.ssh`, `.gnupg`, `.npmrc`, `id_rsa`, `*.pem`, `*.key`, ...); list the
+    /// `.env.*`, `.aws`, `.ssh`, `.gnupg`, `.npmrc`, `id_rsa`, `*.pem`, `*.key`, ...), tool and
+    /// package-manager caches (`.cache`, `.turbo`, `.nox`, `.yarn/cache`, `*.egg-info`, ...) and
+    /// lockfiles (`*.lock`, `go.sum`, `package-lock.json`, `.terraform.lock.hcl`, ...); list the
     /// entry (`.env.*`, `*.pem`) to index one deliberately. A credential entry here is honoured only
     /// when the operator sets `BASEMIND_ALLOW_REPO_CREDENTIALS`, so a repository's own file cannot
     /// un-exclude the operator's secrets. `.git` and `.basemind` can never be allowed,
@@ -87,8 +89,28 @@ pub struct ScanConfig {
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub floor_allow: Vec<String>,
+    /// Honour `.gitignore`, `.git/info/exclude` and the global git ignore file for every walk: the
+    /// code map, the document lane, `extra_roots` and the watcher. An ignored file is never
+    /// extracted or embedded.
     #[serde(default = "ScanConfig::default_respect_gitignore")]
     pub respect_gitignore: bool,
+    /// Globs naming test, fixture, mock, snapshot and end-to-end paths, same syntax as `include`.
+    /// Matching files stay indexed in the code map. The default list is also the document tier's
+    /// default test exclusion, so the two agree. Setting the key replaces the default list.
+    #[serde(default = "ScanConfig::default_test_globs")]
+    #[schemars(inner(length(min = 1)))]
+    pub test_globs: Vec<String>,
+    /// Globs naming files the scan records as present and never opens: lockfiles, archives, packet
+    /// captures, fonts, columnar data and other binaries. A listed file gets a file-map entry (path,
+    /// size, modification time, kind) that `find_files` shows with `indexed: false` and `index_status`
+    /// counts per kind; no symbol, chunk, embedding or text search returns it. Same syntax as
+    /// `exclude`, ordered like a `.gitignore`: a later `!pattern` entry re-includes a file an earlier
+    /// entry listed (`["Cargo.lock", "!crates/app/Cargo.lock"]`). Patterns match file names and
+    /// paths, so `pnpm-lock.yaml` is listed although it is YAML. `exclude` and the exclude floor win:
+    /// a file they drop is not listed. Setting the key replaces the default list; `[]` lists nothing.
+    #[serde(default = "ScanConfig::default_list_only")]
+    #[schemars(inner(length(min = 1)))]
+    pub list_only: Vec<String>,
     /// Follow symlinks during the walk. Ignored (forced `false`) when set by the repository's own
     /// `basemind.toml` unless the operator sets `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`. Default `false` — symlinks are a common way to escape the
     /// repo (Bazel's `bazel-*` convenience symlinks point into an external output tree), and
@@ -176,8 +198,17 @@ impl ScanConfig {
         .map(|s| (*s).to_string())
         .collect()
     }
+    fn default_list_only() -> Vec<String> {
+        super::list_only::default_list_only()
+    }
     fn default_respect_gitignore() -> bool {
         true
+    }
+    fn default_test_globs() -> Vec<String> {
+        super::documents::TEST_PATH_GLOBS
+            .iter()
+            .map(|g| (*g).to_string())
+            .collect()
     }
     fn default_follow_symlinks() -> bool {
         false
@@ -206,6 +237,8 @@ impl Default for ScanConfig {
             exclude: Self::default_exclude(),
             floor_allow: Vec::new(),
             respect_gitignore: Self::default_respect_gitignore(),
+            test_globs: Self::default_test_globs(),
+            list_only: Self::default_list_only(),
             follow_symlinks: Self::default_follow_symlinks(),
             max_file_bytes: Self::default_max_file_bytes(),
             skip_submodules: Self::default_skip_submodules(),

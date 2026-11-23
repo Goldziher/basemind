@@ -260,9 +260,12 @@ fn process_doc(
                 embed_attempted: batch.embed_attempted,
                 config_digest: filters.doc_digest.clone(),
             };
+            if matches!(embed, EmbedMode::Inline) && batch.embedding_dim > 0 {
+                filters.docs_embedded.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             let doc_upsert = match embed {
                 EmbedMode::Inline => Some(doc_entry),
-                EmbedMode::Deferred => None,
+                EmbedMode::Deferred => deferred_doc_entry(rel, config, filters, &batch, doc_entry),
             };
             FileResult {
                 path: rel.to_string(),
@@ -307,6 +310,30 @@ fn process_doc(
     }
 }
 
+/// The entry a `Deferred` pass records for a document whose vectors are still to come, so the
+/// document is tracked and searchable by text at the end of the fast pass and a later `Inline`
+/// pass finds it owing them. `None` for a document that owes none (embedding is off for it, it has
+/// no chunks, it is over the chunk cap, or its blob already carries vectors), which a `Deferred`
+/// pass leaves unrecorded as before.
+fn deferred_doc_entry(
+    rel: &str,
+    config: &Config,
+    filters: &Filters,
+    batch: &PendingDocBatch,
+    entry: crate::store::DocEntry,
+) -> Option<crate::store::DocEntry> {
+    let owes_vectors = config.documents.embed
+        && filters.doc_embed_allowed(rel)
+        && batch.embedding_dim == 0
+        && batch.chunk_count > 0
+        && !batch.over_chunk_cap;
+    owes_vectors.then_some(crate::store::DocEntry {
+        embedded: false,
+        embed_attempted: false,
+        ..entry
+    })
+}
+
 /// The document's metadata as the read would see it: the link itself when links are not followed,
 /// so a symlinked document never matches the shortcut (the read refuses it).
 fn doc_stat(abs: &Path, follow_symlinks: bool) -> std::io::Result<std::fs::Metadata> {
@@ -346,6 +373,10 @@ mod tests {
 #[cfg(test)]
 #[path = "scanner_flush_tests.rs"]
 mod flush_tests;
+
+#[cfg(test)]
+#[path = "scanner_docs_deferral_tests.rs"]
+mod deferral_tests;
 
 #[cfg(all(test, unix))]
 #[path = "scanner_docs_lane_failure_tests.rs"]

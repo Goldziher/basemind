@@ -196,7 +196,7 @@ pub(super) async fn run_slow_tool(
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(&server, request, context);
         super::admission::holding(
             work_admission,
-            CURRENT_TASK.scope(work_slot, server.tool_router.call(tcc)),
+            CURRENT_TASK.scope(work_slot, server.route(tcc)),
         )
         .await
     });

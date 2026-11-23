@@ -74,7 +74,8 @@ src/
 │                             prose/data/config (md/json/yaml/toml, `lang::is_non_code`): the code map is code-only
 ├── scanner_policy.rs       — embed-policy reconciliation: vector rows follow `embed*` config changes
 ├── scanner_candidates.rs   — candidate enumeration + the [scan] max_candidates ceilings and
-│                             the BASEMIND_ALLOW_EXTRA_ROOTS grant for extra_roots
+│                             the BASEMIND_ALLOW_EXTRA_ROOTS grant for extra_roots, and the
+│                             stat-only list-only files ([scan] list_only) the walk records
 ├── scanner_index_batch.rs  — per-worker index write batch: commits on files OR staged bytes
 │                             OR the process-wide staging ceiling
 ├── scanner_drive.rs        — ScanObserver: per-file results are streamed, never accumulated
@@ -304,7 +305,9 @@ Key invariants:
 - **Atomic upsert** — `IndexWriter::upsert_file` is read-before-write: read
   existing primary entries first to derive secondary-index keys for deletion,
   then stage all deletes + inserts in one batch. No torn state on re-scan.
-- **Code-map persist barrier** — `Store::flush` (writing `index.msgpack`) runs
+- **Code-map persist barrier** — `Store::flush` (writing `index.msgpack`; an
+  incremental pass appends only its changed entries to `index.delta`, which a
+  reader replays over the base it is stamped to) runs
   immediately after extraction and the Fjall writes are done, BEFORE any optional
   lane. Everything after the barrier — resolved-reference stitching, LanceDB
   document/code embedding batches, BM25 corpus stats — is enrichment: each lane
@@ -570,7 +573,9 @@ on-disk component, is in [UPGRADING.md](UPGRADING.md).
 Extraction results live in a content-addressed blob store shared by every workspace on the machine
 (`<cache>/cache/blobs/v<schema>/`, one namespace per blob schema, so two installed versions never read
 or overwrite each other's blobs; the sweep also removes un-namespaced blobs and older namespaces,
-and leaves a newer namespace alone); a workspace's `files` (code lane) and `doc_files` (document lane) entries
+and leaves a newer namespace alone). Inside a namespace a blob sits in a bucket named for the first two hex
+digits of its hash (`v<schema>/ab/<hash>.fm.msgpack`, `src/store_blob_layout.rs`); a flat blob an older
+release wrote is moved into its bucket when first read, and the sweep walks both layouts. A workspace's `files` (code lane) and `doc_files` (document lane) entries
 reference blobs by hash. The sweep (`src/store_gc.rs`, `src/store_gc_live.rs`) is tier-aware: a `.doc`
 blob is live only if some workspace's `doc_files` references the hash, and `.fm` / `.chunk` / `.rref`
 blobs only if a `files` entry does. That matters when a path changes tier (a markdown file that used
@@ -622,7 +627,7 @@ which it cannot reference. A file map's version fields (`schema_ver`, `blob_layo
 own before the rest of it, so a newer map the binary cannot decode still reads as newer, and eviction
 treats a newer blob layout as a newer view. A map that does not decode is rebuilt by a writer open
 only when those fields read as this binary's; one whose fields cannot be read at all is renamed aside
-(`index.msgpack.unreadable-<time>`), never deleted, and a read-only open refuses both. The sweep of superseded namespaces needs no live
+(`index.msgpack.unreadable-<time>`), never deleted at once (a view keeps its newest two, and reaps older ones after a week), and a read-only open refuses both. The sweep of superseded namespaces needs no live
 set and runs even when the current namespace cannot be swept.
 
 A file map also records the layout of the blob store it was written for (`blob_layout`; `1` is
@@ -800,23 +805,30 @@ commit walk behind `path` + `symbol`, and full-text `query` / `author` search) a
     session it hosts shares the daemon's handle; a CLI command forwards its whole call. Syncs
     serialize on the handle's build lock, so N sessions asking at once cause one walk.
 - A process that can reach neither backend falls back to the live walk (`git_history: None`). The
-  index is a pure accelerator: tools use it only when `last_indexed_head == HEAD` and otherwise
+  index is a pure accelerator: tools use it only when HEAD is an indexed tip and otherwise
   live-walk, so it can never serve stale results. A `git_log {query}` search that falls back reports
   `truncated_reason: "unindexed_scan"`, as does `basemind git hotspots` when its live walk is cut
   short; a `git_log {path}` fallback reports `span_limit` or no reason.
 - A linked worktree shares the MAIN worktree's index (keyed on the main worktree root) rather than
   rebuilding its own, since the commit graph is identical across worktrees of one clone.
-  The index tracks one head: a linked worktree whose HEAD descends from it appends the new commits,
-  while one that diverges leaves the index untouched (`RebuildOutcome::Skipped`) and answers by live
-  walk, so switching worktrees never wipes and rebuilds the history. The first build may come from any
-  worktree. Index sync runs on a dedicated two-thread pool.
+  The commit store is head-independent: every commit reachable from any worktree HEAD is stored once,
+  under an ordinal assigned in append order, and a divergence never wipes it. Each indexed tip (a HEAD
+  a sync stamped) carries a reachability bitset in `gh_meta`, and a query at HEAD answers from the
+  posting lists keeping the ordinals that HEAD reaches (`GitHistoryIndex::at`), so a worktree sees its
+  own commits without a rebuild and the answer is never `partial`. A HEAD move appends only the
+  commits no earlier sync stored; a head whose commits are all stored costs one revision walk and no
+  diff. A tip is also marked ordered only when its descending ordinals are provably the live walk's
+  newest-first order (a walk that descends through the ordinals, or a linear chain of single-parent
+  commits on an ordered tip); a tip that is not, such as one that merges commits indexed for other
+  heads, is read by the live walk. Up to 32 tips are kept, the least recently synced dropping first; a
+  worktree whose HEAD is not an indexed tip is read by the live walk until its next sync. Index sync runs on a dedicated
+  two-thread pool.
 - A build or append marks the index in progress and removes its head in one batch before its first
-  row; the batch that stamps the new head clears the mark. A marked index has no head, so even an
-  older binary of the same minor rebuilds it rather than appending past a cut-off run. A linked
-  worktree may rebuild an interrupted index, which the main checkout may then rebuild again for its
-  own head: once per interruption. A build or append that fails records its HEAD, and for an hour the
-  next sync at that HEAD leaves the index to the live walk instead of rebuilding the whole history
-  only to fail at the same commit.
+  row; the batch that stamps the new tip clears the mark. A marked index answers for no head, so even
+  an older binary of the same minor rebuilds it rather than appending past a cut-off run. A build or
+  append that fails records its HEAD, and for an hour the next sync at that HEAD leaves the index to
+  the live walk instead of rebuilding the whole history only to fail at the same commit. Only an
+  unbuilt or interrupted index, or one built in a shallow clone since deepened, is wiped and rebuilt.
 
 ## Resource governance
 

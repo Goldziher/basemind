@@ -228,6 +228,48 @@ async fn docs_search_reports_a_partial_index_with_the_lifecycle_notice() {
     assert_eq!(partial["notice"], index_rebuilding_notice(), "{partial}");
 }
 
+/// While documents still owe their vectors to the background embedding pass, `docs_search` serves
+/// the keyword lane and carries a notice saying so, even when the ranking is the one kept for the
+/// first call; the notice goes with the record once the pass finishes.
+#[cfg(feature = "documents")]
+#[tokio::test]
+async fn docs_search_says_embeddings_are_pending_until_the_background_pass_finishes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join("guide.md"),
+        "# Guide\n\nHow the harbour is run, long enough to index as a document.\n",
+    )
+    .expect("guide.md");
+    let mut config = ConfigV1::with_defaults();
+    config.documents.enabled = true;
+    config.documents.embed = false;
+    let server = server_with(tmp.path(), true, config);
+    let search = || -> crate::engine::types::search::DocsSearchParams {
+        parse_args(serde_json::json!({ "query": "harbour" })).expect("valid arguments")
+    };
+    let cache_dir = crate::store::workspace_cache_dir(tmp.path());
+
+    let settled = json_of(&server.docs_search_call(search()).await.expect("docs_search"));
+    assert!(settled.get("notice").is_none(), "{settled}");
+
+    crate::embed_progress::record_owed(&cache_dir, 4);
+    let pending = json_of(&server.docs_search_call(search()).await.expect("docs_search"));
+    assert_eq!(
+        pending["hits"][0]["path"], "guide.md",
+        "keyword hits still come: {pending}"
+    );
+    assert_eq!(pending["lanes_ran"], serde_json::json!(["lexical"]), "{pending}");
+    let notice = pending["notice"].as_str().expect("a notice");
+    assert!(
+        notice.contains("embeddings are pending (0 of 4 documents embedded)"),
+        "{notice}"
+    );
+
+    crate::embed_progress::clear(&cache_dir);
+    let finished = json_of(&server.docs_search_call(search()).await.expect("docs_search"));
+    assert!(finished.get("notice").is_none(), "{finished}");
+}
+
 #[tokio::test]
 async fn a_file_that_is_not_indexed_says_what_to_do_about_it() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -632,5 +674,43 @@ mod error_mapping {
             kind_structured(ErrorKind::InvalidArgument),
             json!({ "error": "invalid_argument", "retryable": false })
         );
+    }
+}
+
+mod single_payload {
+    use rmcp::model::{CallToolResult, ContentBlock};
+    use serde_json::json;
+
+    use super::super::tool_contract::{single_payload, tool_error};
+    use crate::engine::error_kind::ErrorKind;
+
+    #[test]
+    fn a_successful_answer_keeps_its_text_and_drops_the_structured_copy() {
+        let answered = single_payload(CallToolResult::structured(json!({ "total": 2, "hits": [1, 2] })));
+        assert_eq!(answered.structured_content, None);
+        let [ContentBlock::Text(text)] = answered.content.as_slice() else {
+            panic!("one text block: {:?}", answered.content);
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text.text).expect("JSON text"),
+            json!({ "total": 2, "hits": [1, 2] })
+        );
+    }
+
+    #[test]
+    fn a_refusal_keeps_its_code_and_retry_flag() {
+        let refused = single_payload(tool_error(ErrorKind::Busy, "busy"));
+        assert_eq!(refused.is_error, Some(true));
+        assert_eq!(
+            refused.structured_content,
+            Some(json!({ "error": "busy", "retryable": true }))
+        );
+    }
+
+    #[test]
+    fn an_answer_with_no_text_block_keeps_its_structured_content() {
+        let mut bare = CallToolResult::structured(json!({ "total": 1 }));
+        bare.content.clear();
+        assert_eq!(single_payload(bare).structured_content, Some(json!({ "total": 1 })));
     }
 }

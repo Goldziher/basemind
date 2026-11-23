@@ -244,15 +244,14 @@ fn embed_pass_reprocesses_the_chunk_only_sidecar_the_deferred_pass_left() {
     );
 }
 
-/// Bug #32, the document tier: a `Deferred` scan extracts a document but persists no `DocEntry`
-/// (`doc_upsert` is `None` under Deferred, see `scanner_file`), so nothing tracks it as embedded and
-/// nothing lands in LanceDB. The `embed` (Inline) pass persists the `DocEntry`, the marker that the
-/// document was embedded and is reachable via `search_documents`. Before the fix the daemon only ever
-/// ran Deferred, so `lookup_doc` stayed `None` forever. Embedder-independent: the `DocEntry` is
-/// written purely on the strength of the embed mode, not on a vector being produced.
+/// Bug #32, the document tier: a `Deferred` scan tracks a document that owes its vectors, but as not
+/// embedded and not attempted, so nothing lands in LanceDB. The `embed` (Inline) pass persists the
+/// `DocEntry` that says the embedding was attempted, the marker that the document is reachable via
+/// `search_documents`. Embedder-independent: the `DocEntry` is written purely on the strength of the
+/// embed mode, not on a vector being produced.
 #[cfg(feature = "documents")]
 #[test]
-fn embed_pass_indexes_a_document_the_deferred_pass_leaves_untracked() {
+fn embed_pass_indexes_a_document_the_deferred_pass_tracks_as_owing_vectors() {
     store::init_isolated_cache();
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -278,12 +277,13 @@ fn embed_pass_indexes_a_document_the_deferred_pass_leaves_untracked() {
         "the .svg file must route to the document tier (docs_indexed={})",
         deferred.docs_indexed
     );
-    let tracked_after_deferred = pool
-        .with_workspace(dir.path(), |store| store.lookup_doc("notes.svg").is_some())
-        .expect("read after deferred");
+    let after_deferred = pool
+        .with_workspace(dir.path(), |store| store.lookup_doc("notes.svg").cloned())
+        .expect("read after deferred")
+        .expect("the deferred pass tracks a document that owes its vectors");
     assert!(
-        !tracked_after_deferred,
-        "the deferred pass must not persist a document embedding entry"
+        !after_deferred.embedded && !after_deferred.embed_attempted,
+        "the deferred pass must not mark the document embedded: {after_deferred:?}"
     );
 
     pool.rescan(dir.path(), None, false, true, &ScanCancel::default())

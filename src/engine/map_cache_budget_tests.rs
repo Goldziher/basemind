@@ -142,3 +142,25 @@ fn zero_budget_keeps_every_outline_resident() {
         "with no budget a second whole-corpus pass reads no blob at all"
     );
 }
+
+/// Building the file view trusts the file map: it probes no blob, so every indexed file is mapped
+/// even when its blob is gone. The missing blob surfaces only when the outline is faulted in, and
+/// there it reads as absent.
+#[test]
+fn building_the_map_probes_no_blob() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = scan_oversized_corpus(tmp.path());
+    let indexed = store.index.files.len();
+    assert_eq!(indexed, 40, "the corpus indexes every generated file");
+    crate::store::wipe_blobs_in(&store.blobs_dir).expect("wipe the blobs");
+
+    let cache = MapCache::build(&store, 0);
+
+    assert_eq!(cache.file_metas().count(), indexed, "every indexed file is in the view");
+    let first = RelPath::from("module_000.rs");
+    assert!(cache.contains(&first));
+    assert!(
+        cache.get(&first).is_none(),
+        "its missing blob reads as absent at fault time"
+    );
+}

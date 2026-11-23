@@ -1,8 +1,7 @@
 //! The text a verb tool answers with (ADR-0053).
 //!
-//! A tool's answer is built as JSON and sent twice: as MCP `structured_content` (JSON, for a client
-//! that reads typed results, and what the CLI's `--json` prints) and as the text block a model
-//! reads. The text block is encoded per tool, by what measured fewest tokens on the eval corpora:
+//! A tool's answer is built as JSON (what the CLI's `--json` prints) and sent once over MCP, as the
+//! text block a model reads. The text block is encoded per tool, by what measured fewest tokens on the eval corpora:
 //!
 //! - `code_grep` rows: the rest of the answer as [TOON](https://toonformat.dev) lines, then the
 //!   rows under `# <path>` and `## <symbol>` headers, as `rg --heading` prints them. TOON alone

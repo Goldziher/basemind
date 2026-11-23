@@ -572,7 +572,13 @@ done
 LOCK_HELD=1
 
 mark_used "$CACHE_ROOT"
-try_exec "$MANAGED_BIN" "$@"
+# Another launch installed it while this one waited for the lock. exec skips the EXIT trap, so the ~keep
+# lock goes first. ~keep
+if [ -x "$MANAGED_BIN" ] && [ "$(binary_version "$MANAGED_BIN")" = "$VERSION" ]; then
+  release_lock
+  LOCK_HELD=""
+  exec "$MANAGED_BIN" "$@"
+fi
 
 TMP="$(mktemp -d)"
 log "downloading $ASSET ..."

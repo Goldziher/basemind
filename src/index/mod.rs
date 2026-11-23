@@ -245,12 +245,12 @@ fn memtable_bytes_for(name: &str) -> u64 {
 const INDEX_CACHE_FLOOR_BYTES: u64 = 32 * 1_024 * 1_024;
 
 /// Ceiling for the Fjall block cache, in bytes, **per opened `IndexDb`**. The daemon's
-/// `WorkspacePool` (see `src/comms/daemon.rs`) holds up to 16 workspaces at once under LRU
-/// eviction, each owning one `IndexDb`. This ceiling is the load-bearing memory bound: in the
-/// pathological worst case where all 16 pooled slots simultaneously hold a huge, cache-
-/// saturating monorepo index (this repo's own `armis` hardening fixture: 82 k files, a 3.1 GB
-/// on-disk index), total block-cache memory across the whole pool is bounded at
-/// `16 * INDEX_CACHE_CEILING_BYTES` = 4 GiB. That is a deliberately conservative, explicit bound
+/// `WorkspacePool` (see `src/comms/workspace_pool.rs`) keeps `DEFAULT_HOT_CAP` (4) workspaces hot at
+/// once under LRU eviction, each owning one `IndexDb`. This ceiling is the load-bearing memory
+/// bound: in the pathological worst case where all the hot slots simultaneously hold a huge, cache-
+/// saturating monorepo index (this repo's own hardening fixture: 82 k files, a 3.1 GB
+/// on-disk index), total block-cache memory across the hot pool is bounded at
+/// `DEFAULT_HOT_CAP * INDEX_CACHE_CEILING_BYTES` = 1 GiB. That is a deliberately conservative, explicit bound
 /// (not unbounded, unlike the previous zero-configuration state) — the common case is far below
 /// it, because [`index_cache_bytes`] scales the cache down for small/medium indexes instead of
 /// defaulting every pooled slot to the ceiling.

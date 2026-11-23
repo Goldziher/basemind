@@ -387,8 +387,9 @@ the path unchanged from one side. It still lists every other commit that changed
 
 ### Text answers
 
-A tool's MCP text block is no longer always the JSON of its answer (ADR-0053). `structuredContent`
-and the CLI's `--json` output stay JSON for every tool, with the shapes above.
+A tool's MCP text block is no longer always the JSON of its answer (ADR-0053). The CLI's `--json`
+output stays JSON for every tool, with the shapes above. A successful MCP answer no longer repeats
+its payload as `structuredContent`: the text block carries it once, roughly halving the response.
 
 | Tool | Text block |
 | --- | --- |
@@ -397,7 +398,7 @@ and the CLI's `--json` output stay JSON for every tool, with the shapes above.
 | `git_log`, `git_blame`, `code_symbols`, `code_refs`, `docs_search`, `code_search` | the same TOON, or compact JSON when that is shorter |
 | every other tool, `find_files` with `min_lines` | compact JSON, as before |
 
-A client that parsed the text block as JSON reads `structuredContent` instead, or decodes the text
+A client that parsed the text block as JSON decodes the text
 with `basemind::wire::decode` (Rust) or a TOON decoder plus the `code_grep` header rules. A path or
 symbol in a `code_grep` header is a JSON string when it starts with `"`, has leading or trailing
 whitespace or holds a control character. The token budget (`max_tokens`) charges the encoding the
@@ -632,7 +633,7 @@ repository with many worktrees that is gigabytes and minutes. `basemind upgrade 
 `--json` for a script) shows the cost first and writes nothing. Run it with the new binary. Per
 repository group it prints:
 
-- the group index (`cache/groups/<group>/index.fjall`): replaced when one of the group's file maps
+- the group index (`cache/groups/<group>/index.fjall`, `cache/groups/<group>/v<minor>/index.fjall` from 0.35 on): replaced when one of the group's file maps
   is of an older schema, its size freed, and the free space the scan's check then asks for. It is the
   scan's own estimate: 1.5x the index, plus 3.5x for the index rows and 2.5x for the blobs of the
   source the scan extracts, plus the `BASEMIND_MIN_FREE_MB` headroom. The plan reads no source, so
@@ -666,6 +667,7 @@ workspace rebuilds it too.
 | Release-minor schema bump (`0.28.x` to `0.29.x`) | `RELEASE_MINOR` mismatch: each view's `index.msgpack` and fjall index are reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
 | `grep_bloom` index keyspace (per-file trigram bloom for `code_grep`) | A new keyspace, so `INDEX_SCHEMA_VER` is not bumped. An index without it opens with an empty `grep_bloom` and greps correctly at once (every file is a candidate); the next scan builds the rows from the bytes it reads, and an unchanged file with no row is read once to backfill it | One read per unchanged file, once; about 12.8 % of the indexed code bytes on disk |
 | Blob store namespaced by blob schema: `cache/blobs/v<schema>/` instead of `cache/blobs/` | Nothing is moved. A file map records the layout it was written for (`blob_layout`); one from before the namespaces is discarded with its index at the first open, so the first scan re-extracts into the new namespace and embeds every document and code chunk again (the embeddings live in the blobs). The blob GC removes un-namespaced blob files and the namespaces of older schemas, by the rule in [Per-version binaries](#per-version-binaries): not while a process of that version runs, and not until nothing has been written into them for `BASEMIND_PRUNE_AFTER_DAYS` days (default 14; `0` removes the wait). It never touches, counts or evicts for the namespace of a newer schema, so two installed versions no longer overwrite each other's blobs. This ships with the 0.34 release-minor bump: an older basemind left installed keeps its blobs while it is in use, and once they are reaped re-extracts on its next scan | Full re-extraction and re-embedding, once |
+| Blobs sharded by hash prefix: `cache/blobs/v<schema>/<xx>/<hash>.<tier>.msgpack` (`xx` the first two hex digits) instead of flat in `v<schema>/` | Nothing is rewritten and the schema does not change. A reader that finds a flat blob moves it into its bucket by rename, one blob at a time as it is touched; a write replaces a flat copy. The blob GC and `cache stats` walk both layouts and reap a flat copy whose bucketed twin exists. A file view no longer probes each blob at build time: a missing blob is noticed when its outline is read and logged as a hint to rescan. A release from before sharding sharing the same namespace sees only flat names, so it rebuilds a blob it cannot find flat, which the newer release then finds and moves | None |
 | One index per repository group: `cache/groups/<group>/index.fjall` instead of `views/<view>/index.fjall` in each workspace (ADR-0028) | Nothing is converted: the first scan of each workspace rebuilds its views into the group index. A view's own `index.fjall` is deleted by the first scan of the view that passes the free-space check (a scan the check refuses leaves it, so the old release still has its index), and the daemon's cache sweep deletes it in every workspace whose repository's group index exists, opened since the upgrade or not (ADR-0054), by the rule in [Per-version binaries](#per-version-binaries); with the cache over its budget, every one left goes before any workspace is evicted. `cache stats` counts those left (`legacy_indexes`, `legacy_index_bytes`). Memory notes a release before 0.30 kept in it are moved to the group's notes store first; a workspace whose notes cannot be moved, or whose lock another process holds, keeps it | One full scan per workspace |
 | Memory vectors live in `cache/repos/<group>/memory.lance/<model>-<dim>-<hash>/`, beside `memory.fjall`, instead of the workspace's `lance/` | Not migrated. A `memory_search` by meaning embeds the notes that have no current vector row, from `memory.fjall`, up to 256 per call, and says so in `notice` until every note has one; the same happens for an embedding preset used for the first time and after a release-minor bump empties the table. The old `memory` table goes with the workspace's `lance/`, which the release-minor bump wipes at its first open. A store of a preset no longer used is not removed | One embedding per note, once per preset |
 | `index.msgpack` fields `rebuild_pending` and `rebuild_pins`; `pending-vectors.msgpack` and `vector-store-id` beside it; `store-id` in the workspace's `lance/` | Additive: a file map written before them reads as owing no rebuild, and a view without the files as owing no vector rows. Vector rows that a development build of this release recorded as owed inside the file map are not carried over: the first scan after the upgrade embeds and writes every row again | none |
@@ -741,11 +743,25 @@ basemind"). The memory notes are refused for memory operations the same way. So:
   mismatch, as for any schema change. A `basemind.toml` that sets `[analysis] entry_points` or
   `[documents.dependencies]` stops 0.33 from loading at all, so the reset never runs: remove those
   keys first.
-- A later minor back to 0.34 is refused until you upgrade again. To stay on the older binary, give it
+- A later minor back to 0.34 is refused until you upgrade again. The refusal is the file map's: a
+  later minor rewrites it in place, and 0.34 will not read it (the blobs and the group index are
+  not what refuses it, see below). To stay on the older binary, give it
   a data directory of its own (`BASEMIND_DATA_HOME=<empty dir>`) and run `basemind scan`, which
   builds every store from scratch there; notes saved in the original data directory are not visible
   from it. `basemind cache clear --component views|lance` clears only the workspace's file maps and
-  vector stores, not the group index (`cache/groups/<group>/index.fjall`) or the git history.
+  vector stores, not the group index (`cache/groups/<group>/index.fjall`, `v<minor>/index.fjall` from 0.35 on) or the git history.
+
+Releases share one group directory without sharing a group index. Up to 0.34 the index is
+`cache/groups/<group>/index.fjall`; from 0.35 on each minor keeps its own in
+`cache/groups/<group>/v<minor>/index.fjall`, as it keeps its blobs in `cache/blobs/v<minor>/`. A
+newer release's first scan therefore never wipes, rewrites or refuses the index an older release
+that is still running reads, and the older one goes on answering from it for every repository the
+newer one has not touched. The group lock, the notes and the retrieval stores stay in the group
+directory, shared. The daemon's cache sweep reaps the index of an older minor by the rule for a
+superseded blob namespace ([Per-version binaries](#per-version-binaries)): not while a process of
+that release runs, and not until nothing has been written into it for `BASEMIND_PRUNE_AFTER_DAYS`
+days. The 0.34 index (`index.fjall` directly in the group directory) goes the same way, once no
+release up to 0.34 runs.
 
 Going back and forth costs re-extraction, never correctness, with one exception: notes saved while
 `BASEMIND_DATA_HOME` points at the separate directory stay in it and are not visible after you

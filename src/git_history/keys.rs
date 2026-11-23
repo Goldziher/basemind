@@ -9,7 +9,15 @@ use crate::git::ChangeKind;
 use crate::path::RelPath;
 
 pub const META_SCHEMA_VER: &[u8] = b"schema_ver";
+/// The tip most recently synced. Every tip is also a `tip/` row; this one answers a read that names
+/// no head.
 pub const META_LAST_HEAD: &[u8] = b"last_indexed_head";
+/// Prefix of the rows of the indexed tips: `tip/ ‖ sha (20 bytes)` → `stamped unix seconds (u64 BE) ‖
+/// reachability bitset` (see [`super::reach::Reach`]). One row per HEAD the index answers for.
+pub const META_TIP_PREFIX: &[u8] = b"tip/";
+/// Prefix of the rows marking a tip whose reachable commits the index returns in the live walk's
+/// order: `ordered/ ‖ sha (20 bytes)` → one byte. A tip without the row is read by the live walk.
+pub const META_ORDERED_PREFIX: &[u8] = b"ordered/";
 pub const META_NEXT_ORD: &[u8] = b"next_commit_ord";
 pub const META_NEXT_PATH_ID: &[u8] = b"next_path_id";
 pub const META_ROOT_SHA: &[u8] = b"root_sha";
@@ -25,6 +33,21 @@ pub const META_BUILD_IN_PROGRESS: &[u8] = b"build_in_progress";
 /// the batch that stamps a head. Lets a sync at that HEAD back off instead of rebuilding the whole
 /// history only to fail at the same commit.
 pub const META_FAILED_BUILD: &[u8] = b"failed_build";
+
+/// `gh_meta` key of the tip row of `head`.
+pub fn tip_key(head: &[u8; 20]) -> Vec<u8> {
+    [META_TIP_PREFIX, head.as_slice()].concat()
+}
+
+/// `gh_meta` key of the order marker of the tip `head`.
+pub fn ordered_key(head: &[u8; 20]) -> Vec<u8> {
+    [META_ORDERED_PREFIX, head.as_slice()].concat()
+}
+
+/// The head a `gh_meta` tip key names, or `None` for a key that is not a tip row.
+pub fn parse_tip_key(key: &[u8]) -> Option<[u8; 20]> {
+    key.strip_prefix(META_TIP_PREFIX)?.try_into().ok()
+}
 
 /// `u16:len ‖ bytes`. Returns `None` past the 64 KiB ceiling so a pathological path is skipped
 /// (and falls back to the live walk) rather than panicking inside a rayon worker.
@@ -110,6 +133,14 @@ mod tests {
             assert_eq!(parse_u32(&u32_key(value)), Some(value));
         }
         assert_eq!(parse_u32(&[1, 2, 3]), None, "wrong length rejected");
+    }
+
+    #[test]
+    fn a_tip_key_round_trips_and_other_meta_keys_are_not_tips() {
+        let head = [0xabu8; 20];
+        assert_eq!(parse_tip_key(&tip_key(&head)), Some(head));
+        assert_eq!(parse_tip_key(META_LAST_HEAD), None);
+        assert_eq!(parse_tip_key(b"tip/short"), None);
     }
 
     #[test]

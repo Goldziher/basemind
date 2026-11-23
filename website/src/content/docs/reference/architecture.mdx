@@ -190,7 +190,7 @@ A file whose grammar is disabled or unrecognised falls through to the document t
 in `basemind.toml` maps extra extensions and file names onto a grammar, disables a misdetected one
 (`.txt` as vimdoc, `.conf` as nginx), and can preload a grammar for `basemind lang install`.
 
-All languages with a `tags.scm` query in TSLP (~100) work out of the box. For richer extraction, add a `.scm` override at `src/queries/<pack-name>.scm`.
+All languages with a `tags.scm` query in TSLP (~100) work out of the box. For richer extraction, add a `.scm` override at `src/queries/<pack-name>.scm`. Hand-written overrides cover Rust, Python, TypeScript, TSX, JavaScript, Go, Java, Markdown and HCL/Terraform (blocks and `locals` entries; Terragrunt `include`, `dependency` and `inputs`).
 
 ## Git Layer
 
@@ -210,7 +210,7 @@ Two-tier caching:
 
 History queries (`git_log`, `git_blame`) are posting-list lookups over this index, answering in **tens of microseconds** flat.
 
-The index is a pure accelerator: it's used only when fresh (`last_indexed_head == HEAD`) and otherwise walks history directly, so it can never serve stale results. It rebuilds automatically on history rewrite (filter-repo, rebase, force-push).
+The index is a pure accelerator: it's used only when HEAD is an indexed tip and otherwise walks history directly, so it can never serve stale results. One store serves every worktree of a clone: each worktree HEAD is a tip, a HEAD move or a rewrite (filter-repo, rebase, force-push) appends only the commits not yet stored, and nothing is wiped when a worktree diverges.
 
 ## Schema Versioning
 

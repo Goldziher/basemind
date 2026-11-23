@@ -296,13 +296,9 @@ fn group_plan(
 ) -> GroupPlan {
     workspaces.sort_by(|a, b| (&a.root, &a.key).cmp(&(&b.root, &b.key)));
     let index_bytes = group.as_deref().map_or(0, |group| {
-        dir_bytes(
-            &data
-                .cache_dir()
-                .join(GROUPS_DIR)
-                .join(group)
-                .join(crate::index::INDEX_DIR),
-        )
+        dir_bytes(&crate::store_layout::group_index_path_in(
+            &data.cache_dir().join(GROUPS_DIR).join(group),
+        ))
     });
     let index_replaced = group.as_ref().map_or(Some(false), |_| index_replacement(&workspaces));
     let bytes_needed = if workspaces.iter().any(WorkspacePlan::rebuilds) {

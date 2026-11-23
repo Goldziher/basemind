@@ -465,13 +465,12 @@ pub(super) fn touching_page(
     let path = &without_empty_components(path);
     // The lookup's reads take no lock, so a sync that clears or rebuilds the index between the
     // freshness check and them can make a path with history read as untouched: the answer counts
-    // only when the index still stamps `head` after it.
-    let indexed = git_history_if_fresh(ws, head).and_then(|index| {
-        index
-            .commits_touching(path, from, take)
+    // only when the index still holds `head` as it was read after it.
+    let indexed = git_history_if_fresh(ws, head).and_then(|view| {
+        view.commits_touching(path, from, take)
             .inspect_err(|error| tracing::warn!(%error, "git-history lookup failed; walking the history live"))
             .ok()
-            .filter(|_| index.last_indexed_head_hex().as_deref() == Some(head))
+            .filter(|_| view.is_current())
     });
     history_page(
         "git_log",
@@ -754,7 +753,7 @@ fn by_author(
 }
 
 /// The `search` operation: full-text search over git history. Uses the git-history inverted
-/// index when it is fresh (`last_indexed_head == HEAD`), searching author name + email + summary +
+/// index when it holds HEAD as a tip, searching author name + email + summary +
 /// full body; otherwise degrades to a bounded live walk over the recent window, flagged
 /// `truncated` with reason `unindexed_scan` (author + summary only, no body). Pagination and the HEAD-scoped cursor mirror `recent`.
 fn run_search(ws: &Workspace, params: SearchGitHistoryParams) -> Result<SearchGitHistoryResponse, EngineError> {

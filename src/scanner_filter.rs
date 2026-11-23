@@ -9,11 +9,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
-use globset::GlobSet;
 use ignore::WalkBuilder;
 
 use crate::config::Config;
-use crate::config::rules::{compile_patterns, expand_pattern};
+use crate::config::list_only::{ListKind, ListOnly, kind_of};
+use crate::config::rules::{RuleSet, compile_rules, expand_pattern};
 use crate::lang_rules::{Detection, LangRules};
 use crate::scanner::{ScanError, ScanSource, submodule_roots_for_source};
 
@@ -53,6 +53,33 @@ const FLOOR_EXCLUDES: &[&str] = &[
     "**/.basemind/**",
     "**/.idea/**",
     "**/.DS_Store",
+    // Tool and package-manager caches: regenerated on demand and never authored. Judgment calls:
+    // `.yarn/cache` holds the zip archives of Yarn's zero-install layout, committed by some
+    // repositories but binary and unreadable either way; `.hypothesis` may carry committed
+    // example databases, which are opaque data, not source; `.cache` is the generic XDG-style
+    // cache directory. `floor_allow` re-includes any of them.
+    "**/.cache/**",
+    "**/.terragrunt-cache/**",
+    "**/.turbo/**",
+    "**/.parcel-cache/**",
+    "**/.nox/**",
+    "**/.hypothesis/**",
+    "**/.pnpm-store/**",
+    "**/.yarn/cache/**",
+    "**/.angular/**",
+    "**/.sass-cache/**",
+    "**/.ccache/**",
+    "**/.dart_tool/**",
+    "**/__pypackages__/**",
+    "**/.eggs/**",
+    "**/*.egg-info/**",
+    "**/.ipynb_checkpoints/**",
+    "**/.cargo/registry/**",
+    "**/.docusaurus/**",
+    "**/.vite/**",
+    "**/.cache-loader/**",
+    "**/.eslintcache",
+    "**/.coverage",
     // Credentials and key material: indexing them makes the secret searchable by every agent that
     // can query the index. `[scan] floor_allow` lists the entry (`.env.*`, `*.pem`) to opt back in,
     // but a repository's own file may only do so with the operator grant
@@ -77,6 +104,47 @@ const FLOOR_EXCLUDES: &[&str] = &[
     "**/*.jks",
     "**/*.keystore",
 ];
+
+/// Lockfiles: machine-written dependency pins that are never source. Parsing them floods the code
+/// map with meaningless symbols (a `.terraform.lock.hcl` is valid HCL) and fills the document store
+/// with chunks no one searches for. Part of the always-on floor (see [`floor_entries`]), so
+/// `[scan] floor_allow` re-includes one by name (`go.sum`, `*.lock`). Every entry is a file name
+/// or a suffix on one; `go.mod`, `Makefile.lock.py` and `lockdown.py` do not match.
+pub(crate) const LOCKFILE_GLOBS: &[&str] = &[
+    "**/.terraform.lock.hcl",
+    "**/*.lock",
+    "**/*.lockb",
+    "**/*.lockfile",
+    "**/*.lock.json",
+    "**/*.lock.hcl",
+    "**/*.lock.yaml",
+    "**/package-lock.json",
+    "**/npm-shrinkwrap.json",
+    "**/pnpm-lock.yaml",
+    "**/yarn.lock",
+    "**/bun.lock",
+    "**/go.sum",
+    "**/Cargo.lock",
+    "**/poetry.lock",
+    "**/uv.lock",
+    "**/Pipfile.lock",
+    "**/composer.lock",
+    "**/Gemfile.lock",
+    "**/Chart.lock",
+    "**/gradle.lockfile",
+    "**/flake.lock",
+    "**/pdm.lock",
+    "**/mix.lock",
+    "**/pubspec.lock",
+    "**/Podfile.lock",
+    "**/packages.lock.json",
+    "**/deno.lock",
+];
+
+/// Every always-on floor entry: [`FLOOR_EXCLUDES`] then [`LOCKFILE_GLOBS`].
+fn floor_entries() -> impl Iterator<Item = &'static str> {
+    FLOOR_EXCLUDES.iter().chain(LOCKFILE_GLOBS).copied()
+}
 
 /// The credential/key subset of [`FLOOR_EXCLUDES`]: a repository's own `[scan] floor_allow` may not
 /// remove one of these without the operator grant [`ALLOW_REPO_CREDENTIALS_ENV`]. Kept as an
@@ -137,7 +205,7 @@ fn floor_allow_names(entry: &str, pattern: &str) -> bool {
 /// entry is ignored with a warning and the secret stays excluded.
 fn effective_floor(floor_allow: &[String], credentials_granted: bool) -> Vec<&'static str> {
     for entry in floor_allow {
-        let matched = FLOOR_EXCLUDES.iter().any(|p| floor_allow_names(entry, p));
+        let matched = floor_entries().any(|p| floor_allow_names(entry, p));
         let protected = FLOOR_PROTECTED.iter().any(|p| floor_allow_names(entry, p));
         let credential = FLOOR_CREDENTIALS.iter().any(|p| floor_allow_names(entry, p));
         if protected {
@@ -156,9 +224,7 @@ fn effective_floor(floor_allow: &[String], credentials_granted: bool) -> Vec<&'s
             );
         }
     }
-    FLOOR_EXCLUDES
-        .iter()
-        .copied()
+    floor_entries()
         .filter(|p| {
             FLOOR_PROTECTED.contains(p)
                 || !floor_allow
@@ -168,21 +234,67 @@ fn effective_floor(floor_allow: &[String], credentials_granted: bool) -> Vec<&'s
         .collect()
 }
 
+/// Globs (`**/<name>`) that re-include the lockfiles `[scan] floor_allow` names exactly. Removing
+/// `**/yarn.lock` from the floor is not enough while the broader `**/*.lock` still matches the
+/// file, so a named lockfile also gets an entry here; [`Excludes`] lets it cancel only the floor's
+/// lockfile patterns, never a user `[scan] exclude`. A wildcard entry (`*.lock`) removes its own
+/// floor pattern and re-includes nothing else.
+fn lockfile_reallow(floor_allow: &[String]) -> Vec<String> {
+    floor_allow
+        .iter()
+        .map(|e| e.trim().trim_matches('/'))
+        .filter(|e| !e.contains(['*', '?', '[', '{']))
+        .filter(|e| LOCKFILE_GLOBS.iter().any(|p| floor_name(p) == *e))
+        .map(|e| format!("**/{e}"))
+        .collect()
+}
+
+/// The file-level exclude patterns, in the three tiers that decide whether a lockfile exception
+/// applies: `always` (user excludes and every non-lockfile floor entry), `lockfiles` (the floor's
+/// lockfile patterns) and `reallowed` (named lockfiles that cancel `lockfiles` but not `always`).
+#[derive(Clone)]
+struct Excludes {
+    always: globset::GlobSet,
+    lockfiles: globset::GlobSet,
+    reallowed: globset::GlobSet,
+}
+
+impl Excludes {
+    fn build(floor: &[&str], reallowed: &[String], user: &[String]) -> Result<Self, ScanError> {
+        let is_lockfile = |p: &str| LOCKFILE_GLOBS.contains(&p);
+        Ok(Self {
+            always: compile_globs(
+                floor
+                    .iter()
+                    .copied()
+                    .filter(|p| !is_lockfile(p))
+                    .chain(user.iter().map(String::as_str)),
+            )?,
+            lockfiles: compile_globs(floor.iter().copied().filter(|p| is_lockfile(p)))?,
+            reallowed: compile_globs(reallowed.iter().map(String::as_str))?,
+        })
+    }
+
+    fn is_match(&self, rel: &str) -> bool {
+        self.always.is_match(rel) || (self.lockfiles.is_match(rel) && !self.reallowed.is_match(rel))
+    }
+}
+
 /// Include/exclude pair precompiled once per scan. An absent include means "everything"; exclude
 /// always wins.
 #[derive(Default)]
 struct Gate {
-    include: Option<GlobSet>,
-    exclude: Option<GlobSet>,
+    include: Option<RuleSet>,
+    exclude: Option<RuleSet>,
 }
 
 impl Gate {
     fn build(include: &[String], exclude: &[String]) -> Result<Self, ScanError> {
-        let compile = |list: &[String]| -> Result<Option<GlobSet>, ScanError> {
+        let compile = |list: &[String]| -> Result<Option<RuleSet>, ScanError> {
             if list.is_empty() {
                 return Ok(None);
             }
-            compile_patterns(list.iter().map(String::as_str))
+            compile_rules(list.iter().map(String::as_str))
                 .map(Some)
                 .map_err(ScanError::BadGlob)
         };
@@ -203,7 +315,9 @@ pub(crate) struct Filters {
     #[cfg(any(feature = "documents", feature = "code-search"))]
     pub(crate) retrieval: crate::scan_retrieval::Retrieval,
     include: globset::GlobSet,
-    exclude: globset::GlobSet,
+    exclude: Excludes,
+    /// `[scan] list_only`: files recorded as present and never opened. See [`Filters::listed_kind`].
+    list_only: ListOnly,
     /// Directory-level view of `exclude`: every `P/**` pattern also present as bare `P`, so a
     /// directory can be pruned before its children are ever stat'd. See [`dir_exclude_patterns`].
     dir_exclude: Arc<globset::GlobSet>,
@@ -274,6 +388,10 @@ pub(crate) struct Filters {
     /// download): the rest of the pass indexes the keyword lane only instead of retrying per file.
     #[cfg(feature = "code-search")]
     pub(crate) code_embed_failed: std::sync::atomic::AtomicBool,
+    /// Documents this pass has given their vectors, bumped by the extraction workers. The pass's
+    /// embedding progress ([`crate::embed_progress`]) reads it once per drive chunk.
+    #[cfg(feature = "documents")]
+    pub(crate) docs_embedded: std::sync::atomic::AtomicUsize,
     /// The dependency documentation a full working-tree pass indexes under `deps/...` (ADR-0049),
     /// resolved once by its candidate walk; unset on every other pass.
     dep_docs: std::sync::OnceLock<crate::deps_docs::DepDocs>,
@@ -287,12 +405,14 @@ impl Filters {
     ) -> Result<Self, ScanError> {
         let include_patterns: Vec<String> = config.scan.include.iter().flat_map(|p| expand_pattern(p)).collect();
         let include = compile_globs(include_patterns.iter().map(String::as_str))?;
-        let exclude_patterns: Vec<String> = effective_floor(&config.scan.floor_allow, repo_credentials_granted())
-            .into_iter()
-            .map(str::to_string)
-            .chain(config.scan.exclude.iter().flat_map(|p| expand_pattern(p)))
+        let floor = effective_floor(&config.scan.floor_allow, repo_credentials_granted());
+        let user_excludes: Vec<String> = config.scan.exclude.iter().flat_map(|p| expand_pattern(p)).collect();
+        let exclude_patterns: Vec<String> = floor
+            .iter()
+            .map(|p| (*p).to_string())
+            .chain(user_excludes.iter().cloned())
             .collect();
-        let exclude = compile_globs(exclude_patterns.iter().map(String::as_str))?;
+        let exclude = Excludes::build(&floor, &lockfile_reallow(&config.scan.floor_allow), &user_excludes)?;
         let dir_exclude = compile_globs(dir_exclude_patterns(&exclude_patterns).iter().map(String::as_str))?;
         let submodule_prefixes: Arc<[String]> = if config.scan.skip_submodules {
             submodule_roots
@@ -325,6 +445,7 @@ impl Filters {
             retrieval,
             include,
             exclude,
+            list_only: ListOnly::new(&config.scan.list_only).map_err(ScanError::BadGlob)?,
             dir_exclude: Arc::new(dir_exclude),
             max_file_bytes: config.scan.max_file_bytes,
             doc_max_file_bytes: config.documents.max_file_bytes,
@@ -350,6 +471,8 @@ impl Filters {
             vector_rows_unsure: false,
             #[cfg(feature = "code-search")]
             code_embed_failed: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "documents")]
+            docs_embedded: std::sync::atomic::AtomicUsize::new(0),
             dep_docs: std::sync::OnceLock::new(),
         })
     }
@@ -450,17 +573,28 @@ impl Filters {
         }
     }
 
+    /// Is `rel` a candidate for extraction? A list-only file is not: it is never read, whichever
+    /// pass (full, incremental, staged, revision) asks.
     pub(crate) fn allows(&self, rel: &str) -> bool {
-        if self.excluded(rel) {
+        if self.excluded(rel) || self.list_only.is_match(rel) {
             return false;
         }
         self.include.is_match(rel)
     }
 
+    /// The kind of `rel` when it is list-only: it matches `[scan] list_only`, and the exclude floor,
+    /// `[scan] exclude`, a skipped submodule and `[scan] include` all admit it. A file those drop
+    /// stays invisible (credentials must not even be listed).
+    pub(crate) fn listed_kind(&self, rel: &str) -> Option<ListKind> {
+        (self.list_only.is_match(rel) && !self.excluded(rel) && self.include.is_match(rel)).then(|| kind_of(rel))
+    }
+
     /// [`Filters::allows`] for a path relative to an `extra_roots` entry: globs only. Submodule
     /// roots are repo-relative, so they say nothing about a tree outside the repository.
     pub(crate) fn allows_in_extra_root(&self, rel_to_extra_root: &str) -> bool {
-        !self.exclude.is_match(rel_to_extra_root) && self.include.is_match(rel_to_extra_root)
+        !self.exclude.is_match(rel_to_extra_root)
+            && !self.list_only.is_match(rel_to_extra_root)
+            && self.include.is_match(rel_to_extra_root)
     }
 
     /// Directory gate. A directory is kept iff it is NOT matched by the directory-level exclude
@@ -506,7 +640,7 @@ impl Filters {
 /// such events before they are queued; it does no I/O.
 #[derive(Clone)]
 pub(crate) struct ExclusionGate {
-    exclude: globset::GlobSet,
+    exclude: Excludes,
     dir_exclude: Arc<globset::GlobSet>,
     submodule_prefixes: Arc<[String]>,
 }
@@ -643,8 +777,9 @@ pub(crate) fn ignore_walk_builder(dir: &Path, respect_gitignore: bool, follow_li
 /// gitignore-allowed iff every path segment, from the repo root down, is yielded as a non-ignored
 /// child of its parent directory. A per-instance memo caches each directory's allowed-children set,
 /// so a batch touching K distinct directories costs at most K `max_depth(1)` walks. Composing
-/// level-by-level with `parents(false)` correctly rejects a path whose *ancestor* directory is
-/// itself gitignored — the case a single flat `Gitignore` matcher gets wrong.
+/// level-by-level correctly rejects a path whose *ancestor* directory is itself gitignored — the
+/// case a single flat `Gitignore` matcher gets wrong — while each level still reads the ignore
+/// files of its parent directories, so a root `*.log` rule reaches `sub/x.log`.
 pub(crate) struct IndexFilter {
     filters: Filters,
     root: PathBuf,
@@ -823,12 +958,12 @@ impl IndexFilter {
 }
 
 /// Non-ignored immediate children (files and directories) of `dir`, as absolute paths, per the
-/// `ignore` crate. `parents(false)` keeps each directory's `.gitignore` scoped to its own level so
-/// the caller can compose the hierarchy; `max_depth(1)` lists children without descending.
+/// `ignore` crate. The walk reads the ignore files of `dir`'s parents (up to the repository root),
+/// so a rule declared above `dir` applies to its children; `max_depth(1)` lists children without
+/// descending.
 fn shallow_allowed_children(dir: &Path, respect_gitignore: bool, follow_links: bool) -> AHashSet<PathBuf> {
     let mut set = AHashSet::new();
     let walker = ignore_walk_builder(dir, respect_gitignore, follow_links)
-        .parents(false)
         .max_depth(Some(1))
         .build();
     for dent in walker.flatten() {

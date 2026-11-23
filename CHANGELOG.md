@@ -18,6 +18,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING:** a `git_log` list row is `{sha, author, date, subject}` with an 8-digit sha, and no list names its files unless `files: true` is passed; `basemind git log` and `recent` take `--files` (#456)
 - `git_log`, `git_blame`, `code_symbols`, `code_refs`, `docs_search` and `code_search` write their text block as TOON, or as compact JSON when that is shorter, so a commit list is one table (#456)
+### Changed
+
+- The blob store shards each namespace into 256 buckets by the first two hex digits of the hash, and a file-view build no longer stats every blob; flat blobs migrate on first read, no rescan needed (#285)
+- The fast first scan now tracks documents whose embeddings are still to come, so they are searchable by text as soon as it ends; the background pass embeds them, reports `embeddings {done, total, eta_secs}` in `index_status`, makes `docs_search` carry a notice while vectors are pending, and a restarted background server resumes it (#454; a one-shot command does not).
+### Added
+
+- `docs_search` takes `per_doc` (default 2) so one document does not fill a page, and `context` to add the chunk before and after each hit, which is off by default (#474).
+
+### Changed
+
+- `docs_search` merges chunks of one document that touch or overlap into one hit wherever they rank, and no neighbouring chunk is repeated across hits (#474).
+
+### Fixed
+
+- `code_search` merges overlapping chunks of one symbol into one hit (#479).
+- `code_search` and `docs_search` no longer set `truncated` with `truncated_reason: "depth"` on a page cut by `limit`; only a page that reaches the paging depth does (#479).
+- The always-on exclude floor now drops tool and package-manager caches (`.cache`, `.terragrunt-cache`,
+  `.turbo`, `.nox`, `.yarn/cache`, `*.egg-info`, `.cargo/registry`, `.eslintcache`, `.coverage`, ...)
+  and lockfiles (`*.lock`, `go.sum`, `package-lock.json`, `pnpm-lock.yaml`, `.terraform.lock.hcl`, ...);
+  `[scan] floor_allow` re-includes any of them (#458)
+- `[documents]` lists (`include`, `exclude`, `embed_include`, `embed_exclude`) accept `!pattern` re-includes with gitignore semantics: the last matching entry decides (#458).
+- `[scan] test_globs`, the one list of test paths (`tests/`, `__tests__/`, `*_test.*`, `*.spec.*`, `conftest.py`, `e2e/`, `mocks/`, `fixtures/`, `*.stories.*`, `*.snap`, `*.bats`, `testing/`, `playwright/`, `*Test.java`, `*_spec.rb`, ...) that stays in the code map, and that the document tier's default exclude reuses to keep them out of RAG (#458).
+- `basemind init` detects the document scope: it counts document-like files per extension, writes `[documents] include` and `exclude` as plain glob lists, and asks keep, exclude or skip for scratch-like directories (`--yes` excludes only the large ones) (#458).
+- `[documents.ocr] enabled`, off by default (#458).
+- `[scan] list_only`: lockfiles (by name, so `pnpm-lock.yaml` and `.terraform.lock.hcl` too), archives, packet captures, fonts, columnar data and other binaries get a stat-only file-map entry (path, size, mtime, kind) and are never opened. `find_files` lists them with `indexed: false`, a `kind` and `bytes`, takes `indexed: true|false|any`, and `index_status` counts them per kind in `listed`; no search tool returns them. Entries take `!pattern` re-includes (#493).
+
+### Changed
+
+- The default `[documents] exclude` also drops test, fixture, mock, snapshot and e2e paths, agent instruction files and directories (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.cursor/`, ...), and vendored or build output (`node_modules`, `vendor`, `dist`, `build`, `*.min.*`, `*.map`) (#458).
+- Images are no longer sent to OCR unless `[documents.ocr] enabled = true` (#458).
+- A malformed HTML file is no longer re-read as plain text, so markup is never chunked or embedded (#458).
+### Fixed
+
+- `code_search` with `lane: "semantic"` and `[code_search] embed` off is refused as unavailable, naming the setting, instead of returning an empty ranking that reports the vector lane as run (#473).
+### Fixed
+
+- Files named `Dockerfile`, `Dockerfile.<suffix>`, `Containerfile`, `Makefile`, `Jenkinsfile`, `CMakeLists.txt`, `Gemfile`, `Rakefile`, `Vagrantfile`, `BUILD` and `WORKSPACE` are classified by file name in any directory, so language filters and `index_status` counts include them (#475).
+### Fixed
+
+- A successful MCP `tools/call` answer carries its payload once, in the text block, instead of again as `structuredContent` (#481).
+### Fixed
+
+- Constant outline signatures read `const NAME = value` per member in TypeScript, TSX, JavaScript, Go and Python, and Go `const`/`var` group members each take their own span instead of repeating the group (#472).
+
+### Added
+
+- HCL and Terraform files expose symbols: `resource` and `data` blocks, `variable`, `output`, `module`, `provider` and `terraform` blocks and every `locals` entry in `*.tf` and `*.hcl`, with Terragrunt `include`, `dependency` and `inputs`; the signature is the block header (`resource "aws_s3_bucket" "logs"`). Existing indexes re-extract these files on the next scan (#215)
+### Fixed
+
+- A newer release minor no longer wipes the group index a running older release reads: from 0.35 on each minor keeps its group index in `cache/groups/<group>/v<minor>/`, the cache sweep reaps an older one once no process of that release runs and it has sat unwritten for `BASEMIND_PRUNE_AFTER_DAYS` (#447)
+### Fixed
+
+- A config edit that changes nothing a scan reads (a new `basemind.toml` holding the defaults, an `[mcp]` tweak, a comment) no longer sheds the daemon's read stack, so it no longer starts a whole-repository catch-up pass and `index_status` stays `ready`; a stack is rebuilt once a connection finds it built under scan settings or a `watch.debounce_ms` that have since changed (#459).
+### Fixed
+
+- A package `__init__.py` with `from . import a, b` is no longer a one-file import cycle: the names resolve to the submodules, and a file is never its own import target (#476).
+### Fixed
+
+- A copy of the binary not named `basemind` no longer makes the MCP connect retry for about a minute.
+  The refusal to spawn a daemon from it ("not a `basemind` binary ... Set
+  `BASEMIND_DAEMON_BINARY`") is now fatal to the relay and is reported at once (#437).
+### Fixed
+
+- A view keeps only its newest two `index.msgpack.unreadable-<secs>` set-asides; older ones are reaped after a week (#434).
+### Changed
+
+- The working-tree status is cached per worktree and served until the index, `HEAD` or a watcher batch changes it (or five seconds pass), so repeated `changed`-scoped and `git_diff` status calls on a large checkout run one status (#284).
+### Changed
+
+- An incremental pass appends the file-map entries it changed to a delta log (`index.delta`) instead of rewriting `index.msgpack`; a full write happens on the first flush, on a full scan and once the log outgrows a quarter of the base. `ScanReport::file_map_bytes_written` reports the bytes (#278).
+
+### Fixed
+
+- A watcher batch that retires a content no longer decodes every sibling worktree's file map: each view's holds are cached until that view writes again (#277).
+- A file map whose delta log exists but cannot be read is an error instead of the stale base, and the holds cache is invalidated when a log is replaced by one of the same length (#277, #278).
+- The git-history index stores every commit reachable from any worktree HEAD once and answers each HEAD from its own reachability, so linked worktrees on other branches get indexed (not `partial`) history, and a HEAD that diverges or is rewritten appends only its new commits instead of wiping and rebuilding the index (#283). The first sync after upgrading rebuilds the index once. A head whose commits the index cannot prove to list in the live walk's order (for example one that merges commits indexed for other heads) is answered by the live walk.
+### Fixed
+
+- The plugin launcher releases its install lock before it execs a binary another launch installed while it waited (#435)
 
 ## [0.34.0] - 2026-11-22
 

@@ -11,9 +11,9 @@ use std::process::Command;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-#[cfg(unix)]
-use super::call;
 use super::{Client, call_err, call_raw, json_of, serve_synced, text_of};
+#[cfg(unix)]
+use super::{call, call_until};
 
 const LIB_V1: &str = "pub fn alpha() -> u32 {\n    1\n}\n\npub fn beta() -> u32 {\n    2\n}\n";
 const LIB_V2: &str = "pub fn alpha() -> u32 {\n    10\n}\n\npub fn beta() -> u32 {\n    2\n}\n";
@@ -208,6 +208,7 @@ async fn git_diff_answers_byte_for_byte() {
 
     std::fs::write(dir.path().join("src/lib.rs"), LIB_V2.replace("2\n}", "20\n}")).unwrap();
     std::fs::write(dir.path().join("notes/new.txt"), "new\n").unwrap();
+    call_until(&client, "git_diff", json!({}), |status| status["is_clean"] == false).await;
     let cases = [
         (
             json!({}),

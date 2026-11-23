@@ -248,7 +248,8 @@ could prove: `basemind manual resolution`.
 `code_grep` skips files whose trigram filter proves they cannot match
 ([ADR-0012](docs/adr/0012-grep-content-prefilter.md)). Each tool's text answer uses the encoding that
 measured fewest tokens for it ([ADR-0053](docs/adr/0053-text-answers-encoded-per-tool.md)); the
-CLI's `--json` and MCP `structuredContent` are JSON.
+CLI's `--json` is JSON. An MCP answer carries its payload once, in the text block, with no
+`structuredContent`.
 
 ```mermaid
 flowchart LR

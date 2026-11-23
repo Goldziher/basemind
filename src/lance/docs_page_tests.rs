@@ -57,14 +57,182 @@ fn stitching_drops_the_overlap_between_consecutive_chunks() {
 }
 
 #[test]
-fn only_rank_neighbours_merge_so_a_page_can_end_after_any_hit() {
-    // A0 and A1 are adjacent chunks but B0 sits between them in rank: three hits, not two, so a
-    // budget that keeps the first hit resumes at B0.
+fn chunks_of_one_document_merge_wherever_they_rank() {
+    // A0 and A1 are adjacent chunks with B0 between them in rank: they are one hit at A0's rank.
     let groups = merge(vec![ranked("a", 0, "x"), ranked("b", 0, "y"), ranked("a", 1, "z")]);
-    assert_eq!(groups.len(), 3);
+    let spans: Vec<(&str, (u32, u32))> = groups.iter().map(|g| (g.first.doc.as_str(), g.ord_range())).collect();
+    assert_eq!(spans, vec![("a", (0, 1)), ("b", (0, 0))]);
     let groups = merge(vec![ranked("a", 2, "x"), ranked("a", 0, "y"), ranked("a", 1, "z")]);
     let spans: Vec<(u32, u32)> = groups.iter().map(Merged::ord_range).collect();
-    assert_eq!(spans, vec![(2, 2), (0, 1)]);
+    assert_eq!(spans, vec![(0, 2)]);
+    assert_eq!(groups[0].first.ord, 2, "the group ranks where its best chunk did");
+}
+
+#[test]
+fn a_chunk_ranked_twice_is_one_member() {
+    let groups = merge(vec![ranked("a", 1, "x"), ranked("a", 1, "x")]);
+    assert_eq!(groups[0].members.len(), 1);
+}
+
+#[test]
+fn a_document_past_its_cap_ranks_behind_the_others_and_nothing_is_dropped() {
+    let ranking = || {
+        merge(vec![
+            ranked("a", 0, "a0"),
+            ranked("a", 5, "a5"),
+            ranked("a", 9, "a9"),
+            ranked("b", 0, "b0"),
+            ranked("c", 0, "c0"),
+        ])
+    };
+    let order = |groups: Vec<Merged>| -> Vec<(String, u32)> {
+        groups.iter().map(|g| (g.first.doc.clone(), g.first.ord)).collect()
+    };
+    let doc = |name: &str, ord: u32| (name.to_string(), ord);
+    assert_eq!(
+        order(diversify(ranking(), 2)),
+        vec![doc("a", 0), doc("a", 5), doc("b", 0), doc("c", 0), doc("a", 9)]
+    );
+    assert_eq!(
+        order(diversify(ranking(), 1)),
+        vec![doc("a", 0), doc("b", 0), doc("c", 0), doc("a", 5), doc("a", 9)]
+    );
+    assert_eq!(order(diversify(ranking(), 0)), order(ranking()), "0 is no cap");
+}
+
+fn ranking_of(hits: Vec<RankedChunk>) -> DocsRanking {
+    DocsRanking {
+        query: "q".to_string(),
+        hits,
+        ..DocsRanking::default()
+    }
+}
+
+fn paging(offset: u32, limit: u32) -> Paging {
+    Paging {
+        offset,
+        limit,
+        max_tokens: None,
+        per_doc: 0,
+        context: false,
+    }
+}
+
+/// Four chunks of one document that overlap by a sentence, as xberg cuts them.
+fn overlapping_chunks() -> Vec<RankedChunk> {
+    let sentences = [
+        "Branches are named after the ticket key.",
+        "Commit subjects start with the key.",
+        "A subject stays under one hundred characters.",
+        "Bodies are written only on request.",
+        "Merges are squashed into one commit.",
+    ];
+    (0..4)
+        .map(|ord| {
+            ranked(
+                "adr",
+                ord,
+                &format!("{} {}", sentences[ord as usize], sentences[ord as usize + 1]),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn overlapping_chunks_of_one_document_are_one_hit_with_no_repeated_text() {
+    let chunks = overlapping_chunks();
+    let separate: usize = chunks
+        .iter()
+        .map(|chunk| {
+            let group = Merged {
+                first: chunk.clone(),
+                members: vec![chunk.clone()],
+            };
+            serde_json::to_vec(&hit_of(&group, None, None)).unwrap().len()
+        })
+        .sum();
+    // Ranked out of order, with another document between them.
+    let ranking = vec![
+        chunks[1].clone(),
+        ranked("other", 0, "unrelated text of another document"),
+        chunks[3].clone(),
+        chunks[0].clone(),
+        chunks[2].clone(),
+    ];
+    let page = page(None, ranking_of(ranking), paging(0, 10));
+    assert_eq!(page.hits.len(), 2);
+    let hit = &page.hits[0];
+    assert_eq!((hit.chunk.ord, hit.chunk.ord_end), (0, 3));
+    assert_eq!(
+        hit.text,
+        "Branches are named after the ticket key. Commit subjects start with the key. \
+         A subject stays under one hundred characters. Bodies are written only on request. \
+         Merges are squashed into one commit."
+    );
+    for sentence in [
+        "Commit subjects start with the key.",
+        "A subject stays under one hundred characters.",
+    ] {
+        assert_eq!(hit.text.matches(sentence).count(), 1, "{sentence}");
+    }
+    let merged = serde_json::to_vec(hit).unwrap().len();
+    assert!(
+        merged < separate / 2,
+        "{merged} bytes merged against {separate} separate"
+    );
+}
+
+#[test]
+fn the_page_counts_merged_hits_and_resumes_after_the_last_one() {
+    let ranking = vec![
+        ranked("a", 0, "a0 text"),
+        ranked("b", 0, "b0 text"),
+        ranked("a", 1, "a1 text"),
+        ranked("c", 0, "c0 text"),
+    ];
+    let first = page(None, ranking_of(ranking.clone()), paging(0, 2));
+    let docs: Vec<&str> = first.hits.iter().map(|h| h.chunk.doc.as_str()).collect();
+    assert_eq!(docs, ["a", "b"]);
+    assert_eq!(first.next_offset, Some(2));
+    let second = page(None, ranking_of(ranking), paging(2, 2));
+    let docs: Vec<&str> = second.hits.iter().map(|h| h.chunk.doc.as_str()).collect();
+    assert_eq!(docs, ["c"]);
+    assert_eq!(second.next_offset, None);
+}
+
+#[test]
+fn a_limit_cut_of_a_deep_ranking_is_paging_not_truncation() {
+    let deep: Vec<RankedChunk> = (0..=RANKED_DEPTH as u32)
+        .map(|n| ranked(&format!("doc{n}"), 0, "text"))
+        .collect();
+    let first = page(None, ranking_of(deep.clone()), paging(0, 5));
+    assert_eq!(first.hits.len(), 5);
+    assert_eq!(first.next_offset, Some(5));
+    assert!(!first.truncated);
+    assert_eq!(first.truncated_reason, None);
+
+    let last = page(None, ranking_of(deep), paging(RANKED_DEPTH as u32 - 5, 5));
+    assert_eq!(last.hits.len(), 5);
+    assert_eq!(last.next_offset, None);
+    assert!(last.truncated, "the depth is where paging stops");
+    assert_eq!(last.truncated_reason.as_deref(), Some("depth"));
+}
+
+#[test]
+fn per_doc_lets_a_second_document_onto_the_first_page() {
+    let ranking = vec![
+        ranked("a", 0, "a0"),
+        ranked("a", 4, "a4"),
+        ranked("a", 8, "a8"),
+        ranked("b", 0, "b0"),
+    ];
+    let capped = Paging {
+        per_doc: 1,
+        ..paging(0, 2)
+    };
+    let docs = |page: &DocsPage| -> Vec<String> { page.hits.iter().map(|h| h.chunk.doc.clone()).collect() };
+    assert_eq!(docs(&page(None, ranking_of(ranking.clone()), capped)), ["a", "b"]);
+    assert_eq!(docs(&page(None, ranking_of(ranking), paging(0, 2))), ["a", "a"]);
 }
 
 #[test]

@@ -1,5 +1,9 @@
 //! Build, incrementally append to, and revalidate the git-history index.
 //!
+//! The commit store is head-independent. A sync stores the commits reachable from the caller's HEAD
+//! that no earlier sync stored, and records what HEAD reaches as a tip; it never wipes because HEAD
+//! diverged from a head another worktree indexed.
+//!
 //! Parity guarantee: the index is built from [`Repo::commit_record`], which returns the same
 //! exact-path, no-rename-follow relation the live history tools filter on (a merge lists only the
 //! files it changed against every parent, as `git log --cc` does), so an indexed query result is
@@ -10,30 +14,31 @@ use std::path::Path;
 use ahash::AHashMap;
 use rayon::prelude::*;
 
+use super::reach::Reach;
 use super::{CommitMeta, GitHistoryError, GitHistoryIndex, encoding, keys};
 use crate::git::Repo;
 use crate::path::RelPath;
 
-/// What `sync` did, so callers (and tests) can tell a rewrite-triggered rebuild from a cheap
-/// incremental append or a no-op.
+/// What `sync` did, so callers (and tests) can tell a rebuild from a cheap incremental append or a
+/// no-op.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RebuildOutcome {
-    /// HEAD unchanged since the last index — nothing to do.
+    /// HEAD is already an indexed tip — no commit is walked.
     Fresh,
-    /// Appended `added` new commits reachable from the new HEAD.
+    /// HEAD became an indexed tip by appending the `added` commits reachable from it that were not
+    /// stored yet (none when every commit was already stored for another head).
     Incremental { added: u32 },
-    /// The index was left untouched because this checkout cannot advance it without a wipe: a linked
-    /// worktree whose HEAD does not descend from the indexed head (`reason` says why). Tools read via
-    /// the live walk at this head; the main checkout owns the index.
+    /// The index was left untouched: a build at this head failed within the hour (`reason` says so),
+    /// so tools read via the live walk until it is retried.
     Skipped { reason: &'static str },
-    /// Wiped and rebuilt from scratch, indexing `commits` commits. `reason` is `"initial"` (nothing
-    /// was indexed), `"interrupted"` (a build did not finish), `"deepened"` (the shallow clone it was
-    /// built in has been deepened or unshallowed) or `"history-rewrite"` (HEAD no longer descends from
-    /// the indexed history).
+    /// Wiped and rebuilt from scratch for this HEAD, indexing `commits` commits. `reason` is
+    /// `"initial"` (nothing was indexed), `"interrupted"` (a build did not finish) or `"deepened"`
+    /// (the shallow clone it was built in has been deepened or unshallowed).
     FullRebuild { reason: &'static str, commits: u32 },
 }
 
-/// Bring the index up to date with `repo`'s current HEAD, running the revalidation decision tree.
+/// Bring the index up to date with `repo`'s current HEAD: make HEAD an indexed tip, appending the
+/// commits not stored yet.
 /// Best-effort callers ignore the error; the index simply stays stale and tools fall back to the
 /// live walk until the next successful sync.
 /// Only the process that HOLDS the fjall database may build it. Syncs of one database serialize on
@@ -90,34 +95,23 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, Gi
     };
 
     let deepened = root_deepened(index, repo);
-    if !deepened && index.last_indexed_head_hex().as_deref() == Some(head.as_str()) {
+    if !deepened && index.has_tip(&head) {
+        // Already indexed, perhaps for another worktree: make it the latest tip again, which a read
+        // at no head answers for, and renew its sync time so eviction drops older tips first.
+        if let Some(head20) = keys::sha_hex_to_raw(&head)
+            && index.last_indexed_head() != Some(head20)
+        {
+            index.touch_tip(&head20)?;
+        }
         return Ok(RebuildOutcome::Fresh);
     }
 
-    // A descendant of the indexed head is always safe to append, from any worktree.
-    if !deepened
-        && let Some(last_hex) = index.last_indexed_head_hex()
-        && repo.has_commit(&last_hex)
-        && repo.is_ancestor(&last_hex, &head)
-        && fingerprint_ok(index, repo, &head)
-    {
-        return append_since(index, repo, &last_hex, &head).inspect_err(|_| record_failure(index, &head));
-    }
-
-    // The index tracks ONE head, and every worktree of a clone shares it. A linked worktree on its
-    // own branch is usually NOT a descendant of the head another worktree indexed, so letting it
-    // fall through to the wipe below rebuilds the whole multi-100k-commit history (multi-GB, minutes)
-    // on every switch between worktrees, and the main checkout then wipes it back. Only the first
-    // build is left to a linked worktree; afterwards it may append (above) but never wipe. The index
-    // is a pure accelerator (tools use it only when `last_indexed_head == HEAD`), so a linked
-    // worktree at any other head reads via the live walk: correct, just slower.
-    // An interrupted index makes `is_empty` true, so a linked worktree may rebuild it here and the
-    // main checkout then rebuild it again for its own head ("history-rewrite"): the ping-pong above,
-    // once per interruption. ~keep
-    if repo.is_linked_worktree() && !index.is_empty() {
-        return Ok(RebuildOutcome::Skipped {
-            reason: "linked worktree diverges from the indexed head",
-        });
+    // Any other state with a stamped head and nothing deepened is safe to extend, whatever the
+    // relation of HEAD to the tips already indexed: the store is head-independent, so a divergence
+    // appends the commits it adds and wipes nothing. An interrupted index has no stamped head and so
+    // reads as empty here, as does one never built.
+    if !deepened && !index.is_empty() {
+        return append_tip(index, repo, &head).inspect_err(|_| record_failure(index, &head));
     }
 
     let interrupted = index.build_interrupted();
@@ -130,10 +124,8 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, Gi
         "interrupted"
     } else if index.is_empty() {
         "initial"
-    } else if deepened {
-        "deepened"
     } else {
-        "history-rewrite"
+        "deepened"
     };
     index.clear()?;
     rebuild(index, repo, reason).inspect_err(|_| record_failure(index, &head))
@@ -157,23 +149,10 @@ fn record_failure(index: &GitHistoryIndex, head: &str) {
     }
 }
 
-fn now_unix() -> u64 {
+pub(super) fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
-}
-
-/// Defense-in-depth: even when the ancestry check passes, a rewrite below `last_head` (graft,
-/// replace-objects, unshallow) is caught when the stored root sha no longer resolves or is no
-/// longer an ancestor of HEAD.
-fn fingerprint_ok(index: &GitHistoryIndex, repo: &Repo, head: &str) -> bool {
-    match index.root_sha() {
-        None => false,
-        Some(root_raw) => {
-            let root_hex = keys::sha_raw_to_hex(&root_raw);
-            repo.has_commit(&root_hex) && repo.is_ancestor(&root_hex, head)
-        }
-    }
 }
 
 /// Whether the oldest indexed commit now has a parent: the index was built in a shallow clone that
@@ -203,19 +182,19 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
     let mut interner = PathInterner::new(index, 0);
     let mut postings: AHashMap<u32, Vec<u32>> = AHashMap::new();
     let mut term_postings: AHashMap<Vec<u8>, Vec<u32>> = AHashMap::new();
+    let mut reach = Reach::default();
     let mut writer = index.writer()?;
     writer.begin()?;
     writer.put_shallow_boundary(&repo.shallow_boundary())?;
 
     let written = fold_chunked(
-        index,
         repo,
         &chrono,
         0,
-        false,
         &mut interner,
         &mut postings,
         &mut term_postings,
+        &mut reach,
         &mut writer,
     )?;
     for (path_id, ords) in postings {
@@ -224,7 +203,9 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
     for (term_key, ords) in term_postings {
         writer.put_term_posting(&term_key, &encoding::encode_ords(&ords))?;
     }
-    writer.finish_meta(&head20, &root20, total, interner.next_path_id, written)?;
+    // The ordinals follow the reverse of this very walk, one slot per commit.
+    writer.set_ordered(true);
+    writer.finish_meta(&head20, &reach, &root20, total, interner.next_path_id, written)?;
     index.local().compact()?;
     Ok(RebuildOutcome::FullRebuild {
         reason,
@@ -232,27 +213,64 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
     })
 }
 
-/// Append the commits reachable from HEAD but not from `last_hex`.
-fn append_since(
-    index: &GitHistoryIndex,
-    repo: &Repo,
-    last_hex: &str,
-    head: &str,
-) -> Result<RebuildOutcome, GitHistoryError> {
-    let new_newest_first = repo.new_commit_shas(last_hex)?;
+/// Make `head` an indexed tip, appending the commits reachable from it that are not stored yet.
+///
+/// What `head` reaches starts from the tip of an earlier sync that is its ancestor, when there is
+/// one: only the commits it adds are walked. Otherwise (a branch off history indexed for another
+/// head, or a HEAD moved back) the whole history reachable from it is walked, which costs one revision
+/// walk and an ordinal lookup per commit but no diff for a commit that is already stored.
+fn append_tip(index: &GitHistoryIndex, repo: &Repo, head: &str) -> Result<RebuildOutcome, GitHistoryError> {
     let Some(head20) = keys::sha_hex_to_raw(head) else {
         return Ok(RebuildOutcome::Fresh);
     };
+    let (shas, mut reach, base) = match ancestor_tip(index, repo, head) {
+        Some((base, reach)) => (repo.new_commit_shas(&keys::sha_raw_to_hex(&base))?, reach, Some(base)),
+        None => (repo.all_commit_shas()?, Reach::default(), None),
+    };
+    let mut unstored: Vec<&String> = Vec::new();
+    // Each commit of the walk as its stored ordinal, or the position among the unstored ones.
+    let mut walk: Vec<Result<u32, usize>> = Vec::with_capacity(shas.len());
+    for sha in &shas {
+        let Some(sha20) = keys::sha_hex_to_raw(sha) else {
+            continue;
+        };
+        match index.ord_for_sha(&sha20) {
+            Some(ord) => {
+                reach.insert(ord);
+                walk.push(Ok(ord));
+            }
+            None => {
+                walk.push(Err(unstored.len()));
+                unstored.push(sha);
+            }
+        }
+    }
     let root20 = index.root_sha().unwrap_or(head20);
     let start_ord = index.next_ord();
+    let ordered = match base {
+        None => walk_descends(&walk, start_ord, unstored.len()) && walk.len() == shas.len(),
+        Some(base) => {
+            unstored.len() == shas.len()
+                && index.tip_is_ordered(&base)
+                && extends_linearly(repo, head, &shas, &keys::sha_raw_to_hex(&base))
+        }
+    };
 
-    if new_newest_first.is_empty() {
-        let writer = index.writer()?;
-        writer.finish_meta(&head20, &root20, start_ord, index.next_path_id(), index.commit_count())?;
+    if unstored.is_empty() {
+        let mut writer = index.writer()?;
+        writer.set_ordered(ordered);
+        writer.finish_meta(
+            &head20,
+            &reach,
+            &root20,
+            start_ord,
+            index.next_path_id(),
+            index.commit_count(),
+        )?;
         return Ok(RebuildOutcome::Incremental { added: 0 });
     }
 
-    let chrono: Vec<&String> = new_newest_first.iter().rev().collect();
+    let chrono: Vec<&String> = unstored.into_iter().rev().collect();
     let mut interner = PathInterner::new(index, index.next_path_id());
     let mut postings: AHashMap<u32, Vec<u32>> = AHashMap::new();
     let mut term_postings: AHashMap<Vec<u8>, Vec<u32>> = AHashMap::new();
@@ -260,14 +278,13 @@ fn append_since(
     writer.begin()?;
 
     let added = fold_chunked(
-        index,
         repo,
         &chrono,
         start_ord,
-        true,
         &mut interner,
         &mut postings,
         &mut term_postings,
+        &mut reach,
         &mut writer,
     )?;
     for (path_id, new_ords) in postings {
@@ -287,14 +304,59 @@ fn append_since(
         writer.put_term_posting(&term_key, &encoding::encode_ords(&all))?;
     }
     let next_ord = start_ord + chrono.len() as u32;
+    writer.set_ordered(ordered);
     writer.finish_meta(
         &head20,
+        &reach,
         &root20,
         next_ord,
         interner.next_path_id,
         index.commit_count() + added,
     )?;
     Ok(RebuildOutcome::Incremental { added })
+}
+
+/// Whether a walk, newest first, maps to strictly descending ordinals, the unstored commits taking
+/// the `count` ordinals from `start_ord` in reverse walk order (the oldest first).
+fn walk_descends(walk: &[Result<u32, usize>], start_ord: u32, count: usize) -> bool {
+    let ords = walk.iter().map(|slot| match slot {
+        Ok(ord) => *ord,
+        Err(position) => start_ord + (count - 1 - position) as u32,
+    });
+    let mut previous: Option<u32> = None;
+    for ord in ords {
+        if previous.is_some_and(|before| before <= ord) {
+            return false;
+        }
+        previous = Some(ord);
+    }
+    true
+}
+
+/// Whether `shas` (the commits `head` adds over the tip `base`, newest first) are a linear chain:
+/// `head`, then each one's only parent, ending at a commit whose only parent is `base`.
+fn extends_linearly(repo: &Repo, head: &str, shas: &[String], base: &str) -> bool {
+    let mut expected = head.to_owned();
+    for sha in shas {
+        if *sha != expected {
+            return false;
+        }
+        match repo.parent_shas(sha).as_deref() {
+            Some([parent]) => expected.clone_from(parent),
+            _ => return false,
+        }
+    }
+    !shas.is_empty() && expected == base
+}
+
+/// The most recently synced indexed tip that is an ancestor of `head`, with what it reaches.
+fn ancestor_tip(index: &GitHistoryIndex, repo: &Repo, head: &str) -> Option<([u8; 20], Reach)> {
+    index.tips().into_iter().find_map(|tip| {
+        let tip20 = keys::sha_hex_to_raw(&tip)?;
+        (repo.has_commit(&tip) && repo.is_ancestor(&tip, head))
+            .then(|| index.reach_of(&tip20).map(|reach| (tip20, reach)))
+            .flatten()
+    })
 }
 
 /// Records computed (in parallel) per chunk before being folded and dropped. Bounds peak RSS: the
@@ -310,19 +372,18 @@ const RECORD_CHUNK: usize = 8192;
 /// then Fjall puts), then dropped before the next chunk is computed. Ordinals are assigned by their
 /// absolute position in `chrono` (`start_ord` plus the global offset) so a `None`/unparsable record
 /// still consumes its slot, preserving the positional ordinal contract the non-chunked fold had.
-/// Returns the number of commits actually written. `dedup` skips commits already present in
-/// `gh_ord_by_sha` (the incremental append's defensive guard). It never meets a row a cut-off run
-/// left, because such a run leaves the index marked in progress and the next sync rebuilds it.
+/// Returns the number of commits actually written; each one's ordinal is added to `reach`. The
+/// caller passes only commits no row exists for: a row a cut-off run left is never met, because such
+/// a run leaves the index marked in progress and the next sync rebuilds it.
 #[allow(clippy::too_many_arguments)]
 fn fold_chunked(
-    index: &GitHistoryIndex,
     repo: &Repo,
     chrono: &[&String],
     start_ord: u32,
-    dedup: bool,
     interner: &mut PathInterner,
     postings: &mut AHashMap<u32, Vec<u32>>,
     term_postings: &mut AHashMap<Vec<u8>, Vec<u32>>,
+    reach: &mut Reach,
     writer: &mut super::GitHistoryWriter,
 ) -> Result<u32, GitHistoryError> {
     let mut written = 0u32;
@@ -335,9 +396,6 @@ fn fold_chunked(
             let Some(sha20) = keys::sha_hex_to_raw(&record.sha) else {
                 continue;
             };
-            if dedup && index.ord_for_sha(&sha20).is_some() {
-                continue;
-            }
             let files = intern_files(interner, postings, ord, &record.files, writer)?;
             super::fts::index_commit_terms(
                 term_postings,
@@ -360,6 +418,7 @@ fn fold_chunked(
             };
             writer.put_commit_meta(ord, &meta)?;
             writer.put_ord_for_sha(&sha20, ord)?;
+            reach.insert(ord);
             written += 1;
         }
     }
@@ -441,6 +500,24 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn a_walk_is_ordered_only_when_its_ordinals_strictly_descend() {
+        // `Ok` is a stored ordinal, `Err(n)` the n-th unstored commit in walk order, which takes the
+        // ordinals from `start` in reverse: with three unstored from 10, positions 0, 1, 2 are 12, 11, 10.
+        let cases: [(&[Result<u32, usize>], bool); 6] = [
+            (&[], true),
+            (&[Err(0), Err(1), Err(2)], true),
+            (&[Err(0), Ok(7), Ok(3)], true),
+            (&[Err(1), Err(0)], false),
+            (&[Ok(7), Err(0)], false),
+            (&[Err(0), Ok(5), Ok(5)], false),
+        ];
+        for (walk, expected) in cases {
+            let count = walk.iter().filter(|slot| slot.is_err()).count();
+            assert_eq!(walk_descends(walk, 10, count), expected, "{walk:?}");
+        }
+    }
+
     fn git(root: &Path, args: &[&str]) -> String {
         let out = crate::testing::git_command()
             .args(args)
@@ -496,14 +573,13 @@ mod tests {
             let mut postings = AHashMap::new();
             let mut term_postings = AHashMap::new();
             fold_chunked(
-                &index,
                 &repo,
                 &chrono,
                 index.next_ord(),
-                true,
                 &mut interner,
                 &mut postings,
                 &mut term_postings,
+                &mut Reach::default(),
                 &mut writer,
             )
             .expect("fold the new commits");
@@ -601,14 +677,13 @@ mod tests {
             let mut interner = PathInterner::new(&index, index.next_path_id());
             let (mut postings, mut term_postings) = (AHashMap::new(), AHashMap::new());
             fold_chunked(
-                &index,
                 &repo,
                 &chrono,
                 index.next_ord(),
-                true,
                 &mut interner,
                 &mut postings,
                 &mut term_postings,
+                &mut Reach::default(),
                 &mut writer,
             )
             .expect("fold");
@@ -691,5 +766,41 @@ mod tests {
             .map(str::to_owned)
             .collect();
         assert_eq!(touching(&index, "a.rs"), expected);
+    }
+
+    /// Syncing A, a diverged B, then A again leaves A the latest tip: a read at no head answers for
+    /// the checkout that synced last.
+    #[test]
+    fn syncing_an_indexed_tip_again_makes_it_the_latest_tip() {
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+        let root = repo_dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        commit(root, "a.rs", "1", "c1");
+        let cache = tempfile::tempdir().expect("cache dir");
+        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
+        sync(&index, &Repo::discover(root).expect("discover"), cache.path()).expect("sync A");
+        let a = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+
+        git(root, &["checkout", "-q", "-b", "other"]);
+        commit(root, "b.rs", "1", "c2");
+        let b = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+        sync(&index, &Repo::discover(root).expect("rediscover"), cache.path()).expect("sync B");
+        assert_eq!(index.last_indexed_head_hex().as_deref(), Some(b.as_str()));
+
+        git(root, &["checkout", "-q", "main"]);
+        let outcome = sync(&index, &Repo::discover(root).expect("rediscover"), cache.path()).expect("sync A again");
+        assert_eq!(outcome, RebuildOutcome::Fresh);
+        assert_eq!(index.last_indexed_head_hex().as_deref(), Some(a.as_str()));
+        assert!(index.has_tip(&b), "B stays an indexed tip");
+        assert_eq!(
+            index
+                .latest()
+                .expect("a latest view")
+                .recent_commits(0, 10, false)
+                .len(),
+            1,
+            "a read at no head sees A's history, not B's"
+        );
     }
 }

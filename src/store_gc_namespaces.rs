@@ -173,21 +173,12 @@ fn newest_write_age(files: &[PathBuf], now: SystemTime) -> Duration {
         .unwrap_or(Duration::MAX)
 }
 
-/// The files directly in `dir`.
+/// The files of the blob namespace `dir`, flat or in a bucket ([`crate::store_blob_layout`]).
 fn files_in(dir: &Path) -> Result<Vec<PathBuf>, GcError> {
-    let mut files = Vec::new();
-    for entry in read_dir(dir)? {
-        let path = entry
-            .map_err(|source| GcError::Io {
-                path: dir.to_path_buf(),
-                source,
-            })?
-            .path();
-        if !path.is_dir() {
-            files.push(path);
-        }
-    }
-    Ok(files)
+    crate::store_blob_layout::blob_files(dir).map_err(|source| GcError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })
 }
 
 /// Whether the entry `name` of the blobs root is what [`sweep_superseded_namespaces`] reaps once it
@@ -223,9 +214,15 @@ fn reap_if_aged(path: &Path, now: SystemTime, grace: Duration, report: &mut GcRe
     Ok(true)
 }
 
-/// Reap the aged files of one superseded namespace, and the directory once it is empty.
+/// Reap the aged files of one superseded namespace, flat or bucketed, and its bucket directories and
+/// the directory itself once they are empty.
 fn reap_namespace(dir: &Path, now: SystemTime, grace: Duration, report: &mut GcReport) -> Result<(), GcError> {
     let mut emptied = true;
+    for path in files_in(dir)? {
+        if !reap_if_aged(&path, now, grace, report)? {
+            emptied = false;
+        }
+    }
     for entry in read_dir(dir)? {
         let path = entry
             .map_err(|source| GcError::Io {
@@ -233,12 +230,12 @@ fn reap_namespace(dir: &Path, now: SystemTime, grace: Duration, report: &mut GcR
                 source,
             })?
             .path();
-        if path.is_dir() || !reap_if_aged(&path, now, grace, report)? {
-            emptied = false;
+        if path.is_dir() {
+            // Best effort: a writer of that version may have dropped a blob in since the listing.
+            emptied &= std::fs::remove_dir(&path).is_ok();
         }
     }
     if emptied {
-        // Best effort: a writer of that version may have dropped a blob in since the listing.
         let _ = std::fs::remove_dir(dir);
     }
     Ok(())
@@ -618,5 +615,33 @@ mod tests {
 
         assert_eq!((report.scanned, report.removed), (2, 0));
         assert!(legacy.exists() && older.exists());
+    }
+
+    /// A superseded namespace written in the bucketed layout is reaped whole: its blobs, its bucket
+    /// directories and the namespace directory. A bucket that still holds a young blob stays.
+    #[test]
+    fn a_superseded_bucketed_namespace_is_reaped_with_its_buckets() {
+        let root = tempfile::tempdir().unwrap();
+        let old_a = plant_aged(root.path(), "v6/bb/bb11.fm.msgpack", 30 * DAY);
+        let old_b = plant_aged(root.path(), "v6/cc/cc22.doc.msgpack", 30 * DAY);
+        let young = plant(root.path(), "v5/dd/dd33.fm.msgpack");
+        plant_aged(root.path(), "v5/ee/ee44.fm.msgpack", 30 * DAY);
+
+        let report = sweep_superseded_namespaces(
+            root.path(),
+            CURRENT,
+            Duration::from_secs(DAY.as_secs()),
+            &Holds::default(),
+        )
+        .unwrap();
+
+        assert_eq!((report.scanned, report.removed), (4, 3));
+        assert!(!old_a.exists() && !old_b.exists());
+        assert!(
+            !root.path().join("v6").exists(),
+            "the emptied namespace and its buckets go"
+        );
+        assert!(young.exists(), "a young blob keeps its bucket and namespace");
+        assert!(!root.path().join("v5/ee").exists(), "an emptied bucket beside it goes");
     }
 }
