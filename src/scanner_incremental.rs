@@ -116,7 +116,8 @@ fn scan_paths_inner(
         filter.verify_blobs();
     }
     // Named and watched paths alike: a watcher reports a renamed or moved directory as one path.
-    let expanded = crate::scanner_named::expand_named_dirs(root, &store.index, config, filter.filters(), paths);
+    let expanded =
+        crate::scanner_named::expand_named_dirs(root, &store.index, store.key_order(), config, filter.filters(), paths);
     let paths = expanded.as_slice();
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());

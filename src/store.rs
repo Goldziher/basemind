@@ -10,6 +10,7 @@ use crate::index::{IndexDb, IndexError};
 use crate::lance::LanceStore;
 use crate::path::RelPath;
 use crate::store_hash_refs::HashRefs;
+use crate::store_key_order::KeyOrder;
 #[path = "store_durability.rs"]
 mod durability;
 #[path = "store_file_map.rs"]
@@ -316,6 +317,10 @@ pub struct Store {
     /// so "does any file still hold this content" is a lookup, not a pass over the manifest. Mutate
     /// `index.files` through those two methods only.
     hash_refs: HashRefs,
+    /// The keys of `index.files`, `doc_files` and `doc_tombstones` in sorted order, kept in step by
+    /// the mutators below so the entries under a directory are a range lookup. Mutate those maps
+    /// through the store's methods only.
+    pub(crate) key_order: KeyOrder,
     /// What `index` changed since its last flush, so a flush appends the changed entries instead of
     /// rewriting the whole file map (see [`file_map_log`]).
     file_map: file_map_log::FileMapState,
@@ -448,6 +453,7 @@ impl Store {
             view_dir,
             view: view.to_string(),
             hash_refs: HashRefs::of(&index.files),
+            key_order: KeyOrder::of(&index),
             index,
             index_db: Some(index_db),
             #[cfg(feature = "intelligence")]
@@ -579,6 +585,7 @@ impl Store {
             view_dir,
             view: view.to_string(),
             hash_refs: HashRefs::of(&index.files),
+            key_order: KeyOrder::of(&index),
             index,
             index_db,
             #[cfg(feature = "intelligence")]
@@ -642,6 +649,7 @@ impl Store {
     pub fn upsert(&mut self, rel: impl Into<RelPath>, entry: FileEntry) {
         self.hash_refs.acquire(&entry.hash_hex);
         let rel = rel.into();
+        self.key_order.insert(&rel);
         let prior = self.index.files.insert(rel.clone(), entry);
         self.file_map.file_changed(rel, prior.is_none());
         if let Some(prior) = prior {
@@ -652,6 +660,7 @@ impl Store {
     pub fn remove(&mut self, rel: impl AsRef<[u8]>) {
         if let Some((rel, prior)) = self.index.files.remove_entry(bstr::BStr::new(rel.as_ref())) {
             self.hash_refs.release(&prior.hash_hex);
+            self.key_order.forget(&rel, &self.index);
             self.file_map.file_dropped(rel);
         }
     }
@@ -672,6 +681,11 @@ impl Store {
         self.hash_refs.is_held(hash_hex)
     }
 
+    /// The sorted keys of every indexed file, document and tombstone.
+    pub(crate) fn key_order(&self) -> &KeyOrder {
+        &self.key_order
+    }
+
     /// Look a file up by its repository-relative path. Accepts any byte source —
     /// `&str`, `&RelPath`, `&[u8]` — so call sites that already hold a String can keep
     /// working without an explicit conversion.
@@ -689,6 +703,7 @@ impl Store {
             .get(&rel)
             .filter(|old| old.hash_hex != entry.hash_hex || old.config_digest != entry.config_digest)
             .map(|old| doc_key(&old.hash_hex, &old.config_digest));
+        self.key_order.insert(&rel);
         let prior = self.index.doc_files.insert(rel.clone(), entry);
         self.file_map.doc_changed(rel, prior.is_none());
         self.dropped_doc_keys.extend(replaced);
@@ -698,6 +713,7 @@ impl Store {
     pub fn remove_doc(&mut self, rel: impl AsRef<[u8]>) {
         if let Some((rel, old)) = self.index.doc_files.remove_entry(bstr::BStr::new(rel.as_ref())) {
             self.dropped_doc_keys.push(doc_key(&old.hash_hex, &old.config_digest));
+            self.key_order.forget(&rel, &self.index);
             self.file_map.doc_dropped(rel);
         }
     }
