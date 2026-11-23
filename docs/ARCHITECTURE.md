@@ -800,23 +800,27 @@ commit walk behind `path` + `symbol`, and full-text `query` / `author` search) a
     session it hosts shares the daemon's handle; a CLI command forwards its whole call. Syncs
     serialize on the handle's build lock, so N sessions asking at once cause one walk.
 - A process that can reach neither backend falls back to the live walk (`git_history: None`). The
-  index is a pure accelerator: tools use it only when `last_indexed_head == HEAD` and otherwise
+  index is a pure accelerator: tools use it only when HEAD is an indexed tip and otherwise
   live-walk, so it can never serve stale results. A `git_log {query}` search that falls back reports
   `truncated_reason: "unindexed_scan"`, as does `basemind git hotspots` when its live walk is cut
   short; a `git_log {path}` fallback reports `span_limit` or no reason.
 - A linked worktree shares the MAIN worktree's index (keyed on the main worktree root) rather than
   rebuilding its own, since the commit graph is identical across worktrees of one clone.
-  The index tracks one head: a linked worktree whose HEAD descends from it appends the new commits,
-  while one that diverges leaves the index untouched (`RebuildOutcome::Skipped`) and answers by live
-  walk, so switching worktrees never wipes and rebuilds the history. The first build may come from any
-  worktree. Index sync runs on a dedicated two-thread pool.
+  The commit store is head-independent: every commit reachable from any worktree HEAD is stored once,
+  under an ordinal assigned in append order, and a divergence never wipes it. Each indexed tip (a HEAD
+  a sync stamped) carries a reachability bitset in `gh_meta`, and a query at HEAD answers from the
+  posting lists keeping the ordinals that HEAD reaches (`GitHistoryIndex::at`), so a worktree sees its
+  own commits without a rebuild and the answer is never `partial`. A HEAD move appends only the
+  commits no earlier sync stored; a head whose commits are all stored costs one revision walk and no
+  diff. Up to 32 tips are kept, the least recently synced dropping first; a worktree whose HEAD is not
+  an indexed tip is read by the live walk until its next sync. Index sync runs on a dedicated
+  two-thread pool.
 - A build or append marks the index in progress and removes its head in one batch before its first
-  row; the batch that stamps the new head clears the mark. A marked index has no head, so even an
-  older binary of the same minor rebuilds it rather than appending past a cut-off run. A linked
-  worktree may rebuild an interrupted index, which the main checkout may then rebuild again for its
-  own head: once per interruption. A build or append that fails records its HEAD, and for an hour the
-  next sync at that HEAD leaves the index to the live walk instead of rebuilding the whole history
-  only to fail at the same commit.
+  row; the batch that stamps the new tip clears the mark. A marked index answers for no head, so even
+  an older binary of the same minor rebuilds it rather than appending past a cut-off run. A build or
+  append that fails records its HEAD, and for an hour the next sync at that HEAD leaves the index to
+  the live walk instead of rebuilding the whole history only to fail at the same commit. Only an
+  unbuilt or interrupted index, or one built in a shallow clone since deepened, is wiped and rebuilt.
 
 ## Resource governance
 

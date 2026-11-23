@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The git-history index stores every commit reachable from any worktree HEAD once and answers each HEAD from its own reachability, so linked worktrees on other branches get indexed (not `partial`) history, and a HEAD that diverges or is rewritten appends only its new commits instead of wiping and rebuilding the index (#283). The first sync after upgrading rebuilds the index once.
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

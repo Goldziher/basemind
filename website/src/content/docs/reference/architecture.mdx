@@ -210,7 +210,7 @@ Two-tier caching:
 
 History queries (`git_log`, `git_blame`) are posting-list lookups over this index, answering in **tens of microseconds** flat.
 
-The index is a pure accelerator: it's used only when fresh (`last_indexed_head == HEAD`) and otherwise walks history directly, so it can never serve stale results. It rebuilds automatically on history rewrite (filter-repo, rebase, force-push).
+The index is a pure accelerator: it's used only when HEAD is an indexed tip and otherwise walks history directly, so it can never serve stale results. One store serves every worktree of a clone: each worktree HEAD is a tip, a HEAD move or a rewrite (filter-repo, rebase, force-push) appends only the commits not yet stored, and nothing is wiped when a worktree diverges.
 
 ## Schema Versioning
 

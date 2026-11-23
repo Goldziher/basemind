@@ -26,8 +26,18 @@
 //!   building it elsewhere would be doubly wrong — it would steal the lock the daemon needs, and it
 //!   would run a multi-GB, minutes-long walk inside the process an agent is actively querying.
 //!
+//! ## Many heads, one store
+//!
+//! The commit store does not depend on a head: every commit reachable from any worktree HEAD is
+//! stored once, under an ordinal assigned in append order, and a divergence never wipes anything. What
+//! a head reaches is recorded per indexed tip as a [`reach::Reach`] bitset (`gh_meta` `tip/` rows), and
+//! a query at head `X` ([`GitHistoryIndex::at`]) answers from the posting lists keeping only the
+//! ordinals `X` reaches. A HEAD move appends only the commits no earlier sync stored. At most
+//! [`MAX_TIPS`] tips are kept, the least recently synced dropping first; a head with no tip row is read
+//! by the live walk until a sync adds it.
+//!
 //! A process that can reach neither keeps `git_history: None` and falls back to the live walk. The
-//! index is a pure accelerator — tools use it only when `last_indexed_head == HEAD` and otherwise
+//! index is a pure accelerator — tools use it only when HEAD is an indexed tip and otherwise
 //! live-walk (reporting `partial: true`), so it can never serve stale or incorrect results. A build
 //! or append marks the index in progress before it writes a row and clears the mark in the batch
 //! that stamps the new head; while the mark stands the index reports no head, so a run cut off
@@ -38,7 +48,7 @@
 //!
 //! | partition | key | value |
 //! |---|---|---|
-//! | `gh_meta` | fixed byte-strings | schema_ver, last_indexed_head, counters, fingerprint |
+//! | `gh_meta` | fixed byte-strings, `tip/ ‖ sha` | schema_ver, last_indexed_head, counters, fingerprint, one reachability bitset per indexed tip |
 //! | `gh_commit_by_ord` | `ord:u32_be` | msgpack [`CommitMeta`] (interned file list) |
 //! | `gh_ord_by_sha` | `sha:20 raw` | `ord:u32_be` |
 //! | `gh_path_id_by_path` | `u16:len ‖ rel` | `path_id:u32_be` |
@@ -53,6 +63,7 @@ pub mod fts;
 pub mod keys;
 mod maintenance;
 pub mod proto;
+pub mod reach;
 pub mod reader;
 use std::path::{Path, PathBuf};
 
@@ -91,7 +102,15 @@ use crate::path::RelPath;
 ///
 /// `+11` rebuilds the file list of a shallow clone's boundary commit, which is now listed as a root
 /// (its tree added), and stores the clone's `shallow` file so a deepened boundary is noticed.
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 11;
+///
+/// `+12` records the indexed tips with their reachability, so one store answers for every worktree
+/// HEAD; an index with a single stamped head has no tip rows.
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 12;
+
+/// How many tips the index keeps reachability for. Each is a bitset of one bit per indexed commit
+/// (32 KiB at a quarter-million commits), so the bound is a few MiB; past it the tip synced least
+/// recently is dropped, and a worktree still at it is read by the live walk until its next sync.
+pub const MAX_TIPS: usize = 32;
 
 /// Memtable ceiling of each keyspace, in bytes. At fjall's 64 MiB default, eight keyspaces with up
 /// to four sealed memtables queued behind each would let one database (the daemon keeps one per
@@ -284,6 +303,18 @@ fn sweep_discarded(basemind_dir: &Path) {
             tracing::warn!(%error, path = %entry.path().display(), "could not delete discarded git history");
         }
     }
+}
+
+/// Bytes of the sync time at the head of a tip row's value.
+const TIP_STAMP_BYTES: usize = 8;
+
+/// The tips to drop so that `tips` plus the tip being written (`keep`, which is never dropped) stay
+/// within `cap`: the ones synced least recently.
+fn evicted_tips(mut tips: Vec<([u8; 20], u64)>, keep: &[u8; 20], cap: usize) -> Vec<[u8; 20]> {
+    tips.retain(|(head, _)| head != keep);
+    let excess = (tips.len() + 1).saturating_sub(cap);
+    tips.sort_by_key(|&(head, stamp)| (stamp, head));
+    tips.into_iter().take(excess).map(|(head, _)| head).collect()
 }
 
 /// Per-commit metadata stored in `gh_commit_by_ord`. File paths are interned to `path_id` (u32) so
@@ -483,6 +514,24 @@ impl GitHistoryIndex {
         self.db.indexed_head().map(|s| keys::sha_raw_to_hex(&s))
     }
 
+    /// Whether `head` (a 40-char hex sha) is an indexed tip the index answers for. False while a build
+    /// or append is in progress.
+    pub fn has_tip(&self, head: &str) -> bool {
+        keys::sha_hex_to_raw(head).is_some_and(|head20| self.db.reach_of(&head20).is_some())
+    }
+
+    /// The indexed tips, most recently synced first, as 40-char hex shas.
+    pub fn tips(&self) -> Vec<String> {
+        let mut tips = self.db.tips();
+        tips.sort_by_key(|&(head, stamp)| std::cmp::Reverse((stamp, head)));
+        tips.into_iter().map(|(head, _)| keys::sha_raw_to_hex(&head)).collect()
+    }
+
+    /// The reachability of the indexed tip `head`, as the builder extends it for a descendant.
+    pub(crate) fn reach_of(&self, head: &[u8; 20]) -> Option<reach::Reach> {
+        self.db.reach_of(head)
+    }
+
     /// Next free commit ordinal (also the count of indexed commits).
     pub fn next_ord(&self) -> u32 {
         self.db.meta_u32(keys::META_NEXT_ORD)
@@ -577,6 +626,29 @@ impl LocalDb {
             return None;
         }
         self.meta_sha(keys::META_LAST_HEAD)
+    }
+
+    /// The reachability of `head`, or `None` while a build or append is in progress or was cut off
+    /// and when `head` is not an indexed tip.
+    fn reach_of(&self, head: &[u8; 20]) -> Option<reach::Reach> {
+        if self.build_in_progress() {
+            return None;
+        }
+        let row = self.meta.get(keys::tip_key(head)).ok().flatten()?;
+        let (_, bits) = row.split_at_checked(TIP_STAMP_BYTES)?;
+        Some(reach::Reach::from_bytes(bits))
+    }
+
+    /// Every stored tip with the unix second it was last synced.
+    fn tips(&self) -> Vec<([u8; 20], u64)> {
+        self.meta
+            .prefix(keys::META_TIP_PREFIX)
+            .filter_map(|guard| {
+                let (key, value) = guard.into_inner().ok()?;
+                let stamp = value.get(..TIP_STAMP_BYTES)?;
+                Some((keys::parse_tip_key(&key)?, u64::from_be_bytes(stamp.try_into().ok()?)))
+            })
+            .collect()
     }
 
     /// A read error counts as in progress, so the index fails closed.
@@ -797,14 +869,15 @@ impl GitHistoryWriter {
         Ok(())
     }
 
-    /// Write the meta fingerprint + counters, commit everything and sync the journal. Call LAST:
-    /// `last_indexed_head` becoming visible is the commit point — a crash before this leaves the
+    /// Write the meta fingerprint + counters and the tip `head` with the commits it `reach`es, commit
+    /// everything and sync the journal. Call LAST: the tip becoming visible is the commit point — a crash before this leaves the
     /// index looking unbuilt, so the next revalidate triggers an idempotent full rebuild. Compacts
     /// nothing unless the write buffer or a small keyspace's tables have grown; a full rebuild
     /// compacts afterwards.
     pub fn finish_meta(
         mut self,
         head: &[u8; 20],
+        reach: &reach::Reach,
         root: &[u8; 20],
         next_ord: u32,
         next_path_id: u32,
@@ -817,6 +890,15 @@ impl GitHistoryWriter {
         meta.insert(&self.db.meta, keys::META_COMMIT_COUNT, commit_count.to_be_bytes());
         meta.insert(&self.db.meta, keys::META_ROOT_SHA, root.to_vec());
         meta.insert(&self.db.meta, keys::META_LAST_HEAD, head.to_vec());
+        let stamp = builder::now_unix().to_be_bytes();
+        meta.insert(
+            &self.db.meta,
+            keys::tip_key(head),
+            [stamp.as_slice(), reach.as_bytes()].concat(),
+        );
+        for stale in evicted_tips(self.db.tips(), head, MAX_TIPS) {
+            meta.remove(&self.db.meta, keys::tip_key(&stale));
+        }
         meta.remove(&self.db.meta, keys::META_BUILD_IN_PROGRESS);
         meta.remove(&self.db.meta, keys::META_FAILED_BUILD);
         meta.commit()?;
@@ -934,7 +1016,9 @@ mod tests {
         };
         writer.put_commit_meta(0, &meta).expect("commit row");
         writer.put_ord_for_sha(&sha20, 0).expect("sha row");
-        writer.finish_meta(&sha20, &sha20, 1, 0, 1).expect("stamp the head");
+        writer
+            .finish_meta(&sha20, &reach::Reach::from_ords([0]), &sha20, 1, 0, 1)
+            .expect("stamp the head");
         assert_eq!(index.last_indexed_head(), Some(sha20));
 
         index.clear().expect("clear");
@@ -960,7 +1044,7 @@ mod tests {
         index
             .writer()
             .expect("writer")
-            .finish_meta(&sha20, &sha20, 0, 0, 0)
+            .finish_meta(&sha20, &reach::Reach::default(), &sha20, 0, 0, 0)
             .expect("stamp a head");
         index.writer().expect("writer").begin().expect("mark an append");
         drop(index);
@@ -996,5 +1080,72 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().starts_with(DISCARD_PREFIX))
             .count();
         assert_eq!(leftovers, 0, "the wiped database was set aside and deleted");
+    }
+    #[test]
+    fn the_tips_over_the_cap_are_the_ones_synced_least_recently_and_never_the_one_being_written() {
+        let tips: Vec<([u8; 20], u64)> = (1u8..=4).map(|n| ([n; 20], u64::from(n) * 10)).collect();
+
+        assert_eq!(
+            evicted_tips(tips.clone(), &[9; 20], 5),
+            Vec::<[u8; 20]>::new(),
+            "room for one more"
+        );
+        assert_eq!(evicted_tips(tips.clone(), &[9; 20], 4), vec![[1; 20]]);
+        assert_eq!(evicted_tips(tips.clone(), &[9; 20], 2), vec![[1; 20], [2; 20], [3; 20]]);
+        assert_eq!(
+            evicted_tips(tips, &[1; 20], 4),
+            Vec::<[u8; 20]>::new(),
+            "the tip being rewritten is not counted twice, nor dropped"
+        );
+    }
+
+    #[test]
+    fn every_stamped_tip_keeps_its_own_reachability_and_the_oldest_beyond_the_cap_is_dropped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let index = GitHistoryIndex::open(dir.path()).expect("open");
+        let root = [0xeeu8; 20];
+        let stamp = |n: usize| {
+            let mut head = [0u8; 20];
+            head[..8].copy_from_slice(&(n as u64).to_be_bytes());
+            head
+        };
+        for n in 0..MAX_TIPS + 3 {
+            let head = stamp(n);
+            // Distinct stamps: the tip written first is the least recently synced.
+            index
+                .local()
+                .meta
+                .insert(
+                    keys::tip_key(&head),
+                    [
+                        (n as u64).to_be_bytes().as_slice(),
+                        reach::Reach::from_ords([n as u32]).as_bytes(),
+                    ]
+                    .concat(),
+                )
+                .expect("seed a tip");
+        }
+        let newest = stamp(MAX_TIPS + 3);
+        index
+            .writer()
+            .expect("writer")
+            .finish_meta(&newest, &reach::Reach::from_ords([5, 6]), &root, 7, 0, 7)
+            .expect("stamp a tip");
+
+        assert_eq!(index.tips().len(), MAX_TIPS, "the tips are capped");
+        assert!(index.has_tip(&keys::sha_raw_to_hex(&newest)));
+        assert!(
+            !index.has_tip(&keys::sha_raw_to_hex(&stamp(0))),
+            "the oldest is dropped"
+        );
+        assert!(!index.has_tip(&keys::sha_raw_to_hex(&stamp(3))), "and the next oldest");
+        assert!(index.has_tip(&keys::sha_raw_to_hex(&stamp(4))));
+        assert_eq!(index.reach_of(&newest), Some(reach::Reach::from_ords([5, 6])));
+        assert_eq!(index.reach_of(&stamp(10)), Some(reach::Reach::from_ords([10])));
+        assert_eq!(
+            index.tips()[0],
+            keys::sha_raw_to_hex(&newest),
+            "most recently synced first"
+        );
     }
 }

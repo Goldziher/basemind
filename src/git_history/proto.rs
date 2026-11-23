@@ -17,6 +17,10 @@ use crate::git::CommitInfo;
 use crate::path::RelPath;
 
 /// One git-history operation, forwarded from a front-end to the daemon.
+///
+/// Every read op takes the `head` (40-char hex sha) it answers for, one of the repo's indexed tips:
+/// the index holds the commits of every worktree HEAD, and a read sees those the head reaches.
+/// `None` is the tip synced most recently; a head that is no indexed tip answers with no commits.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum GitHistoryOp {
@@ -31,17 +35,31 @@ pub enum GitHistoryOp {
         skip: usize,
         take: usize,
         include_files: bool,
+        #[serde(default)]
+        head: Option<String>,
     },
     /// Commits touching one path, newest-first — backs `commits_touching` / `blame`-adjacent walks.
-    CommitsTouching { path: RelPath, skip: usize, take: usize },
+    CommitsTouching {
+        path: RelPath,
+        skip: usize,
+        take: usize,
+        #[serde(default)]
+        head: Option<String>,
+    },
     /// The newest `window` commits with files resolved — backs `hot_files` / `find_commits_by_path`.
-    WindowCommits { window: usize },
+    WindowCommits {
+        window: usize,
+        #[serde(default)]
+        head: Option<String>,
+    },
     /// Full-text search over indexed commits — backs `search_git_history`.
     SearchCommits {
         query: String,
         scope: FtsScope,
         skip: usize,
         take: usize,
+        #[serde(default)]
+        head: Option<String>,
     },
 }
 
@@ -63,10 +81,10 @@ pub enum GitHistoryReply {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", content = "data", rename_all = "snake_case")]
 pub enum SyncOutcome {
-    /// HEAD unchanged since the last sync — nothing to do. What every session AFTER the one that
+    /// HEAD was already an indexed tip — nothing to do. What every session AFTER the one that
     /// won the build race sees, and the proof that the daemon did not double-build.
     Fresh,
-    /// Appended `added` commits reachable from the new HEAD.
+    /// Made HEAD an indexed tip by appending `added` commits reachable from it.
     Incremental { added: u32 },
     /// Wiped and rebuilt from scratch, indexing `commits` commits.
     FullRebuild { reason: String, commits: u32 },
