@@ -162,7 +162,8 @@ fn binary_ext_set() -> &'static AHashSet<&'static str> {
 
 /// True when a file must be skipped by the document tier because it is unsafe to parse, a binary
 /// blob, an archive / compressed container, on the user-configured `extension_denylist`, or a raster
-/// image in a build without the OCR tier (it would be indexed with metadata and no text).
+/// image unless `[documents.ocr] enabled` is on in a build with the OCR tier (it would be indexed
+/// with metadata and no text).
 fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfig) -> bool {
     if let Some(ext) = abs.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_ascii_lowercase();
@@ -188,7 +189,7 @@ fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfi
     if ARCHIVE_MIME.iter().any(|entry| matches_mime(entry, mime_type)) {
         return true;
     }
-    !crate::extract::doc_tiers::ocr_compiled() && crate::extract::doc_tiers::is_ocr_only_mime(mime_type)
+    !(cfg.ocr.enabled && crate::extract::doc_tiers::ocr_compiled()) && crate::extract::doc_tiers::is_ocr_only_mime(mime_type)
 }
 
 /// Quick filter run before any xberg work happens. Returns the MIME type when the file should be

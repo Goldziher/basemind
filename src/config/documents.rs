@@ -8,6 +8,110 @@ use serde::{Deserialize, Serialize};
 
 use super::DeprecatedSection;
 
+/// Globs naming test, fixture, mock, story, snapshot and end-to-end paths. The single source for
+/// two uses that never drift: `[scan] test_globs` names the test paths (they stay indexed in the
+/// code map for symbols, outlines, refs and grep), and the document tier's default `exclude`
+/// drops them from RAG (document indexing and embedding).
+///
+/// Patterns are anchored on a directory or a suffix. `**/test_*.*` can also hit a production
+/// module such as `test_runner.py`; that is accepted because a user can
+/// re-include with `!pattern` in `[documents] exclude`.
+pub const TEST_PATH_GLOBS: &[&str] = &[
+    "**/tests/**",
+    "**/test/**",
+    "**/__tests__/**",
+    "**/e2e/**",
+    "**/mocks/**",
+    "**/fixtures/**",
+    "**/__snapshots__/**",
+    "**/test_data/**",
+    "**/testdata/**",
+    "**/*_test.*",
+    "**/test_*.*",
+    "**/*.spec.*",
+    "**/*.test.*",
+    "**/conftest.py",
+    "**/*.bats",
+    "**/*.snap",
+    "**/*.stories.*",
+    "**/*.mock.*",
+    "**/*.mocks.*",
+    "**/__mocks__/**",
+    "**/mock/**",
+    "**/testing/**",
+    "**/playwright/**",
+    "**/cypress/**",
+    "**/stories/**",
+    "**/*Test.java",
+    "**/*Tests.java",
+    "**/*Test.kt",
+    "**/*_spec.rb",
+    "**/*_tests.rs",
+    "**/test_utils/**",
+    "**/testutils/**",
+    "**/tests.py",
+    "**/*.e2e.*",
+    "**/*.cy.*",
+];
+
+/// Agent instruction and configuration files: they describe how agents should work, not the
+/// project, so they stay out of document search.
+pub const AGENT_CONFIG_GLOBS: &[&str] = &[
+    "**/CLAUDE.md",
+    "**/CLAUDE.local.md",
+    "**/AGENTS.md",
+    "**/AGENTS.local.md",
+    "**/GEMINI.md",
+    "**/.claude/**",
+    "**/.agents/**",
+    "**/.cursor/**",
+    "**/.windsurf/**",
+    "**/.opencode/**",
+    "**/.ai-rulez/**",
+    ".github/copilot-instructions.md",
+];
+
+/// Vendored, generated and build output plus minified and map files.
+pub const VENDORED_BUILD_GLOBS: &[&str] = &[
+    "**/node_modules/**",
+    "**/vendor/**",
+    "**/third_party/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/target/**",
+    "**/generated/**",
+    "**/__generated__/**",
+    "**/*.min.*",
+    "**/*.map",
+];
+
+/// Lockfiles and vector images: bulk with no prose.
+pub const LOCKFILE_GLOBS: &[&str] = &[
+    "*.svg",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "Cargo.lock",
+    "poetry.lock",
+    "*.lock",
+];
+
+/// The default `[documents] exclude` list: lockfiles, tests, agent config and vendored or build
+/// output. `basemind init` writes it into the generated `[documents]` block so it is visible and
+/// editable; a user entry `!pattern` re-includes a path the list drops.
+pub fn default_document_exclude() -> Vec<String> {
+    [
+        LOCKFILE_GLOBS,
+        TEST_PATH_GLOBS,
+        AGENT_CONFIG_GLOBS,
+        VENDORED_BUILD_GLOBS,
+    ]
+    .into_iter()
+    .flatten()
+    .map(|glob| (*glob).to_string())
+    .collect()
+}
+
 /// Top-level `[documents]` table. Each sub-config has `#[serde(default)]` so
 /// adding a new tier never breaks older TOML files.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -28,11 +132,17 @@ pub struct DocumentsConfig {
     #[schemars(inner(length(min = 1)))]
     pub include: Vec<String>,
     /// Deny-list of globs applied to document indexing itself (not just embedding): matching files
-    /// are not extracted, chunked or searchable as documents. Same syntax as `include`. The default
-    /// drops low-value bulk: `*.svg`, lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`,
-    /// `Cargo.lock`, `poetry.lock`, `*.lock`) and test-data directories (`test_data`, `testdata`,
-    /// `fixtures`, `__snapshots__`). Setting the key replaces the default list; `exclude = []`
-    /// indexes all of them, and a custom list must repeat any default entry it still wants.
+    /// are not extracted, chunked or searchable as documents. Same syntax as `include`, and the
+    /// list is ordered like a `.gitignore`: a later `!pattern` entry re-includes what an earlier
+    /// entry dropped (`["**/tests/**", "!tests/docs/**"]`). The default drops low-value bulk:
+    /// `*.svg`, lockfiles, test, fixture, mock, snapshot and e2e paths, agent instruction files and
+    /// directories (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.cursor/`, ...), and vendored or build
+    /// output (`node_modules`, `vendor`, `dist`, `build`, `*.min.*`, `*.map`). Setting the key
+    /// replaces the default list; `exclude = []` indexes all of them, and a custom list must repeat
+    /// any default entry it still wants (or append `!` entries after `basemind init` wrote the
+    /// default list out). `include`, `embed_include` and `embed_exclude` accept the same `!` form.
+    /// Per-extension rules need no extra syntax: `exclude = ["**/*.html", "!docs/**/*.html"]` drops
+    /// HTML everywhere except under `docs/`.
     #[serde(default = "DocumentsConfig::default_exclude")]
     #[schemars(inner(length(min = 1)))]
     pub exclude: Vec<String>,
@@ -201,21 +311,7 @@ impl DocumentsConfig {
         true
     }
     fn default_exclude() -> Vec<String> {
-        [
-            "*.svg",
-            "pnpm-lock.yaml",
-            "package-lock.json",
-            "yarn.lock",
-            "Cargo.lock",
-            "poetry.lock",
-            "*.lock",
-            "**/test_data/**",
-            "**/testdata/**",
-            "**/fixtures/**",
-            "**/__snapshots__/**",
-        ]
-        .map(String::from)
-        .to_vec()
+        default_document_exclude()
     }
     fn default_embed_exclude() -> Vec<String> {
         [
@@ -598,6 +694,12 @@ pub enum SummarizationStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OcrConfig {
+    /// Run OCR on raster images. Off by default: screenshots and diagrams add embedding time and
+    /// rarely answer a question. Takes effect only in a binary built with the `documents-ocr`
+    /// feature. It does not gate scanned PDFs: a build with the OCR tier compiled in always
+    /// OCRs them.
+    #[serde(default)]
+    pub enabled: bool,
     /// Reserved: parsed but currently has no effect (a load-time warning is logged when set to a
     /// non-default value); OCR runs with xberg's defaults.
     #[serde(default)]
@@ -617,6 +719,7 @@ impl OcrConfig {
 impl Default for OcrConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             backend: OcrBackend::default(),
             languages: Self::default_languages(),
         }

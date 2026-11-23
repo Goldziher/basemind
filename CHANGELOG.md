@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `[documents]` lists (`include`, `exclude`, `embed_include`, `embed_exclude`) accept `!pattern` re-includes with gitignore semantics: the last matching entry decides (#458).
+- `[scan] test_globs`, the one list of test paths (`tests/`, `__tests__/`, `*_test.*`, `*.spec.*`, `conftest.py`, `e2e/`, `mocks/`, `fixtures/`, `*.stories.*`, `*.snap`, `*.bats`, `testing/`, `playwright/`, `*Test.java`, `*_spec.rb`, ...) that stays in the code map, and that the document tier's default exclude reuses to keep them out of RAG (#458).
+- `basemind init` detects the document scope: it counts document-like files per extension, writes `[documents] include` and `exclude` as plain glob lists, and asks keep, exclude or skip for scratch-like directories (`--yes` excludes only the large ones) (#458).
+- `[documents.ocr] enabled`, off by default (#458).
+
+### Changed
+
+- The default `[documents] exclude` also drops test, fixture, mock, snapshot and e2e paths, agent instruction files and directories (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.cursor/`, ...), and vendored or build output (`node_modules`, `vendor`, `dist`, `build`, `*.min.*`, `*.map`) (#458).
+- Images are no longer sent to OCR unless `[documents.ocr] enabled = true` (#458).
+- A malformed HTML file is no longer re-read as plain text, so markup is never chunked or embedded (#458).
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

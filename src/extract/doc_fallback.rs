@@ -38,13 +38,9 @@ pub fn is_plain_text_format(mime: &str) -> bool {
 /// timeouts, unsupported formats) is a genuine failure.
 pub fn should_retry_as_text(mime: Option<&str>, error: &XbergError) -> bool {
     let Some(mime) = mime else { return false };
-    if mime
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .eq_ignore_ascii_case("text/plain")
-    {
+    let essence = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    // HTML is never re-read as text: that would chunk and embed the markup, tags and all.
+    if matches!(essence.as_str(), "text/plain" | "text/html" | "application/xhtml+xml") {
         return false;
     }
     is_plain_text_format(mime) && matches!(error, XbergError::Parsing { .. } | XbergError::Security { .. })
@@ -93,6 +89,12 @@ mod tests {
         ));
         assert!(!should_retry_as_text(Some("application/pdf"), &parsing()));
         assert!(!should_retry_as_text(Some("text/plain"), &parsing()));
+        assert!(
+            !should_retry_as_text(Some("text/html"), &parsing()),
+            "markup is never embedded as text"
+        );
+        assert!(!should_retry_as_text(Some("Text/HTML; charset=utf-8"), &parsing()));
+        assert!(!should_retry_as_text(Some("application/xhtml+xml"), &parsing()));
         assert!(!should_retry_as_text(None, &parsing()));
         let io = XbergError::Io(std::io::Error::other("disk"));
         assert!(!should_retry_as_text(Some("text/csv"), &io));
