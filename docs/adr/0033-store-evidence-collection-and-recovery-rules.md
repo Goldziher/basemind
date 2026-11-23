@@ -105,7 +105,8 @@ named here stands.
 ## Consequences
 
 - A view of a newer layout, or one whose map's version is unreadable, now costs disk until a writer
-  of its own version or a cache clear removes it; an unreadable map set aside is never collected.
+  of its own version or a cache clear removes it. An unreadable map set aside is kept while it is one
+  of the newest two or under a week old; older ones are collected when another map is set aside.
 - A one-shot incremental pass on Linux pays one `syncfs` at its end.
 - A deterministic git-history failure leaves a repository on the live walk for up to an hour per
   HEAD.

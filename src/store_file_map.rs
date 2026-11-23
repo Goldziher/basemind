@@ -90,7 +90,7 @@ fn reap_set_aside_maps(view_dir: &Path, now: u64, keep: usize, hold: u64) {
             Some((secs, entry.path()))
         })
         .collect();
-    set_aside.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    set_aside.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
     for (secs, path) in set_aside.into_iter().skip(keep) {
         if now.saturating_sub(secs) < hold {
             continue;
