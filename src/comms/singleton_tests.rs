@@ -107,6 +107,72 @@ async fn no_daemon_is_spawned_when_the_endpoint_could_not_be_asked() {
     assert!(answering.is_ok(), "{answering:?}");
 }
 
+/// A spawn the binary guard refused is reported at once and as itself. Nothing is polled for: no
+/// daemon is coming, and waiting out the readiness window is the stall this guards against.
+#[tokio::test]
+async fn a_refused_daemon_binary_fails_at_once_with_the_refusal() {
+    let comms = tempfile::tempdir().expect("tempdir");
+    let paths = CommsPaths {
+        comms_dir: comms.path().to_path_buf(),
+        socket_path: comms.path().join("endpoint"),
+    };
+    let reason = "it is not a `basemind` binary. Set BASEMIND_DAEMON_BINARY to a real executable";
+    let probes = std::cell::Cell::new(0_u32);
+    let started = std::time::Instant::now();
+    let outcome = ensure_daemon_probing(
+        &paths,
+        SpawnPolicy::Explicit,
+        |_| {
+            probes.set(probes.get() + 1);
+            Liveness::Silent
+        },
+        |_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                spawn::BinaryRefused::new(reason),
+            ))
+        },
+    )
+    .await;
+
+    assert!(
+        matches!(&outcome, Err(SingletonError::DaemonBinaryRefused(message)) if message == reason),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        probes.get(),
+        1,
+        "the endpoint is probed once and never polled after the refusal"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the refusal waited {:?}, far inside the {SPAWN_READY_TIMEOUT:?} readiness window",
+        started.elapsed()
+    );
+}
+
+/// Any other spawn failure keeps its path and cause: only the binary guard is its own error.
+#[tokio::test]
+async fn an_ordinary_spawn_failure_stays_an_io_error() {
+    let comms = tempfile::tempdir().expect("tempdir");
+    let paths = CommsPaths {
+        comms_dir: comms.path().to_path_buf(),
+        socket_path: comms.path().join("endpoint"),
+    };
+    let outcome = ensure_daemon_probing(
+        &paths,
+        SpawnPolicy::Explicit,
+        |_| Liveness::Silent,
+        |_| Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "exec failed")),
+    )
+    .await;
+
+    assert!(
+        matches!(&outcome, Err(SingletonError::Io { path, .. }) if *path == paths.socket_path),
+        "{outcome:?}"
+    );
+}
+
 /// Runs on every platform: the name is a pure function of the user and the directory path.
 #[test]
 fn the_pipe_name_is_stable_and_distinct_per_generation_directory() {

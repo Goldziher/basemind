@@ -38,6 +38,7 @@ pub mod init;
 pub mod init_capability_prompt;
 pub mod init_gitignore;
 pub mod init_rules;
+pub mod init_scope;
 pub mod init_settings;
 pub mod init_verb;
 pub mod init_write;

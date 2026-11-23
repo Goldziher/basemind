@@ -18,7 +18,8 @@ use crate::engine::error::EngineError;
 use crate::engine::filters::{Filters, Tally, grep_selects_no_file, language_of_doc, parse_path, selects_no_file};
 use crate::engine::scope::ChangeScope;
 use crate::engine::types::files::{
-    FileHit, FileList, FilesResponse, FindFilesParams, FindFilesToolParams, ListFilesParams, SizedFile,
+    FileHit, FileList, FilesResponse, FindFilesParams, FindFilesToolParams, IndexedFilter, ListFilesParams, ListedFile,
+    SizedFile,
 };
 use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
@@ -68,6 +69,7 @@ impl Workspace {
                     limit: p.limit,
                     max_tokens: budget(p.max_tokens),
                     cursor: p.cursor,
+                    indexed: p.indexed,
                 },
                 scope,
             ),
@@ -79,6 +81,7 @@ impl Workspace {
                     limit: p.limit,
                     max_tokens: budget(p.max_tokens),
                     cursor: p.cursor,
+                    indexed: p.indexed,
                 },
                 scope,
             ),
@@ -113,7 +116,7 @@ pub(crate) struct TrackedCache {
     unindexed: Arc<Vec<RelPath>>,
 }
 
-/// Files git tracks that neither the code map nor the document tier holds (images, fonts, data the
+/// Files git tracks that neither the code map, the document tier nor the list-only set holds (images, fonts, data the
 /// scan does not parse, and files the scan was told to leave out), in the index's path order, with a
 /// stamp of the git index they were read from. Empty outside a git repository, and when the
 /// workspace is a directory inside one: git's paths are then not relative to the workspace root.
@@ -139,7 +142,7 @@ fn unindexed_tracked(ws: &Workspace, cache: &MapCache, generation: u32) -> (Arc<
         .tracked
         .files
         .iter()
-        .filter(|path| !cache.contains(path) && !cache.contains_doc(path))
+        .filter(|path| !cache.contains(path) && !cache.contains_doc(path) && cache.listed_entry(path).is_none())
         .cloned()
         .collect();
     held.generation = generation;
@@ -199,15 +202,30 @@ fn run_list_files(
     // differs per process; a cursor is an offset into this listing, so the order must be stable.
     let mut code_sorted: Vec<_> = store.index.files.iter().collect();
     code_sorted.sort_unstable_by(|a, b| a.0.cmp(b.0));
-    let code = code_sorted.into_iter().map(|(p, e)| (p, Some(e.language.clone())));
+    let (want_indexed, want_listed) = (
+        IndexedFilter::lists_indexed(params.indexed),
+        IndexedFilter::lists_listed(params.indexed),
+    );
+    let code = code_sorted
+        .into_iter()
+        .filter(|_| want_indexed)
+        .map(|(p, e)| (p, Some(e.language.clone()), None));
     let doc_paths = std::sync::Arc::clone(&cache.doc_paths);
-    let docs = doc_paths.iter().map(|p| (p, Some(language_of_doc(p))));
-    let others = tracked.iter().map(|p| (p, None));
+    let docs = doc_paths
+        .iter()
+        .filter(|_| want_indexed)
+        .map(|p| (p, Some(language_of_doc(p)), None));
+    let others = tracked.iter().filter(|_| want_indexed).map(|p| (p, None, None));
+    let listed = cache
+        .listed
+        .iter()
+        .filter(|_| want_listed)
+        .map(|(p, entry)| (p, None, Some(entry)));
 
     let mut files: Vec<FileHit> = Vec::with_capacity(limit.min(256));
     let mut total: usize = 0;
     let mut seen: usize = 0;
-    for (p, language) in code.chain(docs).chain(others) {
+    for (p, language, listed_entry) in code.chain(docs).chain(others).chain(listed) {
         let path_ok = path_filter.is_none_or(|filter| filter.matches(p.as_bytes()));
         let lang_ok = lang_filter.is_none_or(|l| language.as_deref() == Some(l));
         if !(path_ok && lang_ok && admits(scope, p)) {
@@ -220,7 +238,7 @@ fn run_list_files(
         seen += 1;
         total += 1;
         if files.len() < limit {
-            files.push(FileHit::Path(p.clone()));
+            files.push(hit_for(p, listed_entry));
         }
     }
     if total == 0 && skip == 0 {
@@ -255,6 +273,14 @@ fn run_list_files(
         generation,
         params.max_tokens,
     )
+}
+
+/// The row for `path`: a list-only file carries its kind and size, any other is its path.
+fn hit_for(path: &RelPath, listed: Option<&crate::config::list_only::ListedEntry>) -> FileHit {
+    match listed {
+        Some(entry) => FileHit::Listed(ListedFile::new(path.clone(), entry)),
+        None => FileHit::Path(path.clone()),
+    }
 }
 
 /// The page of `files` (`total` of them from `skip` on), held to `max_tokens`; `sized` for a
@@ -330,12 +356,25 @@ fn run_find_files(
     // view — so this whole scan reads no outline and touches no blob. The document tier (markdown,
     // JSON, YAML, PDFs ...) is not code-mapped, and the tracked files neither holds have no
     // language, but a file finder must cover them too.
-    let code = cache.file_metas().map(|(p, meta)| (p, Some(meta.language.to_string())));
-    let docs = cache.doc_paths.iter().map(|p| (p, Some(language_of_doc(p))));
-    let others = tracked.iter().map(|p| (p, None));
+    let (want_indexed, want_listed) = (
+        IndexedFilter::lists_indexed(params.indexed),
+        IndexedFilter::lists_listed(params.indexed),
+    );
+    let code = cache
+        .file_metas()
+        .filter(|_| want_indexed)
+        .map(|(p, meta)| (p, Some(meta.language.to_string())));
+    let docs = cache
+        .doc_paths
+        .iter()
+        .filter(|_| want_indexed)
+        .map(|p| (p, Some(language_of_doc(p))));
+    let others = tracked.iter().filter(|_| want_indexed).map(|p| (p, None));
+    let listed = cache.listed.iter().filter(|_| want_listed).map(|(p, _)| (p, None));
     let candidates: Vec<&RelPath> = code
         .chain(docs)
         .chain(others)
+        .chain(listed)
         .filter(|(p, language)| {
             lang_filter.is_none_or(|l| language.as_deref() == Some(l))
                 && path_filter.is_none_or(|filter| filter.matches(p.as_bytes()))
@@ -377,7 +416,7 @@ fn run_find_files(
         .into_iter()
         .skip(skip)
         .take(limit)
-        .map(|(_, path)| FileHit::Path(path.clone()))
+        .map(|(_, path)| hit_for(path, cache.listed_entry(path)))
         .collect();
     respond(
         ws,

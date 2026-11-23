@@ -438,6 +438,9 @@ fn spawn_serve_watcher_thread(
             tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
             let health = &writer.ws.watch_health;
             let result = crate::watcher::watch_paths(&root, &config, health, shutdown_rx, |paths, kind| {
+                if let Some(repo) = writer.ws.repo.as_ref() {
+                    repo.invalidate_status();
+                }
                 if stopping.load(std::sync::atomic::Ordering::Acquire) {
                     tracing::debug!("serve watcher: stopping; batch not scanned");
                     return;

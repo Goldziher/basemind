@@ -77,6 +77,9 @@ pub(super) fn retrieve(
     let (seeds, report): (Vec<CodeSearchHit>, LaneReport) = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
         hybrid_hits(ws, &query, depth, cancelled)?
     } else if mode.eq_ignore_ascii_case("semantic") {
+        if !ws.config.code_search.embed {
+            return Err(embeddings_off_refusal());
+        }
         (
             semantic_hits(ws, &query, depth, SEMANTIC_MEANWHILE)?,
             LaneReport::ran_only("vector"),
@@ -172,6 +175,16 @@ fn absorb(kept: &mut CodeSearchHit, hit: CodeSearchHit) {
 
 /// Why a hybrid search ran without its vector lane when `[code_search] embed` is off.
 const EMBEDDINGS_OFF: &str = "embeddings are off: set `[code_search] embed = true` and run `index_rescan`";
+
+/// The refusal of a semantic-only search while `[code_search] embed` is off: there is no vector lane
+/// to fall back on, and an empty list would claim it was searched.
+fn embeddings_off_refusal() -> EngineError {
+    EngineError::unavailable(format!(
+        "`code_search` lane \"semantic\": {EMBEDDINGS_OFF}. No search ran; this is not an empty result set. \
+         {}",
+        SEMANTIC_MEANWHILE.unwrap_or_default()
+    ))
+}
 
 /// Whether `ranking` may be kept for the pages and repeats that follow: a degraded or empty answer
 /// is the one most likely to differ a moment later. A vector lane the configuration turned off is
