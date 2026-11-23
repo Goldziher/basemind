@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The working-tree status is cached per worktree and served until the index, `HEAD` or a watcher batch changes it (or five seconds pass), so repeated `changed`-scoped and `git_diff` status calls on a large checkout run one status (#284).
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33
