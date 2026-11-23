@@ -105,7 +105,10 @@ jobs:
         os: [ubuntu-latest, macos-26, windows-latest]
         # ~keep `comms documents` is `documents` without `documents-ocr` / `documents-ner`: the only
         # ~keep leg that compiles and runs the tests gated on a missing tier.
-        features: ["", "full", "comms documents", "comms"]
+        # ~keep `comms documents code-intel memory` is the nightly Windows leg: the Windows archive
+        # ~keep ships `full`, but the only per-push Windows leg is `comms`, so this one runs the
+        # ~keep documents, code-intel, memory and comms tests there once a day (and on a manual run).
+        features: ["", "full", "comms documents", "comms", "comms documents code-intel memory"]
         exclude:
           - { os: ubuntu-latest, features: "comms" }
           - { os: macos-26, features: "comms documents" }
@@ -113,6 +116,9 @@ jobs:
           - { os: windows-latest, features: "" }
           - { os: windows-latest, features: "full" }
           - { os: windows-latest, features: "comms documents" }
+          - { os: ubuntu-latest, features: "comms documents code-intel memory" }
+          - { os: macos-26, features: "comms documents code-intel memory" }
+          - features: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && 'comms documents code-intel memory' || 'none' }}
           - os: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'macos-26' || 'none' }}
           - os: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'windows-latest' || 'none' }}
           - features: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'full' || 'none' }}
@@ -160,7 +166,7 @@ jobs:
           install-args: github:nextest-rs/nextest python
 
       - name: Install system dependencies
-        if: matrix.features == 'full' || matrix.features == 'comms documents'
+        if: matrix.features == 'full' || matrix.features == 'comms documents' || matrix.features == 'comms documents code-intel memory'
         uses: ./.github/actions/install-system-deps
 
       - name: Install protoc (Linux, default-features)
@@ -181,7 +187,7 @@ jobs:
         with:
           key: ${{ matrix.os }}-${{ matrix.features }}
           cache-on-failure: true
-          cache-directories: ${{ (matrix.features == 'full' || matrix.features == 'comms documents') && (runner.os == 'macOS' && '~/Library/Caches/ort.pyke.io' || '~/.cache/ort.pyke.io') || '' }}
+          cache-directories: ${{ (matrix.features == 'full' || matrix.features == 'comms documents' || matrix.features == 'comms documents code-intel memory') && (runner.os == 'macOS' && '~/Library/Caches/ort.pyke.io' || '~/.cache/ort.pyke.io') || '' }}
 
       # ~keep Grammars are downloaded at test time; a cache keeps a slow or failed download from
       # ~keep deciding which tests can run. The language-pack version is in Cargo.lock.
