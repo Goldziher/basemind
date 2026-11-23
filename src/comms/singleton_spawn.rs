@@ -15,6 +15,34 @@ use super::CommsPaths;
 /// executable is not itself `basemind` — a test harness, or an embedding host.
 pub const DAEMON_BINARY_ENV: &str = "BASEMIND_DAEMON_BINARY";
 
+/// The refusal to spawn a daemon from an executable that is not a `basemind` binary. Carried inside
+/// the [`std::io::Error`] the spawn returns so a caller can tell it from a spawn that failed for
+/// another reason: it is the same on every retry, so retrying it only stalls the caller.
+#[derive(Debug)]
+pub(super) struct BinaryRefused(String);
+
+impl BinaryRefused {
+    pub(super) fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+impl std::fmt::Display for BinaryRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for BinaryRefused {}
+
+/// The refusal message of [`BinaryRefused`] carried by `error`, when it is one.
+pub(super) fn binary_refusal(error: &std::io::Error) -> Option<String> {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<BinaryRefused>())
+        .map(|refused| refused.0.clone())
+}
+
 /// Make the resolved binary path independent of the working directory, because
 /// [`spawn_detached_daemon`] sets one. A relative path with a directory component (`target/debug/
 /// basemind`, the shape [`DAEMON_BINARY_ENV`] most often takes in a test) is resolved by the child
@@ -70,12 +98,12 @@ fn daemon_binary_for(exe: &Path) -> std::io::Result<PathBuf> {
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
-        format!(
+        BinaryRefused::new(format!(
             "refusing to spawn a comms daemon by re-exec'ing {}: it is not a `basemind` binary. \
              Re-exec'ing a test harness makes it re-run its own suite and spawn again, without \
              bound. Set {DAEMON_BINARY_ENV} to a real `basemind` executable to spawn one from here.",
             exe.display()
-        ),
+        )),
     ))
 }
 
@@ -354,6 +382,11 @@ mod tests {
         let error = daemon_binary_for(harness).expect_err("a test harness must never be re-exec'd");
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(
+            binary_refusal(&error),
+            Some(error.to_string()),
+            "the refusal is recognisable"
+        );
         let message = error.to_string();
         assert!(
             message.contains("not a `basemind` binary") && message.contains(DAEMON_BINARY_ENV),

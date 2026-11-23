@@ -26,6 +26,23 @@ pub(super) fn kind_structured(kind: ErrorKind) -> Value {
     json!({ ERROR_KEY: kind.code(), RETRYABLE_KEY: kind.retryable() })
 }
 
+/// `result` as an MCP client receives it: a successful answer's payload once, in its text block.
+///
+/// The verb tools build their answer as JSON, and in-process callers (the CLI, resources) read it as
+/// `structured_content`. On the wire the same JSON would travel a second time next to the text a
+/// model reads, doubling every response; no tool declares an `outputSchema`, so MCP does not ask for
+/// it. A refusal keeps its small `{error, retryable}` `structuredContent`.
+pub(super) fn single_payload(mut result: CallToolResult) -> CallToolResult {
+    let has_text = result
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Text(_)));
+    if result.is_error != Some(true) && has_text {
+        result.structured_content = None;
+    }
+    result
+}
+
 /// Redact against the repository `root`, this process's data home and the user's home directory.
 fn redaction_for(root: &std::path::Path) -> Redaction {
     let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());

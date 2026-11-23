@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crate::config::list_only::ListedEntry;
 use crate::engine::l1_cache;
 use crate::engine::paged_map::PagedSet;
 use crate::extract::FileMapL1;
@@ -29,6 +30,23 @@ pub(crate) struct MapCache {
     /// files resolve against this set instead of [`Self::files`]. Projected straight from the index
     /// (no blob or LanceDB read) by every build, and patched from the paths of a delta.
     pub(crate) doc_paths: Arc<PagedSet<RelPath>>,
+    /// Every list-only file (`[scan] list_only`) with its stat data, sorted by path. Known to
+    /// exist, never read: `find_files` lists them and `index_status` counts them, no search tool
+    /// reads them. Projected from the index by every build; a delta keeps the previous set when the
+    /// index's is the same.
+    pub(crate) listed: Arc<Vec<(RelPath, ListedEntry)>>,
+}
+
+/// The sorted list-only files of `store`'s index.
+fn listed_of(store: &Store) -> Arc<Vec<(RelPath, ListedEntry)>> {
+    let mut listed: Vec<(RelPath, ListedEntry)> = store
+        .index
+        .listed
+        .iter()
+        .map(|(path, entry)| (path.clone(), *entry))
+        .collect();
+    listed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    Arc::new(listed)
 }
 
 /// The sorted document-tier paths of `store`'s index.
@@ -51,6 +69,7 @@ impl MapCache {
             terms: Default::default(),
             routes: Default::default(),
             doc_paths: doc_paths_of(store),
+            listed: listed_of(store),
         }
     }
 
@@ -67,6 +86,7 @@ impl MapCache {
             terms: Default::default(),
             routes: Default::default(),
             doc_paths: Default::default(),
+            listed: Default::default(),
         }
     }
 
@@ -97,6 +117,7 @@ impl MapCache {
             terms: Default::default(),
             routes: Default::default(),
             doc_paths: Default::default(),
+            listed: Default::default(),
         }
     }
 
@@ -254,6 +275,7 @@ impl MapCache {
             terms: Default::default(),
             routes: Default::default(),
             doc_paths: doc_paths.unwrap_or_else(|| self.doc_paths_patched(store, updated, removed)),
+            listed: self.listed_refreshed(store),
         };
         self.l1.forget_superseded(superseded, &next.files);
         if let Some(terms) = self.terms.get() {
@@ -262,6 +284,25 @@ impl MapCache {
                 .set(Arc::new(terms.patched(updated, removed, |p| next.get(p))));
         }
         next
+    }
+
+    /// The list-only files of `store`: this map's set when it is the same, so a scan that changed
+    /// none keeps the allocation.
+    fn listed_refreshed(&self, store: &Store) -> Arc<Vec<(RelPath, ListedEntry)>> {
+        let fresh = listed_of(store);
+        if fresh == self.listed {
+            Arc::clone(&self.listed)
+        } else {
+            fresh
+        }
+    }
+
+    /// The stat data of `path` when it is a list-only file.
+    pub(crate) fn listed_entry(&self, path: &RelPath) -> Option<&ListedEntry> {
+        self.listed
+            .binary_search_by(|(listed, _)| listed.cmp(path))
+            .ok()
+            .map(|at| &self.listed[at].1)
     }
 
     /// The document paths of `store`, patched from this map's for the paths of a delta: each one is
@@ -310,7 +351,8 @@ impl MapCache {
         }
         let (updated, removed) = self.files.diff(store);
         let doc_paths = doc_paths_of(store);
-        let unchanged = removed.is_empty() && doc_paths == self.doc_paths && updated.is_empty();
+        let unchanged =
+            removed.is_empty() && doc_paths == self.doc_paths && *listed_of(store) == *self.listed && updated.is_empty();
         if unchanged {
             return None;
         }

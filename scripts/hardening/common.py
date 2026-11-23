@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
+import wire_decode  # sibling module; every entry script puts this directory on sys.path first
+
 SESSION_ENV = "BASEMIND_HARDENING_SESSION"
 IS_MAC = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
@@ -886,8 +888,8 @@ class ToolResult:
         body = result.get("structuredContent")
         if body is None:
             try:
-                body = json.loads(text)
-            except (json.JSONDecodeError, ValueError):
+                body = wire_decode.decode(text)
+            except wire_decode.WireError:
                 body = None
         return cls(bool(result.get("isError")), text, body, secs)
 

@@ -80,7 +80,9 @@ impl ReconnectError for anyhow::Error {
         }
         match self.chain().find_map(|cause| cause.downcast_ref::<SingletonError>()) {
             // Nothing a retry does changes the installed version, the path or the platform.
-            Some(SingletonError::NewerDaemon { .. } | SingletonError::NoDataDir) => ReconnectFailure::Fatal,
+            Some(
+                SingletonError::NewerDaemon { .. } | SingletonError::NoDataDir | SingletonError::DaemonBinaryRefused(_),
+            ) => ReconnectFailure::Fatal,
             #[cfg(unix)]
             Some(SingletonError::SocketPathTooLong { .. }) => ReconnectFailure::Fatal,
             // These clear when a daemon stops, exits or is started by whoever owns that.

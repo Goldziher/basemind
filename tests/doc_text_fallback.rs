@@ -96,3 +96,27 @@ fn missing_file_stays_a_failure() {
     let result = extract_doc(&dir.path().join("gone.csv"), Some("text/csv"), &offline_doc_config());
     assert!(result.is_err());
 }
+
+#[test]
+fn html_is_converted_to_text_before_chunking() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("page.html");
+    fs::write(
+        &path,
+        "<html><head><title>Guide</title><style>.x{color:red}</style><script>var secret = 1;</script></head>\
+         <body><nav><a href=\"/home\">Home</a></nav><h1>Install</h1>\
+         <p>Run <b>the installer</b> and then restart.</p></body></html>",
+    )
+    .unwrap();
+
+    let doc = extract_doc(&path, Some("text/html"), &offline_doc_config()).expect("html extracts");
+    assert!(!doc.chunks.is_empty());
+    for text in std::iter::once(&doc.content).chain(doc.chunks.iter().map(|c| &c.text)) {
+        for markup in ["<html", "<p>", "<b>", "<h1", "</", "<script", "<style"] {
+            assert!(!text.contains(markup), "{markup:?} survived in {text:?}");
+        }
+        assert!(!text.contains("var secret"), "script body survived in {text:?}");
+        assert!(!text.contains("color:red"), "style body survived in {text:?}");
+    }
+    assert!(doc.content.contains("Install") && doc.content.contains("the installer"));
+}

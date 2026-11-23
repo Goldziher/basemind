@@ -126,7 +126,7 @@ mod tests {
     }
 
     const TOP_LEVEL_KEYS: &str = "`$schema`, `scan`, `code_intel`, `analysis`, `watch`, `cache`, `mcp`, `languages`, `documents`, `resources`, `code_search`, `memory`, `comms`, `crawl`, `shells`, `llm`";
-    const SCAN_KEYS: &str = "`include`, `exclude`, `floor_allow`, `respect_gitignore`, `follow_symlinks`, `max_file_bytes`, `skip_submodules`, `eager_l2`, `extra_roots`, `max_candidates`";
+    const SCAN_KEYS: &str = "`include`, `exclude`, `floor_allow`, `respect_gitignore`, `test_globs`, `follow_symlinks`, `max_file_bytes`, `skip_submodules`, `eager_l2`, `extra_roots`, `max_candidates`";
     const RERANKER_KEYS: &str = "`enabled`, `preset`, `top_k`";
 
     #[test]

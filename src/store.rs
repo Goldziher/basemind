@@ -14,11 +14,18 @@ use crate::store_hash_refs::HashRefs;
 mod durability;
 #[path = "store_file_map.rs"]
 mod file_map;
+#[path = "store_file_map_log.rs"]
+mod file_map_log;
 pub use durability::RESCAN_OWED;
 pub(crate) use durability::open_index_for_writer;
+#[cfg(test)]
+pub(crate) use file_map_log::LOG_FILE as FILE_MAP_LOG;
+pub(crate) use file_map_log::ViewStamp;
 #[path = "store_group.rs"]
 mod group;
 use file_map::migrate_legacy_index_into_views;
+#[cfg(test)]
+pub(crate) use file_map::read_index_calls;
 pub(crate) use file_map::{
     ViewOnOpen, check_schema, read_index, sets_aside, view_on_open, wipe_view, written_by_newer,
 };
@@ -149,6 +156,13 @@ pub struct Index {
     /// (additive, no schema bump).
     #[serde(default)]
     pub doc_tombstones: AHashMap<RelPath, crate::store_doc_tombstone::DocTombstone>,
+    /// Relative path -> [`crate::config::list_only::ListedEntry`] for list-only files (`[scan]
+    /// list_only`): known to exist, contents never read. Kept apart from `files` so no code consumer
+    /// sees them; `find_files` and `index_status` read this map. Replaced whole by each full
+    /// working-tree scan. `#[serde(default)]` keeps older `index.msgpack` files readable (additive,
+    /// no schema bump).
+    #[serde(default)]
+    pub listed: AHashMap<RelPath, crate::config::list_only::ListedEntry>,
     /// The scan generation [`Store::flush`] sealed into the Fjall index before writing this file map
     /// (see `crate::index::durability`). An index stamped below it lost writes this map vouches
     /// for and is rebuilt before it is sealed again. `0` (also what a file map from before the field
@@ -186,6 +200,7 @@ impl Index {
             doc_files: AHashMap::new(),
             embed_policy: String::new(),
             doc_tombstones: AHashMap::new(),
+            listed: AHashMap::new(),
             generation: 0,
             rebuild_pending: false,
             rebuild_pins: Vec::new(),
@@ -296,6 +311,9 @@ pub struct Store {
     /// so "does any file still hold this content" is a lookup, not a pass over the manifest. Mutate
     /// `index.files` through those two methods only.
     hash_refs: HashRefs,
+    /// What `index` changed since its last flush, so a flush appends the changed entries instead of
+    /// rewriting the whole file map (see [`file_map_log`]).
+    file_map: file_map_log::FileMapState,
     /// This view's handle on the group index (`cache/groups/<group>/index.fjall/`, ADR-0028). Every
     /// read and write goes through `IndexDb`, which is cheap to clone (internally Arc'd).
     /// `None` for a read-only open in a process that holds no handle on the group (ADR-0036):
@@ -436,6 +454,7 @@ impl Store {
             legacy_index_adopted,
             pending_vectors,
             dropped_doc_keys: Vec::new(),
+            file_map: file_map_log::FileMapState::new(),
             index_source: None,
             _lock: Some(lock),
         };
@@ -566,6 +585,7 @@ impl Store {
             legacy_index_adopted: false,
             pending_vectors,
             dropped_doc_keys: Vec::new(),
+            file_map: file_map_log::FileMapState::new(),
             index_source: None,
             _lock: None,
         };
@@ -616,14 +636,18 @@ impl Store {
 
     pub fn upsert(&mut self, rel: impl Into<RelPath>, entry: FileEntry) {
         self.hash_refs.acquire(&entry.hash_hex);
-        if let Some(prior) = self.index.files.insert(rel.into(), entry) {
+        let rel = rel.into();
+        let prior = self.index.files.insert(rel.clone(), entry);
+        self.file_map.file_changed(rel, prior.is_none());
+        if let Some(prior) = prior {
             self.hash_refs.release(&prior.hash_hex);
         }
     }
 
     pub fn remove(&mut self, rel: impl AsRef<[u8]>) {
-        if let Some(prior) = self.index.files.remove(bstr::BStr::new(rel.as_ref())) {
+        if let Some((rel, prior)) = self.index.files.remove_entry(bstr::BStr::new(rel.as_ref())) {
             self.hash_refs.release(&prior.hash_hex);
+            self.file_map.file_dropped(rel);
         }
     }
 
@@ -634,6 +658,7 @@ impl Store {
     pub(crate) fn extract_again(&mut self, rel: &str) {
         if let Some(entry) = self.index.files.get_mut(bstr::BStr::new(rel.as_bytes())) {
             entry.extract_epoch = 0;
+            self.file_map.file_edited(RelPath::from(rel));
         }
     }
 
@@ -659,14 +684,16 @@ impl Store {
             .get(&rel)
             .filter(|old| old.hash_hex != entry.hash_hex || old.config_digest != entry.config_digest)
             .map(|old| doc_key(&old.hash_hex, &old.config_digest));
-        self.index.doc_files.insert(rel, entry);
+        let prior = self.index.doc_files.insert(rel.clone(), entry);
+        self.file_map.doc_changed(rel, prior.is_none());
         self.dropped_doc_keys.extend(replaced);
     }
 
     /// Drop the document-tier index entry for `rel`.
     pub fn remove_doc(&mut self, rel: impl AsRef<[u8]>) {
-        if let Some(old) = self.index.doc_files.remove(bstr::BStr::new(rel.as_ref())) {
+        if let Some((rel, old)) = self.index.doc_files.remove_entry(bstr::BStr::new(rel.as_ref())) {
             self.dropped_doc_keys.push(doc_key(&old.hash_hex, &old.config_digest));
+            self.file_map.doc_dropped(rel);
         }
     }
 
@@ -683,16 +710,28 @@ impl Store {
     /// with no index handle writes no rows, so its file map keeps the generation it carries. The
     /// paths owed vector rows are written first: the map must not claim a file whose debt is lost.
     pub fn flush(&mut self) -> Result<(), StoreError> {
-        self.flush_sealing(false)
+        self.flush_sealing(false, false)
+    }
+
+    /// [`Self::flush`] for an incremental pass: when only entries this store changed differ from
+    /// what it last wrote, appends them to the file map's delta log instead of rewriting the file
+    /// map (see [`file_map_log`]).
+    pub(crate) fn flush_delta(&mut self) -> Result<(), StoreError> {
+        self.flush_sealing(false, true)
     }
 
     /// [`Self::flush`] for the flush that ends a pass which wrote rows and was not cancelled: its
     /// seal records the pass ended ([`IndexDb::seal_scan_ending_rows_pass`]).
     pub(crate) fn flush_ending_rows_pass(&mut self) -> Result<(), StoreError> {
-        self.flush_sealing(true)
+        self.flush_sealing(true, false)
     }
 
-    fn flush_sealing(&mut self, ends_rows_pass: bool) -> Result<(), StoreError> {
+    /// [`Self::flush_ending_rows_pass`] writing only the changed entries, as [`Self::flush_delta`].
+    pub(crate) fn flush_ending_rows_pass_delta(&mut self) -> Result<(), StoreError> {
+        self.flush_sealing(true, true)
+    }
+
+    fn flush_sealing(&mut self, ends_rows_pass: bool, delta: bool) -> Result<(), StoreError> {
         self.pending_vectors.persist(&self.view_dir)?;
         if let Some(db) = self.index_db.as_ref() {
             self.index.generation = if ends_rows_pass {
@@ -701,9 +740,14 @@ impl Store {
                 db.seal_scan(self.index.generation)?
             };
         }
-        file_map::write_file_map(&self.view_dir, &self.index)?;
+        self.file_map.write(&self.view_dir, &self.index, delta)?;
         self.publish_live_keys();
         Ok(())
+    }
+
+    /// Bytes this store's flushes wrote to the file map so far (the base file and its delta log).
+    pub fn file_map_bytes_written(&self) -> u64 {
+        self.file_map.bytes_written()
     }
 
     /// Refresh the cheap `status.json` sidecar for a shell statusline (see [`StatusSidecar`]).

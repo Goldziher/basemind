@@ -120,7 +120,7 @@ pub struct CacheStats {
     /// Recursive byte size of `views/`.
     pub views_bytes: u64,
     /// Recursive byte size of the repository group's code index (`cache/groups/<group>/index.fjall`,
-    /// ADR-0028), shared with the group's other worktrees. `0` when the workspace's group is unknown.
+    /// ADR-0028; under `v<minor>/` from 0.35 on), shared with the group's other worktrees. `0` when the workspace's group is unknown.
     pub group_index_bytes: u64,
     /// Recursive byte size of `lance/` and of the repository group's document retrieval stores
     /// (`cache/groups/<group>/lance/`, shared with the group's other worktrees).
@@ -394,7 +394,7 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
     let (group_bytes, group_index_bytes, group_lance_bytes) = match &group_dir {
         Some(dir) => (
             dir_size(dir)?,
-            dir_size(&dir.join(crate::index::INDEX_DIR))?,
+            dir_size(&crate::store_layout::group_index_path_in(dir))?,
             dir_size(&dir.join(crate::store_layout::GROUP_LANCE_DIR))?,
         ),
         None => (0, 0, 0),

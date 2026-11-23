@@ -541,7 +541,14 @@ pub(crate) fn gc_global_blobs_in(
 /// reclaims the blobs the orphan was pinning. The returned [`GcReport`] carries both halves.
 pub fn reap_and_gc_global(data: &DataRoot) -> Result<GcReport, GcError> {
     let reaped = reap_orphaned_workspaces(data)?;
-    let groups = crate::store_gc_groups::reap_orphaned_group_stores(data)?;
+    let mut groups = crate::store_gc_groups::reap_orphaned_group_stores(data)?;
+    let older = crate::store_gc_groups::reap_superseded_group_indexes_in(
+        &data.cache_dir(),
+        crate::version::RELEASE_MINOR,
+        &Holds::under(data),
+    )?;
+    groups.reaped += older.reaped;
+    groups.bytes_freed += older.bytes_freed;
     let legacy = crate::store_gc_legacy_views::reap_adopted_legacy_indexes(data)?;
     let mut report = gc_global_blobs(data)?;
     report.workspaces_reaped = reaped.reaped;
