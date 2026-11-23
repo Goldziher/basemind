@@ -31,7 +31,9 @@ mod enabled {
     use crate::engine::budget::budget;
     use crate::engine::error::EngineError;
     use crate::engine::filters::{Filters, grep_selects_no_file, parse_path};
-    use crate::engine::ranked::{RANKED_FETCH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset, ranked_retrieval};
+    use crate::engine::ranked::{
+        RANKED_DEPTH, RANKED_FETCH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset, ranked_retrieval,
+    };
     use crate::engine::scope::ChangeScope;
     use crate::engine::timing::elapsed_us;
     use crate::engine::types::search::{CodeSearchPage, CodeSearchParams, GetChunkParams, GetChunkResponse};
@@ -94,12 +96,14 @@ mod enabled {
                 }
             }
             let mut ranking = ranking;
+            let past_depth = ranking.hits.len() > RANKED_DEPTH as usize;
             let page = page_ranked(
                 crate::engine::code_search::merge_overlapping(std::mem::take(&mut ranking.hits)),
                 offset,
                 limit,
                 budget(p.max_tokens),
                 generation,
+                past_depth,
             );
             ranking.hits = page.hits;
             Ok(CodeSearchPage {

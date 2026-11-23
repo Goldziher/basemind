@@ -491,6 +491,28 @@ fn overlapping_chunks_of_one_symbol_are_one_hit_at_the_best_rank() {
 }
 
 #[test]
+fn a_chunk_bridging_two_earlier_hits_folds_them_into_the_best_ranked() {
+    let merged = merge_overlapping(vec![
+        located("a", "x.go", "main", (1, 10), (0, 100)),
+        located("b", "x.go", "main", (19, 28), (190, 280)),
+        located("bridge", "x.go", "main", (10, 19), (100, 190)),
+    ]);
+    let rows: Vec<(&str, u32, u32, u32, u32)> = merged
+        .iter()
+        .map(|hit| {
+            (
+                hit.chunk_id.as_str(),
+                hit.line_start,
+                hit.line_end,
+                hit.byte_start,
+                hit.byte_end,
+            )
+        })
+        .collect();
+    assert_eq!(rows, vec![("a", 1, 28, 0, 280)]);
+}
+
+#[test]
 fn chunks_that_only_share_a_file_or_a_name_stay_apart() {
     let apart = vec![
         located("a", "x.go", "main", (1, 10), (0, 100)),

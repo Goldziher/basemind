@@ -129,29 +129,45 @@ pub(super) fn retrieve(
 pub(super) fn merge_overlapping(hits: Vec<CodeSearchHit>) -> Vec<CodeSearchHit> {
     let mut merged: Vec<CodeSearchHit> = Vec::with_capacity(hits.len());
     for hit in hits {
-        let into = merged.iter_mut().find(|kept| {
-            kept.path == hit.path
-                && kept.symbol == hit.symbol
-                && kept.kind == hit.kind
-                && hit.line_start <= kept.line_end
-                && kept.line_start <= hit.line_end
-        });
-        match into {
-            Some(kept) => {
-                kept.line_start = kept.line_start.min(hit.line_start);
-                kept.line_end = kept.line_end.max(hit.line_end);
-                kept.byte_start = kept.byte_start.min(hit.byte_start);
-                kept.byte_end = kept.byte_end.max(hit.byte_end);
-                for path in hit.also_at {
-                    if !kept.also_at.contains(&path) {
-                        kept.also_at.push(path);
-                    }
-                }
-            }
-            None => merged.push(hit),
+        let Some(first) = merged.iter().position(|kept| overlaps(kept, &hit)) else {
+            merged.push(hit);
+            continue;
+        };
+        absorb(&mut merged[first], hit);
+        // The union may now reach later kept hits (a chunk bridging two earlier ones): fold them in
+        // too, so the kept hits never overlap. The kept hits did not overlap one another, so every
+        // hit the union reaches ranks after `first`, the earliest-ranked, which stays the hit.
+        while let Some(offset) = merged[first + 1..]
+            .iter()
+            .position(|kept| overlaps(kept, &merged[first]))
+        {
+            let bridged = merged.remove(first + 1 + offset);
+            absorb(&mut merged[first], bridged);
         }
     }
     merged
+}
+
+/// Whether two chunks are of one symbol of one file and share lines.
+fn overlaps(a: &CodeSearchHit, b: &CodeSearchHit) -> bool {
+    a.path == b.path
+        && a.symbol == b.symbol
+        && a.kind == b.kind
+        && b.line_start <= a.line_end
+        && a.line_start <= b.line_end
+}
+
+/// Widen `kept` to the lines and bytes `hit` covers and take the paths `hit` is also at.
+fn absorb(kept: &mut CodeSearchHit, hit: CodeSearchHit) {
+    kept.line_start = kept.line_start.min(hit.line_start);
+    kept.line_end = kept.line_end.max(hit.line_end);
+    kept.byte_start = kept.byte_start.min(hit.byte_start);
+    kept.byte_end = kept.byte_end.max(hit.byte_end);
+    for path in hit.also_at {
+        if !kept.also_at.contains(&path) {
+            kept.also_at.push(path);
+        }
+    }
 }
 
 /// Why a hybrid search ran without its vector lane when `[code_search] embed` is off.

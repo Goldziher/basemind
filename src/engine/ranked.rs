@@ -104,7 +104,8 @@ pub(crate) struct RankedPage<T> {
 
 /// Cut the page `[offset, offset + limit)` out of `hits` (a retrieval of [`RANKED_FETCH`]), apply
 /// the token budget, and offer `next_cursor` when the list goes on. A retrieval that came back with
-/// more than [`RANKED_DEPTH`] hits is cut there, on every page.
+/// more than [`RANKED_DEPTH`] hits is cut there, on every page. `past_depth` says the retrieval had
+/// more than that before `hits` was merged down, so a ranking that goes on is still flagged.
 #[cfg_attr(
     not(feature = "code-search"),
     allow(dead_code, reason = "only `code_search` pages this way")
@@ -115,8 +116,9 @@ pub(crate) fn page_ranked<T: Serialize>(
     limit: u32,
     max_tokens: Option<u32>,
     generation: u32,
+    past_depth: bool,
 ) -> RankedPage<T> {
-    let goes_on = hits.len() > RANKED_DEPTH as usize;
+    let goes_on = past_depth || hits.len() > RANKED_DEPTH as usize;
     hits.truncate(RANKED_DEPTH as usize);
     let fetched = hits.len() as u32;
     let page: Vec<T> = hits.into_iter().skip(offset as usize).take(limit as usize).collect();
@@ -143,7 +145,15 @@ mod tests {
     }
 
     fn page(hits: Vec<u32>, offset: u32, limit: u32, max_tokens: Option<u32>) -> RankedPage<u32> {
-        page_ranked(hits, offset, limit, max_tokens, GENERATION)
+        page_ranked(hits, offset, limit, max_tokens, GENERATION, false)
+    }
+
+    #[test]
+    fn a_retrieval_merged_down_to_the_depth_still_says_it_goes_on() {
+        let merged = page_ranked(ranked(RANKED_DEPTH), RANKED_DEPTH - 10, 10, None, GENERATION, true);
+        assert_eq!(merged.hits.len(), 10);
+        assert!(merged.depth_cut, "the retrieval had {RANKED_FETCH} hits before merging");
+        assert!(merged.next_cursor.is_none());
     }
 
     #[test]

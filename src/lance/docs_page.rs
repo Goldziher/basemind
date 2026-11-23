@@ -57,19 +57,27 @@ impl Merged {
 fn merge(ranking: Vec<RankedChunk>) -> Vec<Merged> {
     let mut groups: Vec<Merged> = Vec::new();
     for hit in ranking {
-        let joined = groups.iter_mut().find(|group| {
+        let touches = |group: &Merged| {
             group.first.doc == hit.doc && {
                 let (lo, hi) = group.ord_range();
                 hit.ord + 1 >= lo && hit.ord <= hi + 1
             }
-        });
-        match joined {
-            Some(group) => group.members.push(hit),
-            None => groups.push(Merged {
+        };
+        let Some(first) = groups.iter().position(touches) else {
+            groups.push(Merged {
                 first: hit.clone(),
                 members: vec![hit],
-            }),
+            });
+            continue;
+        };
+        // A chunk can bridge groups that did not touch before: they all join the best-ranked one.
+        // Groups do not touch one another, so the ones the chunk reaches are the only ones.
+        let bridged: Vec<usize> = (first + 1..groups.len()).filter(|&at| touches(&groups[at])).collect();
+        for at in bridged.into_iter().rev() {
+            let other = groups.remove(at);
+            groups[first].members.extend(other.members);
         }
+        groups[first].members.push(hit);
     }
     for group in &mut groups {
         group.members.sort_by_key(|member| member.ord);
