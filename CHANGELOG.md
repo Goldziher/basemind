@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- An incremental pass appends the file-map entries it changed to a delta log (`index.delta`) instead of rewriting `index.msgpack`; a full write happens on the first flush, on a full scan and once the log outgrows a quarter of the base. `ScanReport::file_map_bytes_written` reports the bytes (#278).
+
+### Fixed
+
+- A watcher batch that retires a content no longer decodes every sibling worktree's file map: each view's holds are cached until that view writes again (#277).
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

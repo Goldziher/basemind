@@ -355,6 +355,9 @@ pub struct ScanReport {
     pub phase_peaks: Vec<crate::scan_phase_peaks::PhasePeak>,
     /// Dependencies `[documents.dependencies]` names whose documentation was not indexed, and why.
     pub deps_unavailable: Vec<crate::deps_docs::DepUnavailable>,
+    /// Bytes this pass wrote to the view's file map: the whole map for a full pass, the changed
+    /// entries for an incremental one.
+    pub file_map_bytes_written: u64,
 }
 
 /// Cooperative cancellation token for a scan.
@@ -496,6 +499,7 @@ pub fn scan_with_observer(
 
     let scope = derive_scope(root, &source);
     let mut report = ScanReport::default();
+    let file_map_before = store.file_map_bytes_written();
     let drive = ScanDrive {
         root,
         filters: &filters,
@@ -531,6 +535,7 @@ pub fn scan_with_observer(
         flush_vector_lanes(store, config, &filters, &scope, docs, code, REQUEUE_PER_INCREMENTAL)?;
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
+        report.file_map_bytes_written = store.file_map_bytes_written() - file_map_before;
         return Ok(report);
     }
 
@@ -634,6 +639,7 @@ pub fn scan_with_observer(
         )?;
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
+        report.file_map_bytes_written = store.file_map_bytes_written() - file_map_before;
         return Ok(report);
     }
 
@@ -672,6 +678,7 @@ pub fn scan_with_observer(
     }
     phase_peaks.sample_now();
     report.phase_peaks = phase_peaks.snapshot();
+    report.file_map_bytes_written = store.file_map_bytes_written() - file_map_before;
     Ok(report)
 }
 
