@@ -389,6 +389,48 @@ fn a_ranking_without_the_lane_the_config_turned_off_is_kept() {
     assert!(!is_cacheable(&empty));
 }
 
+/// With `[code_search] embed` off, `lane: "semantic"` is refused naming the setting, never an empty
+/// ranking that claims the vector lane ran; hybrid names the same reason in `lanes_unavailable`.
+#[test]
+fn the_semantic_lane_with_embeddings_off_is_refused_like_hybrid_reports_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("lib.rs"), BODY).unwrap();
+    let ws = read_only_workspace(scanned(root), root);
+    assert!(!ws.config.code_search.embed, "embeddings default to off");
+
+    let refused = retrieve(
+        &ws,
+        "retry upload".to_string(),
+        Some("semantic"),
+        5,
+        &UNFILTERED,
+        None,
+        &|| false,
+    )
+    .expect_err("no vector lane to search");
+    let EngineError::Unavailable(message) = refused else {
+        panic!("unavailable, not an empty ranking: {refused:?}");
+    };
+    assert!(message.contains(EMBEDDINGS_OFF), "{message}");
+    assert!(message.contains("`lane: \"keyword\"`"), "{message}");
+
+    let hybrid = retrieve(
+        &ws,
+        "retry upload".to_string(),
+        Some("hybrid"),
+        5,
+        &UNFILTERED,
+        None,
+        &|| false,
+    )
+    .expect("hybrid ranks without the vector lane");
+    assert_eq!(hybrid.lanes_ran, ["keyword", "exact"]);
+    assert_eq!(hybrid.lanes_unavailable.len(), 1);
+    assert_eq!(hybrid.lanes_unavailable[0].lane, "vector");
+    assert_eq!(hybrid.lanes_unavailable[0].reason, EMBEDDINGS_OFF);
+}
+
 /// Hydration stops at its next check once the call is cancelled: it reads sidecars on a blocking
 /// thread that abandoning the call does not stop.
 #[test]

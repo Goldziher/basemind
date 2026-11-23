@@ -319,9 +319,10 @@ pub(crate) fn sweep_grep_bloom_rows(store: &Store) {
 }
 
 /// Drop the grep bloom rows of `hashes` that no indexed file of the group holds any more. `hashes`
-/// are the contents the pass's changed or removed paths held before it ran, so the cost follows the
-/// batch, not the index; a hash another path still holds (or one the pass just wrote for a new path)
-/// stays. Runs after the pass has applied its entries and committed its rows, so it sees the final
+/// are the contents the pass's changed or removed paths held before it ran. The sweep asks the
+/// group's cached per-view holds ([`crate::store_group_live`]), so a view's file map is decoded
+/// again only after that view wrote, not once per batch; a hash another path still holds (or one the
+/// pass just wrote for a new path) stays. Runs after the pass has applied its entries and committed its rows, so it sees the final
 /// manifest.
 pub(crate) fn drop_unheld_grep_bloom_rows(store: &Store, hashes: &[String]) {
     let Some(idx) = store.index_db.as_ref() else {

@@ -234,9 +234,9 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
   as one table, `symbols[N]{name,kind,...}:` and a comma-separated row per object, a value quoted
   only where it would be misread. Every other tool answers in compact JSON. A header naming a path
   or symbol that starts with `"`, has leading or trailing whitespace or holds a control character
-  is a JSON string. MCP `structuredContent` is JSON for every tool.
+  is a JSON string. An MCP answer has no `structuredContent`: the text block is the whole payload.
 - **CLI output.** Human output prints bodies and diffs in full and cuts only table cells, with a
-  note on stderr. `--json` prints the response as JSON, as MCP `structuredContent` carries it.
+  note on stderr. `--json` prints the response as JSON.
 <!-- /manual:paging -->
 
 For git history, blame and diffs see `basemind-git-history`; for document search see

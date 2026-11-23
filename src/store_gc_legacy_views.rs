@@ -112,7 +112,8 @@ fn legacy_index_bytes(view: &Path) -> Result<u64, GcError> {
 
 /// Whether the group index of `workspace`'s repository exists, so the group has adopted its views.
 fn adopted_by_group(workspace: &Path) -> bool {
-    crate::store_layout::group_dir_of(workspace).is_some_and(|group| group.join(INDEX_DIR).is_dir())
+    crate::store_layout::group_dir_of(workspace)
+        .is_some_and(|group| crate::store_layout::group_index_path_in(&group).is_dir())
 }
 
 /// [`reap_adopted_legacy_indexes`] against an explicit workspaces directory and holds, so tests

@@ -24,6 +24,7 @@ use clap::{Args, ValueEnum};
 use super::init_capability_prompt::prompt_capabilities;
 use super::init_gitignore;
 use super::init_rules::{self, BlockSections, Capability};
+use super::init_scope;
 use super::init_settings;
 use super::init_verb::Verb;
 use crate::config;
@@ -122,7 +123,7 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 
 [documents]
 # Document RAG tier (PDF / Office / HTML / email). Requires a `documents` build; images and scanned
-# PDFs also need `documents-ocr`.
+# PDFs also need `documents-ocr`, and `[documents.ocr] enabled = true` (off by default).
 # enabled = true
 # Embed documents for semantic search. ON by default — embeddings pay off on real prose / OCR.
 # embed = true
@@ -134,7 +135,11 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 #   multilingual— multilingual model for non-English corpora
 # embedding_preset = "balanced"
 # Globs scoping which non-code files are indexed as documents. Empty include = everything that
-# passes [scan]; exclude applies to document indexing itself and beats include.
+# passes [scan]; exclude applies to document indexing itself. Each list takes several patterns
+# (`**`, directory names like `docs`, `!pattern` to re-include); the last matching entry decides.
+# `basemind init` writes both lists out for this repository. The default exclude drops tests,
+# fixtures, mocks, e2e, agent config (CLAUDE.md, AGENTS.md, .claude/ ...), vendored and build output.
+# Per extension: exclude = ["**/*.html", "!docs/**/*.html"] keeps HTML only under docs/.
 # include = []
 # exclude = []
 # Per-document size cap in bytes (separate from scan.max_file_bytes, so big PDFs/Office files work).
@@ -303,7 +308,7 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
     let settings_plan = init_settings::resolve_settings_plan(root, settings_target);
 
     let mut changes = Vec::new();
-    changes.push(plan_config(root, args.config_dir.as_deref())?);
+    changes.extend(plan_config(root, args)?);
     if let Some(rule_change) = plan_rules_change(&rules_plan, &caps, sections)? {
         changes.push(rule_change);
     }
@@ -486,13 +491,14 @@ fn parse_capabilities(slugs: &[String]) -> Result<Vec<Capability>> {
         .collect()
 }
 
-/// Plan the `basemind.toml` write: scaffold when absent, keep when present.
-fn plan_config(root: &Path, config_dir: Option<&str>) -> Result<Change> {
-    let path = resolve_init_config_path(root, config_dir)?;
+/// Plan the `basemind.toml` write: scaffold, with the detected `[documents]` scope, when absent;
+/// keep when present. The scope counts come back as a second change so `--print` shows them too.
+fn plan_config(root: &Path, args: &InitArgs) -> Result<Vec<Change>> {
+    let path = resolve_init_config_path(root, args.config_dir.as_deref())?;
     if path.exists() {
-        return Ok(Change::NoOp {
+        return Ok(vec![Change::NoOp {
             note: format!("basemind.toml: kept existing config at {}", path.display()),
-        });
+        }]);
     }
     // ~keep A ROOT scaffold would silently shadow the legacy config (root path wins in resolution), so
     // ~keep refuse rather than change the effective config behind the user's back. A `.config/` scaffold
@@ -508,12 +514,29 @@ fn plan_config(root: &Path, config_dir: Option<&str>) -> Result<Change> {
             path.display()
         );
     }
-    Ok(Change::Write {
-        path,
-        verb: Verb::Write,
-        what: "basemind.toml scaffold",
-        contents: INIT_SCAFFOLD_TOML.to_string(),
-    })
+    let interactive = !args.yes && !args.print && std::io::stdin().is_terminal();
+    let mode = if args.yes {
+        init_scope::Mode::Yes
+    } else if interactive {
+        init_scope::Mode::Interactive
+    } else {
+        init_scope::Mode::Preview
+    };
+    let report = init_scope::detect(root).context("detect the document scope")?;
+    let (excluded, commented) =
+        init_scope::resolve(&report, mode, &mut std::io::stdin().lock(), &mut std::io::stdout())?;
+    let lists = init_scope::render_lists(&excluded, &commented);
+    Ok(vec![
+        Change::NoOp {
+            note: init_scope::render_counts(&report, &excluded),
+        },
+        Change::Write {
+            path,
+            verb: Verb::Write,
+            what: "basemind.toml scaffold",
+            contents: init_scope::apply_to_scaffold(INIT_SCAFFOLD_TOML, &lists),
+        },
+    ])
 }
 
 /// Map `--config-dir` to the config file `init` writes. Only the two `.config/` convention spellings

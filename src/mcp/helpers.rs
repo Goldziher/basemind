@@ -7,12 +7,11 @@ use serde::Serialize;
 
 use super::ServerState;
 
-/// Build a successful tool result carrying both a text mirror and SEP-2106 `structured_content`.
+/// Build a successful tool result carrying the answer as `structured_content` and a `to_string()`
+/// text block.
 ///
-/// Every tool routes its response through here, so populating `structured_content` in one place
-/// gives the whole MCP surface typed output: `CallToolResult::structured` sets the parsed JSON on
-/// `structured_content` (for clients that consume typed results) and keeps a `to_string()` text
-/// block in `content` (for clients that only read text). No tool advertises an `output_schema`:
+/// Every tool routes its response through here. In-process callers (the CLI, resources) read
+/// `structured_content`; the MCP wire sends the text alone ([`super::tool_contract::single_payload`]). No tool advertises an `output_schema`:
 /// one tool answers in several shapes, and `tests/mcp_smoke.rs` holds every verb tool to that.
 pub(super) fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
     let value =

@@ -6,6 +6,7 @@ mod documents;
 mod documents_validate;
 pub mod engine;
 pub(crate) mod layered;
+pub mod list_only;
 pub mod overrides;
 mod resources;
 pub mod root_guard;
@@ -23,6 +24,7 @@ use thiserror::Error;
 pub use code::CodeSearchConfig;
 pub use comms::CommsConfig;
 pub use documents::{
+    AGENT_CONFIG_GLOBS, LOCKFILE_GLOBS, TEST_PATH_GLOBS, VENDORED_BUILD_GLOBS, default_document_exclude,
     ApiKey, DependenciesConfig, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig,
     NerBackend, NerConfig, OcrBackend, OcrConfig, RerankerConfig, SecretString, SummarizationConfig,
     SummarizationStrategy,
