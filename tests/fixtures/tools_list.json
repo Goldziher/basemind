@@ -590,7 +590,7 @@
           "type": "string"
         },
         "symbol": {
-          "description": "Commits that changed this symbol's body; needs `path`, combines only with `line`.",
+          "description": "Commits that changed this symbol's body, ignoring comments and whitespace so a pure reformat is not a change (`git log -L` lists it); needs `path`, combines only with `line`.",
           "type": "string"
         },
         "line": {

@@ -27,7 +27,7 @@ pub struct GitLogParams {
     /// With `query`/`author`: only commits until then, same forms, day included.
     #[serde(default)]
     pub until: Option<String>,
-    /// Commits that changed this symbol's body; needs `path`, combines only with `line`.
+    /// Commits that changed this symbol's body, ignoring comments and whitespace so a pure reformat is not a change (`git log -L` lists it); needs `path`, combines only with `line`.
     #[serde(default)]
     pub symbol: Option<String>,
     /// With `symbol`: a 1-based line inside the definition meant.
