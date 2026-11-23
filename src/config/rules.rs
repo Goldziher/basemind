@@ -234,6 +234,13 @@ pub fn scan_inputs_digest(cfg: &ConfigV1) -> String {
     )
 }
 
+/// Fingerprint of every setting a daemon-hosted read stack is built from: the scan inputs
+/// ([`scan_inputs_digest`]) and `watch.debounce_ms`, which its watcher reads once at start. A stack
+/// built under a different digest is rebuilt; an edit that leaves it unchanged keeps the stack.
+pub fn read_stack_digest(cfg: &ConfigV1) -> String {
+    digest_of("read-stack/1", &(scan_inputs_digest(cfg), cfg.watch.debounce_ms))
+}
+
 /// Fingerprint of everything that decides which derived rows (vectors, keyword postings) should
 /// exist for a path. When it differs from the value stored in the index, the next full scan
 /// re-flushes eligible files and purges the rows of files that are no longer eligible.
@@ -274,6 +281,20 @@ mod tests {
         let mut excluded = base.clone();
         excluded.scan.exclude.push("generated".to_string());
         assert_ne!(scan_inputs_digest(&base), scan_inputs_digest(&excluded));
+    }
+
+    #[test]
+    fn read_stack_digest_adds_the_watcher_debounce_to_the_scan_inputs() {
+        let base = ConfigV1::with_defaults();
+        let mut debounced = base.clone();
+        debounced.watch.debounce_ms += 1;
+        assert_ne!(read_stack_digest(&base), read_stack_digest(&debounced));
+
+        let mut excluded = base.clone();
+        excluded.scan.exclude.push("generated".to_string());
+        assert_ne!(read_stack_digest(&base), read_stack_digest(&excluded));
+
+        assert_eq!(read_stack_digest(&base), read_stack_digest(&base.clone()));
     }
 
     #[test]
