@@ -230,6 +230,22 @@ pub(crate) fn docs_owed(
         .count()
 }
 
+/// The documents the store records as owing their vectors, in path order: neither embedded nor
+/// attempted. Unlike [`docs_owed`] it reads no config: a document whose embedding has since been
+/// turned off or excluded is listed too, and the scan handed it settles it by its stat.
+#[cfg(feature = "documents")]
+pub(crate) fn owed_doc_paths(store: &crate::store::Store) -> Vec<crate::path::RelPath> {
+    let mut owed: Vec<_> = store
+        .index
+        .doc_files
+        .iter()
+        .filter(|(_, entry)| !entry.embedded && !entry.embed_attempted)
+        .map(|(path, _)| path.clone())
+        .collect();
+    owed.sort_unstable();
+    owed
+}
+
 #[cfg(test)]
 #[path = "embed_progress_tests.rs"]
 mod tests;
