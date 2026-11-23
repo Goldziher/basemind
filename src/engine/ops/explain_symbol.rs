@@ -368,7 +368,7 @@ pub(in crate::engine::ops) fn callees_of(
     name: &str,
     line: u32,
 ) -> Result<Vec<Callee>, String> {
-    let chosen = super::pick::symbol_at(ws, path.clone(), line).map_err(|error| error.to_string())?;
+    let chosen = super::pick::symbol_named_at(ws, path.clone(), name, line).map_err(|error| error.to_string())?;
     let (loaded, symbol) = (&chosen.loaded, &chosen.loaded.l1.symbols[chosen.index]);
     if loaded.stale && (symbol.name != name || symbol.start_row + 1 != line) {
         return Err(format!(

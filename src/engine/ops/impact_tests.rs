@@ -288,6 +288,23 @@ mod scanned {
     }
 
     #[test]
+    fn callees_of_two_definitions_on_one_line_follow_the_name_asked() {
+        let (_dir, ws) = workspace_with_files(&[
+            ("src/f.rs", "pub fn one() { alpha(); } pub fn two() { omega(); }\n"),
+            ("src/lib.rs", "mod a;\nmod b;\nmod c;\nmod d;\nmod f;\n"),
+        ]);
+        let names = |name: &str| -> Vec<String> {
+            crate::engine::ops::explain::callees_of(&ws, &RelPath::from("src/f.rs"), name, 1)
+                .expect("callees")
+                .into_iter()
+                .map(|callee| callee.name)
+                .collect()
+        };
+        assert_eq!(names("one"), ["alpha"]);
+        assert_eq!(names("two"), ["omega"]);
+    }
+
+    #[test]
     fn a_definition_that_moved_since_the_scan_lists_no_calls_and_says_so() {
         let (dir, ws) = workspace_for_answers();
         write(

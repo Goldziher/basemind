@@ -122,7 +122,7 @@ pub(super) fn upstream(ws: &Workspace, definitions: &[ImpactDefinition], name: &
     finish(walk)
 }
 
-/// Why the walk stops short at its last level: `depth` when a boundary definition has a proven
+/// Why the walk stops short at its last level: `depth` when a boundary definition has a
 /// caller the walk did not follow, `scan_cap` when the examined cap leaves that unchecked, and
 /// nothing when no boundary definition has one. A lookup that fails counts as a caller.
 fn beyond_depth(ws: &Workspace, frontier: Vec<Node>, mut examined: usize) -> Option<&'static str> {
@@ -132,7 +132,7 @@ fn beyond_depth(ws: &Workspace, frontier: Vec<Node>, mut examined: usize) -> Opt
         }
         examined += 1;
         let followed = callers_page(ws, &path, &name, line, PAGE_LIMIT, None)
-            .map(|page| page.hits.iter().any(|hit| proven(hit.resolution)))
+            .map(|page| page.hits.iter().any(|hit| is_caller(hit.resolution)))
             .unwrap_or(true);
         if followed {
             return Some("depth");
