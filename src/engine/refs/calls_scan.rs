@@ -43,19 +43,43 @@ pub(crate) fn scan_calls(
     scope: Option<&ChangeScope>,
 ) -> Result<(CallScanPage, u64), EngineError> {
     let generation = idx.live_keys().fingerprint();
+    let page = scan_calls_until_hit(idx, name, matching, limit, cursor_after, scope, SCAN_KEYS_EXAMINED_MAX)?;
+    Ok((page, generation))
+}
+
+/// Examined-keys windows a name scan spends before it settles for an empty partial page. One window
+/// is [`SCAN_KEYS_EXAMINED_MAX`] keys; an empty page that merely says "continue" makes a caller
+/// that reads `total: 0` conclude there is nothing, so the scan keeps going until it has a hit.
+const EMPTY_PAGE_WINDOWS_MAX: usize = 4;
+
+/// [`scan_calls_where`] over the name filter, rescanning from where a window stopped for as long as
+/// the page found nothing, for at most [`EMPTY_PAGE_WINDOWS_MAX`] windows of `examine_cap` keys. A
+/// page with a hit, or one that reached the end, is returned as it is.
+fn scan_calls_until_hit(
+    idx: &dyn IndexView,
+    name: &str,
+    matching: Matching,
+    limit: usize,
+    cursor_after: Option<&[u8]>,
+    scope: Option<&ChangeScope>,
+    examine_cap: usize,
+) -> Result<CallScanPage, EngineError> {
     let finder = memchr::memmem::Finder::new(name.as_bytes());
-    let page = scan_calls_where(
-        idx,
-        name,
-        limit,
-        cursor_after,
-        SCAN_KEYS_EXAMINED_MAX,
-        |callee, path| {
+    let mut after = cursor_after.map(<[u8]>::to_vec);
+    let mut windows = 1;
+    loop {
+        let page = scan_calls_where(idx, name, limit, after.as_deref(), examine_cap, |callee, path| {
             (names_call(&finder, callee, name, matching) && crate::engine::changed::admits(scope, path))
                 .then_some(Kept::NAME_ONLY)
-        },
-    )?;
-    Ok((page, generation))
+        })?;
+        match &page.stopped_after {
+            Some(stop) if page.hits.is_empty() && windows < EMPTY_PAGE_WINDOWS_MAX => {
+                after = Some(stop.clone());
+                windows += 1;
+            }
+            _ => return Ok(page),
+        }
+    }
 }
 
 /// Whether the name scan for `name` (whose `finder` it is) lists a call to `callee`: the callee
