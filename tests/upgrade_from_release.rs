@@ -69,6 +69,10 @@ const NO_MARGIN: [(&str, &str); 2] = [("BASEMIND_BLOB_GC_GRACE_SECS", "0"), ("BA
 #[cfg(feature = "comms")]
 const LAST_UNNAMESPACED_MINOR: u32 = 33;
 
+/// First release minor on the comms v2 protocol (`basemind agent ...`): its threads are in the
+/// store this build reads, where an older release's `agents` store is a generation apart.
+const FIRST_COMMS_V2_MINOR: u32 = 34;
+
 /// Set by the CI job that bumps the tree to the next minor before building: every release upgraded
 /// from must then be of an older minor, so the wipe-and-rebuild of a minor bump is what ran.
 const CROSS_MINOR_ENV: &str = "BASEMIND_UPGRADE_REQUIRE_CROSS_MINOR";
@@ -389,18 +393,35 @@ fn populate_old_stores(env: &Env, old: &Path) {
         env.ok(old, &["memory", "put", "upgrade/probe", "kept across upgrades"], &[]);
     }
     if cfg!(feature = "comms") {
-        env.ok(
-            old,
-            &[
-                "agents",
-                "thread-start",
-                "--subject",
-                "upgrade-probe",
-                "--path",
-                "src/**",
-            ],
-            &[],
-        );
+        if release_minor(env, old) >= FIRST_COMMS_V2_MINOR {
+            env.ok(
+                old,
+                &[
+                    "agent",
+                    "post",
+                    "--subject",
+                    "upgrade-probe",
+                    "--paths",
+                    "src/**",
+                    "--body",
+                    "kept across upgrades",
+                ],
+                &[],
+            );
+        } else {
+            env.ok(
+                old,
+                &[
+                    "agents",
+                    "thread-start",
+                    "--subject",
+                    "upgrade-probe",
+                    "--path",
+                    "src/**",
+                ],
+                &[],
+            );
+        }
     }
 }
 
@@ -435,16 +456,24 @@ fn assert_old_stores_survive(env: &Env, new: &Path, old: &Path) {
         // import the old one, whose `store.fjall` is left untouched. The old store must neither
         // stop this build from answering nor be deleted by it.
         let threads = env.json(new, &["agent", "threads"]);
-        assert!(
-            !threads.to_string().contains("upgrade-probe"),
-            "{}: a thread of the legacy store was imported: {threads}",
-            old.display()
-        );
-        assert!(
-            env.comms.join("store.fjall").is_dir(),
-            "{}: the upgrade removed the old release's comms store",
-            old.display()
-        );
+        if release_minor(env, old) >= FIRST_COMMS_V2_MINOR {
+            assert!(
+                threads.to_string().contains("upgrade-probe"),
+                "{}: a thread of the same protocol generation is gone after the upgrade: {threads}",
+                old.display()
+            );
+        } else {
+            assert!(
+                !threads.to_string().contains("upgrade-probe"),
+                "{}: a thread of the legacy store was imported: {threads}",
+                old.display()
+            );
+            assert!(
+                env.comms.join("store.fjall").is_dir(),
+                "{}: the upgrade removed the old release's comms store",
+                old.display()
+            );
+        }
     }
 }
 

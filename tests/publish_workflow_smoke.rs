@@ -316,15 +316,19 @@ fn publish_is_never_cancelled_mid_flight() {
     );
 }
 
-/// basemind.ai documents what users can install: a push to main builds the site, only a release
-/// tag deploys it.
+/// The github-pages environment admits only `main`, so the site deploys from a push to main and
+/// never from a release tag, whose deploy job the environment's protection rules refuse.
 #[test]
-fn the_website_deploys_only_from_a_release_tag() {
+fn the_website_deploys_only_from_main() {
     let docs = read_workflow("docs.yaml");
     let deploy = job_block(&docs, "deploy");
     assert!(
-        deploy.contains("if: startsWith(github.ref, 'refs/tags/v')"),
-        "the docs deploy job must run only for a release tag:\n{deploy}"
+        deploy.contains("if: github.ref == 'refs/heads/main'"),
+        "the docs deploy job must run only on main:\n{deploy}"
+    );
+    assert!(
+        !docs[..docs.find("\njobs:\n").unwrap()].contains("tags:"),
+        "a release tag must not trigger the docs workflow"
     );
     assert!(
         deploy.contains("pages: write") && !docs[..docs.find("\njobs:\n").unwrap()].contains("pages: write"),

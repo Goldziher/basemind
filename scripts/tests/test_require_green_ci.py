@@ -19,12 +19,15 @@ SHA = "a" * 40
 FAKE_GH = """#!/usr/bin/env python3
 import json, os, re, subprocess, sys
 args = [a for a in sys.argv[1:] if a != "--paginate"]
-assert args[0] == "api" and args[2] == "-q", args
-path, query = args[1], args[3]
+assert args[0] == "api" and (len(args) == 2 or args[2] == "-q"), args
+path = args[1]
 responses = json.loads(open(os.environ["FAKE_GH_RESPONSES"]).read())
 for pattern, body in responses.items():
     if re.search(pattern, path):
-        sys.exit(subprocess.run(["jq", "-r", query], input=json.dumps(body), text=True).returncode)
+        if len(args) == 2:
+            print(json.dumps(body))
+            sys.exit(0)
+        sys.exit(subprocess.run(["jq", "-r", args[3]], input=json.dumps(body), text=True).returncode)
 sys.exit(f"stand-in gh: no response for {path}")
 """
 
@@ -122,6 +125,22 @@ class RequireGreenCiTests(unittest.TestCase):
         responses = green()
         responses[r"workflows/hardening\.yaml/runs"] = {"workflow_runs": [run(3, "push")]}
         self.refused(responses, "no scheduled or dispatched hardening.yaml run")
+
+    def test_a_failed_check_run_of_the_ci_is_refused(self) -> None:
+        responses = green()
+        responses[r"check-runs"] = {"check_runs": [{"name": "validate", "conclusion": "failure"}]}
+        self.refused(responses, "validate")
+
+    def test_failed_jobs_of_an_earlier_publish_attempt_and_the_docs_deploy_are_not_counted(self) -> None:
+        responses = green()
+        responses[r"check-runs"] = {
+            "check_runs": [
+                {"name": "Create GitHub release", "conclusion": "failure"},
+                {"name": "deploy", "conclusion": "failure"},
+            ]
+        }
+        done = self.gate(responses)
+        self.assertEqual(done.returncode, 0, done.stderr)
 
 
 if __name__ == "__main__":
