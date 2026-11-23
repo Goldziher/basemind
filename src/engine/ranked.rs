@@ -10,7 +10,8 @@
 //!
 //! The depth is a hard bound on how far a ranking can be paged. One hit more than the depth is
 //! retrieved to learn whether the ranking goes on past it, and a ranking that does is flagged
-//! `truncated`, so a list of exactly [`RANKED_DEPTH`] hits is told from one cut there.
+//! `truncated` once a page reads up to it, so a list of exactly [`RANKED_DEPTH`] hits is told from
+//! one cut there. A page that stops short of the depth is paging, not truncation.
 
 #![cfg_attr(
     not(any(feature = "code-search", feature = "documents")),
@@ -96,7 +97,7 @@ pub(crate) struct RankedPage<T> {
     pub hits: Vec<T>,
     /// The token budget dropped trailing hits of the page.
     pub budgeted: bool,
-    /// The ranking goes on past [`RANKED_DEPTH`].
+    /// The page ends at [`RANKED_DEPTH`] and the ranking goes on past it.
     pub depth_cut: bool,
     pub next_cursor: Option<Cursor>,
 }
@@ -115,7 +116,7 @@ pub(crate) fn page_ranked<T: Serialize>(
     max_tokens: Option<u32>,
     generation: u32,
 ) -> RankedPage<T> {
-    let depth_cut = hits.len() > RANKED_DEPTH as usize;
+    let goes_on = hits.len() > RANKED_DEPTH as usize;
     hits.truncate(RANKED_DEPTH as usize);
     let fetched = hits.len() as u32;
     let page: Vec<T> = hits.into_iter().skip(offset as usize).take(limit as usize).collect();
@@ -125,7 +126,8 @@ pub(crate) fn page_ranked<T: Serialize>(
     RankedPage {
         hits: budgeted.items,
         budgeted: budgeted.budgeted,
-        depth_cut,
+        // A page that ends short of the depth is paging: only one that reaches it is cut there.
+        depth_cut: goes_on && !more,
         next_cursor: more.then(|| Cursor::encode_in_memory(u64::from(next), generation)),
     }
 }
@@ -171,7 +173,7 @@ mod tests {
         assert!(!exact.depth_cut, "exactly {RANKED_DEPTH} hits exist");
 
         let first = page(ranked(RANKED_DEPTH + 1), 0, 10, None);
-        assert!(first.depth_cut, "flagged from the first page");
+        assert!(!first.depth_cut, "a limit cut is paging");
         assert!(first.next_cursor.is_some());
 
         let last = page(ranked(RANKED_DEPTH + 1), RANKED_DEPTH - 10, 10, None);

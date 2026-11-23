@@ -123,6 +123,37 @@ pub(super) fn retrieve(
     })
 }
 
+/// `hits` with the chunks of one symbol that overlap in a file merged into one hit: the chunks of a
+/// long function overlap by a few lines and each ranks on its own. The merged hit is the best-ranked
+/// chunk (first in `hits`) with the union of the lines and bytes the chunks cover, at its rank.
+pub(super) fn merge_overlapping(hits: Vec<CodeSearchHit>) -> Vec<CodeSearchHit> {
+    let mut merged: Vec<CodeSearchHit> = Vec::with_capacity(hits.len());
+    for hit in hits {
+        let into = merged.iter_mut().find(|kept| {
+            kept.path == hit.path
+                && kept.symbol == hit.symbol
+                && kept.kind == hit.kind
+                && hit.line_start <= kept.line_end
+                && kept.line_start <= hit.line_end
+        });
+        match into {
+            Some(kept) => {
+                kept.line_start = kept.line_start.min(hit.line_start);
+                kept.line_end = kept.line_end.max(hit.line_end);
+                kept.byte_start = kept.byte_start.min(hit.byte_start);
+                kept.byte_end = kept.byte_end.max(hit.byte_end);
+                for path in hit.also_at {
+                    if !kept.also_at.contains(&path) {
+                        kept.also_at.push(path);
+                    }
+                }
+            }
+            None => merged.push(hit),
+        }
+    }
+    merged
+}
+
 /// Why a hybrid search ran without its vector lane when `[code_search] embed` is off.
 const EMBEDDINGS_OFF: &str = "embeddings are off: set `[code_search] embed = true` and run `index_rescan`";
 

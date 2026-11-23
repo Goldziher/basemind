@@ -1,8 +1,9 @@
-//! A page of a document-search ranking (ADR-0029 rule 8): cut the page, merge adjacent chunks of
-//! one document that are rank neighbours, add a neighbouring chunk on either side while the token
+//! A page of a document-search ranking (ADR-0029 rule 8): merge the chunks of one document that
+//! touch or overlap into one hit (at the best rank of its chunks), let no document fill the page
+//! (`per_doc`), cut the page, add a neighbouring chunk on either side when asked and the token
 //! budget allows, and cite every hit.
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 
 use super::docs::DocStore;
 use super::docs_schema::{DocChunkHit, DocMeta};
@@ -14,6 +15,23 @@ pub const RANKED_DEPTH: usize = super::docs_rank::RANKED_FETCH - 1;
 const STITCH_MAX_OVERLAP: usize = 512;
 /// The shortest shared text taken for an overlap: a shorter match is a coincidence ("the" + "end").
 const STITCH_MIN_OVERLAP: usize = 12;
+
+/// Hits one document contributes before the other documents' hits rank ahead of its rest.
+pub const PER_DOC_DEFAULT: u32 = 2;
+
+/// Which part of a ranking one page is, and how it is shaped.
+#[derive(Debug, Clone, Copy)]
+pub struct Paging {
+    /// Hits (merged runs of chunks) of the ranking before the page.
+    pub offset: u32,
+    pub limit: u32,
+    /// Token budget of the page; the first hit is always kept.
+    pub max_tokens: Option<u32>,
+    /// Most hits of one document ahead of the rest of the ranking; 0 is no cap.
+    pub per_doc: u32,
+    /// Add the chunk before and after each hit.
+    pub context: bool,
+}
 
 /// Estimated tokens of `bytes` of response, the estimate the MCP token budget uses.
 fn bytes_to_tokens(bytes: u64) -> u64 {
@@ -33,13 +51,13 @@ impl Merged {
     }
 }
 
-/// Group the page's hits: a hit whose chunk is next to a chunk of the hit ranked just before it, in
-/// the same document, joins that hit. Only rank neighbours merge, so every group is a run of
-/// consecutive ranks and the page can end after any group. The group keeps its first rank.
-fn merge(page: Vec<RankedChunk>) -> Vec<Merged> {
+/// Group the ranking's hits: a hit whose chunk touches or overlaps the chunks of an earlier hit of
+/// the same document joins that hit, wherever the two rank. A group keeps the rank of its best
+/// chunk, so it ranks where its first member did.
+fn merge(ranking: Vec<RankedChunk>) -> Vec<Merged> {
     let mut groups: Vec<Merged> = Vec::new();
-    for hit in page {
-        let joined = groups.last_mut().filter(|group| {
+    for hit in ranking {
+        let joined = groups.iter_mut().find(|group| {
             group.first.doc == hit.doc && {
                 let (lo, hi) = group.ord_range();
                 hit.ord + 1 >= lo && hit.ord <= hi + 1
@@ -55,8 +73,31 @@ fn merge(page: Vec<RankedChunk>) -> Vec<Merged> {
     }
     for group in &mut groups {
         group.members.sort_by_key(|member| member.ord);
+        group.members.dedup_by_key(|member| member.ord);
     }
     groups
+}
+
+/// `groups` with no document holding more than `per_doc` places ahead of the others: the hits past
+/// the cap follow the rest in their own order, so a document that dominates the ranking does not
+/// hide the others and nothing is dropped. `0` leaves the order as it is.
+fn diversify(groups: Vec<Merged>, per_doc: u32) -> Vec<Merged> {
+    if per_doc == 0 {
+        return groups;
+    }
+    let mut seen: AHashMap<String, u32> = AHashMap::new();
+    let (mut head, mut tail) = (Vec::new(), Vec::new());
+    for group in groups {
+        let count = seen.entry(group.first.doc.clone()).or_default();
+        *count += 1;
+        if *count <= per_doc {
+            head.push(group);
+        } else {
+            tail.push(group);
+        }
+    }
+    head.append(&mut tail);
+    head
 }
 
 /// `b` appended to `a`, without the text the two chunks share at the seam (xberg overlaps
@@ -163,15 +204,16 @@ fn hit_of(group: &Merged, title: Option<String>, of: Option<u32>) -> DocHit {
     }
 }
 
-/// Cut the page `[offset, offset + limit)` out of `ranking` and build its hits, reading titles and
-/// neighbouring chunks from `store`. `max_tokens` bounds the hits; the first is always kept.
-pub fn page(
-    store: Option<&DocStore>,
-    ranking: DocsRanking,
-    offset: u32,
-    limit: u32,
-    max_tokens: Option<u32>,
-) -> DocsPage {
+/// Cut the page of `ranking` that `paging` names and build its hits, reading titles (and, with
+/// `paging.context`, neighbouring chunks) from `store`. The first hit is always kept.
+pub fn page(store: Option<&DocStore>, ranking: DocsRanking, paging: Paging) -> DocsPage {
+    let Paging {
+        offset,
+        limit,
+        max_tokens,
+        per_doc,
+        context,
+    } = paging;
     let DocsRanking {
         query,
         mut hits,
@@ -185,13 +227,13 @@ pub fn page(
     } = ranking;
     let goes_on = hits.len() > RANKED_DEPTH;
     hits.truncate(RANKED_DEPTH);
-    let fetched = hits.len() as u32;
-    let page: Vec<RankedChunk> = hits.into_iter().skip(offset as usize).take(limit as usize).collect();
-    let consumed = page.len() as u32;
-    let groups = merge(page);
+    let all = diversify(merge(hits), per_doc);
+    let fetched = all.len() as u32;
+    let groups: Vec<Merged> = all.into_iter().skip(offset as usize).take(limit as usize).collect();
+    let consumed = groups.len() as u32;
 
     let (metas, neighbours) = match store {
-        Some(store) if !groups.is_empty() => context_of(store, &groups),
+        Some(store) if !groups.is_empty() => context_of(store, &groups, context),
         _ => (AHashMap::new(), AHashMap::new()),
     };
 
@@ -223,36 +265,40 @@ pub fn page(
     }
     let budgeted = kept < out.len();
     out.truncate(kept);
-    // Context goes on in rank order while the budget holds: before, then after.
+    // Context goes on in rank order while the budget holds: before, then after. A chunk already
+    // given to an earlier hit is not repeated.
+    let mut given: AHashSet<(String, u32)> = AHashSet::new();
     for (hit, group) in out.iter_mut().zip(&groups) {
+        let doc = &group.first.doc;
         let (ord, ord_end) = group.ord_range();
-        let before = ord
-            .checked_sub(1)
-            .and_then(|o| neighbours.get(&(group.first.doc.clone(), o)));
-        let after = neighbours.get(&(group.first.doc.clone(), ord_end + 1));
-        if let Some(chunk) = before {
+        let before = ord.checked_sub(1).map(|o| (doc.clone(), o));
+        let after = Some((doc.clone(), ord_end + 1));
+        for (key, is_before) in [(before, true), (after, false)] {
+            let Some(key) = key else { continue };
+            let Some(chunk) = neighbours.get(&key).filter(|_| !given.contains(&key)) else {
+                continue;
+            };
             let cost = bytes_to_tokens(chunk.text.len() as u64);
-            if budget.is_none_or(|budget| used + cost <= budget) {
-                used += cost;
+            if budget.is_some_and(|budget| used + cost > budget) {
+                continue;
+            }
+            used += cost;
+            given.insert(key);
+            if is_before {
                 hit.text = stitch(&chunk.text, &hit.text);
                 hit.context.before = 1;
-            }
-        }
-        if let Some(chunk) = after {
-            let cost = bytes_to_tokens(chunk.text.len() as u64);
-            if budget.is_none_or(|budget| used + cost <= budget) {
-                used += cost;
+            } else {
                 hit.text = stitch(&hit.text, &chunk.text);
                 hit.context.after = 1;
             }
         }
     }
 
-    // The page ends where its last kept hit's members end in the ranking.
-    let kept_members: u32 = groups.iter().take(kept).map(|g| g.members.len() as u32).sum();
-    let next = offset + if budgeted { kept_members } else { consumed };
+    // The page ends after its last kept hit.
+    let next = offset + if budgeted { kept as u32 } else { consumed };
     let more = !out.is_empty() && next < fetched;
-    let truncated_reason = truncated_reason.or_else(|| goes_on.then(|| "depth".to_string()));
+    // Only a ranking the page has read to its end is cut at the depth: a `limit` cut is paging.
+    let truncated_reason = truncated_reason.or_else(|| (goes_on && !more).then(|| "depth".to_string()));
     DocsPage {
         query,
         hits: out,
@@ -272,14 +318,14 @@ pub fn page(
 type Metas = AHashMap<String, DocMeta>;
 type Neighbours = AHashMap<(String, u32), DocChunkHit>;
 
-/// Titles and chunk counts of the page's documents, and the chunks on either side of each group.
-/// A store error leaves the page without context rather than failing it.
-fn context_of(store: &DocStore, groups: &[Merged]) -> (Metas, Neighbours) {
+/// Titles and chunk counts of the page's documents, and with `context` the chunks on either side of
+/// each group. A store error leaves the page without context rather than failing it.
+fn context_of(store: &DocStore, groups: &[Merged], context: bool) -> (Metas, Neighbours) {
     let mut keys: Vec<String> = groups.iter().map(|g| g.first.doc.clone()).collect();
     keys.sort_unstable();
     keys.dedup();
     let mut wanted: AHashMap<String, Vec<u32>> = AHashMap::new();
-    for group in groups {
+    for group in groups.iter().filter(|_| context) {
         let (ord, ord_end) = group.ord_range();
         let ords = wanted.entry(group.first.doc.clone()).or_default();
         if let Some(before) = ord.checked_sub(1) {
@@ -288,9 +334,14 @@ fn context_of(store: &DocStore, groups: &[Merged]) -> (Metas, Neighbours) {
         ords.push(ord_end + 1);
     }
     let wanted: Vec<(String, Vec<u32>)> = wanted.into_iter().collect();
-    let fetched = store
-        .documents(&keys)
-        .and_then(|metas| store.chunks(&wanted).map(|chunks| (metas, chunks)));
+    let fetched = store.documents(&keys).and_then(|metas| {
+        let chunks = if wanted.is_empty() {
+            Vec::new()
+        } else {
+            store.chunks(&wanted)?
+        };
+        Ok((metas, chunks))
+    });
     match fetched {
         Ok((metas, chunks)) => (
             metas.into_iter().map(|meta| (meta.doc_key.clone(), meta)).collect(),

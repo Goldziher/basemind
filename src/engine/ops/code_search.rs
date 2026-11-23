@@ -95,7 +95,7 @@ mod enabled {
             }
             let mut ranking = ranking;
             let page = page_ranked(
-                std::mem::take(&mut ranking.hits),
+                crate::engine::code_search::merge_overlapping(std::mem::take(&mut ranking.hits)),
                 offset,
                 limit,
                 budget(p.max_tokens),

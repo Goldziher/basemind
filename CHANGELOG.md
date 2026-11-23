@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `docs_search` takes `per_doc` (default 2) so one document does not fill a page, and `context` to add the chunk before and after each hit, which is off by default (#474).
+
+### Changed
+
+- `docs_search` merges chunks of one document that touch or overlap into one hit wherever they rank, and no neighbouring chunk is repeated across hits (#474).
+
+### Fixed
+
+- `code_search` merges overlapping chunks of one symbol into one hit (#479).
+- `code_search` and `docs_search` no longer set `truncated` with `truncated_reason: "depth"` on a page cut by `limit`; only a page that reaches the paging depth does (#479).
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33
