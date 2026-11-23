@@ -99,6 +99,12 @@ These read the index (the daemon answers them when one runs) and have no MCP too
   caller says how it was established: `same_file` or `imported` (`proven`, bound to the definition
   by the resolution facts) or `name_only` (a callee named alike, listed but never followed and never
   proven). Call sites that bind to another definition are not callers and are left out.
+  Each impacted file (an importer reached or a file holding a caller, targets excluded) is counted
+  once in `impacted_files` and in its `buckets` count: `prod`, `config`, `test` or `external`
+  (vendored or third-party code), judged from the path. `order` lists what to change first: the
+  targets, then the impacted files nearest first, prod before config before tests before external
+  code. `--fail-above <n>` exits 1 for CI when `impacted_files` exceeds `n`; a report from an index
+  that is not ready exits 1 instead of passing.
 - `basemind code cycles` lists import cycles, smallest first, each with an import chain that closes
   it; `--path` narrows to a file or directory and `--max-size` drops larger cycles.
   `basemind code cycles --check <from> <to>` says whether `from` importing `to` would close a cycle.

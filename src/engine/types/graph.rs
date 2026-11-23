@@ -93,6 +93,51 @@ pub struct ImpactCallee {
     pub proven: bool,
 }
 
+/// What an impacted file is, judged from its path, in the order its work is done within a depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImpactBucket {
+    /// Source that ships.
+    Prod,
+    /// Configuration, build and automation files.
+    Config,
+    /// Tests and their fixtures.
+    Test,
+    /// Code the repository does not own: vendored or third-party directories, files indexed from
+    /// outside the root.
+    External,
+}
+
+/// Impacted files per [`ImpactBucket`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ImpactBuckets {
+    pub prod: usize,
+    pub config: usize,
+    pub test: usize,
+    pub external: usize,
+}
+
+impl ImpactBuckets {
+    /// Count one more file in `bucket`.
+    pub fn add(&mut self, bucket: ImpactBucket) {
+        match bucket {
+            ImpactBucket::Prod => self.prod += 1,
+            ImpactBucket::Config => self.config += 1,
+            ImpactBucket::Test => self.test += 1,
+            ImpactBucket::External => self.external += 1,
+        }
+    }
+}
+
+/// One file in the order of work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ImpactStep {
+    pub path: RelPath,
+    /// Hops from the nearest target, by import or call: 0 for a target itself.
+    pub depth: u8,
+    pub bucket: ImpactBucket,
+}
+
 /// The answer of `basemind code impact`.
 #[derive(Debug, Serialize)]
 pub struct ImpactResponse {
@@ -138,6 +183,14 @@ pub struct ImpactResponse {
     /// Symbol target: the calls its definitions' bodies make, each graded like a caller.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<ImpactCallee>,
+    /// The files impacted, targets excluded: the importers reached and the files holding a call
+    /// site, each counted once. `--fail-above` compares against it.
+    pub impacted_files: usize,
+    /// `impacted_files` per bucket.
+    pub buckets: ImpactBuckets,
+    /// What to change, first to last: the targets, then the impacted files nearest first, production
+    /// before configuration before tests before external code within a depth.
+    pub order: Vec<ImpactStep>,
     pub coverage: GraphCoverage,
     /// What the graph cannot see that bears on this answer.
     #[serde(skip_serializing_if = "Vec::is_empty")]

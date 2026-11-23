@@ -92,6 +92,45 @@ fn the_walk_reports_each_file_once_at_its_depth_and_marks_cycles() {
     assert_eq!(from_cycle.targets_in_cycles, [RelPath::from("q")]);
 }
 
+#[test]
+fn the_answer_buckets_its_impacted_files_and_orders_the_work() {
+    let graph = graph_of(
+        &[
+            ("mid", "leaf", I),
+            ("tests/top_test.rs", "mid", I),
+            ("vendor/v.rs", "mid", I),
+        ],
+        "rust",
+        true,
+    );
+    let mut response = answer(&graph, targets(&["leaf"]), WalkLimits::new(Some(2)), Tiers::RUNTIME);
+    super::impact_order::finish(&mut response);
+    assert_eq!(response.impacted_files, 3);
+    assert_eq!(
+        response.buckets,
+        ImpactBuckets {
+            prod: 1,
+            config: 0,
+            test: 1,
+            external: 1
+        }
+    );
+    let order: Vec<(String, u8)> = response
+        .order
+        .iter()
+        .map(|step| (step.path.to_string(), step.depth))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("leaf".to_string(), 0),
+            ("mid".to_string(), 1),
+            ("tests/top_test.rs".to_string(), 2),
+            ("vendor/v.rs".to_string(), 2)
+        ]
+    );
+}
+
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 mod scanned {
     use super::*;

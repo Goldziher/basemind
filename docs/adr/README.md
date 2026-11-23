@@ -144,4 +144,5 @@ them.
 | [0053](0053-text-answers-encoded-per-tool.md) | Text answers encoded per tool, by measured tokens | Accepted |
 | [0054](0054-per-view-indexes-go-at-adoption.md) | Per-view indexes go when the group index adopts their view | Proposed |
 | [0055](0055-read-around-reducing-floor.md) | A 1.4x reducing floor for `read_around` | Accepted |
-| [0056](0056-impact-callers-graded-by-resolution.md) | `code impact`: callers graded by resolution, and downstream dependencies | Accepted |
+| [0056](0056-impact-callers-graded-by-resolution.md) | `code impact`: callers graded by resolution, and downstream dependencies | Accepted (amended by ADR-0057) |
+| [0057](0057-impact-buckets-order-and-gate.md) | `code impact`: buckets, order of work and `--fail-above` | Accepted |
