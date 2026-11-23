@@ -237,3 +237,34 @@ fn every_stamped_tip_keeps_its_own_reachability_and_the_oldest_beyond_the_cap_is
         "most recently synced first"
     );
 }
+
+#[test]
+fn a_tip_is_ordered_only_when_its_stamp_says_so_and_loses_it_when_restamped_unordered() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let index = GitHistoryIndex::open(dir.path()).expect("open");
+    let head = [0x33u8; 20];
+    let stamp = |ordered: bool| {
+        let mut writer = index.writer().expect("writer");
+        writer.set_ordered(ordered);
+        writer
+            .finish_meta(&head, &reach::Reach::from_ords([0]), &head, 1, 0, 1)
+            .expect("stamp the tip");
+    };
+
+    assert!(!index.tip_is_ordered(&head), "a tip nobody stamped is not ordered");
+    stamp(false);
+    assert!(!index.tip_is_ordered(&head), "stamped unordered");
+    stamp(true);
+    assert!(index.tip_is_ordered(&head));
+    assert!(
+        index.at(&keys::sha_raw_to_hex(&head)).is_some(),
+        "an ordered tip is served"
+    );
+    stamp(false);
+    assert!(!index.tip_is_ordered(&head), "a restamp replaces the mark");
+    assert!(index.has_tip(&keys::sha_raw_to_hex(&head)));
+    assert!(
+        index.at(&keys::sha_raw_to_hex(&head)).is_none(),
+        "an unordered tip is read by the live walk"
+    );
+}

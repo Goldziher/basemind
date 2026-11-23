@@ -906,3 +906,118 @@ fn main_checkout_still_appends_after_a_diverged_linked_worktree_is_indexed() {
         "the worktree's head is still served"
     );
 }
+
+/// Newest-first shas of the live walk of HEAD, the order `git_log` answers in without the index.
+fn live_walk(root: &Path) -> Vec<String> {
+    Repo::discover(root)
+        .expect("repo discover")
+        .log_paths(1000, false)
+        .expect("live walk")
+        .into_iter()
+        .map(|commit| commit.sha)
+        .collect()
+}
+
+fn index_recent(index: &GitHistoryIndex, head: &str) -> Vec<String> {
+    index
+        .at(head)
+        .unwrap_or_else(|| panic!("{head} is served from the index"))
+        .recent_commits(0, 100, false)
+        .into_iter()
+        .map(|commit| commit.sha)
+        .collect()
+}
+
+/// A head that extends the indexed tip linearly keeps the index as its fast path, and the index
+/// lists its commits in the live walk's order.
+#[test]
+fn a_linear_head_is_served_from_the_index_in_the_live_walks_order() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_authored_at(root, "a.rs", "1", "t", "t@e.x", "c1", "2025-01-01T00:00:00");
+    let (index, _) = sync(root);
+    drop(index);
+    commit_authored_at(root, "a.rs", "2", "t", "t@e.x", "c2", "2025-01-02T00:00:00");
+    commit_authored_at(root, "a.rs", "3", "t", "t@e.x", "c3", "2025-01-03T00:00:00");
+
+    let (index, outcome) = sync(root);
+
+    assert_eq!(outcome, RebuildOutcome::Incremental { added: 2 });
+    assert!(index.tip_is_ordered(&basemind::git_history::keys::sha_hex_to_raw(&head_of(root)).expect("sha")));
+    assert_eq!(index_recent(&index, &head_of(root)), live_walk(root));
+    assert_eq!(live_walk(root).len(), 3);
+}
+
+/// Append order is not walk order once a head merges commits indexed for two other heads: the merge
+/// is appended last, yet the walk lists the older side's commit after the newer one's. Such a head is
+/// answered by the live walk (the index declines it), while the tips it joins stay served.
+#[test]
+fn a_merged_head_whose_order_the_index_cannot_prove_is_left_to_the_live_walk() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_authored_at(root, "a.rs", "1", "t", "t@e.x", "c1", "2025-01-01T00:00:00");
+    commit_authored_at(root, "a.rs", "2", "t", "t@e.x", "c2", "2025-01-03T00:00:00");
+    let c2 = head_of(root);
+    let (index, _) = sync(root);
+    drop(index);
+    run(root, &["checkout", "-qb", "feature", "HEAD~1"]);
+    commit_authored_at(root, "b.rs", "1", "t", "t@e.x", "f1", "2025-01-02T00:00:00");
+    let f1 = head_of(root);
+    let (index, _) = sync(root);
+    drop(index);
+    run(root, &["checkout", "-q", "main"]);
+    run(root, &["merge", "-q", "--no-ff", "feature", "-m", "merge"]);
+    let merge = head_of(root);
+
+    let (index, outcome) = sync(root);
+
+    assert_eq!(outcome, RebuildOutcome::Incremental { added: 1 });
+    assert!(index.has_tip(&merge), "the merge is an indexed tip");
+    assert!(
+        index.at(&merge).is_none(),
+        "but its order is not provable from the index"
+    );
+    let c1 = head_of_rev(root, "HEAD~2");
+    assert_eq!(
+        live_walk(root),
+        [merge, c2.clone(), f1.clone(), c1],
+        "the live walk lists the newer side first, the order append order would invert"
+    );
+    for tip in [&c2, &f1] {
+        assert!(index.at(tip).is_some(), "{tip} stays served");
+    }
+    assert_eq!(
+        index_recent(&index, &c2),
+        capture_lines(root, &["log", "--format=%H", &c2])
+    );
+    assert_eq!(
+        index_recent(&index, &f1),
+        capture_lines(root, &["log", "--format=%H", &f1])
+    );
+}
+
+/// A head that branches off history indexed for another head is checked against its own walk: here
+/// the walk descends through the ordinals, so the index serves it in the live walk's order.
+#[test]
+fn a_branch_off_indexed_history_whose_walk_descends_is_served_in_the_live_walks_order() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_authored_at(root, "a.rs", "1", "t", "t@e.x", "c1", "2025-01-01T00:00:00");
+    commit_authored_at(root, "a.rs", "2", "t", "t@e.x", "c2", "2025-01-02T00:00:00");
+    let (index, _) = sync(root);
+    drop(index);
+    run(root, &["checkout", "-qb", "feature", "HEAD~1"]);
+    commit_authored_at(root, "b.rs", "1", "t", "t@e.x", "f1", "2025-01-03T00:00:00");
+
+    let (index, _) = sync(root);
+
+    assert_eq!(index_recent(&index, &head_of(root)), live_walk(root));
+}
+
+fn head_of_rev(root: &Path, rev: &str) -> String {
+    capture(root, &["rev-parse", rev]).trim().to_string()
+}
+
+fn capture_lines(root: &Path, args: &[&str]) -> Vec<String> {
+    capture(root, args).lines().map(str::to_owned).collect()
+}

@@ -15,6 +15,9 @@ pub const META_LAST_HEAD: &[u8] = b"last_indexed_head";
 /// Prefix of the rows of the indexed tips: `tip/ ‖ sha (20 bytes)` → `stamped unix seconds (u64 BE) ‖
 /// reachability bitset` (see [`super::reach::Reach`]). One row per HEAD the index answers for.
 pub const META_TIP_PREFIX: &[u8] = b"tip/";
+/// Prefix of the rows marking a tip whose reachable commits the index returns in the live walk's
+/// order: `ordered/ ‖ sha (20 bytes)` → one byte. A tip without the row is read by the live walk.
+pub const META_ORDERED_PREFIX: &[u8] = b"ordered/";
 pub const META_NEXT_ORD: &[u8] = b"next_commit_ord";
 pub const META_NEXT_PATH_ID: &[u8] = b"next_path_id";
 pub const META_ROOT_SHA: &[u8] = b"root_sha";
@@ -34,6 +37,11 @@ pub const META_FAILED_BUILD: &[u8] = b"failed_build";
 /// `gh_meta` key of the tip row of `head`.
 pub fn tip_key(head: &[u8; 20]) -> Vec<u8> {
     [META_TIP_PREFIX, head.as_slice()].concat()
+}
+
+/// `gh_meta` key of the order marker of the tip `head`.
+pub fn ordered_key(head: &[u8; 20]) -> Vec<u8> {
+    [META_ORDERED_PREFIX, head.as_slice()].concat()
 }
 
 /// The head a `gh_meta` tip key names, or `None` for a key that is not a tip row.

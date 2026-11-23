@@ -812,8 +812,11 @@ commit walk behind `path` + `symbol`, and full-text `query` / `author` search) a
   posting lists keeping the ordinals that HEAD reaches (`GitHistoryIndex::at`), so a worktree sees its
   own commits without a rebuild and the answer is never `partial`. A HEAD move appends only the
   commits no earlier sync stored; a head whose commits are all stored costs one revision walk and no
-  diff. Up to 32 tips are kept, the least recently synced dropping first; a worktree whose HEAD is not
-  an indexed tip is read by the live walk until its next sync. Index sync runs on a dedicated
+  diff. A tip is also marked ordered only when its descending ordinals are provably the live walk's
+  newest-first order (a walk that descends through the ordinals, or a linear chain of single-parent
+  commits on an ordered tip); a tip that is not, such as one that merges commits indexed for other
+  heads, is read by the live walk. Up to 32 tips are kept, the least recently synced dropping first; a
+  worktree whose HEAD is not an indexed tip is read by the live walk until its next sync. Index sync runs on a dedicated
   two-thread pool.
 - A build or append marks the index in progress and removes its head in one batch before its first
   row; the batch that stamps the new tip clears the mark. A marked index answers for no head, so even

@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The git-history index stores every commit reachable from any worktree HEAD once and answers each HEAD from its own reachability, so linked worktrees on other branches get indexed (not `partial`) history, and a HEAD that diverges or is rewritten appends only its new commits instead of wiping and rebuilding the index (#283). The first sync after upgrading rebuilds the index once.
+- The git-history index stores every commit reachable from any worktree HEAD once and answers each HEAD from its own reachability, so linked worktrees on other branches get indexed (not `partial`) history, and a HEAD that diverges or is rewritten appends only its new commits instead of wiping and rebuilding the index (#283). The first sync after upgrading rebuilds the index once. A head whose commits the index cannot prove to list in the live walk's order (for example one that merges commits indexed for other heads) is answered by the live walk.
 
 ## [0.34.0] - 2026-11-22
 

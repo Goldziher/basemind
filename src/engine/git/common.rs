@@ -83,7 +83,7 @@ pub(super) fn require_git_repo(ws: &Workspace) -> Result<&Arc<crate::git::Repo>,
     })
 }
 
-/// The git-history index as `head` sees it, but only when the index holds `head` as a tip. History
+/// The git-history index as `head` sees it, but only when the index holds `head` as an ordered tip. History
 /// tools use it as a pure accelerator: a head the index has not caught up to (another worktree's, a
 /// commit made while the server runs) or an absent index returns `None`, and the caller falls back to
 /// the live walk, so a result is never served from a HEAD the index lacks. An index built in a shallow
@@ -104,6 +104,11 @@ pub(super) fn git_history_if_fresh<'a>(
         && !deepened()
     {
         return Some(view);
+    }
+    // A tip the index holds but cannot return in the live walk's order is read live; a sync would
+    // change nothing for it.
+    if index.has_tip(head) && !deepened() {
+        return None;
     }
     ws.request_history_sync();
     None

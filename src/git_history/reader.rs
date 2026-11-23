@@ -23,11 +23,28 @@ pub struct HistoryAt<'a> {
 }
 
 impl GitHistoryIndex {
-    /// The history as `head` (a 40-char hex sha) sees it, or `None` when `head` is not an indexed tip
-    /// (a worktree the index has not synced yet, a head dropped past [`MAX_TIPS`](super::MAX_TIPS),
-    /// or a build in progress): the caller reads by the live walk.
+    /// The history as `head` (a 40-char hex sha) sees it, or `None` when the index cannot answer for
+    /// it in the live walk's order: `head` is not an indexed tip (a worktree the index has not synced
+    /// yet, a head dropped past [`MAX_TIPS`](super::MAX_TIPS), or a build in progress), or it is a tip
+    /// whose order the index could not prove. The caller reads by the live walk.
+    ///
+    /// The index lists a head's commits by descending ordinal, the order they were appended in, while
+    /// the live walk lists them newest commit time first. A sync marks a tip ordered only when the
+    /// two are provably the same list:
+    /// - after a walk from `head` alone (a full build, or a head with no indexed ancestor tip), when
+    ///   the ordinals of that very walk, read in walk order, strictly descend; or
+    /// - after an extension of an ordered tip, when the commits added are a linear chain of
+    ///   single-parent commits from `head` down to that tip, none stored before. The walk of `head`
+    ///   then has a one-commit frontier throughout: the chain, then the walk of the tip, and the added
+    ///   ordinals all exceed the tip's.
+    ///
+    /// A head reached after a branch switch or a merge, or that adds a merge, fails both and is read
+    /// live: the order of an index that serves many heads is not a property of the head.
     pub fn at(&self, head: &str) -> Option<HistoryAt<'_>> {
         let head = keys::sha_hex_to_raw(head)?;
+        if !self.db.tip_is_ordered(&head) {
+            return None;
+        }
         let reach = self.db.reach_of(&head)?;
         Some(HistoryAt {
             db: &self.db,

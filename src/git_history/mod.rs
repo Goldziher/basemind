@@ -495,6 +495,7 @@ impl GitHistoryIndex {
             db: db.clone(),
             batch: db.db.batch(),
             staged: 0,
+            ordered: false,
         })
     }
 
@@ -518,6 +519,13 @@ impl GitHistoryIndex {
     /// or append is in progress.
     pub fn has_tip(&self, head: &str) -> bool {
         keys::sha_hex_to_raw(head).is_some_and(|head20| self.db.reach_of(&head20).is_some())
+    }
+
+    /// Whether the indexed tip `head` returns its commits in the order the live walk does: the one
+    /// condition under which a read may answer from the index (see [`HistoryAt`](reader::HistoryAt)).
+    /// False for a head that is no tip.
+    pub fn tip_is_ordered(&self, head: &[u8; 20]) -> bool {
+        self.db.tip_is_ordered(head)
     }
 
     /// The indexed tips, most recently synced first, as 40-char hex shas.
@@ -662,6 +670,10 @@ impl LocalDb {
         Some(reach::Reach::from_bytes(bits))
     }
 
+    fn tip_is_ordered(&self, head: &[u8; 20]) -> bool {
+        self.meta.contains_key(keys::ordered_key(head)).unwrap_or(false)
+    }
+
     /// Every stored tip with the unix second it was last synced.
     fn tips(&self) -> Vec<([u8; 20], u64)> {
         self.meta
@@ -800,6 +812,7 @@ pub struct GitHistoryWriter {
     db: LocalDb,
     batch: OwnedWriteBatch,
     staged: usize,
+    ordered: bool,
 }
 
 /// Flush the Fjall batch every N staged ops (mirrors the scanner's `INDEX_COMMIT_BATCH`).
@@ -817,6 +830,12 @@ impl GitHistoryWriter {
         mark.remove(&self.db.meta, keys::META_LAST_HEAD);
         mark.commit()?;
         Ok(())
+    }
+
+    /// Whether the tip [`finish_meta`](Self::finish_meta) stamps returns its commits in the live
+    /// walk's order. Unset, the tip is read by the live walk.
+    pub fn set_ordered(&mut self, ordered: bool) {
+        self.ordered = ordered;
     }
 
     /// Record the `shallow` file this build read, so a later fetch that moves a boundary is seen.
@@ -919,8 +938,14 @@ impl GitHistoryWriter {
             keys::tip_key(head),
             [stamp.as_slice(), reach.as_bytes()].concat(),
         );
+        if self.ordered {
+            meta.insert(&self.db.meta, keys::ordered_key(head), [1u8]);
+        } else {
+            meta.remove(&self.db.meta, keys::ordered_key(head));
+        }
         for stale in evicted_tips(self.db.tips(), head, MAX_TIPS) {
             meta.remove(&self.db.meta, keys::tip_key(&stale));
+            meta.remove(&self.db.meta, keys::ordered_key(&stale));
         }
         meta.remove(&self.db.meta, keys::META_BUILD_IN_PROGRESS);
         meta.remove(&self.db.meta, keys::META_FAILED_BUILD);

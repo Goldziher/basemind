@@ -203,6 +203,8 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
     for (term_key, ords) in term_postings {
         writer.put_term_posting(&term_key, &encoding::encode_ords(&ords))?;
     }
+    // The ordinals follow the reverse of this very walk, one slot per commit.
+    writer.set_ordered(true);
     writer.finish_meta(&head20, &reach, &root20, total, interner.next_path_id, written)?;
     index.local().compact()?;
     Ok(RebuildOutcome::FullRebuild {
@@ -221,25 +223,42 @@ fn append_tip(index: &GitHistoryIndex, repo: &Repo, head: &str) -> Result<Rebuil
     let Some(head20) = keys::sha_hex_to_raw(head) else {
         return Ok(RebuildOutcome::Fresh);
     };
-    let (shas, mut reach) = match ancestor_tip(index, repo, head) {
-        Some((base, reach)) => (repo.new_commit_shas(&keys::sha_raw_to_hex(&base))?, reach),
-        None => (repo.all_commit_shas()?, Reach::default()),
+    let (shas, mut reach, base) = match ancestor_tip(index, repo, head) {
+        Some((base, reach)) => (repo.new_commit_shas(&keys::sha_raw_to_hex(&base))?, reach, Some(base)),
+        None => (repo.all_commit_shas()?, Reach::default(), None),
     };
     let mut unstored: Vec<&String> = Vec::new();
+    // Each commit of the walk as its stored ordinal, or the position among the unstored ones.
+    let mut walk: Vec<Result<u32, usize>> = Vec::with_capacity(shas.len());
     for sha in &shas {
         let Some(sha20) = keys::sha_hex_to_raw(sha) else {
             continue;
         };
         match index.ord_for_sha(&sha20) {
-            Some(ord) => reach.insert(ord),
-            None => unstored.push(sha),
+            Some(ord) => {
+                reach.insert(ord);
+                walk.push(Ok(ord));
+            }
+            None => {
+                walk.push(Err(unstored.len()));
+                unstored.push(sha);
+            }
         }
     }
     let root20 = index.root_sha().unwrap_or(head20);
     let start_ord = index.next_ord();
+    let ordered = match base {
+        None => walk_descends(&walk, start_ord, unstored.len()) && walk.len() == shas.len(),
+        Some(base) => {
+            unstored.len() == shas.len()
+                && index.tip_is_ordered(&base)
+                && extends_linearly(repo, head, &shas, &keys::sha_raw_to_hex(&base))
+        }
+    };
 
     if unstored.is_empty() {
-        let writer = index.writer()?;
+        let mut writer = index.writer()?;
+        writer.set_ordered(ordered);
         writer.finish_meta(
             &head20,
             &reach,
@@ -285,6 +304,7 @@ fn append_tip(index: &GitHistoryIndex, repo: &Repo, head: &str) -> Result<Rebuil
         writer.put_term_posting(&term_key, &encoding::encode_ords(&all))?;
     }
     let next_ord = start_ord + chrono.len() as u32;
+    writer.set_ordered(ordered);
     writer.finish_meta(
         &head20,
         &reach,
@@ -294,6 +314,39 @@ fn append_tip(index: &GitHistoryIndex, repo: &Repo, head: &str) -> Result<Rebuil
         index.commit_count() + added,
     )?;
     Ok(RebuildOutcome::Incremental { added })
+}
+
+/// Whether a walk, newest first, maps to strictly descending ordinals, the unstored commits taking
+/// the `count` ordinals from `start_ord` in reverse walk order (the oldest first).
+fn walk_descends(walk: &[Result<u32, usize>], start_ord: u32, count: usize) -> bool {
+    let ords = walk.iter().map(|slot| match slot {
+        Ok(ord) => *ord,
+        Err(position) => start_ord + (count - 1 - position) as u32,
+    });
+    let mut previous: Option<u32> = None;
+    for ord in ords {
+        if previous.is_some_and(|before| before <= ord) {
+            return false;
+        }
+        previous = Some(ord);
+    }
+    true
+}
+
+/// Whether `shas` (the commits `head` adds over the tip `base`, newest first) are a linear chain:
+/// `head`, then each one's only parent, ending at a commit whose only parent is `base`.
+fn extends_linearly(repo: &Repo, head: &str, shas: &[String], base: &str) -> bool {
+    let mut expected = head.to_owned();
+    for sha in shas {
+        if *sha != expected {
+            return false;
+        }
+        match repo.parent_shas(sha).as_deref() {
+            Some([parent]) => expected.clone_from(parent),
+            _ => return false,
+        }
+    }
+    !shas.is_empty() && expected == base
 }
 
 /// The most recently synced indexed tip that is an ancestor of `head`, with what it reaches.
@@ -446,6 +499,24 @@ impl<'a> PathInterner<'a> {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn a_walk_is_ordered_only_when_its_ordinals_strictly_descend() {
+        // `Ok` is a stored ordinal, `Err(n)` the n-th unstored commit in walk order, which takes the
+        // ordinals from `start` in reverse: with three unstored from 10, positions 0, 1, 2 are 12, 11, 10.
+        let cases: [(&[Result<u32, usize>], bool); 6] = [
+            (&[], true),
+            (&[Err(0), Err(1), Err(2)], true),
+            (&[Err(0), Ok(7), Ok(3)], true),
+            (&[Err(1), Err(0)], false),
+            (&[Ok(7), Err(0)], false),
+            (&[Err(0), Ok(5), Ok(5)], false),
+        ];
+        for (walk, expected) in cases {
+            let count = walk.iter().filter(|slot| slot.is_err()).count();
+            assert_eq!(walk_descends(walk, 10, count), expected, "{walk:?}");
+        }
+    }
 
     fn git(root: &Path, args: &[&str]) -> String {
         let out = crate::testing::git_command()
