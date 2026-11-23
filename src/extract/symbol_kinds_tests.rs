@@ -204,7 +204,6 @@ fn hcl_outlines_terragrunt_include_dependency_terraform_locals_and_inputs() {
     let (got, _) = outline("hcl", include_str!("../../tests/fixtures/symbol_kinds/terragrunt.hcl"));
     let want = [
         ("env", Variable),
-        ("include", Module),
         ("inputs", Variable),
         ("root", Module),
         ("terraform", Namespace),
@@ -232,4 +231,28 @@ fn terraform_signatures_are_the_block_header() {
             "{name}"
         );
     }
+}
+
+#[test]
+fn hcl_unlabeled_include_is_named_by_its_block_type() {
+    let (got, _) = outline("hcl", "include {\n  path = find_in_parent_folders()\n}\n");
+    assert_eq!(got, symbols(&[("include", Module)]));
+}
+
+#[test]
+fn terraform_outlines_blocks_with_bare_identifier_labels() {
+    let src = "resource aws_s3_bucket logs {}\n\nvariable region {}\n\noutput arn {}\n\nmodule network {}\n\nprovider aws {}\n";
+    let (got, _) = outline("terraform", src);
+    let want = [
+        ("arn", Const),
+        ("aws", Namespace),
+        ("logs", Class),
+        ("network", Module),
+        ("region", Variable),
+    ];
+    assert_eq!(got, symbols(&want));
+    assert_eq!(
+        signature_of("terraform", src, "logs"),
+        (Class, Some("resource aws_s3_bucket logs".to_string()))
+    );
 }
