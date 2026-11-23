@@ -6,6 +6,10 @@ inputs:
     description: Comma-separated extra targets to install
     required: false
     default: ""
+  use-sccache:
+    description: Route rustc through sccache, backed by the GitHub Actions cache (the same setup as xberg-io/actions/setup-rust)
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -26,3 +30,27 @@ runs:
         toolchain: ${{ steps.channel.outputs.channel }}
         components: rustfmt, clippy
         targets: ${{ inputs.targets }}
+    - name: Set up sccache
+      if: inputs.use-sccache == 'true'
+      uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      continue-on-error: true
+    - name: Route rustc through sccache
+      if: inputs.use-sccache == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v sccache >/dev/null 2>&1 && [ -z "${SCCACHE_PATH:-}" ]; then
+          echo "::warning::sccache is unavailable; compiling without it"
+          exit 0
+        fi
+        {
+          echo "SCCACHE_GHA_ENABLED=true"
+          echo "RUSTC_WRAPPER=${SCCACHE_PATH:+$SCCACHE_PATH/}sccache"
+          echo "SCCACHE_STARTUP_TIMEOUT=120"
+          echo "SCCACHE_IDLE_TIMEOUT=0"
+          echo "CARGO_INCREMENTAL=0"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "SCCACHE_NO_DAEMON=1"
+            echo "SCCACHE_DIR=$RUNNER_TEMP/sccache"
+          fi
+        } >> "$GITHUB_ENV"

@@ -16,10 +16,30 @@ pnpm = "12.21.0"
 "github:nextest-rs/nextest" = { version = "0.9.152", version_prefix = "cargo-nextest-" }
 "github:EmbarkStudios/cargo-about" = "0.9.3"
 ripgrep = "15.2.0"
+sccache = "0.20.0"
 
 [tasks.setup]
 description = "Install all dependencies and initialize project. Idempotent."
-run = ["mise install", "cargo fetch", { task = "governance:hooks:install" }, "echo 'Setup complete'"]
+run = ["mise install", { task = "setup:sccache" }, "cargo fetch", { task = "governance:hooks:install" }, "echo 'Setup complete'"]
+
+[tasks."setup:sccache"]
+description = "Cache Rust compilation across worktrees with sccache: install it when missing, point cargo at it. Idempotent."
+run = """
+set -eu
+command -v sccache >/dev/null 2>&1 || mise install sccache
+bin="$(command -v sccache || mise which sccache)"
+cfg="${CARGO_HOME:-$HOME/.cargo}/config.toml"
+mkdir -p "$(dirname "$cfg")"
+if ! grep -q 'rustc-wrapper' "$cfg" 2>/dev/null; then
+  # sccache cannot cache incremental builds, so cargo's incremental mode is turned off with it.
+  printf '\n[build]\nrustc-wrapper = "%s"\nincremental = false\n' "$bin" >> "$cfg"
+  echo "cargo now builds through $bin ($cfg)"
+else
+  echo "$cfg already sets a rustc-wrapper; left as it is"
+fi
+"$bin" --start-server >/dev/null 2>&1 || true
+"$bin" --show-stats | head -4
+"""
 
 [tasks.build]
 description = "Build the basemind binary"
