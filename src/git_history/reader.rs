@@ -240,11 +240,11 @@ mod tests {
         let index = GitHistoryIndex::open(dir.path()).expect("open the index");
         let rel = RelPath::from("src/lib.rs");
         let head = [1u8; 20];
-        index
-            .writer()
-            .expect("writer")
+        let mut writer = index.writer().expect("writer");
+        writer.set_ordered(true);
+        writer
             .finish_meta(&head, &Reach::from_ords([3, 4]), &head, 5, 2, 2)
-            .expect("stamp a tip that reaches both ordinals");
+            .expect("stamp an ordered tip that reaches both ordinals");
         let db = index.local();
         let key = keys::path_id_by_path_key(&rel).expect("a path key");
         db.path_id_by_path

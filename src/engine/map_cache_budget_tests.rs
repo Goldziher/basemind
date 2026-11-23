@@ -146,18 +146,45 @@ fn zero_budget_keeps_every_outline_resident() {
 /// Building the file view trusts the file map: it probes no blob, so every indexed file is mapped
 /// even when its blob is gone. The missing blob surfaces only when the outline is faulted in, and
 /// there it reads as absent.
+///
+/// The blob directory is shared by every test in the process, so this scans sources no other test
+/// writes and deletes only the blobs of those files, never the directory.
 #[test]
 fn building_the_map_probes_no_blob() {
+    crate::store::init_isolated_cache();
     let tmp = tempfile::tempdir().unwrap();
-    let store = scan_oversized_corpus(tmp.path());
+    let token = tmp
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .replace(|c: char| !c.is_alphanumeric(), "_");
+    for f in 0..5u32 {
+        let src = format!("pub fn probe_{token}_{f}() {{}}\n");
+        std::fs::write(tmp.path().join(format!("probe_{f}.rs")), src).unwrap();
+    }
+    let cfg = crate::config::ConfigV1::with_defaults();
+    let mut store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+    crate::scanner::scan(
+        tmp.path(),
+        &mut store,
+        &cfg,
+        crate::scanner::ScanSource::WorkingTree,
+        crate::scanner::EmbedMode::Inline,
+        crate::retrieval_wiring::backend(),
+    )
+    .expect("scan");
     let indexed = store.index.files.len();
-    assert_eq!(indexed, 40, "the corpus indexes every generated file");
-    crate::store::wipe_blobs_in(&store.blobs_dir).expect("wipe the blobs");
+    assert_eq!(indexed, 5, "the corpus indexes every generated file");
+    for entry in store.index.files.values() {
+        let blob = store.blob_path_fm_hex(&entry.hash_hex);
+        std::fs::remove_file(&blob).unwrap_or_else(|e| panic!("remove {}: {e}", blob.display()));
+    }
 
     let cache = MapCache::build(&store, 0);
 
     assert_eq!(cache.file_metas().count(), indexed, "every indexed file is in the view");
-    let first = RelPath::from("module_000.rs");
+    let first = RelPath::from("probe_0.rs");
     assert!(cache.contains(&first));
     assert!(
         cache.get(&first).is_none(),

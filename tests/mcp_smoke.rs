@@ -3204,10 +3204,11 @@ async fn git_tools_reject_inexact_arguments() {
         "git_log must refuse a symbol history with no file: {message}"
     );
 
-    let message = refused(&service, "git_log", json!({ "query": "tweak", "path": "a.rs" })).await;
+    let message = refused(&service, "git_log", json!({ "path": "a.rs", "since": "2025-01-01" })).await;
     assert!(
-        message.contains("do not combine with `path`") && message.contains("accepted shapes:"),
-        "git_log must refuse a history search scoped to a path: {message}"
+        message.contains("`since` and `until` bound a `query` / `author` search")
+            && message.contains("accepted shapes:"),
+        "git_log must refuse a time range with no search: {message}"
     );
 
     let message = refused(&service, "git_diff", json!({ "from": "HEAD" })).await;

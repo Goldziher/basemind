@@ -12,16 +12,25 @@ use crate::path::RelPath;
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GitLogParams {
-    /// Only commits touching this file, or a directory (trailing `/`; 200 commits a page). Not with
-    /// `query` or `author`.
+    /// Only commits touching this file, or a directory (trailing `/`; 200 commits a page). With
+    /// `query` or `author`: narrows the search to that file or directory.
     #[serde(default)]
     pub path: Option<RelPath>,
-    /// Words the commit message must all contain. Combines with `author` only.
+    /// Words the commit message must all contain; typos, word parts (`BulkConfig`, `KEY-123`) and
+    /// the start of the last word still match, listed after exact matches and marked in `fuzzy`.
     #[serde(default)]
     pub query: Option<String>,
-    /// Words the author name or email must all contain. Combines with `query` only.
+    /// Words the author name or email must all contain, matched like `query` and also as a
+    /// subsequence.
     #[serde(default)]
     pub author: Option<String>,
+    /// With `query` or `author`: only commits since this author time, `YYYY-MM-DD` or `<N>d`,
+    /// `<N>w`, `<N>m`, `<N>y` ago.
+    #[serde(default)]
+    pub since: Option<String>,
+    /// With `query` or `author`: only commits until this author time, same forms, day included.
+    #[serde(default)]
+    pub until: Option<String>,
     /// Commits that changed this symbol's body; needs `path`, combines only with `line`.
     #[serde(default)]
     pub symbol: Option<String>,
@@ -122,6 +131,17 @@ pub struct SearchGitHistoryParams {
     /// own `field`; these are matched against the author only, never the message.
     #[serde(default)]
     pub author: Option<String>,
+    /// Only commits that touched this file, or a file under this directory (trailing `/`).
+    #[serde(default)]
+    pub path: Option<RelPath>,
+    /// Only commits authored at or after this time: `YYYY-MM-DD`, or `<N>d`, `<N>w`, `<N>m`, `<N>y`
+    /// ago.
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Only commits authored at or before the end of this day, or of `<N>` days, weeks, months or
+    /// years ago.
+    #[serde(default)]
+    pub until: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -428,12 +448,15 @@ pub(crate) struct GitShowResponse {
 pub(crate) struct SearchGitHistoryResponse {
     /// Matching commits, newest first. A message's body is not listed: `git_log {rev}` shows it.
     pub commits: Vec<CommitView>,
+    /// The shas of the commits that matched only through a tolerance (a typo, a word part, the
+    /// start of a word); the rest matched the words as typed and come first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fuzzy: Vec<String>,
     /// True when the search did not cover the whole history.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// `unindexed_scan`: the git-history index was not ready, so only the subjects and authors of the
-    /// newest 10,000 commits were searched, no message bodies; retry shortly. `scan_cap`: an
-    /// `author` filter stopped after 20,000 commits matching `query`.
+    /// newest 10,000 commits were searched as typed, no message bodies; retry shortly.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`

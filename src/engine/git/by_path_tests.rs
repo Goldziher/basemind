@@ -199,6 +199,8 @@ fn log(path: Option<&str>, symbol: Option<&str>, cursor: Option<Cursor>) -> GitL
         path: path.map(|path| RelPath::from(path.as_bytes())),
         query: None,
         author: None,
+        since: None,
+        until: None,
         symbol: symbol.map(str::to_string),
         line: None,
         rev: None,
