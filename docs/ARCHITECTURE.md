@@ -623,7 +623,7 @@ which it cannot reference. A file map's version fields (`schema_ver`, `blob_layo
 own before the rest of it, so a newer map the binary cannot decode still reads as newer, and eviction
 treats a newer blob layout as a newer view. A map that does not decode is rebuilt by a writer open
 only when those fields read as this binary's; one whose fields cannot be read at all is renamed aside
-(`index.msgpack.unreadable-<time>`), never deleted, and a read-only open refuses both. The sweep of superseded namespaces needs no live
+(`index.msgpack.unreadable-<time>`), never deleted at once (a view keeps its newest two, and reaps older ones after a week), and a read-only open refuses both. The sweep of superseded namespaces needs no live
 set and runs even when the current namespace cannot be swept.
 
 A file map also records the layout of the blob store it was written for (`blob_layout`; `1` is

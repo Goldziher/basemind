@@ -53,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A copy of the binary not named `basemind` no longer makes the MCP connect retry for about a minute.
   The refusal to spawn a daemon from it ("not a `basemind` binary ... Set
   `BASEMIND_DAEMON_BINARY`") is now fatal to the relay and is reported at once (#437).
+### Fixed
+
+- A view keeps only its newest two `index.msgpack.unreadable-<secs>` set-asides; older ones are reaped after a week (#434).
 
 ## [0.34.0] - 2026-11-22
 
