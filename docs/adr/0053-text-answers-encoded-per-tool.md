@@ -59,7 +59,10 @@ entry on its own indented line, costs more than JSON's.
 ## Decision
 
 The text block of a verb tool is written in the encoding that measured fewest tokens for it.
-`structuredContent` stays JSON for every tool, and so does the CLI's `--json` output.
+The CLI's `--json` output stays JSON for every tool. A successful MCP answer carries its payload
+once, in the text block, and no `structuredContent`: no tool declares an `outputSchema`, so MCP does
+not ask for it, and sending both doubled every response (GH #481). A refusal keeps its
+`{error, retryable}` `structuredContent`.
 
 1. **`code_grep` rows: a plain block.** The answer's other fields are TOON `key: value` lines; then
    each file is a line `# <path>`, each enclosing symbol `## <symbol>`, and the rows follow as
@@ -92,7 +95,7 @@ The text block of a verb tool is written in the encoding that measured fewest to
 
 - A breaking change to the MCP text of four tools and of the `basemind://outline` resource;
   `docs/UPGRADING.md` ("Text answers") lists them. A client that parsed the text block as JSON reads
-  `structuredContent`, or decodes the text.
+  `wire::decode` on the text.
 - Measured with the gate after the change, recall unchanged everywhere (basemind / tokio, tool
   tokens and ratio): `grep` 39 / 53 tokens, 0.78x / 0.86x; `grep_changed` 47 / 74, 0.83x / 0.98x;
   `read_around` 340 / 231, 1.43x / 1.61x; `outline` 669 / 359, 4.71x / 2.21x; `diff` 381 / 209,
@@ -103,10 +106,8 @@ The text block of a verb tool is written in the encoding that measured fewest to
 - **`read_around` still fails the 1.5 floor on basemind (1.43x).** What remains over the rows the
   shell prints is the `# <path>` and `## <symbol>` headers: the enclosing symbol is a fact `rg` does
   not give, and this record keeps it. No threshold changes.
-- A host that hands the model `structuredContent` rather than the text block sees JSON, and none of
-  these savings.
-- MCP asks a tool that returns structured content to mirror it as serialized JSON in a text block
-  for backwards compatibility; these four tools mirror it in another encoding of the same data.
+- A successful answer has no `structuredContent`, so a host cannot hand the model a second, JSON
+  copy of it.
 - The tools now answer in three encodings. A tool moves from one to another only on a measurement
   like the one above.
 - A new dependency, `toon-format` 0.7 (pre-1.0; its encoder is the spec's reference port). Only

@@ -216,8 +216,8 @@ Builds a fixture repository (Rust + Python, two commits, an uncommitted edit) wi
 each carrying one invented fact: Markdown, HTML, a hand-written text-layer PDF, an `.eml` and an
 `.ipynb`. It scans, waits (up to `--docs-timeout`) for documents to become searchable, then makes
 one call per case over MCP and runs the matching CLI command with `--json`, asserting structural
-fields of the JSON answer (MCP `structuredContent` and the CLI's `--json`; the MCP text block is
-encoded per tool, ADR-0053): the outline lists `compute_total` with a 1-based line, `code_refs`
+fields of the JSON answer (the CLI's `--json` and the decoded MCP text block, which is encoded per
+tool, ADR-0053): the outline lists `compute_total` with a 1-based line, `code_refs`
 finds callers, implementations, importers and a definition, `git_log` / `git_blame` / `git_diff`
 show the fixture's history and edit, `memory_*` round-trips a note. For each planted question `docs_search` must return
 the planted document among the top five with the answer in its text; a `mime_type` filter must keep

@@ -139,6 +139,12 @@ async fn connect(socket: &Path, agent: &str, root: &Path) -> CommsClient {
         .unwrap_or_else(|e| panic!("connect {agent}: {e}"))
 }
 
+/// The JSON a hosted `tools/call` response answers with, decoded from its text block.
+fn hosted_answer(response: &Value) -> Value {
+    let text = response["result"]["content"][0]["text"].as_str().unwrap_or_default();
+    basemind::wire::decode(text).unwrap_or(Value::Null)
+}
+
 /// Send one stateless MCP JSON-RPC call to the daemon's hosted HTTP frontend.
 async fn hosted_tool_call(
     addr: &str,
@@ -1700,7 +1706,7 @@ async fn await_settled(addr: &str, token: &str, repo: &Path) {
             json!({ "name": "x" }),
         )
         .await;
-        if response["result"]["structuredContent"].get("notice").is_none() {
+        if hosted_answer(&response).get("notice").is_none() {
             return;
         }
         assert!(Instant::now() < deadline, "the hosted stack never settled: {response}");
@@ -1728,7 +1734,7 @@ async fn await_symbol(comms_dir: &Path, repo: &Path, name: &str, bound: Duration
             json!({ "name": name }),
         )
         .await;
-        if response["result"]["structuredContent"]["results"]
+        if hosted_answer(&response)["results"]
             .as_array()
             .is_some_and(|rows| rows.len() == 1)
         {
