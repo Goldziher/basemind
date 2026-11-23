@@ -539,4 +539,24 @@ mod tests {
         let status = ws.index_status(IndexStatusParams {}).expect("status");
         assert_eq!(status.scan_progress, None, "a finished scan is not reported");
     }
+
+    /// `rescanning` and a progress block are claims that a scan is running: with no pass holding the
+    /// workspace's rescan mark and no live scan breadcrumb, status carries neither.
+    #[test]
+    fn status_reports_rescanning_only_while_a_pass_holds_the_rescan_mark() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = unscanned_workspace(dir.path());
+        let state = |ws: &Workspace| {
+            let status = ws.index_status(IndexStatusParams {}).expect("status");
+            (status.notice.map(|notice| notice.state), status.scan_progress)
+        };
+
+        let mark = ws.mark_rescan();
+        assert_eq!(state(&ws).0, Some("rescanning"), "a pass holds the mark");
+
+        drop(mark);
+        let (notice, progress) = state(&ws);
+        assert_ne!(notice, Some("rescanning"), "no pass holds the mark");
+        assert_eq!(progress, None, "no scan runs, so there is nothing to report");
+    }
 }

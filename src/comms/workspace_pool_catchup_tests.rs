@@ -153,3 +153,41 @@ async fn a_catch_up_over_an_unchanged_tree_extracts_nothing() {
         "every file was judged unchanged and none re-extracted"
     );
 }
+
+/// Whether `pool`'s hosted stack for `root` is still built.
+fn stack_is_built(pool: &WorkspacePool, root: &std::path::Path) -> bool {
+    let entry = pool.get_or_open(root).expect("hot entry");
+    entry.serve_state.try_lock().expect("the stack slot is free").is_some()
+}
+
+/// A config file appearing, or an edit that changes nothing a scan reads, keeps the built stack: a
+/// rebuilt one would run a whole-tree catch-up pass and report `rescanning` for nothing. An edit that
+/// changes what a scan reads sheds the stack so its rebuild catches the index up under the new config.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_config_edit_sheds_the_read_stack_only_when_a_scan_reads_the_change() {
+    store::init_isolated_cache();
+    let pool = std::sync::Arc::new(WorkspacePool::new(DEFAULT_HOT_CAP));
+    let workspace = workspace_with_sources();
+    pool.rescan(workspace.path(), None, false, false, &ScanCancel::default())
+        .expect("scan workspace");
+    drop(hosted_stack(&pool, workspace.path()).await);
+    let toml = workspace.path().join("basemind.toml");
+
+    std::fs::write(&toml, "\"$schema\" = \"v1\"\n").expect("create the config file");
+    assert!(
+        stack_is_built(&pool, workspace.path()),
+        "a new file holding the defaults changes nothing a scan reads"
+    );
+
+    std::fs::write(&toml, "\"$schema\" = \"v1\"\n[watch]\ndebounce_ms = 999\n").expect("edit [watch]");
+    assert!(
+        stack_is_built(&pool, workspace.path()),
+        "a watcher setting is not a scan input"
+    );
+
+    std::fs::write(&toml, "\"$schema\" = \"v1\"\n[scan]\nexclude = [\"generated\"]\n").expect("edit [scan]");
+    assert!(
+        !stack_is_built(&pool, workspace.path()),
+        "an exclude change is a scan input: the stack is rebuilt and catches up"
+    );
+}

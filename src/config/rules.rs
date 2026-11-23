@@ -216,6 +216,24 @@ pub fn doc_guard_digest(cfg: &DocumentsConfig, doc_digest: &str) -> String {
     )
 }
 
+/// Fingerprint of every setting that decides what a scan reads, extracts or stores: the walk
+/// (`[scan]`, `[languages]`), the extractors (`[code_intel]`, `[code_search]`, `[documents]`) and the
+/// resource limits they run under. A config edit that leaves it unchanged (a new file holding the
+/// defaults, a `[mcp]` or `[watch]` tweak) cannot change what an index holds, so it owes no rescan.
+pub fn scan_inputs_digest(cfg: &ConfigV1) -> String {
+    digest_of(
+        "scan-inputs/1",
+        &(
+            &cfg.scan,
+            &cfg.languages,
+            &cfg.code_intel,
+            &cfg.code_search,
+            &cfg.documents,
+            &cfg.resources,
+        ),
+    )
+}
+
 /// Fingerprint of everything that decides which derived rows (vectors, keyword postings) should
 /// exist for a path. When it differs from the value stored in the index, the next full scan
 /// re-flushes eligible files and purges the rows of files that are no longer eligible.
@@ -244,6 +262,18 @@ mod tests {
         compile_patterns(patterns.iter().copied())
             .expect("compiles")
             .is_match(path)
+    }
+
+    #[test]
+    fn scan_inputs_digest_tracks_scan_settings_and_ignores_the_rest() {
+        let base = ConfigV1::with_defaults();
+        let mut watch_only = base.clone();
+        watch_only.watch.debounce_ms += 1;
+        assert_eq!(scan_inputs_digest(&base), scan_inputs_digest(&watch_only));
+
+        let mut excluded = base.clone();
+        excluded.scan.exclude.push("generated".to_string());
+        assert_ne!(scan_inputs_digest(&base), scan_inputs_digest(&excluded));
     }
 
     #[test]

@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A config edit that changes nothing a scan reads (a new `basemind.toml` holding the defaults, a `[watch]` or `[mcp]` tweak) no longer sheds the daemon's read stack, so it no longer starts a whole-repository catch-up pass and `index_status` stays `ready` (#459).
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

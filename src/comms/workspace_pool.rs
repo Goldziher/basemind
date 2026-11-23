@@ -484,8 +484,8 @@ impl WorkspacePool {
     ///
     /// The stamp is advanced before the reload, so a file that fails to parse is reported once per
     /// edit rather than once per request, and the previous config stays in force until a good one
-    /// lands. A hosted read stack with no live connection is dropped so its next build picks the new
-    /// config up; live sessions keep theirs until they reconnect. The scanner's thread pool is sized
+    /// lands. A hosted read stack with no live connection is dropped, when the edit changes what a scan
+    /// reads, so its next build picks the new config up; live sessions keep theirs until they reconnect. The scanner's thread pool is sized
     /// once per process, so a changed `scan_threads` only warns.
     fn refresh_config(&self, entry: &WorkspaceEntry) {
         let now = config::daemon::ConfigStamp::of(&entry.root);
@@ -511,9 +511,15 @@ impl WorkspacePool {
             );
         }
         tracing::info!(root = %entry.root.display(), stamp = %now, "config changed; reloaded");
+        #[cfg_attr(not(all(feature = "comms", any(unix, windows))), allow(unused_variables))]
+        let scan_inputs_changed = config::rules::scan_inputs_digest(&old) != config::rules::scan_inputs_digest(&new);
         *entry.config.write().unwrap_or_else(PoisonError::into_inner) = std::sync::Arc::new(new);
+        // A rebuilt stack owes a whole-tree catch-up pass, so an edit that changes nothing a scan reads
+        // (a new file holding the defaults, an `[mcp]` tweak) must not shed it: the daemon would report
+        // `rescanning` for a pass over the whole repository that finds nothing to do.
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        if entry.active_conns.load(std::sync::atomic::Ordering::Acquire) == 0
+        if scan_inputs_changed
+            && entry.active_conns.load(std::sync::atomic::Ordering::Acquire) == 0
             && let Ok(mut slot) = entry.serve_state.try_lock()
         {
             *slot = None;
