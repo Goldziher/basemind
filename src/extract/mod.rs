@@ -115,7 +115,10 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 ///   records, annotation types, constructors and fields, Python annotated fields and `type` aliases,
 ///   Go type aliases and interface methods), and member-expression and generic bases become
 ///   implementations.
-pub const EXTRACT_EPOCH: u16 = 7;
+/// - 8: HCL and Terraform files gain an outline: resources, data sources, variables, outputs, locals,
+///   modules, providers and the `terraform` block, plus Terragrunt `include`, `dependency` and
+///   `inputs`.
+pub const EXTRACT_EPOCH: u16 = 8;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {

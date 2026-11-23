@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- HCL and Terraform files expose symbols: `resource` and `data` blocks, `variable`, `output`, `module`, `provider` and `terraform` blocks and every `locals` entry in `*.tf` and `*.hcl`, with Terragrunt `include`, `dependency` and `inputs`; the signature is the block header (`resource "aws_s3_bucket" "logs"`). Existing indexes re-extract these files on the next scan (#215)
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

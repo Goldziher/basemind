@@ -132,7 +132,7 @@ pub(super) fn run_combined(
     *partial |= dropped;
     let mut symbols = dedupe_symbols(symbols);
     for sym in &mut symbols {
-        trim_signature(sym);
+        trim_signature(sym, lang);
     }
     symbols.extend(routes.finish());
     Ok((symbols, imports, implementations))
@@ -334,8 +334,9 @@ const VALUE_SIGNATURE_MAX_CHARS: usize = 80;
 /// Drop signature text that costs tokens without adding information: for value-like symbols the
 /// name is already a field of the entry, so `MAX_RETRIES = 3` is stored as `= 3`, and a long
 /// initialiser is cut at [`VALUE_SIGNATURE_MAX_CHARS`]. Definitions (functions, classes ...) keep
-/// their full header.
-fn trim_signature(sym: &mut Symbol) {
+/// their full header. An HCL header (`variable "region"`) holds its name inside a label, and
+/// removing it would leave `variable ""`, so HCL signatures are only cut.
+fn trim_signature(sym: &mut Symbol, lang: LangId) {
     if !matches!(sym.kind, SymbolKind::Variable | SymbolKind::Const | SymbolKind::Field) {
         return;
     }
@@ -343,7 +344,7 @@ fn trim_signature(sym: &mut Symbol) {
         return;
     };
     let mut out = match sig.find(sym.name.as_str()) {
-        Some(i) if whole_word(sig, i, sym.name.len()) => {
+        Some(i) if !matches!(lang, "hcl" | "terraform") && whole_word(sig, i, sym.name.len()) => {
             let mut t = String::with_capacity(sig.len());
             t.push_str(sig[..i].trim_end());
             if !t.is_empty() {
