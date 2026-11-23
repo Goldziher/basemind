@@ -165,8 +165,12 @@ Observed live on 2026-11-16 in throwaway repositories. The captures are untracke
   `hooks/hooks.json` is discovered without a manifest `hooks` key. MCP servers get only `HOME`,
   `PATH`, `TERM`, `USER`, `LC_CTYPE` and the configured env; their parent process is `codex`. Hooks
   need persisted trust (`hooks.state.<key>.trusted_hash`).
-- **opencode 2.3.0.** The MCP server process gets no host-identifying variable. No model turn could
-  be run (expired API key), so tool-call hooks were not observed.
+- **opencode 2.3.2.** The MCP server process gets no host-identifying variable. Model turns run:
+  the server lists its 18 tools, and `code_symbols`, `code_outline`, `git_log` and the comms round
+  trip (post, then read) pass. OpenCode does not list MCP tools one by one: it puts them behind
+  generic `execute` and `search` calls, so a model reaches a basemind tool as
+  `tools["basemind"].<tool>(...)`, and a `search` returns them 10 to a page. Tool-call hooks were
+  not observed.
 - **Not verified.** Cursor, Gemini CLI and Copilot (not installed or not authorised); Claude Code
   interactive permission prompts with an injected input.
 - **Cursor and Gemini CLI, from their documentation only.** Cursor's `preToolUse` (camel case, with
