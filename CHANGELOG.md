@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Windows comms daemon keeps a spare listening pipe instance, so a client no longer gets `ERROR_PIPE_BUSY` for the whole connect window when the daemon is slow to create the next instance (#446)
 - `code_search` merges overlapping chunks of one symbol into one hit (#479).
 - `code_search` and `docs_search` no longer set `truncated` with `truncated_reason: "depth"` on a page cut by `limit`; only a page that reaches the paging depth does (#479).
 - The always-on exclude floor now drops tool and package-manager caches (`.cache`, `.terragrunt-cache`,
