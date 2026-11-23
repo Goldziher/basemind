@@ -184,6 +184,38 @@ fn the_last_word_matches_by_prefix_and_an_earlier_one_does_not() {
 }
 
 #[test]
+fn the_last_word_keeps_its_prefix_match_when_an_earlier_word_repeats_it() {
+    let fixture = fixture();
+    let (index, _) = sync(fixture.root.path());
+    let hits = search(&index, &query("collec bulk collec", FtsScope::Message));
+    assert_eq!(shas(&hits), vec![(fixture.collector.as_str(), true)]);
+}
+
+#[test]
+fn a_nearby_word_does_not_hide_the_commits_holding_the_run_together_spelling() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let at = root.path();
+    git(at, &["init", "-q", "-b", "main"], ADA, "2025-01-01T00:00:00+00:00");
+    git(
+        at,
+        &["config", "commit.gpgsign", "false"],
+        ADA,
+        "2025-01-01T00:00:00+00:00",
+    );
+    let apart = commit(at, "a.rs", ADA, "2025-01-10", "feat: collector bulk", "");
+    let near = commit(at, "b.rs", ADA, "2025-02-10", "chore: collectorbulks", "");
+    let (index, _) = sync(at);
+    let mut found: Vec<String> = search(&index, &query("collectorbulk", FtsScope::Message))
+        .into_iter()
+        .map(|hit| hit.commit.sha)
+        .collect();
+    found.sort();
+    let mut expected = vec![apart, near];
+    expected.sort();
+    assert_eq!(found, expected);
+}
+
+#[test]
 fn identifiers_match_by_their_parts_the_whole_and_a_run_together_spelling() {
     let fixture = fixture();
     let (index, _) = sync(fixture.root.path());

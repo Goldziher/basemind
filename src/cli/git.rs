@@ -47,6 +47,12 @@ pub enum GitCmd {
         /// Only commits whose author name or email holds every one of these terms.
         #[arg(long)]
         author: Option<String>,
+        /// With a search: only commits since this author time, `YYYY-MM-DD` or `<N>d`/`w`/`m`/`y` ago.
+        #[arg(long)]
+        since: Option<String>,
+        /// With a search: only commits until this author time, same forms, day included.
+        #[arg(long)]
+        until: Option<String>,
         /// History of this symbol's body (needs `--path`).
         #[arg(long)]
         symbol: Option<String>,
@@ -139,6 +145,12 @@ pub enum GitCmd {
         /// the author alone, never the message.
         #[arg(long)]
         author: Option<String>,
+        /// With a search: only commits since this author time, `YYYY-MM-DD` or `<N>d`/`w`/`m`/`y` ago.
+        #[arg(long)]
+        since: Option<String>,
+        /// With a search: only commits until this author time, same forms, day included.
+        #[arg(long)]
+        until: Option<String>,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -239,6 +251,8 @@ fn log() -> GitLogParams {
         path: None,
         query: None,
         author: None,
+        since: None,
+        until: None,
         symbol: None,
         line: None,
         rev: None,
@@ -255,6 +269,8 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
             path,
             query,
             author,
+            since,
+            until,
             symbol,
             line,
             rev,
@@ -266,6 +282,8 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
                 path: path.map(|path| resolve_path(tools, &path)),
                 query,
                 author,
+                since,
+                until,
                 symbol,
                 line,
                 rev,
@@ -321,6 +339,8 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
         GitCmd::Search {
             query,
             author,
+            since,
+            until,
             limit,
             cursor,
             max_tokens,
@@ -328,6 +348,8 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
             let p = GitLogParams {
                 query: Some(query),
                 author,
+                since,
+                until,
                 limit,
                 cursor: cursor.map(Cursor),
                 max_tokens,

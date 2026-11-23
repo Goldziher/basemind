@@ -94,9 +94,9 @@ use crate::path::RelPath;
 /// `+11` rebuilds the file list of a shallow clone's boundary commit, which is now listed as a root
 /// (its tree added), and stores the clone's `shallow` file so a deepened boundary is noticed.
 ///
-/// `+12` adds the `gh_term_dict` keyspace and indexes identifier parts (`BulkConfig` → `bulk`,
+/// `+13` adds the `gh_term_dict` keyspace and indexes identifier parts (`BulkConfig` → `bulk`,
 /// `config`) beside the whole term, for typo-tolerant search.
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 12;
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 13;
 
 /// Memtable ceiling of each keyspace, in bytes. At fjall's 64 MiB default, eight keyspaces with up
 /// to four sealed memtables queued behind each would let one database (the daemon keeps one per

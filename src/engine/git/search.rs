@@ -34,8 +34,9 @@ const BOUND_FORMS: &str =
 /// HEAD-scoped cursor mirror `recent`.
 pub(super) fn run_search(
     ws: &Workspace,
-    params: SearchGitHistoryParams,
+    mut params: SearchGitHistoryParams,
 ) -> Result<SearchGitHistoryResponse, EngineError> {
+    params.path = params.path.take().map(|path| without_empty_components(&path));
     let repo = require_git_repo(ws)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let scope = FtsScope::parse(params.field.as_deref());
@@ -63,17 +64,23 @@ pub(super) fn run_search(
     };
 
     let want = limit.saturating_add(1);
-    let (mut hits, truncated_reason) = match git_history_if_fresh(ws, &head) {
-        Some(index) => {
-            let query = CommitQuery {
-                pattern: &params.pattern,
-                scope,
-                author: params.author.as_deref(),
-                path: params.path.as_ref(),
-                since: range.since,
-                until: range.until,
-            };
-            let hits = index.search_commits_fuzzy(&query, skip, want);
+    // The index reads take no lock, so a sync that rebuilds the index between the freshness check
+    // and the search can make it answer with too little: the answer counts only when the index still
+    // stamps `head` after it, else the live walk answers.
+    let indexed = git_history_if_fresh(ws, &head).and_then(|index| {
+        let query = CommitQuery {
+            pattern: &params.pattern,
+            scope,
+            author: params.author.as_deref(),
+            path: params.path.as_ref(),
+            since: range.since,
+            until: range.until,
+        };
+        let hits = index.search_commits_fuzzy(&query, skip, want);
+        (index.last_indexed_head_hex().as_deref() == Some(head.as_str())).then_some(hits)
+    });
+    let (mut hits, truncated_reason) = match indexed {
+        Some(hits) => {
             if hits.is_empty()
                 && skip == 0
                 && let Some(path) = &params.path
@@ -348,6 +355,18 @@ impl<'a> LiveQuery<'a> {
             && self.range.contains(commit.author_time_unix)
             && self.path.is_none_or(|path| touches(commit, path))
     }
+}
+
+/// `path` with its empty components (a doubled or leading `/`) dropped, bytes untouched. The
+/// trailing `/` that marks a directory stays, so `src//config/` still matches the files under it.
+fn without_empty_components(path: &RelPath) -> RelPath {
+    let bytes = path.as_bytes();
+    let kept: Vec<&[u8]> = bytes.split(|&b| b == b'/').filter(|c| !c.is_empty()).collect();
+    let mut normal = kept.join(&b'/');
+    if !normal.is_empty() && bytes.ends_with(b"/") {
+        normal.push(b'/');
+    }
+    RelPath::from(normal.as_slice())
 }
 
 /// Whether `commit` changed `path`, or a file under it when it ends with `/`.

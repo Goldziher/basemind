@@ -260,6 +260,8 @@ impl Workspace {
             path: None,
             query: None,
             author: None,
+            since: None,
+            until: None,
             symbol: None,
             line: None,
             rev: None,

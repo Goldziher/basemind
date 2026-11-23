@@ -78,7 +78,8 @@ pub fn tokenize(text: &str, out: &mut AHashSet<String>) {
     }
 }
 
-/// The terms a search `query` is matched on, in order, without repeats. Like [`tokenize`], except
+/// The terms a search `query` is matched on, in order, without repeats (a repeated term keeps its
+/// last place, so a query ending in a word it began with still matches that word as a prefix). Like [`tokenize`], except
 /// that an identifier is matched on its parts alone: `BulkConfig` finds both `bulk_config` and
 /// `BulkConfig`, where requiring the whole `bulkconfig` as well would miss the first. The order
 /// matters: the last term is the one matched as a prefix.
@@ -90,9 +91,11 @@ pub fn query_terms(query: &str) -> Vec<String> {
             parts.push(run.to_lowercase());
         }
         for term in parts {
-            if term.len() <= MAX_TERM_LEN && !terms.contains(&term) {
-                terms.push(term);
+            if term.len() > MAX_TERM_LEN {
+                continue;
             }
+            terms.retain(|known| *known != term);
+            terms.push(term);
         }
     }
     terms
@@ -336,6 +339,7 @@ mod tests {
             ("amvp165657", &["amvp", "165657"]),
             ("collectr bulk confg", &["collectr", "bulk", "confg"]),
             ("fix fix", &["fix"]),
+            ("collec bulk collec", &["bulk", "collec"]),
             ("v2", &["v2"]),
             ("", &[]),
         ];

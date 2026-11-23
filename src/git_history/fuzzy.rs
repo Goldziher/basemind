@@ -262,7 +262,7 @@ impl LocalDb {
             for term in &clause.terms {
                 let ords = self.ords_for_term(term, clause.scope);
                 matching = Some(intersect(matching, ords));
-                if matching.as_ref().is_some_and(AHashSet::is_empty) {
+                if matching.as_ref().is_some_and(|set| set.is_empty()) {
                     return AHashSet::new();
                 }
             }
@@ -291,6 +291,7 @@ impl LocalDb {
                 .collect();
             for (at, probe) in probes.iter().enumerate() {
                 let mut ords = self.ords_for_term(probe.term, clause.scope);
+                let held_as_typed = !ords.is_empty();
                 for (field, expansions) in &near {
                     for term in &expansions[at] {
                         if let Some(bytes) = self.term_posting_bytes(&keys::term_key(*field, term)) {
@@ -298,11 +299,11 @@ impl LocalDb {
                         }
                     }
                 }
-                if ords.is_empty() {
-                    ords = self.joined_terms(probe.term, clause.scope);
+                if !held_as_typed {
+                    ords.extend(self.joined_terms(probe.term, clause.scope));
                 }
                 matching = Some(intersect(matching, ords));
-                if matching.as_ref().is_some_and(AHashSet::is_empty) {
+                if matching.as_ref().is_some_and(|set| set.is_empty()) {
                     return AHashSet::new();
                 }
             }
