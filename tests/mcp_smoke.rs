@@ -2004,6 +2004,17 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
         "per-hit document metadata is gone: {harbour}"
     );
 
+    let knobs = decode_text(
+        &call(json!({ "query": "harbour pilots", "per_doc": 1, "context": true, "limit": 1 }))
+            .await
+            .expect("docs_search"),
+    );
+    assert_eq!(knobs["hits"].as_array().map(Vec::len), Some(1), "{knobs}");
+    assert!(
+        knobs.get("truncated").is_none(),
+        "a `limit` cut is paging, not truncation: {knobs}"
+    );
+
     let by_path = decode_text(
         &call(json!({ "query": "harbour", "path": "air*.md" }))
             .await

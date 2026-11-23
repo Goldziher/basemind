@@ -489,3 +489,80 @@ fn the_hybrid_lanes_stop_before_the_exact_lane_once_cancelled() {
         "checked before the keyword lane and again before the exact lane"
     );
 }
+
+fn located(chunk_id: &str, path: &str, symbol: &str, lines: (u32, u32), bytes: (u32, u32)) -> CodeSearchHit {
+    CodeSearchHit {
+        path: path.to_string(),
+        symbol: symbol.to_string(),
+        kind: "function".to_string(),
+        line_start: lines.0,
+        line_end: lines.1,
+        byte_start: bytes.0,
+        byte_end: bytes.1,
+        ..seed(chunk_id.to_string())
+    }
+}
+
+#[test]
+fn overlapping_chunks_of_one_symbol_are_one_hit_at_the_best_rank() {
+    let merged = merge_overlapping(vec![
+        located("tail", "cmd/main.go", "main", (860, 902), (9_000, 9_900)),
+        located("other", "cmd/other.go", "run", (1, 20), (0, 400)),
+        located("head", "cmd/main.go", "main", (816, 865), (8_200, 9_100)),
+    ]);
+    let rows: Vec<(&str, &str, u32, u32, u32, u32)> = merged
+        .iter()
+        .map(|hit| {
+            (
+                hit.chunk_id.as_str(),
+                hit.symbol.as_str(),
+                hit.line_start,
+                hit.line_end,
+                hit.byte_start,
+                hit.byte_end,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("tail", "main", 816, 902, 8_200, 9_900),
+            ("other", "run", 1, 20, 0, 400)
+        ]
+    );
+}
+
+#[test]
+fn a_chunk_bridging_two_earlier_hits_folds_them_into_the_best_ranked() {
+    let merged = merge_overlapping(vec![
+        located("a", "x.go", "main", (1, 10), (0, 100)),
+        located("b", "x.go", "main", (19, 28), (190, 280)),
+        located("bridge", "x.go", "main", (10, 19), (100, 190)),
+    ]);
+    let rows: Vec<(&str, u32, u32, u32, u32)> = merged
+        .iter()
+        .map(|hit| {
+            (
+                hit.chunk_id.as_str(),
+                hit.line_start,
+                hit.line_end,
+                hit.byte_start,
+                hit.byte_end,
+            )
+        })
+        .collect();
+    assert_eq!(rows, vec![("a", 1, 28, 0, 280)]);
+}
+
+#[test]
+fn chunks_that_only_share_a_file_or_a_name_stay_apart() {
+    let apart = vec![
+        located("a", "x.go", "main", (1, 10), (0, 100)),
+        located("b", "x.go", "main", (11, 20), (101, 200)),
+        located("c", "x.go", "helper", (5, 15), (50, 150)),
+        located("d", "y.go", "main", (1, 10), (0, 100)),
+    ];
+    let merged = merge_overlapping(apart);
+    let ids: Vec<&str> = merged.iter().map(|hit| hit.chunk_id.as_str()).collect();
+    assert_eq!(ids, ["a", "b", "c", "d"]);
+}

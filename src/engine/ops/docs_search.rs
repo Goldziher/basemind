@@ -97,7 +97,14 @@ mod enabled {
             if cancelled() {
                 return Err(EngineError::Cancelled);
             }
-            let mut page = crate::lance::docs_page::page(store.as_ref(), ranking, offset, limit, budget(p.max_tokens));
+            let paging = crate::lance::docs_page::Paging {
+                offset,
+                limit,
+                max_tokens: budget(p.max_tokens),
+                per_doc: p.per_doc.unwrap_or(crate::lance::docs_page::PER_DOC_DEFAULT),
+                context: p.context.unwrap_or(false),
+            };
+            let mut page = crate::lance::docs_page::page(store.as_ref(), ranking, paging);
             if let Some(reason) = refusal.filter(|_| page.hits.is_empty()) {
                 return Err(EngineError::invalid_argument(format!("`docs_search`: {reason}")));
             }

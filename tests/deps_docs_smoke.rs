@@ -159,7 +159,17 @@ fn an_installed_dependency_is_indexed_searchable_by_path_and_cites_its_version()
         rerank: None,
     };
     let ranking = basemind::lance::docs_rank::rank(&request.query, &filters, inputs).expect("rank");
-    let page = basemind::lance::docs_page::page(Some(&docs), ranking, 0, 10, None);
+    let page = basemind::lance::docs_page::page(
+        Some(&docs),
+        ranking,
+        basemind::lance::docs_page::Paging {
+            offset: 0,
+            limit: 10,
+            max_tokens: None,
+            per_doc: basemind::lance::docs_page::PER_DOC_DEFAULT,
+            context: false,
+        },
+    );
     let mut paths: Vec<&str> = page.hits.iter().map(|hit| hit.path.as_str()).collect();
     paths.sort_unstable();
     assert_eq!(
