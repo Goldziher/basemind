@@ -77,6 +77,17 @@ const FIRST_COMMS_V2_MINOR: u32 = 34;
 /// from must then be of an older minor, so the wipe-and-rebuild of a minor bump is what ran.
 const CROSS_MINOR_ENV: &str = "BASEMIND_UPGRADE_REQUIRE_CROSS_MINOR";
 
+/// First release minor that checks the schema of the stores it opens and refuses a newer one
+/// ("written by a newer basemind") instead of wiping it, as a release before it does.
+const FIRST_REFUSING_MINOR: u32 = 34;
+
+/// First release minor with a group index; earlier ones keep an index per workspace.
+const FIRST_GROUP_INDEX_MINOR: u32 = 34;
+
+/// Last release minor that keeps its group index directly in the group directory
+/// (`cache/groups/<group>/index.fjall`); later ones keep it in `v<minor>/` there.
+const LAST_UNNAMESPACED_GROUP_MINOR: u32 = 34;
+
 /// Oldest release minor whose CLI shape this test drives (`--root`, `--json`, `code files`).
 const OLDEST_MINOR: u32 = 27;
 
@@ -299,6 +310,21 @@ impl Env {
             entries
                 .flatten()
                 .any(|entry| entry.file_name().to_string_lossy().ends_with(".msgpack"))
+        })
+    }
+
+    /// Whether a group directory holds the group index a release of `minor` reads: directly in it
+    /// up to [`LAST_UNNAMESPACED_GROUP_MINOR`], in `v<minor>/` after it.
+    fn holds_group_index_of(&self, minor: u32) -> bool {
+        fs::read_dir(self.data.join("cache").join("groups")).is_ok_and(|groups| {
+            groups.flatten().any(|group| {
+                let dir = if minor <= LAST_UNNAMESPACED_GROUP_MINOR {
+                    group.path()
+                } else {
+                    group.path().join(format!("v{minor}"))
+                };
+                dir.join("index.fjall").is_dir()
+            })
         })
     }
 
@@ -592,6 +618,26 @@ fn upgrade_from(old: &Path) -> (bool, u32) {
     for bin in [old, new] {
         let _ = env.run(bin, &["comms", "stop"], &[]);
     }
+    if minor >= FIRST_REFUSING_MINOR && minor < current_minor() {
+        // A release that refuses a newer store is cut off from the file map the upgrade rewrote,
+        // and says so; it never wipes it. Its own group index is not what refuses it.
+        let refused = env.run(old, &["scan"], &[]);
+        let stderr = String::from_utf8_lossy(&refused.stderr).into_owned();
+        assert!(
+            !refused.status.success() && stderr.contains("written by a newer basemind"),
+            "{}: a scan by the older release must be refused by the newer file map:\n{stderr}",
+            old.display()
+        );
+        assert!(
+            env.holds_group_index_of(minor),
+            "{}: the upgrade left the older release's group index where it reads it",
+            old.display()
+        );
+        env.scan_after_stopping_daemons(old, new);
+        let again = env.scan_after_stopping_daemons(old, new);
+        assert!(again.contains("updated 0"), "re-upgrade converges:\n{again}");
+        return (maps_prose, minor);
+    }
     env.ok(old, &["scan"], &[]);
     let mut downgraded = env.code_paths(old);
     let mut expected = before.clone();
@@ -764,6 +810,11 @@ fn upgrading_while_the_old_release_s_daemon_still_runs() {
     assert!(
         env.holds_blobs_of(minor),
         "{}: the GC reaped the blobs of a running release",
+        old.display()
+    );
+    assert!(
+        minor < FIRST_GROUP_INDEX_MINOR || env.holds_group_index_of(minor),
+        "{}: the new build's scan and GC took the group index of a running release",
         old.display()
     );
     assert_eq!(

@@ -18,12 +18,13 @@ use ahash::AHashSet;
 use crate::data_root::DataRoot;
 use crate::store::{LockHolder, VIEWS_DIR, WORKSPACES_DIR, read_workspace_marker};
 use crate::store_gc::{GcError, dir_size};
-use crate::store_layout::{GROUPS_DIR, group_of_workspace, repo_group_key};
+use crate::store_gc_namespaces::{BlobNamespace, Holds};
+use crate::store_layout::{GROUPS_DIR, LAST_UNNAMESPACED_GROUP_MINOR, group_of_workspace, repo_group_key};
 
 /// What a reap of the group directories removed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GroupStoreReap {
-    /// Group directories removed.
+    /// Group directories removed, and the group indexes of older releases.
     pub reaped: usize,
     /// Their on-disk size.
     pub bytes_freed: u64,
@@ -183,6 +184,144 @@ pub(crate) fn reap_orphaned_group_stores_in(cache_dir: &Path) -> Result<GroupSto
                 tracing::warn!(group = %group_dir.display(), %error, "could not reap a group no workspace names; kept");
             }
         }
+    }
+    Ok(report)
+}
+
+/// What a release minor older than the running one left in a group directory: its group database
+/// directory, and who may still read it.
+struct SupersededIndex {
+    /// The directory removed: `v<minor>/`, or the legacy `index.fjall` of the releases up to
+    /// [`LAST_UNNAMESPACED_GROUP_MINOR`].
+    path: std::path::PathBuf,
+    /// Whether a live process of `holds` reads it.
+    in_use: fn(&Holds, u16) -> bool,
+    /// The minor a namespaced directory is of; unused by the legacy one.
+    minor: u16,
+}
+
+fn namespace_in_use(holds: &Holds, minor: u16) -> bool {
+    holds.live.contains(&BlobNamespace::Schema(minor))
+}
+
+/// The legacy index was read by every release up to [`LAST_UNNAMESPACED_GROUP_MINOR`], and by those
+/// before the blob namespaces too.
+fn legacy_in_use(holds: &Holds, _minor: u16) -> bool {
+    holds.live.iter().any(|namespace| match namespace {
+        BlobNamespace::Unnamespaced => true,
+        BlobNamespace::Schema(minor) => *minor <= LAST_UNNAMESPACED_GROUP_MINOR,
+    })
+}
+
+/// The group databases in `group_dir` that a release older than `current` keeps there.
+fn superseded_indexes(group_dir: &Path, current: u16) -> Vec<SupersededIndex> {
+    if current <= LAST_UNNAMESPACED_GROUP_MINOR {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    let legacy = group_dir.join(crate::index::INDEX_DIR);
+    if legacy.is_dir() {
+        found.push(SupersededIndex {
+            path: legacy,
+            in_use: legacy_in_use,
+            minor: LAST_UNNAMESPACED_GROUP_MINOR,
+        });
+    }
+    for entry in std::fs::read_dir(group_dir).into_iter().flatten().flatten() {
+        let minor = entry
+            .file_name()
+            .to_str()
+            .and_then(crate::store_gc_namespaces::namespace_schema)
+            .filter(|minor| (LAST_UNNAMESPACED_GROUP_MINOR + 1..current).contains(minor));
+        if let Some(minor) = minor.filter(|_| entry.path().is_dir()) {
+            found.push(SupersededIndex {
+                path: entry.path(),
+                in_use: namespace_in_use,
+                minor,
+            });
+        }
+    }
+    found
+}
+
+/// The newest modification time of any file under `dir`, `None` when there is none.
+fn newest_write(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut newest = None;
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) {
+                newest = newest.max(Some(modified));
+            }
+        }
+    }
+    newest
+}
+
+/// Whether nothing has been written into `dir` for [`Holds::hold`] as of now.
+fn idle_for_hold(dir: &Path, holds: &Holds) -> bool {
+    newest_write(dir)
+        .map(|written| std::time::SystemTime::now().duration_since(written).unwrap_or_default())
+        .is_none_or(|age| age >= holds.hold)
+}
+
+/// Reap the group indexes of release minors older than `current` ([`crate::store_layout::group_index_namespace`]):
+/// two installed releases keep an index each in one group, and a superseded one is garbage only
+/// this sweep collects. As for a blob namespace ([`crate::store_gc_namespaces`]) one is kept while a
+/// live process reads it, and until nothing has been written into it for [`Holds::hold`]; nothing
+/// goes while a live process's release cannot be told. Taken under the group lock, so a release that
+/// is writing the group is never raced; a locked group is skipped.
+pub(crate) fn reap_superseded_group_indexes_in(
+    cache_dir: &Path,
+    current: u16,
+    holds: &Holds,
+) -> Result<GroupStoreReap, GcError> {
+    let mut report = GroupStoreReap::default();
+    let groups_dir = cache_dir.join(GROUPS_DIR);
+    if holds.unidentified || !groups_dir.is_dir() {
+        return Ok(report);
+    }
+    for entry in crate::store_gc::read_dir(&groups_dir)?.flatten() {
+        let group_dir = entry.path();
+        let superseded: Vec<_> = superseded_indexes(&group_dir, current)
+            .into_iter()
+            .filter(|index| !(index.in_use)(holds, index.minor))
+            .filter(|index| idle_for_hold(&index.path, holds))
+            .collect();
+        if superseded.is_empty() {
+            continue;
+        }
+        let Ok(lock) = crate::store_lock::try_acquire_lock_as(&group_dir, LockHolder::Maintenance) else {
+            tracing::debug!(group = %group_dir.display(), "group is locked by another process; keeping its older indexes");
+            continue;
+        };
+        for index in superseded {
+            // A write may have landed between the filter above and the lock.
+            if !idle_for_hold(&index.path, holds) {
+                continue;
+            }
+            let bytes = match dir_size(&index.path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::warn!(index = %index.path.display(), %error, "could not measure the group index of an older release; kept");
+                    continue;
+                }
+            };
+            match std::fs::remove_dir_all(&index.path) {
+                Ok(()) => {
+                    report.reaped += 1;
+                    report.bytes_freed += bytes;
+                    tracing::info!(index = %index.path.display(), bytes, "reaped the group index of an older release");
+                }
+                Err(error) => {
+                    tracing::warn!(index = %index.path.display(), %error, "could not reap the group index of an older release; kept");
+                }
+            }
+        }
+        drop(lock);
     }
     Ok(report)
 }
@@ -454,5 +593,195 @@ mod tests {
 
         assert_eq!(reap_orphaned_group_stores_in(&cache).expect("reap").reaped, 0);
         assert!(store_of(&cache, "busy").exists());
+    }
+
+    /// Plant a group database directory under `group` with a file last written `age` ago.
+    fn plant_index(cache: &Path, group: &str, rel: &str, age: std::time::Duration) -> PathBuf {
+        let dir = cache.join(GROUPS_DIR).join(group).join(rel);
+        fs::create_dir_all(&dir).expect("mk index");
+        let file = dir.join("journal");
+        fs::write(&file, b"rows").expect("write rows");
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .and_then(|file| file.set_modified(std::time::SystemTime::now() - age))
+            .expect("age the file");
+        dir
+    }
+
+    const DAY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+    fn holds(live: &[BlobNamespace], hold_days: u32) -> Holds {
+        Holds {
+            live: live.to_vec(),
+            unidentified: false,
+            hold: DAY * hold_days,
+        }
+    }
+
+    /// A row of `an_older_releases_group_index_is_reaped_only_when_unused_and_past_the_hold`: the
+    /// case, the directory the index is in, the days since its last write, the live namespaces, the
+    /// hold in days, the running minor and whether it is reaped.
+    type ReapCase = (
+        &'static str,
+        &'static str,
+        u32,
+        &'static [BlobNamespace],
+        u32,
+        u16,
+        bool,
+    );
+
+    #[test]
+    fn an_older_releases_group_index_is_reaped_only_when_unused_and_past_the_hold() {
+        use BlobNamespace::{Schema, Unnamespaced};
+        let cases: [ReapCase; 9] = [
+            ("legacy, idle and past the hold", "index.fjall", 30, &[], 14, 35, true),
+            ("legacy, inside the hold", "index.fjall", 3, &[], 14, 35, false),
+            (
+                "legacy, read by a live 0.34",
+                "index.fjall",
+                30,
+                &[Schema(34)],
+                14,
+                35,
+                false,
+            ),
+            (
+                "legacy, read by a live pre-namespace release",
+                "index.fjall",
+                30,
+                &[Unnamespaced],
+                14,
+                35,
+                false,
+            ),
+            (
+                "legacy, a live release of another namespace",
+                "index.fjall",
+                30,
+                &[Schema(36)],
+                14,
+                37,
+                true,
+            ),
+            (
+                "a namespace, idle and past the hold",
+                "v35/index.fjall",
+                30,
+                &[],
+                14,
+                36,
+                true,
+            ),
+            (
+                "a namespace, read by a live release",
+                "v35/index.fjall",
+                30,
+                &[Schema(35)],
+                14,
+                36,
+                false,
+            ),
+            (
+                "the running minor's namespace is never reaped",
+                "v35/index.fjall",
+                30,
+                &[],
+                0,
+                35,
+                false,
+            ),
+            (
+                "a newer minor's namespace is never reaped",
+                "v36/index.fjall",
+                30,
+                &[],
+                0,
+                35,
+                false,
+            ),
+        ];
+        for (case, rel, days, live, hold_days, current, reaped) in cases {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let cache = tmp.path().join("cache");
+            let index = plant_index(&cache, "g", rel, DAY * days);
+            let lance = cache.join(GROUPS_DIR).join("g").join(GROUP_LANCE_DIR);
+            fs::create_dir_all(&lance).expect("mk lance");
+
+            let report = reap_superseded_group_indexes_in(&cache, current, &holds(live, hold_days)).expect("reap");
+
+            assert_eq!(report.reaped, usize::from(reaped), "{case}");
+            assert_eq!(index.exists(), !reaped, "{case}");
+            assert!(
+                lance.exists(),
+                "{case}: the retrieval stores are not an index's to take"
+            );
+        }
+    }
+
+    #[test]
+    fn the_running_releases_own_index_is_never_reaped() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache = tmp.path().join("cache");
+        let legacy = plant_index(&cache, "g", "index.fjall", DAY * 90);
+        assert_eq!(
+            reap_superseded_group_indexes_in(&cache, LAST_UNNAMESPACED_GROUP_MINOR, &holds(&[], 0))
+                .expect("reap")
+                .reaped,
+            0
+        );
+        assert!(
+            legacy.exists(),
+            "up to the last unnamespaced minor the legacy index is the current one"
+        );
+    }
+
+    /// The age is read again under the group lock, so it must track a write that lands after the
+    /// first read: an index is idle only once its newest write is a full hold old.
+    #[test]
+    fn an_index_is_idle_only_once_its_newest_write_is_a_full_hold_old() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache = tmp.path().join("cache");
+        let index = plant_index(&cache, "g", "index.fjall", DAY * 30);
+        let hold = holds(&[], 14);
+        assert!(idle_for_hold(&index, &hold), "30 days idle against a 14-day hold");
+
+        fs::write(index.join("late"), b"rows").expect("late write");
+
+        assert!(!idle_for_hold(&index, &hold), "a write just now restarts the hold");
+    }
+
+    #[test]
+    fn an_unidentified_live_process_holds_every_older_index() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache = tmp.path().join("cache");
+        let index = plant_index(&cache, "g", "index.fjall", DAY * 90);
+        let unidentified = Holds {
+            unidentified: true,
+            ..holds(&[], 0)
+        };
+        assert_eq!(
+            reap_superseded_group_indexes_in(&cache, 35, &unidentified)
+                .expect("reap")
+                .reaped,
+            0
+        );
+        assert!(index.exists());
+    }
+
+    #[test]
+    fn a_locked_group_keeps_its_older_index() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache = tmp.path().join("cache");
+        let index = plant_index(&cache, "g", "index.fjall", DAY * 90);
+        let _held = crate::store_lock::acquire_lock(&cache.join(GROUPS_DIR).join("g")).expect("lock");
+        assert_eq!(
+            reap_superseded_group_indexes_in(&cache, 35, &holds(&[], 0))
+                .expect("reap")
+                .reaped,
+            0
+        );
+        assert!(index.exists());
     }
 }
