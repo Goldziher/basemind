@@ -14,6 +14,11 @@ use crate::path::{RelPath, is_external_key, normalize_query_path};
 use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanError, ScanObserver, ScanReport};
 use crate::store::Store;
 
+/// Owed documents a resumed embedding pass embeds per scoped scan: few enough that a read waiting
+/// on the store write lock waits seconds, not the whole pass.
+#[cfg(feature = "documents")]
+const RESUME_BATCH_DOCUMENTS: usize = 32;
+
 /// The only thing a rescan wants out of a scan's per-file outcomes: which paths to fold into
 /// the cache delta, and which to drop from it. A restamped path is folded in like an updated one:
 /// its content is unchanged, but the stamp the map holds for it moved.
@@ -120,6 +125,52 @@ impl Workspace {
         self.note_index_changed();
 
         Ok(report)
+    }
+
+    /// Resume an embedding pass a killed process left unfinished. The documents the store records as
+    /// owing vectors are embedded by scoped scans of [`RESUME_BATCH_DOCUMENTS`] each, every one
+    /// holding the store write lock only while it runs, so a read (a `docs_search` answering from the
+    /// keyword lane) waits for one batch rather than for the whole pass. A whole working-tree pass
+    /// then pays whatever the batches could not reach (a dependency's documentation, an extra root,
+    /// a document added since) and settles the progress record.
+    pub(crate) fn resume_embedding(&self) -> Result<ScanReport, EngineError> {
+        #[cfg(feature = "documents")]
+        self.embed_owed_documents(RESUME_BATCH_DOCUMENTS, &mut |_| {})?;
+        self.rescan(None, EmbedMode::Inline, false)
+    }
+
+    /// The batched half of [`resume_embedding`](Self::resume_embedding): `batch_documents` owed
+    /// documents per scoped scan, the progress record advanced after each, and `after_batch` handed
+    /// the count embedded so far, with the write lock released.
+    #[cfg(feature = "documents")]
+    fn embed_owed_documents(
+        &self,
+        batch_documents: usize,
+        after_batch: &mut dyn FnMut(usize),
+    ) -> Result<(), EngineError> {
+        let owed = crate::embed_progress::owed_doc_paths(&self.store_read());
+        let owed: Vec<PathBuf> = owed
+            .into_iter()
+            .filter(|rel| !rel.is_external())
+            .map(|rel| self.root.join(rel.to_path_buf()))
+            .filter(|abs| abs.is_file())
+            .collect();
+        if owed.is_empty() {
+            return Ok(());
+        }
+        let embedded = std::sync::atomic::AtomicUsize::new(0);
+        let reporter = crate::embed_progress::EmbedReporter::begin(
+            crate::store_layout::workspace_cache_dir(&self.root),
+            owed.len(),
+            &embedded,
+        );
+        for batch in owed.chunks(batch_documents.max(1)) {
+            self.rescan(Some(batch.to_vec()), EmbedMode::Inline, false)?;
+            let done = embedded.fetch_add(batch.len(), Ordering::Relaxed) + batch.len();
+            reporter.report();
+            after_batch(done);
+        }
+        Ok(())
     }
 
     /// The scan itself, under the store write lock.
@@ -328,3 +379,7 @@ fn is_indexed(root: &Path, cache: &mut Option<crate::store::Index>, rel: &str) -
         .keys()
         .any(|key| key.as_str().is_some_and(|key| key.starts_with(&prefix)))
 }
+
+#[cfg(all(test, feature = "documents"))]
+#[path = "scan_resume_tests.rs"]
+mod resume_tests;

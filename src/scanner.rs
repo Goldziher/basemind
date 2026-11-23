@@ -784,3 +784,7 @@ fn advance(
         crumb.advance(phase, candidates);
     }
 }
+
+#[cfg(all(test, feature = "documents"))]
+#[path = "scanner_embed_settle_tests.rs"]
+mod embed_settle_tests;

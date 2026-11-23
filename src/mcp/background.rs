@@ -110,6 +110,18 @@ impl Writer {
         Ok((report.stats.scanned, report.stats.updated, report.stats.removed))
     }
 
+    /// Resume an interrupted embedding pass, reported as [`scan`](Self::scan) reports. In process it
+    /// runs in batches ([`Workspace::resume_embedding`]), so the served store stays readable between
+    /// them; a daemon-hosted workspace forwards one pass to the pool writer, whose lock is not the
+    /// one this process serves reads from.
+    fn resume_embedding(&self) -> Result<(usize, usize, usize), EngineError> {
+        if self.hosted() {
+            return self.scan(None, EmbedMode::Inline);
+        }
+        let report = self.ws.resume_embedding()?;
+        Ok((report.stats.scanned, report.stats.updated, report.stats.removed))
+    }
+
     /// Whether the catch-up should stop before its next step: the daemon is draining, or the pool no
     /// longer holds the workspace (evicted while the map warmed), which a scan would reopen only to
     /// publish to a stack nobody serves.
@@ -313,7 +325,7 @@ pub(super) fn spawn_embedding_resume(state: Arc<ServerState>) {
     let hosted = writer.hosted();
     spawn_scan_logged(hosted, "embedding resume task panicked", move || {
         let started = std::time::Instant::now();
-        match writer.scan(None, EmbedMode::Inline) {
+        match writer.resume_embedding() {
             Ok((scanned, updated, _)) => tracing::info!(
                 scanned,
                 updated,
