@@ -9,6 +9,8 @@ They need Python 3.10+ and nothing outside the standard library.
 | `soak.py` + `analyze.py` | no growth in memory / fds / threads under load, quiet idle, clean shutdown, bounded data dir | load + idle + ~1 min (15 min for a short run, 1 h+ for a release) |
 | `functional_sweep.py` | every verb tool and its CLI command answers with the expected structure; RAG finds planted facts, with filters | 1-3 min (`comms` build); 5-15 min first time on a `full` build (model downloads) |
 | `leak_check.py` | no leaks in one-shot `basemind scan` (macOS `leaks`); no definitely-lost blocks (Linux valgrind); on a `system-allocator` build | 1-2 min for the fixtures (`leaks`); about 20 min under valgrind on a 4-core runner; longer with `--repo` |
+| `monorepo_soak.py` + `analyze_monorepo.py` | a pinned large public repository with 20 worktrees and 30 sessions stays inside the memory cap, answers fresh and cheap, adds little disk per worktree and retires deleted worktrees | 15 min load plus the scan and the worktree setup (30 min to 2 h) |
+| `selftest_monorepo.py` | the corpus pins parse, a worktree is set up as the scenarios assume, and `analyze_monorepo.py` fails each rule on the one measurement that breaks it | seconds |
 | `selftest_analyze.py` | `analyze.py`'s rules fire on known-bad input and pass known-good input | seconds |
 | `selftest_leak_check.py` | `leak_check.py` names a definite leak's owning frame, judges clean and uninspected reports, and fails a run killed at its timeout | seconds |
 | `selftest_sweep.py` | the sweep's matchers read the shipped answer shapes, and its verdict fails a skip in a `full` build | seconds |
@@ -263,6 +265,81 @@ per-language query caches, and the stack-graph engines (`intel::stackgraph::ENGI
 `.tsg` compiles 132 stanza queries plus one combined query). The same scans on the system
 allocator report 0, and a build that forgets seven vectors at start-up reports exactly 7.
 
+## Large-monorepo soak (`monorepo_soak.py`)
+
+The soak above runs on a generated fixture; nothing in it reaches the scale the group index was built
+for. `monorepo_soak.py` soaks real repositories, pinned to a commit in `scripts/hardening/large_repos.tsv`:
+
+| Name | Files | Languages |
+|---|---|---|
+| `llvm-project` | ~150 k | C++, Python, shell |
+| `kibana` | ~100 k | TypeScript, JavaScript, SCSS |
+| `tensorflow` | large | Bazel, Python, C++ |
+| `terraform-provider-aws` | large | Go, HCL |
+
+The pins are fetched by `fetch_large_repo.sh`, which calls the `harden_fetch` function of
+`scripts/harden_fetch.sh`: the fetch `scripts/harden.sh` pins its canary repositories with, not a second
+one. The clone is shallow (depth 1), hooks are off and nothing in it is run. Move a pin deliberately, in its own
+commit.
+
+The main checkout is whole and scanned once. The run then adds 20 linked worktrees, each checking out only the
+directories its row names (twenty whole copies of a 150 000-file tree do not fit a runner's disk) and carrying two
+branches, `soak-<i>-a` and `soak-<i>-b`, so a worktree has a distinct file per branch and one file, `soak_shared.py`,
+that all of them hold. Each worktree gets a session of its own, opened one after another so that the bytes it adds
+are its own; ten more sessions share worktrees, for 30 in all. The run fails when a worktree holds fewer than 50
+files, so a directory that moved upstream is noticed, not soaked empty.
+
+Under 15 minutes of load (the sessions loop over cheap tools: `index_status`, `find_files`, `code_symbols`,
+`code_grep`, `code_read`, `code_outline`, `code_refs`, `git_log`) three scenarios run:
+
+1. **Save fan-out.** `soak_shared.py` is saved in one worktree ten times while the other 19 hold the same file.
+   Each save is an explicit `index_rescan` (its latency is the per-save cost; the files the data home rewrote since
+   are the bytes written) and then a second edit nobody rescans, polled until `code_symbols` finds it (the staleness
+   of the watcher path).
+2. **Branch switch.** All 20 worktrees run `git switch soak-<i>-b` at the same instant; each session is polled until
+   its answers name the new branch's symbol and no longer the old one.
+3. **Retire.** Five worktrees are closed and removed, then `basemind cache gc` times how long the sweep takes and how
+   many of their workspaces it reaps.
+
+Beside them the sampler of `soak.py` records the daemon's RSS and the data directory, and a watcher counts every
+rewrite of an `index.msgpack` under the data home (its bytes, from its mtime, every 5 seconds).
+
+`analyze_monorepo.py` judges the NDJSON. Every threshold is a flag; the defaults come from the 0.34.0 live-check
+decision (#166): a save costs at most 200 ms, resident memory stays under 2 GiB of the daemon's 3 GiB cap, and an added
+worktree adds at most 75% of the first scan (`MAX_ADDED_WORKTREE_PERCENT` in `tests/harden/worktrees.rs`, the bound
+of #267).
+
+| Rule | Measures | Threshold |
+|---|---|---|
+| M1 daemon RSS | peak resident set of the daemon over the run | <= 2048 MiB (cap 3072) |
+| M2 per-save cost | p95 of an `index_rescan` of the shared file, with 19 sibling views | <= 200 ms |
+| M3 bytes per added worktree | the largest growth of the data home when a worktree first answers, as a share of the main checkout's first scan | <= 75% |
+| M4 data dir slope | MiB/min the data directory grows under load, journals and telemetry excluded (same fit as R8) | <= 2 MiB/min unless levelled off |
+| M5 lock waits | p99 of `index_status` under 30 sessions (a cheap call waits only on a lock or admission), and the share of calls answered busy | p99 <= 2000 ms, busy <= 1% |
+| M6 call errors | calls that fail under load | <= 1% |
+| M7 answer staleness | slowest time until a watched edit, and a concurrent branch switch, is answered | <= 30 s, <= 60 s; none unanswered |
+| M8 view retire and sweep | `cache gc` after removing 5 worktrees | exit 0, <= 120 s, all 5 workspaces reaped |
+| M9 `index.msgpack` written | bytes of `index.msgpack` rewritten per hour of load | <= 4096 MiB/h |
+| M10 no survivors | processes of the run after `comms stop` | none |
+
+The daemon exposes no counter for lock waits, `read_index` calls or the bytes of one file map, so the soak reports
+what it can observe from outside: call latency (M5), and the data home's files modified since a save (the "MiB
+rewritten per save" in M2's detail). M9's 4096 MiB/h is a ceiling for a first run; once a run's number is recorded,
+lower it toward that number plus its noise. Revisit M2 and M7 the same way.
+
+Run one repository by hand (Linux or macOS; the first scan of llvm-project alone takes the better part of an hour):
+
+```bash
+python scripts/hardening/monorepo_soak.py --binary target/release/basemind --name llvm-project --duration 900
+python scripts/hardening/analyze_monorepo.py reports/hardening/monorepo-llvm-project-*/monorepo.ndjson
+```
+
+The workflow's `monorepo` job runs the four repositories as a matrix on `ubuntu-latest`, nightly and on demand
+(`-f monorepo_minutes=30` lengthens the load), never on a pull request or a push. It is in the same workflow run as
+the `harden` legs, so the release gate (`.github/scripts/require-green-ci.sh`), which needs a scheduled or dispatched
+`hardening` run to succeed, needs the monorepo soak to pass too. It uploads `hardening-monorepo-<name>` with
+`monorepo.ndjson`, `monorepo.report.md` and `verdict.json`.
+
 ## CI (`.github/workflows/hardening.yaml`)
 
 The workflow runs the whole pass on `ubuntu-latest`, `macos-26` and `windows-2022` (the image the
@@ -283,7 +360,7 @@ CI soaks the generated fixture (`--fixture`): a `full` scan of this repository d
 The binary is `cargo build --release --features <features>`. When `full` (what ships) fails to
 build, the leg fails; for any other requested set it retries with `comms` and says so in a warning
 and in the summary title. A leg fails when any step
-fails: a selftest case, a sweep case, a soak rule, or a leak. Each leg writes a table (rule,
+fails: a selftest case (`selftest_monorepo.py` included), a sweep case, a soak rule, or a leak. Each leg writes a table (rule,
 value, threshold, verdict) to the run's summary page and uploads its report directory as the
 `hardening-<os>` artifact, also on failure: `selftest/`, `sweep/sweep.report.md`,
 `soak/soak.ndjson` with `soak.report.md` and `verdict.json`, and `leaks/` with the raw checker
@@ -293,6 +370,7 @@ output. Read a failure from the summary row first, then the matching report as d
 
 - Windows: no one-shot leak check, no idle-wakeup counter (R6b), and `--inject-orphan` cannot
   anchor its sleeper to the run.
+- The large-monorepo soak runs on Linux only in CI and not at all on Windows, and its added worktrees are sparse.
 - The daemon's own idle reap (10 minutes after the last client) is not waited for; `comms stop` is
   the shutdown exercised.
 

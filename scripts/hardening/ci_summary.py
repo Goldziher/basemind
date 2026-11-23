@@ -7,6 +7,7 @@ the soak verdict JSON written by `analyze.py --json`, and `leaks.json`. A missin
 
 Usage:
     ci_summary.py --title "ubuntu-latest / full" --reports DIR [--leaks-skipped REASON]
+    ci_summary.py --title "llvm-project" --reports DIR --monorepo
 """
 
 from __future__ import annotations
@@ -83,6 +84,18 @@ def soak_rows(reports: Path) -> list[Row]:
     return rows
 
 
+def monorepo_rows(reports: Path) -> list[Row]:
+    """The large-monorepo soak's rows: its selftest and the rules analyze_monorepo.py judged."""
+    rows = [selftest_row(reports, "selftest: monorepo soak", "selftest-monorepo.log")]
+    data = read_json(reports / "monorepo" / "verdict.json")
+    if data is None:
+        return [*rows, ("large-monorepo soak (analyze_monorepo.py)", "-", "every rule passes", verdict(None))]
+    for r in data["rules"]:
+        value = r.get("value") or r["detail"][:160]
+        rows.append((f"monorepo {r['name']}", value, r.get("threshold") or "-", verdict(r["passed"])))
+    return rows
+
+
 def leak_rows(reports: Path, skipped: str | None) -> list[Row]:
     if skipped:
         return [("one-shot leak check", f"skipped: {skipped}", "0 definite leaks", "skipped")]
@@ -105,9 +118,13 @@ def main() -> int:
     ap.add_argument("--title", required=True)
     ap.add_argument("--reports", type=Path, required=True)
     ap.add_argument("--leaks-skipped", help="why the leak check did not run on this leg")
+    ap.add_argument("--monorepo", action="store_true", help="summarize the large-monorepo soak instead of a leg")
     args = ap.parse_args()
-    rows = selftest_rows(args.reports) + sweep_rows(args.reports) + soak_rows(args.reports)
-    rows += leak_rows(args.reports, args.leaks_skipped)
+    if args.monorepo:
+        rows = monorepo_rows(args.reports)
+    else:
+        rows = selftest_rows(args.reports) + sweep_rows(args.reports) + soak_rows(args.reports)
+        rows += leak_rows(args.reports, args.leaks_skipped)
     lines = [f"## Hardening: {args.title}", "", "| rule | value | threshold | verdict |", "|---|---|---|---|"]
     lines += [f"| {cell(a)} | {cell(b)} | {cell(c)} | {d} |" for a, b, c, d in rows]
     text = "\n".join(lines) + "\n\n"

@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The hardening workflow soaks `llvm-project`, `kibana`, `tensorflow` and `terraform-provider-aws` at pinned commits with 20 worktrees and 30 sessions, judging resident memory, per-save cost, bytes per added worktree, lock waits, answer staleness, the retire sweep and `index.msgpack` writes (#211).
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

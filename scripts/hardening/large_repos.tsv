@@ -1,0 +1,11 @@
+# The repositories of the large-monorepo soak (docs/hardening.md), each pinned to a commit so an
+# upstream push cannot move a run. Move a pin deliberately, in its own commit.
+# Columns (tab-separated): name, clone URL, commit, fetch depth (a number: a shell `read` drops an empty tab-separated field),
+# worktree paths. The main checkout is whole; each added worktree checks out only these
+# comma-separated directories (plus the root files), because twenty whole copies of a 150 000-file
+# tree do not fit a CI runner's disk. The soak fails when a worktree holds fewer than
+# --min-worktree-files files, so a path that moved upstream is caught, not soaked empty.
+llvm-project	https://github.com/llvm/llvm-project.git	d81c378cc437af6a7aab858073bc2b84bf5d6960	1	llvm/lib/Support,llvm/utils,clang/lib/Basic
+kibana	https://github.com/elastic/kibana.git	461fae3234c2e798734fd793a2cb256a1127865f	1	src/platform/packages/shared,scripts
+tensorflow	https://github.com/tensorflow/tensorflow.git	14193034810e0e892779580cd393d3dba220be5f	1	tensorflow/python,tensorflow/core/util
+terraform-provider-aws	https://github.com/hashicorp/terraform-provider-aws.git	6d3a3b5fd74f626aa3190cea8a1da4dd2b5604b6	1	internal/service/s3,internal/acctest,names
