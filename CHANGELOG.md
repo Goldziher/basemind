@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `git_log` `symbol` description says a body comparison ignores comments and whitespace, so a formatter-only rewrite that `git log -L` lists is not reported; `hash_mode` on `symbol_history` is unchanged (#480)
 - **BREAKING:** a `git_log` list row is `{sha, author, date, subject}` with an 8-digit sha, and no list names its files unless `files: true` is passed; `basemind git log` and `recent` take `--files` (#456)
 - `git_log`, `git_blame`, `code_symbols`, `code_refs`, `docs_search` and `code_search` write their text block as TOON, or as compact JSON when that is shorter, so a commit list is one table (#456)
 ### Changed
