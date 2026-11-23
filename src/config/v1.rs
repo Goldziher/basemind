@@ -99,6 +99,17 @@ pub struct ScanConfig {
     #[serde(default = "ScanConfig::default_test_globs")]
     #[schemars(inner(length(min = 1)))]
     pub test_globs: Vec<String>,
+    /// Globs naming files the scan records as present and never opens: lockfiles, archives, packet
+    /// captures, fonts, columnar data and other binaries. A listed file gets a file-map entry (path,
+    /// size, modification time, kind) that `find_files` shows with `indexed: false` and `index_status`
+    /// counts per kind; no symbol, chunk, embedding or text search returns it. Same syntax as
+    /// `exclude`, ordered like a `.gitignore`: a later `!pattern` entry re-includes a file an earlier
+    /// entry listed (`["Cargo.lock", "!crates/app/Cargo.lock"]`). Patterns match file names and
+    /// paths, so `pnpm-lock.yaml` is listed although it is YAML. `exclude` and the exclude floor win:
+    /// a file they drop is not listed. Setting the key replaces the default list; `[]` lists nothing.
+    #[serde(default = "ScanConfig::default_list_only")]
+    #[schemars(inner(length(min = 1)))]
+    pub list_only: Vec<String>,
     /// Follow symlinks during the walk. Ignored (forced `false`) when set by the repository's own
     /// `basemind.toml` unless the operator sets `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`. Default `false` — symlinks are a common way to escape the
     /// repo (Bazel's `bazel-*` convenience symlinks point into an external output tree), and
@@ -186,6 +197,9 @@ impl ScanConfig {
         .map(|s| (*s).to_string())
         .collect()
     }
+    fn default_list_only() -> Vec<String> {
+        super::list_only::default_list_only()
+    }
     fn default_respect_gitignore() -> bool {
         true
     }
@@ -223,6 +237,7 @@ impl Default for ScanConfig {
             floor_allow: Vec::new(),
             respect_gitignore: Self::default_respect_gitignore(),
             test_globs: Self::default_test_globs(),
+            list_only: Self::default_list_only(),
             follow_symlinks: Self::default_follow_symlinks(),
             max_file_bytes: Self::default_max_file_bytes(),
             skip_submodules: Self::default_skip_submodules(),

@@ -145,7 +145,8 @@ pub fn validate(cfg: &ConfigV1) -> Result<(), String> {
         ("[scan] exclude", &cfg.scan.exclude),
         ("[analysis] entry_points", &cfg.analysis.entry_points),
     ];
-    let ordered: [(&str, &[String]); 6] = [
+    let ordered: [(&str, &[String]); 7] = [
+        ("[scan] list_only", &cfg.scan.list_only),
         ("[documents] include", &cfg.documents.include),
         ("[documents] exclude", &cfg.documents.exclude),
         ("[documents] embed_include", &cfg.documents.embed_include),

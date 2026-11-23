@@ -149,6 +149,13 @@ pub struct Index {
     /// (additive, no schema bump).
     #[serde(default)]
     pub doc_tombstones: AHashMap<RelPath, crate::store_doc_tombstone::DocTombstone>,
+    /// Relative path -> [`crate::config::list_only::ListedEntry`] for list-only files (`[scan]
+    /// list_only`): known to exist, contents never read. Kept apart from `files` so no code consumer
+    /// sees them; `find_files` and `index_status` read this map. Replaced whole by each full
+    /// working-tree scan. `#[serde(default)]` keeps older `index.msgpack` files readable (additive,
+    /// no schema bump).
+    #[serde(default)]
+    pub listed: AHashMap<RelPath, crate::config::list_only::ListedEntry>,
     /// The scan generation [`Store::flush`] sealed into the Fjall index before writing this file map
     /// (see `crate::index::durability`). An index stamped below it lost writes this map vouches
     /// for and is rebuilt before it is sealed again. `0` (also what a file map from before the field
@@ -186,6 +193,7 @@ impl Index {
             doc_files: AHashMap::new(),
             embed_policy: String::new(),
             doc_tombstones: AHashMap::new(),
+            listed: AHashMap::new(),
             generation: 0,
             rebuild_pending: false,
             rebuild_pins: Vec::new(),
