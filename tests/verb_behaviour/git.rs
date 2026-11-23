@@ -11,9 +11,9 @@ use std::process::Command;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use super::{Client, call_err, call_raw, call_until, json_of, serve_synced, text_of};
 #[cfg(unix)]
 use super::call;
+use super::{Client, call_err, call_raw, call_until, json_of, serve_synced, text_of};
 
 const LIB_V1: &str = "pub fn alpha() -> u32 {\n    1\n}\n\npub fn beta() -> u32 {\n    2\n}\n";
 const LIB_V2: &str = "pub fn alpha() -> u32 {\n    10\n}\n\npub fn beta() -> u32 {\n    2\n}\n";

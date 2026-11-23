@@ -37,7 +37,7 @@ fn settled_total(
     settle: fn(&std::path::Path, &Store, &ConfigV1, &Filters, &ScanSource<'_>),
 ) -> Option<usize> {
     let (tmp, store, config) = workspace_with(entry);
-    let filters = Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval()).expect("filters");
+    let filters = Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("filters");
     settle(tmp.path(), &store, &config, &filters, &ScanSource::WorkingTree);
     embed_progress::read(&crate::store_layout::workspace_cache_dir(tmp.path())).map(|record| record.total)
 }
