@@ -416,12 +416,12 @@ fn a_search_path_drops_empty_components_and_keeps_the_directory_marker() {
     ];
     for (given, expected) in cases {
         assert_eq!(
-            without_empty_components(&RelPath::from(given)),
-            RelPath::from(expected),
+            without_empty_components(&crate::path::RelPath::from(given)),
+            crate::path::RelPath::from(expected),
             "{given}"
         );
     }
-    let changed = CommitInfo {
+    let changed = crate::git::CommitInfo {
         sha: "0".repeat(40),
         short_sha: "0".repeat(7),
         summary: String::new(),
@@ -429,10 +429,13 @@ fn a_search_path_drops_empty_components_and_keeps_the_directory_marker() {
         author_email: String::new(),
         author_time_unix: 0,
         body: String::new(),
-        files: vec![(RelPath::from("src/config/loader.rs"), ChangeKind::Modified)],
+        files: vec![(
+            crate::path::RelPath::from("src/config/loader.rs"),
+            crate::git::ChangeKind::Modified,
+        )],
     };
     assert!(touches(
         &changed,
-        &without_empty_components(&RelPath::from("src//config/"))
+        &without_empty_components(&crate::path::RelPath::from("src//config/"))
     ));
 }
