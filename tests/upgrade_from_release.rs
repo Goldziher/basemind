@@ -162,6 +162,20 @@ fn old_binaries() -> Vec<PathBuf> {
     found
 }
 
+/// The path of `hit` when it is a symbol named exactly `name`. Releases up to 0.33 list
+/// `{"path", "name", ...}` objects; 0.34 lists `"<path>:<line>: <signature>"` rows.
+fn symbol_hit(hit: &Value, name: &str) -> Option<String> {
+    if let Some(row) = hit.as_str() {
+        let (path, rest) = row.split_once(':')?;
+        let (_, signature) = rest.split_once(": ")?;
+        let named = signature
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .any(|word| word == name);
+        return named.then(|| path.to_string());
+    }
+    (hit["name"] == name).then(|| hit["path"].as_str().unwrap_or_default().to_string())
+}
+
 struct Env {
     repo: PathBuf,
     data: PathBuf,
@@ -244,14 +258,14 @@ impl Env {
     }
 
     /// The `(path, name)` of each hit an old release's `code symbols <name>` reports under exactly
-    /// that name. Releases up to 0.33 list `{"path", "name", ...}` objects.
+    /// that name, in either result shape (see [`symbol_hit`]).
     fn old_symbol_hits(&self, old: &Path, name: &str) -> Vec<(String, String)> {
         self.json(old, &["code", "symbols", name])["results"]
             .as_array()
             .map(|hits| {
                 hits.iter()
-                    .filter(|hit| hit["name"] == name)
-                    .map(|hit| (hit["path"].as_str().unwrap_or_default().to_string(), name.to_string()))
+                    .filter_map(|hit| symbol_hit(hit, name))
+                    .map(|path| (path, name.to_string()))
                     .collect()
             })
             .unwrap_or_default()
