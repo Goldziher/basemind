@@ -86,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A watcher batch that retires a content no longer decodes every sibling worktree's file map: each view's holds are cached until that view writes again (#277).
 - A file map whose delta log exists but cannot be read is an error instead of the stale base, and the holds cache is invalidated when a log is replaced by one of the same length (#277, #278).
 - The git-history index stores every commit reachable from any worktree HEAD once and answers each HEAD from its own reachability, so linked worktrees on other branches get indexed (not `partial`) history, and a HEAD that diverges or is rewritten appends only its new commits instead of wiping and rebuilding the index (#283). The first sync after upgrading rebuilds the index once. A head whose commits the index cannot prove to list in the live walk's order (for example one that merges commits indexed for other heads) is answered by the live walk.
+### Fixed
+
+- The plugin launcher releases its install lock before it execs a binary another launch installed while it waited (#435)
 
 ## [0.34.0] - 2026-11-22
 
