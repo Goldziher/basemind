@@ -99,6 +99,12 @@ pub(crate) struct StatusResponse {
     /// full scan runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scan_progress: Option<crate::scan_evidence::ScanProgress>,
+    /// The background embedding of documents: `done` of `total` documents owed their vectors by
+    /// the scan have them, and `eta_secs`, the seconds the running pass has left at its own rate.
+    /// Until it finishes `docs_search` answers from its keyword lane and says so; a process that
+    /// finds the pass interrupted starts it again. Absent when no document owes vectors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embeddings: Option<crate::embed_progress::EmbeddingsStatus>,
     pub total_size_bytes: u64,
     pub languages: BTreeMap<String, usize>,
     /// Code files too long to read whole. Absent while a writer holds the store.

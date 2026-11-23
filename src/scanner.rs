@@ -506,7 +506,8 @@ pub fn scan_with_observer(
         cancel,
     };
     let bm25_pass = crate::scanner_flush::begin_bm25_pass_if_any(store, config, true);
-    let mut progress = ProgressObserver::new(observer, breadcrumb.as_mut());
+    let embed_reporter = begin_embed_reporter(root, store, config, &filters, &source, embed);
+    let mut progress = ProgressObserver::new(observer, breadcrumb.as_mut()).with_embed(embed_reporter);
     let driven = drive_scan(&drive, &candidates, store, &mut report.stats, &mut progress)?;
     let (seen_count, total_candidates) = (driven.seen.len(), candidates.len());
     // Before the cancel check and the stale purge: a drive stopped by a fatal commit failure is a ~keep
@@ -670,9 +671,75 @@ pub fn scan_with_observer(
     if filters.verify_blobs && matches!(source, ScanSource::WorkingTree) {
         crate::scan_evidence::blobs_verified(&store.basemind_dir);
     }
+    settle_embed_progress(root, store, config, &filters, &source, embed);
     phase_peaks.sample_now();
     report.phase_peaks = phase_peaks.snapshot();
     Ok(report)
+}
+
+/// Start reporting the embedding progress of a whole working-tree `Inline` pass that has documents
+/// owed their vectors (see [`crate::embed_progress`]); `None` for every other pass.
+#[cfg(feature = "documents")]
+fn begin_embed_reporter<'a>(
+    root: &Path,
+    store: &Store,
+    config: &Config,
+    filters: &'a Filters,
+    source: &ScanSource<'_>,
+    embed: EmbedMode,
+) -> Option<crate::embed_progress::EmbedReporter<'a>> {
+    if !matches!(source, ScanSource::WorkingTree) || !matches!(embed, EmbedMode::Inline) {
+        return None;
+    }
+    let owed = crate::embed_progress::docs_owed(store, config, filters);
+    (owed > 0).then(|| {
+        crate::embed_progress::EmbedReporter::begin(
+            crate::store_layout::workspace_cache_dir(root),
+            owed,
+            &filters.docs_embedded,
+        )
+    })
+}
+
+#[cfg(not(feature = "documents"))]
+fn begin_embed_reporter<'a>(
+    _root: &Path,
+    _store: &Store,
+    _config: &Config,
+    _filters: &'a Filters,
+    _source: &ScanSource<'_>,
+    _embed: EmbedMode,
+) -> Option<crate::embed_progress::EmbedReporter<'a>> {
+    None
+}
+
+/// The end of a whole working-tree pass settles the embedding record: a `Deferred` pass leaves it
+/// naming the documents still owed their vectors (the mark a restarted process resumes from), an
+/// `Inline` pass has paid what it could and removes it. A cancelled pass returns before this and
+/// leaves the record as it was.
+fn settle_embed_progress(
+    root: &Path,
+    store: &Store,
+    config: &Config,
+    filters: &Filters,
+    source: &ScanSource<'_>,
+    embed: EmbedMode,
+) {
+    if !matches!(source, ScanSource::WorkingTree) {
+        return;
+    }
+    let cache_dir = crate::store_layout::workspace_cache_dir(root);
+    #[cfg(feature = "documents")]
+    if matches!(embed, EmbedMode::Deferred) {
+        match crate::embed_progress::docs_owed(store, config, filters) {
+            0 => crate::embed_progress::clear(&cache_dir),
+            owed => crate::embed_progress::record_owed(&cache_dir, owed),
+        }
+        return;
+    }
+    #[cfg(not(feature = "documents"))]
+    let _ = (store, config, filters, embed);
+    crate::embed_progress::clear(&cache_dir);
 }
 
 /// Move the pass's breadcrumb (and the per-phase memory tally) to `phase`, if one could be written at all. Folding the `Option` in

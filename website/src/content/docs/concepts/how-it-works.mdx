@@ -81,6 +81,13 @@ extracted (`files_done`) of those the scan works through (`files_total`), and `e
 seconds extraction has left at the rate it has run so far. It is read from the scan's breadcrumb, so
 a scan another process runs (`basemind scan`) is reported too.
 
+Embedding does not gate readiness. The first scan extracts documents and indexes their text, and
+`indexing` ends there; a background pass then embeds the documents that still owe vectors. While it
+runs, `index_status` reports `embeddings` (`done` of `total` documents and `eta_secs`) and
+`docs_search` serves its keyword lane with a `notice`. The pass writes its progress to the workspace
+cache, so a daemon killed mid-way resumes it at the next start instead of embedding from the top; the
+documents already embedded are not embedded again.
+
 ## Code versus documents
 
 The code map holds code only. Prose, data and configuration files (Markdown, reStructuredText,

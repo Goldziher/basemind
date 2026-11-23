@@ -60,6 +60,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("data_root", Core),
     ("deps_docs", Core),
     ("disk_space", Core),
+    ("embed_progress", Core),
     ("embeddings", Retrieval),
     ("engine", Engine),
     ("eval", Root),

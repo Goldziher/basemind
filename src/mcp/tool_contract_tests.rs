@@ -228,6 +228,48 @@ async fn docs_search_reports_a_partial_index_with_the_lifecycle_notice() {
     assert_eq!(partial["notice"], index_rebuilding_notice(), "{partial}");
 }
 
+/// While documents still owe their vectors to the background embedding pass, `docs_search` serves
+/// the keyword lane and carries a notice saying so, even when the ranking is the one kept for the
+/// first call; the notice goes with the record once the pass finishes.
+#[cfg(feature = "documents")]
+#[tokio::test]
+async fn docs_search_says_embeddings_are_pending_until_the_background_pass_finishes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        tmp.path().join("guide.md"),
+        "# Guide\n\nHow the harbour is run, long enough to index as a document.\n",
+    )
+    .expect("guide.md");
+    let mut config = ConfigV1::with_defaults();
+    config.documents.enabled = true;
+    config.documents.embed = false;
+    let server = server_with(tmp.path(), true, config);
+    let search = || -> crate::engine::types::search::DocsSearchParams {
+        parse_args(serde_json::json!({ "query": "harbour" })).expect("valid arguments")
+    };
+    let cache_dir = crate::store::workspace_cache_dir(tmp.path());
+
+    let settled = json_of(&server.docs_search_call(search()).await.expect("docs_search"));
+    assert!(settled.get("notice").is_none(), "{settled}");
+
+    crate::embed_progress::record_owed(&cache_dir, 4);
+    let pending = json_of(&server.docs_search_call(search()).await.expect("docs_search"));
+    assert_eq!(
+        pending["hits"][0]["path"], "guide.md",
+        "keyword hits still come: {pending}"
+    );
+    assert_eq!(pending["lanes_ran"], serde_json::json!(["lexical"]), "{pending}");
+    let notice = pending["notice"].as_str().expect("a notice");
+    assert!(
+        notice.contains("embeddings are pending (0 of 4 documents embedded)"),
+        "{notice}"
+    );
+
+    crate::embed_progress::clear(&cache_dir);
+    let finished = json_of(&server.docs_search_call(search()).await.expect("docs_search"));
+    assert!(finished.get("notice").is_none(), "{finished}");
+}
+
 #[tokio::test]
 async fn a_file_that_is_not_indexed_says_what_to_do_about_it() {
     let tmp = tempfile::tempdir().expect("tempdir");
