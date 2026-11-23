@@ -47,7 +47,7 @@ fn run_scan(root: &Path, config: &Config) -> Store {
         config,
         ScanSource::WorkingTree,
         EmbedMode::Deferred,
-        crate::scanner_vectors::test_retrieval(),
+        crate::scan_retrieval::Retrieval::inert(),
     )
     .unwrap();
     store
@@ -181,7 +181,7 @@ fn an_empty_list_lists_nothing() {
 #[test]
 fn the_filters_list_only_what_the_floor_admits() {
     let config = crate::config::default_for_root(Path::new("."));
-    let filters = crate::scanner_filter::Filters::build(&config, Vec::new(), crate::scanner_vectors::test_retrieval())
+    let filters = crate::scanner_filter::Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert())
         .expect("filters");
 
     assert_eq!(filters.listed_kind("pkg/pnpm-lock.yaml"), Some(ListKind::Lockfile));
