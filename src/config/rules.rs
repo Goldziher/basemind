@@ -405,7 +405,7 @@ mod tests {
             ("src/FooTest.kt", "src/Contest.kt"),
             ("lib/foo_spec.rb", "lib/foo.rb"),
             ("src/foo_tests.rs", "src/attestation.rs"),
-            ("pkg/test_utils/a.py", "pkg/test_utilsx/a.py"),
+            ("pkg/test_utils/a.py", "pkg/mytest_utils/a.py"),
             ("pkg/testutils/a.go", "pkg/contestutils/a.go"),
             ("pkg/tests.py", "pkg/attests.py"),
             ("web/a.e2e.ts", "web/e2e.ts"),

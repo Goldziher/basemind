@@ -82,7 +82,7 @@ fn escape_glob(dir: &str) -> String {
     }
     for c in dir.chars() {
         match c {
-            '*' | '?' | '[' | '{' => {
+            '*' | '?' | '[' | '{' | '}' => {
                 out.push('[');
                 out.push(c);
                 out.push(']');
@@ -342,6 +342,7 @@ mod tests {
             ("a*b/legacy", "a*b/legacy/a.md", "axb/legacy/a.md"),
             ("a?b/legacy", "a?b/legacy/a.md", "axb/legacy/a.md"),
             ("{x,y}/legacy", "{x,y}/legacy/a.md", "x/legacy/a.md"),
+            ("a}b/legacy", "a}b/legacy/a.md", "axb/legacy/a.md"),
         ] {
             let scratch = ScratchDir {
                 dir: dir.to_string(),
