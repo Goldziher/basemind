@@ -437,7 +437,15 @@ fn condition_of(block: &str) -> Option<String> {
     Some(std::iter::once(header).chain(rest).collect::<Vec<_>>().join("\n"))
 }
 
-/// The jobs that can be skipped on a run: one whose `if:` has no `always()`, or one with no `if:`
+/// Whether an `if:` can evaluate false: `always()` only overrides the implicit "needs succeeded"
+/// check, so a condition that keeps any other term next to it (`always() && inputs.x`) still skips.
+fn can_skip(condition: &str) -> bool {
+    let rest = condition.replace("always()", "");
+    let rest = rest.trim_start().strip_prefix("if:").unwrap_or(&rest).to_owned();
+    rest.chars().any(|c| !c.is_whitespace() && !"(){}$&>-".contains(c))
+}
+
+/// The jobs that can be skipped on a run: one whose `if:` can evaluate false, or one with no `if:`
 /// that needs such a job (a skipped need skips its dependants).
 fn skippable_jobs(workflow: &str) -> Vec<String> {
     let jobs: Vec<(String, Vec<String>, Option<String>)> = job_names(workflow)
@@ -450,7 +458,7 @@ fn skippable_jobs(workflow: &str) -> Vec<String> {
         .collect();
     let mut skippable: Vec<String> = jobs
         .iter()
-        .filter(|(_, _, condition)| condition.as_deref().is_some_and(|c| !c.contains("always()")))
+        .filter(|(_, _, condition)| condition.as_deref().is_some_and(can_skip))
         .map(|(name, ..)| name.clone())
         .collect();
     loop {
@@ -523,6 +531,26 @@ fn the_always_check_reports_a_job_that_a_skipped_need_would_skip() {
     let workflow = "name: t\njobs:\n  a:\n    if: ${{ inputs.x }}\n    runs-on: x\n  b:\n    needs: [a]\n    if: >-\n      ${{ always() }}\n    runs-on: x\n  c:\n    needs: [a]\n    if: ${{ inputs.y }}\n    runs-on: x\n  d:\n    needs:\n      - c\n    runs-on: x\n";
     assert_eq!(jobs_missing_always(workflow, &[]), ["c", "d"]);
     assert_eq!(jobs_missing_always(workflow, &["c"]), ["d"]);
+}
+
+/// `always()` next to another term does not make the job unskippable: `a` is skipped when `inputs.x` is
+/// false, so the unconditional `b` that needs it is reported.
+#[test]
+fn the_always_check_reports_a_job_needing_one_guarded_by_always_and_another_term() {
+    let workflow = "name: t\njobs:\n  a:\n    if: ${{ always() && inputs.x }}\n    runs-on: x\n  b:\n    needs: [a]\n    runs-on: x\n";
+    assert_eq!(jobs_missing_always(workflow, &[]), ["b"]);
+}
+
+#[test]
+fn a_bare_always_condition_is_not_skippable() {
+    for condition in [
+        "    if: ${{ always() }}",
+        "    if: >-\n      ${{ always() }}",
+        "    if: always()",
+    ] {
+        assert!(!can_skip(condition), "{condition}");
+    }
+    assert!(can_skip("    if: >-\n      ${{ !inputs.plugins-only && (always()) }}"));
 }
 
 /// The release notes are cut under GitHub's 125000-character body limit (HTTP 422 above it); the
