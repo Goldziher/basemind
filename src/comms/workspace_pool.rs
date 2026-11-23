@@ -341,7 +341,24 @@ impl WorkspacePool {
 
     /// [`rescan`](Self::rescan), saying whether `paths` were named by a person or an agent
     /// (`verify`) or seen changing by a watcher: only named paths have their blobs validated.
+    ///
+    /// Returns the scan's transient buffers to the OS once it ends (see
+    /// [`crate::allocator::release_unused_memory`]), so a rescan's high-water mark does not stay resident.
     pub(crate) fn rescan_as(
+        &self,
+        root: &Path,
+        paths: Option<Vec<PathBuf>>,
+        full: bool,
+        embed: bool,
+        verify: bool,
+        cancel: &ScanCancel,
+    ) -> Result<(ScanStats, bool), WorkspacePoolError> {
+        let outcome = self.scan_workspace(root, paths, full, embed, verify, cancel);
+        crate::allocator::release_unused_memory();
+        outcome
+    }
+
+    fn scan_workspace(
         &self,
         root: &Path,
         paths: Option<Vec<PathBuf>>,

@@ -375,6 +375,30 @@ def floor_rule(v: Verdict, label: str, points: list[tuple[float, float]], args: 
     v.rules.append(Rule(label, waived, detail + note, value, f"{args.floor_tol} MiB/min{suffix}", waived))
 
 
+def idle_memory_rule(v: Verdict, pid: int, idle: list[dict[str, Any]], args: argparse.Namespace) -> None:
+    """Fail when a daemon's memory swings by more than `--idle-swing-mib` while nothing is asked of it.
+
+    An idle daemon must settle, not breathe: a transient that the allocator keeps after a rescan or
+    a read-stack rebuild shows up as memory that jumps by GBs within a minute with no call in
+    flight. The band is the spread between the highest and lowest sample after `--idle-settle`.
+    """
+    key = "footprint" if idle and idle[0].get("footprint") is not None else "rss"
+    values = [r[key] for r in idle if r.get(key) is not None]
+    label = f"R6c daemon {pid} idle memory ({key})"
+    if len(values) < 2:  # noqa: PLR2004 - a spread needs two samples
+        v.add(label, False, f"{len(values)} idle samples (need >= 2)")
+        return
+    swing = (max(values) - min(values)) / MIB
+    v.add(
+        label,
+        swing <= args.idle_swing_mib,
+        f"swing {swing:.1f} MiB between {min(values) / MIB:.0f} and {max(values) / MIB:.0f} MiB over "
+        f"{len(values)} idle samples (band {args.idle_swing_mib} MiB)",
+        f"{swing:.1f} MiB",
+        f"{args.idle_swing_mib} MiB",
+    )
+
+
 def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:  # noqa: C901, PLR0912, PLR0915
     v = Verdict()
     meta = next((r for r in records if r.get("kind") == "meta"), {})
@@ -515,6 +539,8 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
                 f"{rate:.1f}/s",
                 f"{args.idle_wakeups}/s",
             )
+        for pid in daemon_pids:
+            idle_memory_rule(v, pid, [r for r in idle if r["pid"] == pid], args)
     else:
         v.add("R6 idle CPU", False, f"idle window after settle is {window:.0f}s (need >= {args.min_idle_window}s)")
 
@@ -760,6 +786,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument(
         "--idle-wakeups", type=float, default=100.0, help="idle wakeups/s summed over the run (macOS only; default 100)"
+    )
+    ap.add_argument(
+        "--idle-swing-mib",
+        type=float,
+        default=256.0,
+        help="MiB the daemon's memory may swing between its highest and lowest idle sample (default 256)",
     )
     ap.add_argument(
         "--idle-settle", type=float, default=30.0, help="seconds at the start of idle not judged (default 30)"
