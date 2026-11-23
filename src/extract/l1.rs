@@ -287,7 +287,11 @@ fn const_member_signature(name_node: Node, source: &[u8]) -> Option<String> {
 /// initializers do not line up one-to-one with the names (a call returning several values).
 fn shared_spec_member_signature(keyword: &str, name_node: Node, spec: Node, source: &[u8]) -> Option<String> {
     let mut cursor = spec.walk();
-    let names: Vec<Node> = spec.children_by_field_name("name", &mut cursor).collect();
+    // The grammar tags the separating commas with the `name` field too, so keep only the identifiers.
+    let names: Vec<Node> = spec
+        .children_by_field_name("name", &mut cursor)
+        .filter(Node::is_named)
+        .collect();
     if names.len() < 2 {
         return None;
     }
