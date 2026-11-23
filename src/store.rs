@@ -96,6 +96,11 @@ pub enum StoreError {
     /// writer open sets it aside and rebuilds; nothing deletes it.
     #[error("file map {path} is unreadable; `basemind scan` sets it aside and rebuilds the view")]
     UnreadableFileMap { path: PathBuf },
+    /// The file map's base was replaced while it was read, on every attempt: a compaction may have
+    /// removed the delta log the read applied, so the map read could miss durable updates. Nothing
+    /// is damaged; the read is retried later.
+    #[error("file map {path} was replaced while it was read, on each of {attempts} attempts; retry")]
+    FileMapUnsettled { path: PathBuf, attempts: u32 },
     #[error("inverted index error: {0}")]
     Index(#[from] IndexError),
     #[error(

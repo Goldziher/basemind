@@ -20,7 +20,10 @@ use crate::path::RelPath;
 ///
 /// Every read op takes the `head` (40-char hex sha) it answers for, one of the repo's indexed tips:
 /// the index holds the commits of every worktree HEAD, and a read sees those the head reaches.
-/// `None` is the tip synced most recently; a head that is no indexed tip answers with no commits.
+/// `None` is the tip synced most recently. A head the index has no ordered view of (never built, no
+/// indexed tip, or a tip whose order is unproven) is refused with
+/// [`GitHistoryError::NoOrderedView`](super::GitHistoryError::NoOrderedView), error code
+/// `git_history_not_ready`, never answered with no commits; the caller live-walks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum GitHistoryOp {

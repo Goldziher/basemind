@@ -71,6 +71,10 @@ impl Broker {
                 code: "git_history_out_of_scope".to_string(),
                 message: error.to_string(),
             },
+            Err(error @ GitHistoryError::NoOrderedView { .. }) => CommsResponse::Error {
+                code: "git_history_not_ready".to_string(),
+                message: error.to_string(),
+            },
             Err(error) => CommsResponse::Error {
                 code: "git_history_failed".to_string(),
                 message: error.to_string(),
@@ -102,7 +106,7 @@ impl Broker {
         let dir = crate::git_history::shared_history_basemind_dir(&root);
         // ~keep Only a sync builds the index; a read of one never built creates nothing.
         if !matches!(op, GitHistoryOp::Sync) && self.history_lookup(&dir).is_none() && !GitHistoryIndex::exists(&dir) {
-            return Ok(unbuilt_reply(&op));
+            return unbuilt_reply(op);
         }
         let entry = self.history_entry(&dir).await?;
         entry.touch();
@@ -267,18 +271,28 @@ fn shed_over_cap(map: &mut ahash::AHashMap<std::path::PathBuf, Arc<HistoryEntry>
     shed
 }
 
-/// What an index that was never built answers to a read: no indexed HEAD (the caller live-walks)
-/// and no commits.
-fn unbuilt_reply(op: &GitHistoryOp) -> GitHistoryReply {
+/// What an index that was never built answers to an op other than a sync: no indexed HEAD, and a
+/// commit read refused as [`GitHistoryError::NoOrderedView`] rather than answered with no commits,
+/// which would read as a path with no history. The caller live-walks either way.
+fn unbuilt_reply(op: GitHistoryOp) -> Result<GitHistoryReply, GitHistoryError> {
     match op {
-        GitHistoryOp::IndexedHead => GitHistoryReply::IndexedHead(None),
-        _ => GitHistoryReply::Commits(Vec::new()),
+        GitHistoryOp::RecentCommits { head, .. }
+        | GitHistoryOp::CommitsTouching { head, .. }
+        | GitHistoryOp::WindowCommits { head, .. }
+        | GitHistoryOp::SearchCommits { head, .. } => Err(GitHistoryError::NoOrderedView { head }),
+        GitHistoryOp::Sync | GitHistoryOp::IndexedHead => Ok(GitHistoryReply::IndexedHead(None)),
     }
 }
 
 /// The index as `head` sees it, or as the most recently synced tip sees it when the op names none.
-fn view<'a>(index: &'a GitHistoryIndex, head: Option<&str>) -> Option<crate::git_history::reader::HistoryAt<'a>> {
-    head.map_or_else(|| index.latest(), |head| index.at(head))
+/// A head with no ordered view (no indexed tip, or a tip whose order is unproven) is refused: an
+/// empty answer would be indistinguishable from a path with no history.
+fn view(
+    index: &GitHistoryIndex,
+    head: Option<String>,
+) -> Result<crate::git_history::reader::HistoryAt<'_>, GitHistoryError> {
+    let found = head.as_deref().map_or_else(|| index.latest(), |head| index.at(head));
+    found.ok_or(GitHistoryError::NoOrderedView { head })
 }
 
 /// Execute one git-history op against the daemon-held index. Blocking (fjall reads, and a full
@@ -302,15 +316,17 @@ fn run_git_history_op(
             take,
             include_files,
             head,
-        } => Ok(GitHistoryReply::Commits(
-            view(index, head.as_deref()).map_or_else(Vec::new, |view| view.recent_commits(skip, take, include_files)),
-        )),
-        GitHistoryOp::CommitsTouching { path, skip, take, head } => view(index, head.as_deref())
-            .map_or_else(|| Ok(Vec::new()), |view| view.commits_touching(&path, skip, take))
+        } => Ok(GitHistoryReply::Commits(view(index, head)?.recent_commits(
+            skip,
+            take,
+            include_files,
+        ))),
+        GitHistoryOp::CommitsTouching { path, skip, take, head } => view(index, head)?
+            .commits_touching(&path, skip, take)
             .map(GitHistoryReply::Commits),
-        GitHistoryOp::WindowCommits { window, head } => Ok(GitHistoryReply::Commits(
-            view(index, head.as_deref()).map_or_else(Vec::new, |view| view.window_commits(window)),
-        )),
+        GitHistoryOp::WindowCommits { window, head } => {
+            Ok(GitHistoryReply::Commits(view(index, head)?.window_commits(window)))
+        }
         GitHistoryOp::SearchCommits {
             query,
             scope,
@@ -318,7 +334,7 @@ fn run_git_history_op(
             take,
             head,
         } => Ok(GitHistoryReply::Commits(
-            view(index, head.as_deref()).map_or_else(Vec::new, |view| view.search_commits(&query, scope, skip, take)),
+            view(index, head)?.search_commits(&query, scope, skip, take),
         )),
     }
 }

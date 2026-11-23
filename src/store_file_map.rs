@@ -181,25 +181,42 @@ pub(crate) fn read_index_calls() -> usize {
     READ_INDEX_CALLS.with(std::cell::Cell::get)
 }
 
+/// Run between a read's apply of the delta log and its settle check, standing in for a compaction
+/// that lands there.
+#[cfg(test)]
+thread_local! {
+    static BEFORE_SETTLE_CHECK: std::cell::Cell<Option<fn(&Path)>> = const { std::cell::Cell::new(None) };
+}
+
 /// The view's file map: the base file with its delta log applied (see [`super::file_map_log`]).
+///
+/// A base replaced between its read and the end of the replay (a compaction, which then removes
+/// the log) may have lost the log's durable updates, so the read is retried; one that never
+/// settles within [`READ_ATTEMPTS`] is [`StoreError::FileMapUnsettled`], never the possibly
+/// incomplete map.
 pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
     #[cfg(test)]
     READ_INDEX_CALLS.with(|calls| calls.set(calls.get() + 1));
     let path = view_dir.join(INDEX_FILE);
-    let mut attempt = 0;
-    loop {
-        attempt += 1;
+    for _ in 0..READ_ATTEMPTS {
         if !path.exists() {
             return Ok(None);
         }
         let (mut index, stamp) = read_base(&path)?;
         super::file_map_log::apply_log(view_dir, stamp, &mut index)?;
+        #[cfg(test)]
+        if let Some(hook) = BEFORE_SETTLE_CHECK.with(std::cell::Cell::get) {
+            hook(&path);
+        }
         // A compaction between the read and now replaced the base the log was applied to. ~keep
-        let settled = BaseStamp::of_path(&path) == Some(stamp);
-        if settled || attempt >= READ_ATTEMPTS {
+        if BaseStamp::of_path(&path) == Some(stamp) {
             return Ok(Some(index));
         }
     }
+    Err(StoreError::FileMapUnsettled {
+        path,
+        attempts: READ_ATTEMPTS,
+    })
 }
 
 /// Decode the base file at `path`, with the stamp of the very file read.
@@ -326,6 +343,56 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    thread_local! {
+        static COMPACTIONS_LEFT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Replace the base at `path` by one a generation on, as a compaction does, while any of the
+    /// compactions the test planned are left.
+    fn compact_under_the_read(path: &Path) {
+        let left = COMPACTIONS_LEFT.with(std::cell::Cell::get);
+        if left == 0 {
+            return;
+        }
+        COMPACTIONS_LEFT.with(|cell| cell.set(left - 1));
+        let view_dir = path.parent().expect("a view dir");
+        let (mut index, _) = read_base(path).expect("read the base");
+        index.generation += 1;
+        write_file_map(view_dir, &index).expect("replace the base");
+        super::super::file_map_log::remove_log(view_dir);
+    }
+
+    /// The generation `read_index` returns when `compactions` reads in a row see their base replaced
+    /// under them, or the error it fails with.
+    fn read_under_compactions(compactions: u32) -> Result<u64, StoreError> {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_file_map(tmp.path(), &Index::empty()).expect("write the base");
+        COMPACTIONS_LEFT.with(|cell| cell.set(compactions));
+        BEFORE_SETTLE_CHECK.with(|hook| hook.set(Some(compact_under_the_read)));
+        let read = read_index(tmp.path());
+        BEFORE_SETTLE_CHECK.with(|hook| hook.set(None));
+        read.map(|index| index.expect("a file map").generation)
+    }
+
+    /// A read whose base a compaction replaced is retried and returns the settled map. One that
+    /// never settles used to return the last, possibly incomplete map on its final attempt; it is
+    /// an error instead.
+    #[test]
+    fn a_read_that_never_settles_fails_instead_of_returning_an_unsettled_map() {
+        for compactions in [0, 1, READ_ATTEMPTS - 1] {
+            assert_eq!(
+                read_under_compactions(compactions).expect("a read that settles"),
+                u64::from(compactions),
+                "{compactions} compactions under the read"
+            );
+        }
+        let error = read_under_compactions(READ_ATTEMPTS).expect_err("a read that never settles");
+        assert!(
+            matches!(error, StoreError::FileMapUnsettled { attempts, .. } if attempts == READ_ATTEMPTS),
+            "{error:?}"
+        );
     }
 
     #[test]

@@ -219,13 +219,20 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
 /// one: only the commits it adds are walked. Otherwise (a branch off history indexed for another
 /// head, or a HEAD moved back) the whole history reachable from it is walked, which costs one revision
 /// walk and an ordinal lookup per commit but no diff for a commit that is already stored.
+///
+/// Every walk starts at `head` itself, never at the repository's HEAD again: HEAD may have moved
+/// since the caller resolved it, and the commits walked must be the ones the tip is stamped for.
 fn append_tip(index: &GitHistoryIndex, repo: &Repo, head: &str) -> Result<RebuildOutcome, GitHistoryError> {
     let Some(head20) = keys::sha_hex_to_raw(head) else {
         return Ok(RebuildOutcome::Fresh);
     };
     let (shas, mut reach, base) = match ancestor_tip(index, repo, head) {
-        Some((base, reach)) => (repo.new_commit_shas(&keys::sha_raw_to_hex(&base))?, reach, Some(base)),
-        None => (repo.all_commit_shas()?, Reach::default(), None),
+        Some((base, reach)) => (
+            repo.new_commit_shas_from(head, &keys::sha_raw_to_hex(&base))?,
+            reach,
+            Some(base),
+        ),
+        None => (repo.all_commit_shas_from(head)?, Reach::default(), None),
     };
     let mut unstored: Vec<&String> = Vec::new();
     // Each commit of the walk as its stored ordinal, or the position among the unstored ones.
@@ -766,6 +773,48 @@ mod tests {
             .map(str::to_owned)
             .collect();
         assert_eq!(touching(&index, "a.rs"), expected);
+    }
+
+    /// A sync resolves HEAD once, then appends the tip. When HEAD moves in between, the append used
+    /// to walk from the moved HEAD and stamp the captured head with that walk's commits: nothing
+    /// appended, and the tip claiming another checkout's history. It walks from the captured head,
+    /// with an indexed ancestor tip (`side` forks off the synced HEAD) and without one (`side` forks
+    /// off an older commit).
+    #[test]
+    fn an_append_walks_the_head_it_was_given_not_a_head_moved_since() {
+        for (fork_at, expected_len) in [("HEAD~1", 2), ("HEAD", 3)] {
+            let repo_dir = tempfile::tempdir().expect("tempdir");
+            let root = repo_dir.path();
+            git(root, &["init", "-q", "-b", "main"]);
+            git(root, &["config", "commit.gpgsign", "false"]);
+            commit(root, "a.rs", "1", "c1");
+            commit(root, "a.rs", "2", "c2");
+            let cache = tempfile::tempdir().expect("cache dir");
+            let index = GitHistoryIndex::open(cache.path()).expect("open the index");
+            sync(&index, &Repo::discover(root).expect("discover"), cache.path()).expect("build main");
+
+            git(root, &["checkout", "-q", "-b", "side", fork_at]);
+            commit(root, "b.rs", "1", "side");
+            let captured = git(root, &["rev-parse", "HEAD"]).trim().to_string();
+            git(root, &["checkout", "-q", "main"]);
+
+            let repo = Repo::discover(root).expect("rediscover");
+            let outcome = append_tip(&index, &repo, &captured).expect("append the captured head");
+            assert_eq!(outcome, RebuildOutcome::Incremental { added: 1 }, "fork at {fork_at}");
+            let listed: Vec<String> = index
+                .at(&captured)
+                .expect("an ordered view of the captured head")
+                .recent_commits(0, 10, false)
+                .into_iter()
+                .map(|c| c.sha)
+                .collect();
+            let expected: Vec<String> = git(root, &["log", "--format=%H", &captured])
+                .lines()
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(expected.len(), expected_len, "fork at {fork_at}");
+            assert_eq!(listed, expected, "fork at {fork_at}: the captured head's history");
+        }
     }
 
     /// Syncing A, a diverged B, then A again leaves A the latest tip: a read at no head answers for
