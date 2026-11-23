@@ -391,17 +391,20 @@ pub fn status_sidecar_path(basemind_dir: &Path) -> PathBuf {
     basemind_dir.join(STATUS_SIDECAR_FILE)
 }
 
-/// Count content-addressed filemap blobs (`*.fm.msgpack`) in `blobs_dir` — the same population the
+/// Count content-addressed filemap blobs (`*.fm.msgpack`) in `blobs_dir`, flat or bucketed — the same population the
 /// MCP `status` tool reports as `blob_count`. Returns `0` when the directory is absent or unreadable;
 /// the count is advisory, never load-bearing.
 pub fn count_fm_blobs(blobs_dir: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(blobs_dir) else {
-        return 0;
-    };
-    entries
-        .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".fm.msgpack")))
-        .count()
+    crate::store_blob_layout::blob_files(blobs_dir).map_or(0, |files| {
+        files
+            .iter()
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".fm.msgpack"))
+            })
+            .count()
+    })
 }
 
 /// Best-effort atomic write of the `status.json` sidecar into `basemind_dir`. `scanned_unix` is set

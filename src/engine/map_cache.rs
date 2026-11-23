@@ -310,18 +310,7 @@ impl MapCache {
         }
         let (updated, removed) = self.files.diff(store);
         let doc_paths = doc_paths_of(store);
-        // A path left out of the view for a missing blob is re-probed by every diff; while its
-        // blob is still missing the delta would map exactly what this map does.
-        let unchanged = removed.is_empty()
-            && doc_paths == self.doc_paths
-            && updated.iter().all(|path| {
-                !self.files.contains(path)
-                    && store
-                        .index
-                        .files
-                        .get(path)
-                        .is_none_or(|entry| !l1_cache::has_blob(store, entry))
-            });
+        let unchanged = removed.is_empty() && doc_paths == self.doc_paths && updated.is_empty();
         if unchanged {
             return None;
         }

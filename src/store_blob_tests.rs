@@ -111,7 +111,7 @@ fn legacy_uncompressed_filemap_blobs_remain_readable() {
     legacy.extend_from_slice(&(l1_bytes.len() as u32).to_le_bytes());
     legacy.extend_from_slice(&l1_bytes);
     legacy.extend_from_slice(&l2_bytes);
-    std::fs::write(store.blob_path_fm_hex(&hash_hex), legacy).expect("write legacy frame");
+    plant(&store.blob_path_fm_hex(&hash_hex), &legacy);
 
     assert_eq!(store.read_l1_by_hex(&hash_hex).unwrap(), Some(l1));
     assert_eq!(store.read_l2_by_hex(&hash_hex).unwrap(), Some(l2));
@@ -217,7 +217,7 @@ fn legacy_uncompressed_single_map_blobs_remain_readable() {
     let hash_hex = "1".repeat(64);
     let refs = FileResolvedRefs::new("rust");
     let legacy = rmp_serde::to_vec_named(&refs).expect("serialize legacy blob");
-    std::fs::write(store.blob_path_rref_hex(&hash_hex), legacy).expect("write legacy blob");
+    plant(&store.blob_path_rref_hex(&hash_hex), &legacy);
 
     assert_eq!(store.read_resolved_by_hex(&hash_hex).unwrap(), Some(refs));
 }
@@ -279,7 +279,7 @@ fn legacy_uncompressed_chunk_blobs_remain_readable_and_peekable() {
         embeddings: Vec::new(),
     };
     let legacy = rmp_serde::to_vec_named(&blob).expect("serialize legacy chunk blob");
-    std::fs::write(store.blob_path_chunk_hex(&hash_hex), legacy).expect("write legacy chunk blob");
+    plant(&store.blob_path_chunk_hex(&hash_hex), &legacy);
 
     assert_eq!(store.read_chunks_by_hex(&hash_hex).unwrap(), Some(blob));
     let peek = store.peek_chunk_state(&hash_hex).unwrap().expect("legacy chunk peek");
@@ -431,7 +431,7 @@ fn a_chunk_envelope_without_an_epoch_reads_as_epoch_zero() {
         chunks: (0..3).map(noisy_chunk).collect(),
         embeddings: (0..3).map(|i| vec![i as f32; 4]).collect(),
     };
-    std::fs::write(store.blob_path_chunk_hex(&hash_hex), pre_epoch_chunk_envelope(&blob)).unwrap();
+    plant(&store.blob_path_chunk_hex(&hash_hex), &pre_epoch_chunk_envelope(&blob));
 
     let peek = store.peek_chunk_state(&hash_hex).unwrap().expect("peek present");
     assert_eq!(peek.extract_epoch, 0, "no epoch in the header reads as stale");
@@ -478,4 +478,76 @@ fn has_l2_reads_the_tier_from_the_header() {
     assert!(store.has_l2_by_hex(&with));
     assert!(!store.has_l2_by_hex(&without));
     assert!(!store.has_l2_by_hex(&absent));
+}
+
+/// Write `bytes` at `path`, creating the blob's bucket directory first.
+fn plant(path: &Path, bytes: &[u8]) {
+    std::fs::create_dir_all(path.parent().expect("a blob has a bucket")).expect("create the bucket");
+    std::fs::write(path, bytes).expect("plant the blob");
+}
+
+#[test]
+fn a_written_blob_lands_in_the_bucket_of_its_first_two_hash_digits() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+    let hash_hex = format!("ab{}", "c".repeat(62));
+
+    store.write_filemap_hex(&hash_hex, &sample_l1(), None).expect("write");
+
+    let expected = store.blobs_dir.join("ab").join(format!("{hash_hex}.fm.msgpack"));
+    assert_eq!(store.blob_path_fm_hex(&hash_hex), expected);
+    assert!(expected.is_file(), "the blob is in its bucket");
+    assert!(
+        !store.blobs_dir.join(format!("{hash_hex}.fm.msgpack")).exists(),
+        "nothing is written flat"
+    );
+}
+
+#[test]
+fn a_flat_blob_of_an_older_release_is_read_and_moved_into_its_bucket() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+    let hash_hex = format!("0f{}", "1".repeat(62));
+    let flat = store.blobs_dir.join(format!("{hash_hex}.fm.msgpack"));
+    std::fs::write(
+        &flat,
+        crate::store_blob::frame_filemap(&sample_l1(), Some(&sample_l2())).unwrap(),
+    )
+    .expect("plant a flat blob");
+
+    assert_eq!(store.read_l1_by_hex(&hash_hex).unwrap(), Some(sample_l1()));
+
+    assert!(!flat.exists(), "the flat blob moved");
+    assert!(
+        store
+            .blobs_dir
+            .join("0f")
+            .join(format!("{hash_hex}.fm.msgpack"))
+            .is_file(),
+        "into its bucket"
+    );
+    assert_eq!(
+        store.read_l2_by_hex(&hash_hex).unwrap(),
+        Some(sample_l2()),
+        "and still reads whole"
+    );
+}
+
+#[test]
+fn a_blob_written_over_a_flat_one_replaces_it_instead_of_leaving_a_twin() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+    let hash_hex = format!("7e{}", "2".repeat(62));
+    let flat = store.blobs_dir.join(format!("{hash_hex}.fm.msgpack"));
+    std::fs::write(&flat, b"stale").expect("plant a flat blob");
+
+    store
+        .overwrite_filemap_hex(&hash_hex, &sample_l1(), None)
+        .expect("overwrite");
+
+    assert!(!flat.exists(), "no flat twin is left");
+    assert_eq!(store.read_l1_by_hex(&hash_hex).unwrap(), Some(sample_l1()));
 }

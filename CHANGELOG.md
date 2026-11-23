@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The blob store shards each namespace into 256 buckets by the first two hex digits of the hash, and a file-view build no longer stats every blob; flat blobs migrate on first read, no rescan needed (#285)
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

@@ -987,3 +987,90 @@ fn a_clear_under_a_held_workspace_lock_is_refused() {
     );
     assert!(fx.basemind_dir.join(TELEMETRY_FILENAME).exists());
 }
+
+/// Move the fixture's blob named `stem` + `.fm.msgpack` from the flat layout into its bucket.
+fn shard_fm_blob(fx: &Fixture, stem: &str) -> PathBuf {
+    let flat = fx.blobs_dir.join(format!("{stem}.fm.msgpack"));
+    let bucketed = crate::store_blob_layout::sharded_blob_path(&fx.blobs_dir, stem, ".fm.msgpack");
+    fs::create_dir_all(bucketed.parent().unwrap()).expect("mk bucket");
+    fs::rename(flat, &bucketed).expect("shard blob");
+    bucketed
+}
+
+#[test]
+fn the_sweep_reaps_an_orphan_in_a_bucket_and_keeps_a_referenced_one() {
+    let fx = build_fixture();
+    let referenced_path = shard_fm_blob(&fx, &fx.referenced_stem);
+    let orphan_path = shard_fm_blob(&fx, &fx.orphan_stem);
+    let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
+
+    let report = gc_blobs_in(&fx.blobs_dir, &referenced, Duration::ZERO).expect("gc");
+
+    assert_eq!(report.scanned, 2);
+    assert_eq!(report.removed, 1);
+    assert_eq!(report.bytes_freed, fx.orphan_len);
+    assert!(referenced_path.exists(), "the referenced blob stays in its bucket");
+    assert!(!orphan_path.exists(), "the orphan in its bucket is reaped");
+}
+
+#[test]
+fn the_sweep_sees_flat_and_bucketed_blobs_in_one_pass() {
+    let fx = build_fixture();
+    let referenced_path = shard_fm_blob(&fx, &fx.referenced_stem);
+    let orphan_path = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.orphan_stem));
+    let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
+
+    let report = gc_blobs_in(&fx.blobs_dir, &referenced, Duration::ZERO).expect("gc");
+
+    assert_eq!((report.scanned, report.removed), (2, 1));
+    assert!(referenced_path.exists());
+    assert!(
+        !orphan_path.exists(),
+        "the flat orphan is reaped beside the bucketed blobs"
+    );
+}
+
+#[test]
+fn the_sweep_reaps_the_flat_twin_of_a_referenced_bucketed_blob() {
+    let fx = build_fixture();
+    let bucketed = shard_fm_blob(&fx, &fx.referenced_stem);
+    let twin = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.referenced_stem));
+    fs::write(&twin, b"fm").expect("write twin");
+    let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
+
+    gc_blobs_in(&fx.blobs_dir, &referenced, Duration::from_secs(3600)).expect("gc");
+
+    assert!(bucketed.exists(), "the bucketed copy stays");
+    assert!(!twin.exists(), "the flat twin is reaped");
+}
+
+#[test]
+fn a_flat_referenced_blob_with_no_bucketed_twin_is_kept() {
+    let fx = build_fixture();
+    let flat = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.referenced_stem));
+    let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
+
+    gc_blobs_in(&fx.blobs_dir, &referenced, Duration::ZERO).expect("gc");
+
+    assert!(flat.exists());
+}
+
+#[test]
+fn cache_stats_counts_bucketed_blobs_and_their_orphans() {
+    let fx = build_fixture();
+    shard_fm_blob(&fx, &fx.referenced_stem);
+    shard_fm_blob(&fx, &fx.orphan_stem);
+
+    let stats = cache_stats_in(&fx.basemind_dir, &fx.blobs()).expect("cache_stats");
+
+    assert_eq!(stats.blob_count, 2);
+    assert_eq!(stats.orphan_blob_count, 1);
+}
+
+#[test]
+fn count_blob_files_counts_a_namespace_in_both_layouts() {
+    let fx = build_fixture();
+    shard_fm_blob(&fx, &fx.referenced_stem);
+
+    assert_eq!(count_blob_files(&fx.basemind_dir.join(BLOBS_DIR)).expect("count"), 2);
+}
