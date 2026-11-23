@@ -102,6 +102,8 @@ log "ci run $run_id: $total of $total test legs succeeded"
 # no edit here.
 publish_jobs="$(sed -n 's/^    name: //p' "$(dirname "${BASH_SOURCE[0]}")/../workflows/publish.yaml" | jq -R . | jq -s .)"
 [ "$(jq length <<<"$publish_jobs")" -gt 0 ] || die "found no job names in publish.yaml"
+# The docs site deploys from main; the tag's own docs run is not CI's verdict either.
+publish_jobs="$(jq -c '. + ["deploy"]' <<<"$publish_jobs")"
 failing="$(gh api --paginate "repos/$REPO/commits/$SHA/check-runs?per_page=100" |
   jq -r --argjson own "$publish_jobs" '.check_runs[]
       | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required")

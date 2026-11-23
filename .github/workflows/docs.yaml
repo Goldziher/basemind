@@ -1,11 +1,10 @@
 name: docs
 
-# basemind.ai documents the released binary. A push to main only builds the site, so a broken build
-# shows up early; a release tag (or a dispatch from a tag) deploys it.
+# basemind.ai deploys from main: the github-pages environment only admits that branch. A pull
+# request or dispatch from another ref only builds the site.
 on:
   push:
     branches: [main]
-    tags: ["v[0-9]+.*"]
     paths:
       - "website/**"
       - "mise.toml"
@@ -41,7 +40,7 @@ jobs:
 
   deploy:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       pages: write
