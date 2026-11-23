@@ -384,7 +384,7 @@ fn files_by_path<S: serde::Serializer>(files: &[CommitFileView], serializer: S) 
 
     let mut map = serializer.serialize_map(Some(files.len()))?;
     for file in files {
-        map.serialize_entry(&file.path.to_str_lossy(), file.change)?;
+        map.serialize_entry(&file.path.to_str_lossy(), &file.change)?;
     }
     map.end()
 }
