@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A copy of the binary not named `basemind` no longer stalls the MCP connect and the session hooks for
-  a minute: the refusal to spawn a daemon from it ("not a `basemind` binary ... Set
-  `BASEMIND_DAEMON_BINARY`") is reported at once instead of being retried (#437).
+- A copy of the binary not named `basemind` no longer makes the MCP connect retry for about a minute.
+  The refusal to spawn a daemon from it ("not a `basemind` binary ... Set
+  `BASEMIND_DAEMON_BINARY`") is now fatal to the relay and is reported at once (#437).
 
 ## [0.34.0] - 2026-11-22
 
