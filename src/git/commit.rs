@@ -550,6 +550,15 @@ impl Repo {
             .is_some_and(|base| base.detach() == and)
     }
 
+    /// The parents of the commit `sha` names, in order, as 40-char hex; `None` when `sha` does not
+    /// resolve to a commit.
+    pub fn parent_shas(&self, sha: &str) -> Option<Vec<String>> {
+        let local = self.local();
+        let id = Self::resolve_oid(&local, sha)?;
+        let commit = local.find_commit(id).ok()?;
+        Some(commit.parent_ids().map(|parent| parent.to_string()).collect())
+    }
+
     /// True when the object named by `sha` exists in the repository.
     pub fn has_commit(&self, sha: &str) -> bool {
         let local = self.local();

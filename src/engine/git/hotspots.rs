@@ -167,7 +167,7 @@ fn collect_window(
     }
 }
 
-/// The window's commits from the git-history index when it indexes HEAD, else a live walk of at
+/// The window's commits from the git-history index when it holds HEAD as a tip, else a live walk of at
 /// most [`LIVE_COMMIT_CAP`] commits.
 fn window_of(ws: &Workspace, span: i64) -> Result<Window, EngineError> {
     let repo = require_git_repo(ws)?;

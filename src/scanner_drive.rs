@@ -36,6 +36,7 @@ use std::path::Path;
 use crate::backpressure::{AdmitOutcome, FootprintGate};
 use crate::chunk_drive::{ChunkCut, drive_chunks_governed};
 use crate::config::{Config, MaxFootprint};
+use crate::embed_progress::EmbedReporter;
 use crate::scan_evidence::ScanBreadcrumb;
 use crate::scanner::{FileResult, FileStatus, ScanCancel, ScanError, ScanSource, ScanStats};
 use crate::scanner_file::{run_candidates, scanner_pool};
@@ -124,6 +125,7 @@ impl ScanObserver for CollectObserver {
 pub(crate) struct ProgressObserver<'a> {
     inner: &'a mut dyn ScanObserver,
     breadcrumb: Option<&'a mut ScanBreadcrumb>,
+    embed: Option<EmbedReporter<'a>>,
     done: usize,
 }
 
@@ -133,8 +135,15 @@ impl<'a> ProgressObserver<'a> {
         Self {
             inner,
             breadcrumb,
+            embed: None,
             done: 0,
         }
+    }
+
+    /// Also record, at each chunk, how many documents the pass has embedded so far.
+    pub(crate) fn with_embed(mut self, embed: Option<EmbedReporter<'a>>) -> Self {
+        self.embed = embed;
+        self
     }
 }
 
@@ -147,6 +156,9 @@ impl ScanObserver for ProgressObserver<'_> {
         self.done += live_results;
         if let Some(breadcrumb) = self.breadcrumb.as_deref_mut() {
             breadcrumb.files_done(self.done);
+        }
+        if let Some(embed) = &self.embed {
+            embed.report();
         }
         self.inner.on_batch(live_results);
     }

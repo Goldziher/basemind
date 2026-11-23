@@ -370,6 +370,9 @@ impl BasemindServer {
                 if plan.defer_warm {
                     background::spawn_cache_warm(Arc::clone(&state));
                 }
+                if !options.read_only && view_is_working {
+                    background::spawn_embedding_resume(Arc::clone(&state));
+                }
                 background::spawn_background_gc(Arc::clone(&state.shared));
             }
         }

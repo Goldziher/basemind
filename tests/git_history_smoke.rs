@@ -154,8 +154,24 @@ fn a_synced_index_closes_promptly_and_releases_its_lock() {
     assert_eq!(reopened.commit_count(), 20);
 }
 
+/// Newest-first shas of commits touching `path` as `head` sees them in the index.
+fn touching_at(index: &GitHistoryIndex, head: &str, path: &str) -> Vec<String> {
+    index
+        .at(head)
+        .unwrap_or_else(|| panic!("{head} is an indexed tip"))
+        .commits_touching(&path.as_bytes().into(), 0, 1000)
+        .expect("index read")
+        .into_iter()
+        .map(|c| c.sha)
+        .collect()
+}
+
+fn head_of(root: &Path) -> String {
+    capture(root, &["rev-parse", "HEAD"]).trim().to_string()
+}
+
 #[test]
-fn history_rewrite_triggers_full_rebuild_no_stale_commits() {
+fn an_amended_head_appends_the_rewritten_commit_and_serves_only_its_history() {
     let dir = init_repo();
     let root = dir.path();
     commit_file(root, "a.rs", "fn a1() {}\n", "c1");
@@ -164,6 +180,7 @@ fn history_rewrite_triggers_full_rebuild_no_stale_commits() {
     let (index, _) = sync(root);
     let before = index_commits_touching(&index, "a.rs");
     assert_eq!(before.len(), 2);
+    let old_head = head_of(root);
     drop(index);
 
     run(root, &["commit", "--amend", "-qm", "c2-amended"]);
@@ -171,21 +188,26 @@ fn history_rewrite_triggers_full_rebuild_no_stale_commits() {
     assert_ne!(before, rewritten, "amend changed the tip sha");
 
     let (index, outcome) = sync(root);
-    assert!(
-        matches!(
-            outcome,
-            RebuildOutcome::FullRebuild {
-                reason: "history-rewrite",
-                ..
-            }
-        ),
-        "rewrite forces a full rebuild, got {outcome:?}"
+    assert_eq!(
+        outcome,
+        RebuildOutcome::Incremental { added: 1 },
+        "no wipe, one commit appended"
     );
     assert_eq!(index_commits_touching(&index, "a.rs"), rewritten);
+    assert_eq!(
+        index.commit_count(),
+        3,
+        "the replaced commit stays stored for the head that still has it"
+    );
+    assert_eq!(
+        touching_at(&index, &old_head, "a.rs"),
+        before,
+        "the old head still answers"
+    );
 }
 
 #[test]
-fn reset_back_diverges_and_triggers_full_rebuild() {
+fn reset_back_appends_nothing_and_serves_the_rewound_history() {
     let dir = init_repo();
     let root = dir.path();
     commit_file(root, "a.rs", "fn a1() {}\n", "c1");
@@ -194,18 +216,26 @@ fn reset_back_diverges_and_triggers_full_rebuild() {
 
     let (index, _) = sync(root);
     assert_eq!(index.commit_count(), 3);
+    let tip = head_of(root);
     drop(index);
 
     run(root, &["reset", "--hard", "-q", "HEAD~2"]);
     let (index, outcome) = sync(root);
-    assert!(
-        matches!(outcome, RebuildOutcome::FullRebuild { .. }),
-        "reset-back forces a full rebuild, got {outcome:?}"
+    assert_eq!(
+        outcome,
+        RebuildOutcome::Incremental { added: 0 },
+        "every commit is already stored"
     );
-    assert_eq!(index.commit_count(), 1, "index reflects the rewound history");
+    assert_eq!(index.commit_count(), 3, "nothing is wiped");
     assert_eq!(
         index_commits_touching(&index, "a.rs"),
         git_commits_touching(root, "a.rs"),
+        "the rewound head sees only its own commit"
+    );
+    assert_eq!(
+        touching_at(&index, &tip, "a.rs").len(),
+        3,
+        "the former head still sees all three"
     );
 }
 
@@ -670,8 +700,10 @@ fn diverged_linked_worktree(main: &Path) -> (tempfile::TempDir, PathBuf) {
     (holder, wt)
 }
 
+/// Two worktrees on diverged branches share one store, and each is answered from it, with no
+/// partial result: a worktree's own commits are visible to it and not to the other.
 #[test]
-fn linked_worktree_leaves_populated_index_untouched() {
+fn two_diverged_worktrees_are_both_indexed_and_each_sees_only_its_own_history() {
     let dir = init_repo();
     let root = dir.path();
     commit_file(root, "a.rs", "fn a1() {}\n", "c1");
@@ -680,23 +712,102 @@ fn linked_worktree_leaves_populated_index_untouched() {
 
     let (index, outcome) = sync_at(root, &bdir);
     assert!(matches!(outcome, RebuildOutcome::FullRebuild { reason: "initial", .. }));
-    let head_a = index.last_indexed_head_hex().expect("indexed head");
-    let count = index.commit_count();
-    assert_eq!(count, 2);
+    let head_a = head_of(root);
     drop(index);
 
     let (_holder, wt) = diverged_linked_worktree(root);
-    let head_b = capture(&wt, &["rev-parse", "HEAD"]).trim().to_string();
+    commit_file(&wt, "b.rs", "fn b1() {}\n", "on the branch");
+    let head_b = head_of(&wt);
     assert_ne!(head_a, head_b, "worktree branch diverged from the indexed head");
     assert!(Repo::discover(&wt).expect("discover worktree").is_linked_worktree());
 
     let (index, outcome) = sync_at(&wt, &bdir);
-    assert!(
-        matches!(outcome, RebuildOutcome::Skipped { .. }),
-        "linked worktree must not rebuild, got {outcome:?}"
+    assert_eq!(
+        outcome,
+        RebuildOutcome::Incremental { added: 2 },
+        "the amended commit and the new one"
     );
-    assert_eq!(index.last_indexed_head_hex().as_deref(), Some(head_a.as_str()));
-    assert_eq!(index.commit_count(), count);
+    assert_eq!(index.commit_count(), 4, "nothing was wiped");
+    assert!(index.has_tip(&head_a) && index.has_tip(&head_b));
+    drop(index);
+
+    let (index, outcome) = sync_at(root, &bdir);
+    assert_eq!(
+        outcome,
+        RebuildOutcome::Fresh,
+        "the main checkout's head is still an indexed tip"
+    );
+    for (checkout, head) in [(root, &head_a), (wt.as_path(), &head_b)] {
+        for path in ["a.rs", "b.rs"] {
+            assert_eq!(
+                touching_at(&index, head, path),
+                git_commits_touching(checkout, path),
+                "{path} at {head}"
+            );
+        }
+        let recent: Vec<String> = index
+            .at(head)
+            .expect("tip")
+            .recent_commits(0, 100, false)
+            .into_iter()
+            .map(|c| c.sha)
+            .collect();
+        assert_eq!(
+            recent,
+            capture(checkout, &["log", "--format=%H"])
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            "the recent log at {head}"
+        );
+    }
+}
+
+#[test]
+fn a_head_that_is_not_an_indexed_tip_is_not_served() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_file(root, "a.rs", "fn a1() {}\n", "c1");
+    let (index, _) = sync(root);
+
+    assert!(index.at(&head_of(root)).is_some());
+    assert!(index.at(&"1".repeat(40)).is_none());
+    assert!(index.at("not a sha").is_none());
+}
+
+#[test]
+fn a_head_moved_in_one_worktree_appends_only_its_new_commits_and_keeps_the_other_head_served() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_file(root, "a.rs", "fn a1() {}\n", "c1");
+    let bdir = basemind_dir(root);
+    let (index, _) = sync_at(root, &bdir);
+    drop(index);
+
+    let (_holder, wt) = diverged_linked_worktree(root);
+    let (index, outcome) = sync_at(&wt, &bdir);
+    assert_eq!(outcome, RebuildOutcome::Incremental { added: 1 });
+    drop(index);
+    let head_main = head_of(root);
+
+    commit_file(&wt, "a.rs", "fn a2() {}\n", "wt move 1");
+    commit_file(&wt, "a.rs", "fn a3() {}\n", "wt move 2");
+    let (index, outcome) = sync_at(&wt, &bdir);
+    assert_eq!(
+        outcome,
+        RebuildOutcome::Incremental { added: 2 },
+        "only the commits no sync stored"
+    );
+    assert_eq!(index.commit_count(), 4);
+    assert_eq!(
+        touching_at(&index, &head_of(&wt), "a.rs"),
+        git_commits_touching(&wt, "a.rs")
+    );
+    assert_eq!(
+        touching_at(&index, &head_main, "a.rs"),
+        git_commits_touching(root, "a.rs"),
+        "the main checkout's head is unaffected by the move"
+    );
 }
 
 #[test]
@@ -765,7 +876,7 @@ fn linked_worktree_builds_an_empty_index() {
 }
 
 #[test]
-fn main_checkout_still_appends_after_linked_worktree_skipped() {
+fn main_checkout_still_appends_after_a_diverged_linked_worktree_is_indexed() {
     let dir = init_repo();
     let root = dir.path();
     commit_file(root, "a.rs", "fn a1() {}\n", "c1");
@@ -777,19 +888,136 @@ fn main_checkout_still_appends_after_linked_worktree_skipped() {
 
     let (_holder, wt) = diverged_linked_worktree(root);
     let (index, outcome) = sync_at(&wt, &bdir);
-    assert!(matches!(outcome, RebuildOutcome::Skipped { .. }), "got {outcome:?}");
+    assert_eq!(outcome, RebuildOutcome::Incremental { added: 1 }, "got {outcome:?}");
     drop(index);
 
     commit_file(root, "a.rs", "fn a2() {}\n", "c2");
     let (index, outcome) = sync_at(root, &bdir);
     assert_eq!(outcome, RebuildOutcome::Incremental { added: 1 });
-    assert_eq!(index.commit_count(), 2);
-    assert_eq!(
-        index.last_indexed_head_hex(),
-        Some(capture(root, &["rev-parse", "HEAD"]).trim().to_string())
-    );
+    assert_eq!(index.commit_count(), 3);
+    assert_eq!(index.last_indexed_head_hex(), Some(head_of(root)));
     assert_eq!(
         index_commits_touching(&index, "a.rs"),
         git_commits_touching(root, "a.rs")
     );
+    assert_eq!(
+        touching_at(&index, &head_of(&wt), "a.rs"),
+        git_commits_touching(&wt, "a.rs"),
+        "the worktree's head is still served"
+    );
+}
+
+/// Newest-first shas of the live walk of HEAD, the order `git_log` answers in without the index.
+fn live_walk(root: &Path) -> Vec<String> {
+    Repo::discover(root)
+        .expect("repo discover")
+        .log_paths(1000, false)
+        .expect("live walk")
+        .into_iter()
+        .map(|commit| commit.sha)
+        .collect()
+}
+
+fn index_recent(index: &GitHistoryIndex, head: &str) -> Vec<String> {
+    index
+        .at(head)
+        .unwrap_or_else(|| panic!("{head} is served from the index"))
+        .recent_commits(0, 100, false)
+        .into_iter()
+        .map(|commit| commit.sha)
+        .collect()
+}
+
+/// A head that extends the indexed tip linearly keeps the index as its fast path, and the index
+/// lists its commits in the live walk's order.
+#[test]
+fn a_linear_head_is_served_from_the_index_in_the_live_walks_order() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_authored_at(root, "a.rs", "1", "t", "t@e.x", "c1", "2025-01-01T00:00:00");
+    let (index, _) = sync(root);
+    drop(index);
+    commit_authored_at(root, "a.rs", "2", "t", "t@e.x", "c2", "2025-01-02T00:00:00");
+    commit_authored_at(root, "a.rs", "3", "t", "t@e.x", "c3", "2025-01-03T00:00:00");
+
+    let (index, outcome) = sync(root);
+
+    assert_eq!(outcome, RebuildOutcome::Incremental { added: 2 });
+    assert!(index.tip_is_ordered(&basemind::git_history::keys::sha_hex_to_raw(&head_of(root)).expect("sha")));
+    assert_eq!(index_recent(&index, &head_of(root)), live_walk(root));
+    assert_eq!(live_walk(root).len(), 3);
+}
+
+/// Append order is not walk order once a head merges commits indexed for two other heads: the merge
+/// is appended last, yet the walk lists the older side's commit after the newer one's. Such a head is
+/// answered by the live walk (the index declines it), while the tips it joins stay served.
+#[test]
+fn a_merged_head_whose_order_the_index_cannot_prove_is_left_to_the_live_walk() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_authored_at(root, "a.rs", "1", "t", "t@e.x", "c1", "2025-01-01T00:00:00");
+    commit_authored_at(root, "a.rs", "2", "t", "t@e.x", "c2", "2025-01-03T00:00:00");
+    let c2 = head_of(root);
+    let (index, _) = sync(root);
+    drop(index);
+    run(root, &["checkout", "-qb", "feature", "HEAD~1"]);
+    commit_authored_at(root, "b.rs", "1", "t", "t@e.x", "f1", "2025-01-02T00:00:00");
+    let f1 = head_of(root);
+    let (index, _) = sync(root);
+    drop(index);
+    run(root, &["checkout", "-q", "main"]);
+    run(root, &["merge", "-q", "--no-ff", "feature", "-m", "merge"]);
+    let merge = head_of(root);
+
+    let (index, outcome) = sync(root);
+
+    assert_eq!(outcome, RebuildOutcome::Incremental { added: 1 });
+    assert!(index.has_tip(&merge), "the merge is an indexed tip");
+    assert!(
+        index.at(&merge).is_none(),
+        "but its order is not provable from the index"
+    );
+    let c1 = head_of_rev(root, "HEAD~2");
+    assert_eq!(
+        live_walk(root),
+        [merge, c2.clone(), f1.clone(), c1],
+        "the live walk lists the newer side first, the order append order would invert"
+    );
+    for tip in [&c2, &f1] {
+        assert!(index.at(tip).is_some(), "{tip} stays served");
+    }
+    assert_eq!(
+        index_recent(&index, &c2),
+        capture_lines(root, &["log", "--format=%H", &c2])
+    );
+    assert_eq!(
+        index_recent(&index, &f1),
+        capture_lines(root, &["log", "--format=%H", &f1])
+    );
+}
+
+/// A head that branches off history indexed for another head is checked against its own walk: here
+/// the walk descends through the ordinals, so the index serves it in the live walk's order.
+#[test]
+fn a_branch_off_indexed_history_whose_walk_descends_is_served_in_the_live_walks_order() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_authored_at(root, "a.rs", "1", "t", "t@e.x", "c1", "2025-01-01T00:00:00");
+    commit_authored_at(root, "a.rs", "2", "t", "t@e.x", "c2", "2025-01-02T00:00:00");
+    let (index, _) = sync(root);
+    drop(index);
+    run(root, &["checkout", "-qb", "feature", "HEAD~1"]);
+    commit_authored_at(root, "b.rs", "1", "t", "t@e.x", "f1", "2025-01-03T00:00:00");
+
+    let (index, _) = sync(root);
+
+    assert_eq!(index_recent(&index, &head_of(root)), live_walk(root));
+}
+
+fn head_of_rev(root: &Path, rev: &str) -> String {
+    capture(root, &["rev-parse", rev]).trim().to_string()
+}
+
+fn capture_lines(root: &Path, args: &[&str]) -> Vec<String> {
+    capture(root, args).lines().map(str::to_owned).collect()
 }

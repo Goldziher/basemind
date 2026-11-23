@@ -23,7 +23,7 @@
 (variadic_parameter_declaration name: (identifier) @local.definition.parameter)
 (short_var_declaration left: (expression_list (identifier) @local.definition.var))
 (var_spec name: (identifier) @local.definition.var)
-(const_spec name: (identifier) @local.definition.var)
+(const_spec (identifier) @local.definition.var)
 
 ;; references
 (identifier) @local.reference

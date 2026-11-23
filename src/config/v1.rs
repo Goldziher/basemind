@@ -79,7 +79,9 @@ pub struct ScanConfig {
     /// or by the floor pattern itself (`**/build/**`). Use it to index a tree the floor otherwise
     /// drops. The default `exclude` list is separate: a directory also listed there (`dist`,
     /// `target`) must be removed from `exclude` too. The floor also drops credential files (`.env`,
-    /// `.env.*`, `.aws`, `.ssh`, `.gnupg`, `.npmrc`, `id_rsa`, `*.pem`, `*.key`, ...); list the
+    /// `.env.*`, `.aws`, `.ssh`, `.gnupg`, `.npmrc`, `id_rsa`, `*.pem`, `*.key`, ...), tool and
+    /// package-manager caches (`.cache`, `.turbo`, `.nox`, `.yarn/cache`, `*.egg-info`, ...) and
+    /// lockfiles (`*.lock`, `go.sum`, `package-lock.json`, `.terraform.lock.hcl`, ...); list the
     /// entry (`.env.*`, `*.pem`) to index one deliberately. A credential entry here is honoured only
     /// when the operator sets `BASEMIND_ALLOW_REPO_CREDENTIALS`, so a repository's own file cannot
     /// un-exclude the operator's secrets. `.git` and `.basemind` can never be allowed,

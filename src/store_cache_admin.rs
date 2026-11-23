@@ -362,29 +362,22 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
 
     let mut blob_count = 0usize;
     let mut orphan_blob_count = 0usize;
-    if blobs_dir.exists() {
-        for entry in read_dir(blobs_dir)? {
-            let entry = entry.map_err(|source| GcError::Io {
-                path: blobs_dir.to_path_buf(),
-                source,
-            })?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(file_name) = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .filter(|n| blob_stem(n).is_some())
-            else {
-                continue;
-            };
-            blob_count += 1;
-            if let Some(referenced) = &referenced
-                && !referenced.keeps(file_name)
-            {
-                orphan_blob_count += 1;
-            }
+    for path in crate::store_blob_layout::blob_files(blobs_dir).map_err(|source| GcError::Io {
+        path: blobs_dir.to_path_buf(),
+        source,
+    })? {
+        let Some(file_name) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| blob_stem(n).is_some())
+        else {
+            continue;
+        };
+        blob_count += 1;
+        if let Some(referenced) = &referenced
+            && !referenced.keeps(file_name)
+        {
+            orphan_blob_count += 1;
         }
     }
 

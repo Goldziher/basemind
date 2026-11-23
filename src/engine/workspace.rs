@@ -49,7 +49,7 @@ pub(crate) struct Workspace {
     /// Precomputed git-history index (posting lists `path → [commit]`). `Some` only on a writable
     /// serve in a git repo with the index enabled; a read-only serve or a Fjall-lock collision
     /// leaves it `None`, and the git tools fall back to the live walk. Used by the history tools
-    /// only when `last_indexed_head == HEAD` (the freshness gate), so it never serves stale results.
+    /// only when HEAD is an indexed tip (the freshness gate), so it never serves stale results.
     pub(crate) git_history: Option<Arc<crate::git_history::GitHistoryIndex>>,
     /// `(blob_oid, lang) -> Arc<OutlineEntry>` cache that keeps `symbol_history` fast on
     /// hot files even when the symbol's source blob shows up in many adjacent commits.

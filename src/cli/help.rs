@@ -234,8 +234,10 @@ When to use: you are looking for a topic in prose, data or config files: Markdow
 HTML, email, JSON, YAML, TOML. The code tools do not cover them.
 
 Returns: ranked passages, each cited with its path and its pages, section or lines. `--format`,
-`--path` (a glob), `--mime-type`, `--keywords` and `--entity` filter before ranking. Needs a build
-with the `documents` feature and a scan.
+`--path` (a glob), `--mime-type`, `--keywords` and `--entity` filter before ranking. Chunks of one
+document that touch are one hit; `--per-doc` (default 2, 0 for no cap) puts other documents ahead of
+a document's later hits; `--context` adds the chunk before and after each hit. Needs a build with
+the `documents` feature and a scan.
 
 Example:
   basemind docs search \"how releases are versioned\" --format markdown

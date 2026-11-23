@@ -10,7 +10,8 @@
 //!
 //! The depth is a hard bound on how far a ranking can be paged. One hit more than the depth is
 //! retrieved to learn whether the ranking goes on past it, and a ranking that does is flagged
-//! `truncated`, so a list of exactly [`RANKED_DEPTH`] hits is told from one cut there.
+//! `truncated` once a page reads up to it, so a list of exactly [`RANKED_DEPTH`] hits is told from
+//! one cut there. A page that stops short of the depth is paging, not truncation.
 
 #![cfg_attr(
     not(any(feature = "code-search", feature = "documents")),
@@ -96,14 +97,15 @@ pub(crate) struct RankedPage<T> {
     pub hits: Vec<T>,
     /// The token budget dropped trailing hits of the page.
     pub budgeted: bool,
-    /// The ranking goes on past [`RANKED_DEPTH`].
+    /// The page ends at [`RANKED_DEPTH`] and the ranking goes on past it.
     pub depth_cut: bool,
     pub next_cursor: Option<Cursor>,
 }
 
 /// Cut the page `[offset, offset + limit)` out of `hits` (a retrieval of [`RANKED_FETCH`]), apply
 /// the token budget, and offer `next_cursor` when the list goes on. A retrieval that came back with
-/// more than [`RANKED_DEPTH`] hits is cut there, on every page.
+/// more than [`RANKED_DEPTH`] hits is cut there, on every page. `past_depth` says the retrieval had
+/// more than that before `hits` was merged down, so a ranking that goes on is still flagged.
 #[cfg_attr(
     not(feature = "code-search"),
     allow(dead_code, reason = "only `code_search` pages this way")
@@ -114,8 +116,9 @@ pub(crate) fn page_ranked<T: Serialize>(
     limit: u32,
     max_tokens: Option<u32>,
     generation: u32,
+    past_depth: bool,
 ) -> RankedPage<T> {
-    let depth_cut = hits.len() > RANKED_DEPTH as usize;
+    let goes_on = past_depth || hits.len() > RANKED_DEPTH as usize;
     hits.truncate(RANKED_DEPTH as usize);
     let fetched = hits.len() as u32;
     let page: Vec<T> = hits.into_iter().skip(offset as usize).take(limit as usize).collect();
@@ -125,7 +128,8 @@ pub(crate) fn page_ranked<T: Serialize>(
     RankedPage {
         hits: budgeted.items,
         budgeted: budgeted.budgeted,
-        depth_cut,
+        // A page that ends short of the depth is paging: only one that reaches it is cut there.
+        depth_cut: goes_on && !more,
         next_cursor: more.then(|| Cursor::encode_in_memory(u64::from(next), generation)),
     }
 }
@@ -141,7 +145,15 @@ mod tests {
     }
 
     fn page(hits: Vec<u32>, offset: u32, limit: u32, max_tokens: Option<u32>) -> RankedPage<u32> {
-        page_ranked(hits, offset, limit, max_tokens, GENERATION)
+        page_ranked(hits, offset, limit, max_tokens, GENERATION, false)
+    }
+
+    #[test]
+    fn a_retrieval_merged_down_to_the_depth_still_says_it_goes_on() {
+        let merged = page_ranked(ranked(RANKED_DEPTH), RANKED_DEPTH - 10, 10, None, GENERATION, true);
+        assert_eq!(merged.hits.len(), 10);
+        assert!(merged.depth_cut, "the retrieval had {RANKED_FETCH} hits before merging");
+        assert!(merged.next_cursor.is_none());
     }
 
     #[test]
@@ -171,7 +183,7 @@ mod tests {
         assert!(!exact.depth_cut, "exactly {RANKED_DEPTH} hits exist");
 
         let first = page(ranked(RANKED_DEPTH + 1), 0, 10, None);
-        assert!(first.depth_cut, "flagged from the first page");
+        assert!(!first.depth_cut, "a limit cut is paging");
         assert!(first.next_cursor.is_some());
 
         let last = page(ranked(RANKED_DEPTH + 1), RANKED_DEPTH - 10, 10, None);
@@ -237,7 +249,7 @@ mod tests {
     #[test]
     fn a_budget_cut_is_flagged_and_resumable() {
         let hits: Vec<String> = (0..10).map(|rank| format!("hit {rank} {}", "x".repeat(64))).collect();
-        let cut = page_ranked(hits, 0, 10, Some(1), GENERATION);
+        let cut = page_ranked(hits, 0, 10, Some(1), GENERATION, false);
         assert_eq!(cut.hits.len(), 1);
         assert!(cut.budgeted);
         assert!(cut.next_cursor.is_some());

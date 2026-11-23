@@ -18,7 +18,10 @@
   type: (interface_type
     (method_elem name: (field_identifier) @symbol.name) @symbol.method))
 
-(const_declaration (const_spec name: (identifier) @symbol.name) @symbol.const)
+;; No `name:` field here: tree-sitter-go tags every child of a multi-name `const` spec (the commas too)
+;; with it, and a query that names the field stops after the first name (`const A, B = 1, 2`
+;; yields only `A`). The identifiers that are direct children of the spec are exactly its names.
+(const_declaration (const_spec (identifier) @symbol.name) @symbol.const)
 
 (var_declaration (var_spec name: (identifier) @symbol.name) @symbol.const)
 

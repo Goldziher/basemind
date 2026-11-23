@@ -471,13 +471,12 @@ pub(super) fn touching_page(
     let path = &without_empty_components(path);
     // The lookup's reads take no lock, so a sync that clears or rebuilds the index between the
     // freshness check and them can make a path with history read as untouched: the answer counts
-    // only when the index still stamps `head` after it.
-    let indexed = git_history_if_fresh(ws, head).and_then(|index| {
-        index
-            .commits_touching(path, from, take)
+    // only when the index still holds `head` as it was read after it.
+    let indexed = git_history_if_fresh(ws, head).and_then(|view| {
+        view.commits_touching(path, from, take)
             .inspect_err(|error| tracing::warn!(%error, "git-history lookup failed; walking the history live"))
             .ok()
-            .filter(|_| index.last_indexed_head_hex().as_deref() == Some(head))
+            .filter(|_| view.is_current())
     });
     history_page(
         "git_log",

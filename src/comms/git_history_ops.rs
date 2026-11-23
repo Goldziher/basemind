@@ -54,7 +54,7 @@ impl Broker {
     ///
     /// A [`GitHistoryOp::Sync`] serializes on the index's build lock, so N callers asking at once
     /// produce ONE build: the winner walks history; the rest wait, then see `Fresh` (`builder::sync`
-    /// compares `last_indexed_head` to HEAD and no-ops). The walk is heavy and blocking, so it — and every
+    /// finds HEAD already an indexed tip and no-ops). The walk is heavy and blocking, so it — and every
     /// read — runs on a blocking thread while the reactor keeps serving other links.
     pub(crate) async fn on_git_history(&self, root: std::path::PathBuf, op: GitHistoryOp) -> CommsResponse {
         match self.run_git_history_inproc(root, op).await {
@@ -276,6 +276,11 @@ fn unbuilt_reply(op: &GitHistoryOp) -> GitHistoryReply {
     }
 }
 
+/// The index as `head` sees it, or as the most recently synced tip sees it when the op names none.
+fn view<'a>(index: &'a GitHistoryIndex, head: Option<&str>) -> Option<crate::git_history::reader::HistoryAt<'a>> {
+    head.map_or_else(|| index.latest(), |head| index.at(head))
+}
+
 /// Execute one git-history op against the daemon-held index. Blocking (fjall reads, and a full
 /// history walk for `Sync`); the caller runs it on a blocking thread.
 fn run_git_history_op(
@@ -296,22 +301,24 @@ fn run_git_history_op(
             skip,
             take,
             include_files,
-        } => Ok(GitHistoryReply::Commits(index.recent_commits(
-            skip,
-            take,
-            include_files,
-        ))),
-        GitHistoryOp::CommitsTouching { path, skip, take } => {
-            index.commits_touching(&path, skip, take).map(GitHistoryReply::Commits)
-        }
-        GitHistoryOp::WindowCommits { window } => Ok(GitHistoryReply::Commits(index.window_commits(window))),
+            head,
+        } => Ok(GitHistoryReply::Commits(
+            view(index, head.as_deref()).map_or_else(Vec::new, |view| view.recent_commits(skip, take, include_files)),
+        )),
+        GitHistoryOp::CommitsTouching { path, skip, take, head } => view(index, head.as_deref())
+            .map_or_else(|| Ok(Vec::new()), |view| view.commits_touching(&path, skip, take))
+            .map(GitHistoryReply::Commits),
+        GitHistoryOp::WindowCommits { window, head } => Ok(GitHistoryReply::Commits(
+            view(index, head.as_deref()).map_or_else(Vec::new, |view| view.window_commits(window)),
+        )),
         GitHistoryOp::SearchCommits {
             query,
             scope,
             skip,
             take,
+            head,
         } => Ok(GitHistoryReply::Commits(
-            index.search_commits(&query, scope, skip, take),
+            view(index, head.as_deref()).map_or_else(Vec::new, |view| view.search_commits(&query, scope, skip, take)),
         )),
     }
 }

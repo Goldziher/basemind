@@ -10,9 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The blob store shards each namespace into 256 buckets by the first two hex digits of the hash, and a file-view build no longer stats every blob; flat blobs migrate on first read, no rescan needed (#285)
+- The fast first scan now tracks documents whose embeddings are still to come, so they are searchable by text as soon as it ends; the background pass embeds them, reports `embeddings {done, total, eta_secs}` in `index_status`, makes `docs_search` carry a notice while vectors are pending, and a restarted background server resumes it (#454; a one-shot command does not).
 ### Added
 
 - `git_log` searches commit messages and authors tolerantly (typos, identifier parts, the start of the last word, authors by subsequence), lists exact matches first and the loose ones in `fuzzy`, combines `query` / `author` with `path`, `since` and `until`, and names the nearest paths of the history when `path` is not in it (#457). The git-history index schema moves, so the next scan rebuilds it.
+- `docs_search` takes `per_doc` (default 2) so one document does not fill a page, and `context` to add the chunk before and after each hit, which is off by default (#474).
+
+### Changed
+
+- `docs_search` merges chunks of one document that touch or overlap into one hit wherever they rank, and no neighbouring chunk is repeated across hits (#474).
+
+### Fixed
+
+- `code_search` merges overlapping chunks of one symbol into one hit (#479).
+- `code_search` and `docs_search` no longer set `truncated` with `truncated_reason: "depth"` on a page cut by `limit`; only a page that reaches the paging depth does (#479).
+- The always-on exclude floor now drops tool and package-manager caches (`.cache`, `.terragrunt-cache`,
+  `.turbo`, `.nox`, `.yarn/cache`, `*.egg-info`, `.cargo/registry`, `.eslintcache`, `.coverage`, ...)
+  and lockfiles (`*.lock`, `go.sum`, `package-lock.json`, `pnpm-lock.yaml`, `.terraform.lock.hcl`, ...);
+  `[scan] floor_allow` re-includes any of them (#458)
 - `[documents]` lists (`include`, `exclude`, `embed_include`, `embed_exclude`) accept `!pattern` re-includes with gitignore semantics: the last matching entry decides (#458).
 - `[scan] test_globs`, the one list of test paths (`tests/`, `__tests__/`, `*_test.*`, `*.spec.*`, `conftest.py`, `e2e/`, `mocks/`, `fixtures/`, `*.stories.*`, `*.snap`, `*.bats`, `testing/`, `playwright/`, `*Test.java`, `*_spec.rb`, ...) that stays in the code map, and that the document tier's default exclude reuses to keep them out of RAG (#458).
 - `basemind init` detects the document scope: it counts document-like files per extension, writes `[documents] include` and `exclude` as plain glob lists, and asks keep, exclude or skip for scratch-like directories (`--yes` excludes only the large ones) (#458).
@@ -68,6 +86,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A watcher batch that retires a content no longer decodes every sibling worktree's file map: each view's holds are cached until that view writes again (#277).
 - A file map whose delta log exists but cannot be read is an error instead of the stale base, and the holds cache is invalidated when a log is replaced by one of the same length (#277, #278).
+- The git-history index stores every commit reachable from any worktree HEAD once and answers each HEAD from its own reachability, so linked worktrees on other branches get indexed (not `partial`) history, and a HEAD that diverges or is rewritten appends only its new commits instead of wiping and rebuilding the index (#283). The first sync after upgrading rebuilds the index once. A head whose commits the index cannot prove to list in the live walk's order (for example one that merges commits indexed for other heads) is answered by the live walk.
+### Fixed
+
+- The plugin launcher releases its install lock before it execs a binary another launch installed while it waited (#435)
 
 ## [0.34.0] - 2026-11-22
 

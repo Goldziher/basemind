@@ -136,7 +136,9 @@ impl Workspace {
         };
         let notice = self.lifecycle_notice();
         let watches = watch_status(&self.watch_health, crate::watch_health::max_user_watches);
-        let scan_progress = crate::scan_evidence::live_progress(&crate::store::workspace_cache_dir(&self.root));
+        let cache_dir = crate::store::workspace_cache_dir(&self.root);
+        let scan_progress = crate::scan_evidence::live_progress(&cache_dir);
+        let embeddings = crate::embed_progress::status(&cache_dir, crate::embed_progress::now_unix_ms());
         let identity = self.repo_identity();
         let submodules = self.repo.as_ref().map(|r| r.submodule_paths()).unwrap_or_default();
         let Ok(store) = self.try_store_read() else {
@@ -161,6 +163,7 @@ impl Workspace {
                 notice,
                 watches,
                 scan_progress,
+                embeddings,
                 total_size_bytes: 0,
                 languages: BTreeMap::new(),
                 listed: BTreeMap::new(),
@@ -216,6 +219,7 @@ impl Workspace {
             notice,
             watches,
             scan_progress,
+            embeddings,
             total_size_bytes: total_size,
             languages: by_lang,
             listed: listed_by_kind(&store.index.listed),
@@ -297,7 +301,6 @@ struct RepoIdentity {
     head_short_sha: Option<String>,
 }
 
-/// Where the tree-sitter grammars are cached; shared with every other user of the language pack.
 /// How many list-only files the index holds of each kind.
 fn listed_by_kind(
     listed: &ahash::AHashMap<crate::path::RelPath, crate::config::list_only::ListedEntry>,
@@ -309,6 +312,7 @@ fn listed_by_kind(
     counts
 }
 
+/// Where the tree-sitter grammars are cached; shared with every other user of the language pack.
 fn grammar_dir() -> Option<String> {
     crate::lang::grammar_cache_dir().map(|dir| dir.display().to_string())
 }
@@ -579,6 +583,29 @@ mod tests {
         drop(breadcrumb);
         let status = ws.index_status(IndexStatusParams {}).expect("status");
         assert_eq!(status.scan_progress, None, "a finished scan is not reported");
+    }
+
+    #[test]
+    fn status_reports_the_embedding_pass_and_drops_it_once_the_vectors_are_written() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = unscanned_workspace(dir.path());
+        assert_eq!(
+            ws.index_status(IndexStatusParams {}).expect("status").embeddings,
+            None,
+            "no document owes vectors"
+        );
+
+        let cache_dir = crate::store::workspace_cache_dir(dir.path());
+        crate::embed_progress::record_owed(&cache_dir, 7);
+        let embeddings = ws
+            .index_status(IndexStatusParams {})
+            .expect("status")
+            .embeddings
+            .expect("the owed vectors are reported");
+        assert_eq!((embeddings.done, embeddings.total, embeddings.eta_secs), (0, 7, None));
+
+        crate::embed_progress::clear(&cache_dir);
+        assert_eq!(ws.index_status(IndexStatusParams {}).expect("status").embeddings, None);
     }
 
     /// `rescanning` and a progress block are claims that a scan is running: with no pass holding the

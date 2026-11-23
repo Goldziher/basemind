@@ -28,7 +28,7 @@ const BOUND_FORMS: &str =
 /// The `search` operation: words in the commit message and/or the author, tolerant of typos, word
 /// parts and the start of the last word, optionally narrowed to a `path` and a time range. Exact
 /// matches come first, and the shas of the ones that matched only through a tolerance are listed in
-/// `fuzzy`. Uses the git-history index when it is fresh (`last_indexed_head == HEAD`); otherwise
+/// `fuzzy`. Uses the git-history index when it is fresh (it holds HEAD as a tip); otherwise
 /// degrades to a bounded live walk over the recent window that matches the words as typed, flagged
 /// `truncated` with reason `unindexed_scan` (author + summary only, no body). Pagination and the
 /// HEAD-scoped cursor mirror `recent`.
@@ -66,7 +66,7 @@ pub(super) fn run_search(
     let want = limit.saturating_add(1);
     // The index reads take no lock, so a sync that rebuilds the index between the freshness check
     // and the search can make it answer with too little: the answer counts only when the index still
-    // stamps `head` after it, else the live walk answers.
+    // holds `head` as it was read after it, else the live walk answers.
     let indexed = git_history_if_fresh(ws, &head).and_then(|index| {
         let query = CommitQuery {
             pattern: &params.pattern,
@@ -77,7 +77,7 @@ pub(super) fn run_search(
             until: range.until,
         };
         let hits = index.search_commits_fuzzy(&query, skip, want);
-        (index.last_indexed_head_hex().as_deref() == Some(head.as_str())).then_some(hits)
+        index.is_current().then_some(hits)
     });
     let (mut hits, truncated_reason) = match indexed {
         Some(hits) => {

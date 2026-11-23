@@ -15,6 +15,8 @@
 use ahash::{AHashMap, AHashSet};
 
 use super::fts::{self, FIELD_AUTHOR, FtsScope};
+use super::reach::Reach;
+use super::reader::HistoryAt;
 use super::{GitHistoryIndex, LocalDb, encoding, keys};
 use crate::git::CommitInfo;
 use crate::path::RelPath;
@@ -84,12 +86,28 @@ impl GitHistoryIndex {
     /// newest first, after skipping `skip` and taking at most `take`. A query with no word to
     /// search (`pattern` and `author` both empty or without a letter or digit) matches nothing.
     pub fn search_commits_fuzzy(&self, query: &CommitQuery<'_>, skip: usize, take: usize) -> Vec<SearchHit> {
-        self.local().search_commits_fuzzy(query, skip, take)
+        self.latest()
+            .map_or_else(Vec::new, |view| view.search_commits_fuzzy(query, skip, take))
     }
 
     /// Every path any indexed commit touched.
     pub fn history_paths(&self) -> Vec<RelPath> {
         self.local().history_paths()
+    }
+}
+
+impl HistoryAt<'_> {
+    /// The commits this head reaches that match `query`, exact matches first and then the tolerant
+    /// ones, each group newest first, after skipping `skip` and taking at most `take`. A query with
+    /// no word to search matches nothing.
+    pub fn search_commits_fuzzy(&self, query: &CommitQuery<'_>, skip: usize, take: usize) -> Vec<SearchHit> {
+        let (db, reach) = self.parts();
+        db.search_commits_fuzzy(reach, query, skip, take)
+    }
+
+    /// Every path any indexed commit touched.
+    pub fn history_paths(&self) -> Vec<RelPath> {
+        self.parts().0.history_paths()
     }
 }
 
@@ -172,7 +190,7 @@ fn clauses(query: &CommitQuery<'_>) -> Vec<Clause> {
 }
 
 impl LocalDb {
-    fn search_commits_fuzzy(&self, query: &CommitQuery<'_>, skip: usize, take: usize) -> Vec<SearchHit> {
+    fn search_commits_fuzzy(&self, reach: &Reach, query: &CommitQuery<'_>, skip: usize, take: usize) -> Vec<SearchHit> {
         let clauses = clauses(query);
         if take == 0 || clauses.is_empty() || clauses.iter().any(|clause| clause.terms.is_empty()) {
             return Vec::new();
@@ -194,6 +212,7 @@ impl LocalDb {
         };
 
         let mut exact = self.exact_ords(&clauses);
+        exact.retain(|ord| reach.contains(*ord));
         if let Some(file_ords) = &file_ords {
             exact.retain(|ord| file_ords.contains(ord));
         }
@@ -208,7 +227,9 @@ impl LocalDb {
         }
 
         let mut tolerant = self.tolerant_ords(&clauses);
-        tolerant.retain(|ord| !exact.contains(ord) && file_ords.as_ref().is_none_or(|ords| ords.contains(ord)));
+        tolerant.retain(|ord| {
+            reach.contains(*ord) && !exact.contains(ord) && file_ords.as_ref().is_none_or(|ords| ords.contains(ord))
+        });
         let mut tolerant_sorted: Vec<u32> = tolerant.into_iter().collect();
         tolerant_sorted.sort_unstable_by(|a, b| b.cmp(a));
         for ord in tolerant_sorted {

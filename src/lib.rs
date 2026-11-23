@@ -18,6 +18,7 @@ pub mod daemon_lock;
 pub mod data_root;
 pub mod deps_docs;
 pub mod disk_space;
+pub mod embed_progress;
 #[cfg(feature = "intelligence")]
 pub mod embeddings;
 pub mod engine;
@@ -83,6 +84,7 @@ pub mod source_text;
 pub mod store;
 pub mod store_blob;
 mod store_blob_codec;
+pub(crate) mod store_blob_layout;
 pub mod store_cache_admin;
 pub mod store_doc_tombstone;
 pub mod store_gc;
