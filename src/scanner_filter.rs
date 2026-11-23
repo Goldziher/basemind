@@ -9,11 +9,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
-use globset::GlobSet;
 use ignore::WalkBuilder;
 
 use crate::config::Config;
-use crate::config::rules::{compile_patterns, expand_pattern};
+use crate::config::rules::{RuleSet, compile_rules, expand_pattern};
 use crate::lang_rules::{Detection, LangRules};
 use crate::scanner::{ScanError, ScanSource, submodule_roots_for_source};
 
@@ -172,17 +171,17 @@ fn effective_floor(floor_allow: &[String], credentials_granted: bool) -> Vec<&'s
 /// always wins.
 #[derive(Default)]
 struct Gate {
-    include: Option<GlobSet>,
-    exclude: Option<GlobSet>,
+    include: Option<RuleSet>,
+    exclude: Option<RuleSet>,
 }
 
 impl Gate {
     fn build(include: &[String], exclude: &[String]) -> Result<Self, ScanError> {
-        let compile = |list: &[String]| -> Result<Option<GlobSet>, ScanError> {
+        let compile = |list: &[String]| -> Result<Option<RuleSet>, ScanError> {
             if list.is_empty() {
                 return Ok(None);
             }
-            compile_patterns(list.iter().map(String::as_str))
+            compile_rules(list.iter().map(String::as_str))
                 .map(Some)
                 .map_err(ScanError::BadGlob)
         };

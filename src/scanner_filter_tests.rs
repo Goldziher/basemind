@@ -473,12 +473,133 @@ fn default_document_excludes_drop_vectors_lockfiles_and_test_data() {
         "svc/testdata/a.json",
         "pkg/fixtures/b.json",
         "ui/__snapshots__/c.snap",
+        "svc/tests/report.html",
+        "web/__tests__/page.html",
+        "e2e/shots/flow.pdf",
+        "app/mocks/response.xml",
+        "docs/api.test.html",
+        "CLAUDE.md",
+        "svc/CLAUDE.local.md",
+        "AGENTS.md",
+        "GEMINI.md",
+        ".claude/skills/x/SKILL.md",
+        ".cursor/rules/a.mdc",
+        ".ai-rulez/rules/b.md",
+        ".github/copilot-instructions.md",
+        "web/node_modules/pkg/README.md",
+        "vendor/lib/LICENSE.md",
+        "third_party/x/CHANGELOG.md",
+        "web/dist/index.html",
+        "build/out/page.html",
+        "static/app.min.js",
+        "static/app.js.map",
     ] {
         assert!(!filters.doc_allowed(dropped), "{dropped} is excluded by default");
     }
-    for kept in ["README.md", "docs/guide.md", "config/settings.yaml", "data/report.csv"] {
+    for kept in [
+        "README.md",
+        "docs/guide.md",
+        "config/settings.yaml",
+        "data/report.csv",
+        ".github/workflows/ci.yml",
+        "docs/adr/0001.md",
+    ] {
         assert!(filters.doc_allowed(kept), "{kept} stays indexable");
     }
+}
+
+#[test]
+fn default_document_exclude_list_is_the_one_named_constant() {
+    let config = crate::config::default_for_root(Path::new("."));
+    assert_eq!(
+        config.documents.exclude,
+        crate::config::default_document_exclude(),
+        "the loaded default is the constant `init` writes out"
+    );
+}
+
+/// Several patterns per list, `**`, directory patterns, per-extension rules, exclude beating
+/// include, and `!` entries re-including in list order.
+#[test]
+fn document_glob_lists_take_many_patterns_directories_and_negations() {
+    let build = |include: &[&str], exclude: &[&str]| {
+        let mut config = crate::config::default_for_root(Path::new("."));
+        config.documents.include = include.iter().map(|s| (*s).to_string()).collect();
+        config.documents.exclude = exclude.iter().map(|s| (*s).to_string()).collect();
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters")
+    };
+
+    let filters = build(&["docs", "adr/**", "**/*.rst"], &["docs/drafts", "**/*.html"]);
+    for (path, allowed) in [
+        ("docs/guide.md", true),
+        ("docs/deep/er/guide.md", true),
+        ("adr/0001.md", true),
+        ("pkg/readme.rst", true),
+        ("other/guide.md", false),
+        ("docs/drafts/a.md", false),
+        ("docs/drafts/deep/a.md", false),
+        ("docs/page.html", false),
+    ] {
+        assert_eq!(filters.doc_allowed(path), allowed, "{path}");
+    }
+
+    let filters = build(&[], &["**/*.html", "!docs/**/*.html"]);
+    for (path, allowed) in [
+        ("docs/site/page.html", true),
+        ("tests/page.html", false),
+        ("web/page.html", false),
+    ] {
+        assert_eq!(filters.doc_allowed(path), allowed, "per-extension: {path}");
+    }
+
+    let filters = build(&[], &["!docs/**/*.html", "**/*.html"]);
+    assert!(
+        !filters.doc_allowed("docs/site/page.html"),
+        "the last matching entry decides, so a later exclude wins over an earlier `!`"
+    );
+
+    let filters = build(&["**/*.md"], &["**/tests/**", "!tests/docs/**"]);
+    assert!(
+        filters.doc_allowed("tests/docs/howto.md"),
+        "`!` re-includes under a dropped dir"
+    );
+    assert!(!filters.doc_allowed("tests/unit/notes.md"));
+}
+
+#[test]
+fn a_user_negation_overrides_the_default_floor_in_every_list() {
+    let mut config = crate::config::default_for_root(Path::new("."));
+    config.documents.exclude.push("!tests/docs/**".to_string());
+    config.documents.embed_exclude.push("!data/prose.csv".to_string());
+    config.documents.embed_include = vec!["**/*.csv".to_string(), "!data/skip.csv".to_string()];
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
+    assert!(filters.doc_allowed("tests/docs/guide.md"));
+    assert!(!filters.doc_allowed("tests/unit/guide.md"));
+    assert!(
+        filters.doc_embed_allowed("data/prose.csv"),
+        "re-included by `!` in embed_exclude"
+    );
+    assert!(
+        !filters.doc_embed_allowed("data/other.csv"),
+        "still in the embed_exclude default"
+    );
+    assert!(!filters.doc_embed_allowed("data/skip.csv"));
+}
+
+#[test]
+fn a_gitignored_document_is_never_a_candidate() {
+    let (filter, root, _tmp) = filter_for(|root| {
+        fs::write(root.join(".gitignore"), b"private/\n*.secret.pdf\n").unwrap();
+        fs::create_dir_all(root.join("private")).unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("private/plan.pdf"), b"%PDF").unwrap();
+        fs::write(root.join("docs/a.secret.pdf"), b"%PDF").unwrap();
+        fs::write(root.join("docs/guide.md"), b"# guide\n").unwrap();
+    });
+    assert!(!filter.is_indexable(&root.join("private/plan.pdf")));
+    assert!(!filter.is_indexable(&root.join("docs/a.secret.pdf")));
+    assert!(filter.is_indexable(&root.join("docs/guide.md")));
 }
 
 #[test]

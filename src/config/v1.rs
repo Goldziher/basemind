@@ -87,8 +87,18 @@ pub struct ScanConfig {
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub floor_allow: Vec<String>,
+    /// Honour `.gitignore`, `.git/info/exclude` and the global git ignore file for every walk: the
+    /// code map, the document lane, `extra_roots` and the watcher. An ignored file is never
+    /// extracted or embedded.
     #[serde(default = "ScanConfig::default_respect_gitignore")]
     pub respect_gitignore: bool,
+    /// Globs naming test, fixture, mock, snapshot and end-to-end paths, same syntax as `include`.
+    /// A file matching one is marked `is_test` in the code map; it stays indexed. The default
+    /// list is also the document tier's default test exclusion, so the two agree. Setting the key
+    /// replaces the default list.
+    #[serde(default = "ScanConfig::default_test_globs")]
+    #[schemars(inner(length(min = 1)))]
+    pub test_globs: Vec<String>,
     /// Follow symlinks during the walk. Ignored (forced `false`) when set by the repository's own
     /// `basemind.toml` unless the operator sets `BASEMIND_ALLOW_FOLLOW_SYMLINKS=1`. Default `false` — symlinks are a common way to escape the
     /// repo (Bazel's `bazel-*` convenience symlinks point into an external output tree), and
@@ -179,6 +189,12 @@ impl ScanConfig {
     fn default_respect_gitignore() -> bool {
         true
     }
+    fn default_test_globs() -> Vec<String> {
+        super::documents::TEST_PATH_GLOBS
+            .iter()
+            .map(|g| (*g).to_string())
+            .collect()
+    }
     fn default_follow_symlinks() -> bool {
         false
     }
@@ -206,6 +222,7 @@ impl Default for ScanConfig {
             exclude: Self::default_exclude(),
             floor_allow: Vec::new(),
             respect_gitignore: Self::default_respect_gitignore(),
+            test_globs: Self::default_test_globs(),
             follow_symlinks: Self::default_follow_symlinks(),
             max_file_bytes: Self::default_max_file_bytes(),
             skip_submodules: Self::default_skip_submodules(),
