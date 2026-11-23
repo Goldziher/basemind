@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::embed_progress;
@@ -91,4 +92,15 @@ fn a_completed_resume_removes_the_progress_record() {
     ws.resume_embedding().expect("resume");
 
     assert_eq!(embed_progress::read(&cache_dir), None);
+}
+
+/// A document a batch deferred keeps its embedding debt, so it does not count as settled.
+#[test]
+fn settled_documents_excludes_those_still_owed() {
+    let owed: Vec<PathBuf> = ["a.md", "b.md", "c.md"].iter().map(PathBuf::from).collect();
+    let still_owed: HashSet<PathBuf> = [PathBuf::from("b.md")].into();
+
+    assert_eq!(super::settled_documents(&owed, &still_owed), 2);
+    assert_eq!(super::settled_documents(&owed, &HashSet::new()), 3);
+    assert_eq!(super::settled_documents(&owed, &owed.iter().cloned().collect()), 0);
 }

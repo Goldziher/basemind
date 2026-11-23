@@ -166,7 +166,13 @@ impl Workspace {
         );
         for batch in owed.chunks(batch_documents.max(1)) {
             self.rescan(Some(batch.to_vec()), EmbedMode::Inline, false)?;
-            let done = embedded.fetch_add(batch.len(), Ordering::Relaxed) + batch.len();
+            let still_owed: std::collections::HashSet<PathBuf> =
+                crate::embed_progress::owed_doc_paths(&self.store_read())
+                    .into_iter()
+                    .map(|rel| self.root.join(rel.to_path_buf()))
+                    .collect();
+            let done = settled_documents(&owed, &still_owed);
+            embedded.store(done, Ordering::Relaxed);
             reporter.report();
             after_batch(done);
         }
@@ -378,6 +384,13 @@ fn is_indexed(root: &Path, cache: &mut Option<crate::store::Index>, rel: &str) -
         .files
         .keys()
         .any(|key| key.as_str().is_some_and(|key| key.starts_with(&prefix)))
+}
+
+/// How many of the `owed` documents the store no longer lists in `still_owed`: the ones a batch
+/// settled, not the ones it merely visited (a scan may defer a document past its budget).
+#[cfg(feature = "documents")]
+fn settled_documents(owed: &[PathBuf], still_owed: &std::collections::HashSet<PathBuf>) -> usize {
+    owed.iter().filter(|path| !still_owed.contains(*path)).count()
 }
 
 #[cfg(all(test, feature = "documents"))]
