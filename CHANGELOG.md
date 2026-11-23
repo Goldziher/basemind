@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `basemind serve --lead --agents-policy <file>` reads the operator's agent-launch policy from a
+  throwaway file, so an `agent_launch` round trip can be verified on a live host (#436).
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33
