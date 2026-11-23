@@ -61,12 +61,21 @@ pub(crate) fn locate_blob(blobs_dir: &Path, hash_hex: &str, suffix: &str) -> Pat
     }
 }
 
-/// Move `flat` to `sharded` by rename, creating the bucket directory. Whether it moved.
+/// Move `flat` to `sharded`, creating the bucket directory. Whether it moved.
+///
+/// The move is a hard link followed by removing `flat`, not a rename: a rename replaces an existing
+/// destination, so a writer that published `sharded` between the caller's probe and this call would
+/// lose its blob to the older flat one. A link fails when `sharded` exists. A `flat` that cannot be
+/// removed after the link leaves a twin that a sweep reaps; the blob has still moved.
 fn migrate_blob(flat: &Path, sharded: &Path) -> bool {
     let Some(bucket) = sharded.parent() else {
         return false;
     };
-    std::fs::create_dir_all(bucket).is_ok() && std::fs::rename(flat, sharded).is_ok()
+    if std::fs::create_dir_all(bucket).is_err() || std::fs::hard_link(flat, sharded).is_err() {
+        return false;
+    }
+    let _ = std::fs::remove_file(flat);
+    true
 }
 
 /// Every file of a blob namespace in either layout: those directly in `blobs_dir` (flat, written by
@@ -83,9 +92,10 @@ pub(crate) fn blob_files(blobs_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        let is_bucket = entry.file_type()?.is_dir() && entry.file_name().to_str().is_some_and(is_shard_name);
+        let file_type = entry.file_type()?;
+        let is_bucket = file_type.is_dir() && entry.file_name().to_str().is_some_and(is_shard_name);
         if !is_bucket {
-            if path.is_file() {
+            if file_type.is_file() {
                 files.push(path);
             }
             continue;
@@ -93,9 +103,9 @@ pub(crate) fn blob_files(blobs_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
         match std::fs::read_dir(&path) {
             Ok(bucket) => {
                 for blob in bucket {
-                    let blob = blob?.path();
-                    if blob.is_file() {
-                        files.push(blob);
+                    let blob = blob?;
+                    if blob.file_type()?.is_file() {
+                        files.push(blob.path());
                     }
                 }
             }

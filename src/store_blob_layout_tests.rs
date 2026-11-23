@@ -55,6 +55,22 @@ fn locate_prefers_a_bucketed_blob_and_leaves_a_flat_twin_alone() {
 }
 
 #[test]
+fn migrating_never_replaces_a_blob_already_in_the_bucket() {
+    let tmp = tempfile::tempdir().unwrap();
+    let flat = flat_blob_path(tmp.path(), HASH, FM);
+    let sharded = sharded_blob_path(tmp.path(), HASH, FM);
+    touch(&flat);
+    std::fs::write(&flat, b"old").unwrap();
+    touch(&sharded);
+    std::fs::write(&sharded, b"new").unwrap();
+
+    assert!(!migrate_blob(&flat, &sharded));
+
+    assert_eq!(std::fs::read(&sharded).unwrap(), b"new");
+    assert_eq!(std::fs::read(&flat).unwrap(), b"old");
+}
+
+#[test]
 fn locate_of_an_absent_blob_is_the_sharded_path_and_creates_nothing() {
     let tmp = tempfile::tempdir().unwrap();
 
