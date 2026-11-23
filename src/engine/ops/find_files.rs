@@ -518,7 +518,7 @@ fn run_large_files(
 /// edit outranks every fuzzy match: a transposed or dropped letter otherwise matches nothing, or
 /// only paths that happen to hold the letters in order. A query nucleo reads as more than one plain
 /// atom (whitespace, or a `!`, `^`, `$` or `'` operator) names no one file, so it gets no typo pass.
-fn score<'a>(query: &str, candidates: &[&'a RelPath]) -> Vec<(u32, &'a RelPath)> {
+pub(crate) fn score<'a>(query: &str, candidates: &[&'a RelPath]) -> Vec<(u32, &'a RelPath)> {
     let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
     let mut utf32_buf: Vec<char> = Vec::new();

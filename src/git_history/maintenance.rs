@@ -19,7 +19,7 @@ pub(super) const APPEND_WRITE_BUFFER_BYTES: u64 = 8 * 1_024 * 1_024;
 const SMALL_KEYSPACE_BYTES: u64 = 16 * 1_024 * 1_024;
 
 impl LocalDb {
-    fn keyspaces(&self) -> [&Keyspace; 8] {
+    fn keyspaces(&self) -> [&Keyspace; 9] {
         [
             &self.meta,
             &self.commit_by_ord,
@@ -29,6 +29,7 @@ impl LocalDb {
             &self.path_to_ords,
             &self.commit_text_by_ord,
             &self.term_to_ords,
+            &self.term_dict,
         ]
     }
 

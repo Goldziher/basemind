@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The fast first scan now tracks documents whose embeddings are still to come, so they are searchable by text as soon as it ends; the background pass embeds them, reports `embeddings {done, total, eta_secs}` in `index_status`, makes `docs_search` carry a notice while vectors are pending, and a restarted background server resumes it (#454; a one-shot command does not).
 ### Added
 
+- `git_log` searches commit messages and authors tolerantly (typos, identifier parts, the start of the last word, authors by subsequence), lists exact matches first and the loose ones in `fuzzy`, combines `query` / `author` with `path`, `since` and `until`, and names the nearest paths of the history when `path` is not in it (#457). The git-history index schema moves, so the next scan rebuilds it.
 - `docs_search` takes `per_doc` (default 2) so one document does not fill a page, and `context` to add the chunk before and after each hit, which is off by default (#474).
 
 ### Changed
