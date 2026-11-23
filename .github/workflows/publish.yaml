@@ -799,7 +799,7 @@ jobs:
     name: Publish npm agent plugin (OpenCode and Pi)
     needs: [meta, finalize_release]
     if: >-
-      ${{ !inputs.plugins-only && (needs.finalize_release.result == 'success') }}
+      ${{ !inputs.plugins-only && (always() && needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -885,7 +885,7 @@ jobs:
     name: Publish all agent runtime archives and marketplaces
     needs: [meta, finalize_release]
     if: >-
-      ${{ !inputs.plugins-only && (needs.finalize_release.result == 'success') }}
+      ${{ !inputs.plugins-only && (always() && needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -931,7 +931,7 @@ jobs:
     name: Publish Hermes plugin to PyPI
     needs: [meta, finalize_release]
     if: >-
-      ${{ !inputs.plugins-only && (needs.finalize_release.result == 'success') }}
+      ${{ !inputs.plugins-only && (always() && needs.finalize_release.result == 'success') }}
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
