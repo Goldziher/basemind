@@ -125,11 +125,53 @@ pub fn intern(name: &str) -> Option<LangId> {
 
 static INTERNED: OnceLock<RwLock<AHashSet<&'static str>>> = OnceLock::new();
 
-/// Detect the language for a path. Returns the TSLP pack name (a `'static` slice) for any
-/// extension TSLP can resolve — across all 306 bundled grammars. Returns `None` for unknown
-/// extensions; the scanner skips those files entirely.
+/// Detect the language for a path. Well-known file names (`Dockerfile`, `Makefile`, `Jenkinsfile`,
+/// `BUILD` ...) resolve first, wherever the file sits; then the TSLP pack name (a `'static` slice)
+/// for any extension TSLP can resolve — across all 306 bundled grammars. Returns `None` for
+/// unknown paths; the scanner skips those files entirely.
 pub fn detect(path: &Path) -> Option<LangId> {
-    tree_sitter_language_pack::detect_language(path.to_str()?)
+    detect_by_file_name(path).or_else(|| tree_sitter_language_pack::detect_language(path.to_str()?))
+}
+
+/// Extensionless file names a grammar owns, matched case-insensitively against the file name.
+/// The pack resolves extensions only (and a bare `Makefile`, never `sub/Makefile`).
+const FILE_NAMES: &[(&str, LangId)] = &[
+    ("dockerfile", "dockerfile"),
+    ("containerfile", "dockerfile"),
+    ("makefile", "make"),
+    ("gnumakefile", "make"),
+    ("jenkinsfile", "groovy"),
+    ("cmakelists.txt", "cmake"),
+    ("gemfile", "ruby"),
+    ("rakefile", "ruby"),
+    ("vagrantfile", "ruby"),
+    ("podfile", "ruby"),
+    ("guardfile", "ruby"),
+    ("brewfile", "ruby"),
+    ("capfile", "ruby"),
+    ("build", "starlark"),
+    ("build.bazel", "starlark"),
+    ("workspace", "starlark"),
+    ("workspace.bazel", "starlark"),
+    ("module.bazel", "starlark"),
+];
+
+/// Names that also take a `.<suffix>` variant (`Dockerfile.base`, `Jenkinsfile.release`).
+const FILE_NAME_PREFIXES: &[(&str, LangId)] = &[
+    ("dockerfile.", "dockerfile"),
+    ("containerfile.", "dockerfile"),
+    ("jenkinsfile.", "groovy"),
+];
+
+/// Resolve a path by its file name alone: an exact [`FILE_NAMES`] entry or a [`FILE_NAME_PREFIXES`]
+/// variant. A `<name>.Dockerfile` suffix is an extension, which the pack already resolves.
+fn detect_by_file_name(path: &Path) -> Option<LangId> {
+    let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+    FILE_NAMES
+        .iter()
+        .find(|(known, _)| *known == name)
+        .or_else(|| FILE_NAME_PREFIXES.iter().find(|(prefix, _)| name.starts_with(prefix)))
+        .map(|&(_, lang)| lang)
 }
 
 /// Grammars for files that are prose, data or configuration rather than code. The code map keeps
@@ -731,6 +773,45 @@ mod tests {
         assert_eq!(detect(Path::new("foo.rs")), Some("rust"));
         assert_eq!(detect(Path::new("foo.py")), Some("python"));
         assert_eq!(detect(Path::new("foo.go")), Some("go"));
+    }
+
+    #[test]
+    fn detect_resolves_well_known_file_names_in_any_directory() {
+        for (path, expected) in [
+            ("Dockerfile", "dockerfile"),
+            ("svc/Dockerfile", "dockerfile"),
+            ("svc/Dockerfile.base", "dockerfile"),
+            ("svc/dockerfile.dev", "dockerfile"),
+            ("svc/api.Dockerfile", "dockerfile"),
+            ("svc/Containerfile", "dockerfile"),
+            ("svc/Containerfile.prod", "dockerfile"),
+            ("svc/Makefile", "make"),
+            ("svc/GNUmakefile", "make"),
+            ("ci/Jenkinsfile", "groovy"),
+            ("ci/Jenkinsfile.release", "groovy"),
+            ("lib/CMakeLists.txt", "cmake"),
+            ("Gemfile", "ruby"),
+            ("a/Rakefile", "ruby"),
+            ("a/Vagrantfile", "ruby"),
+            ("pkg/BUILD", "starlark"),
+            ("pkg/BUILD.bazel", "starlark"),
+            ("WORKSPACE", "starlark"),
+            ("MODULE.bazel", "starlark"),
+        ] {
+            assert_eq!(detect(Path::new(path)), Some(expected), "{path}");
+        }
+    }
+
+    #[test]
+    fn detect_leaves_look_alike_names_unclaimed() {
+        for path in [
+            "svc/Dockerfiles",
+            "svc/mydockerfile",
+            "svc/notes.txt.bak",
+            "svc/Buildfile",
+        ] {
+            assert_eq!(detect(Path::new(path)), None, "{path}");
+        }
     }
 
     #[test]

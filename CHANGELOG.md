@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `code_search` with `lane: "semantic"` and `[code_search] embed` off is refused as unavailable, naming the setting, instead of returning an empty ranking that reports the vector lane as run (#473).
+### Fixed
+
+- Files named `Dockerfile`, `Dockerfile.<suffix>`, `Containerfile`, `Makefile`, `Jenkinsfile`, `CMakeLists.txt`, `Gemfile`, `Rakefile`, `Vagrantfile`, `BUILD` and `WORKSPACE` are classified by file name in any directory, so language filters and `index_status` counts include them (#475).
 
 ## [0.34.0] - 2026-11-22
 
