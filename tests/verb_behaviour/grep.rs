@@ -57,6 +57,7 @@ async fn code_grep_counts_the_files_it_could_not_search() {
     let (dir, client) = started().await;
     let clean = call(&client, "code_grep", json!({ "pattern": "file_outline" })).await;
     assert!(clean.get("skipped_files").is_none(), "{clean}");
+    assert!(clean.get("skipped_reasons").is_none(), "{clean}");
 
     std::fs::write(dir.path().join("src/callers.rs"), b"file_outline \xff\xfe not text\n").unwrap();
     std::fs::remove_file(dir.path().join("worker.rb")).unwrap();
@@ -68,6 +69,7 @@ async fn code_grep_counts_the_files_it_could_not_search() {
     )
     .await;
     assert_eq!(body["skipped_files"], 1, "worker.rb is gone: {body}");
+    assert_eq!(body["skipped_reasons"], json!({ "unavailable": 1 }), "{body}");
     assert_eq!(
         body["hits"]
             .as_object()

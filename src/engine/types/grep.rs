@@ -300,6 +300,40 @@ pub(crate) enum GrepTruncation {
     ByteBudget,
 }
 
+/// Why `code_grep` could not search the files it counts in `skipped_files`. A reason with no file
+/// is absent.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub(crate) struct SkippedBreakdown {
+    /// Gone since the scan, or now leading out of the repository.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unavailable: usize,
+    /// Grown past `scan.max_file_bytes`.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub too_large: usize,
+    /// Present, but opening or reading it failed (permission denied, an I/O error).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unreadable: usize,
+}
+
+impl SkippedBreakdown {
+    /// Files skipped for any reason.
+    pub(crate) fn total(&self) -> usize {
+        self.unavailable + self.too_large + self.unreadable
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+}
+
+impl std::ops::AddAssign for SkippedBreakdown {
+    fn add_assign(&mut self, other: Self) {
+        self.unavailable += other.unavailable;
+        self.too_large += other.too_large;
+        self.unreadable += other.unreadable;
+    }
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct WorkspaceGrepResponse {
     /// Hit count from the cursor position on, not just the returned page: exact over the scanned
@@ -337,6 +371,9 @@ pub(crate) struct WorkspaceGrepResponse {
     /// Files this call could not search: gone, unreadable, or leading out of the repository.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped_files: usize,
+    /// `skipped_files` by why, each reason beside its count; absent when nothing was skipped.
+    #[serde(default, skip_serializing_if = "SkippedBreakdown::is_empty")]
+    pub skipped_reasons: SkippedBreakdown,
     /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
     /// (a rescan happened between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
