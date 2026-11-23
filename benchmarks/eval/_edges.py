@@ -54,6 +54,7 @@ at its first line. `#[cfg]` and other conditions are ignored.
 from __future__ import annotations
 
 import ast
+import bisect
 import posixpath
 import re
 import tomllib
@@ -416,8 +417,6 @@ def python_edges(blobs: Iterable[tuple[str, str]]) -> Edges:
 TS_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts")
 TS_JS_TO_SOURCE = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
 TS_SPECIFIER = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])(\.{1,2}(?:/[^'"\n]*)?)\1""")
-TS_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
-TS_LINE_COMMENT = re.compile(r"(?m)(^|\s)//.*$")
 
 
 def _ts_resolve(importer: str, specifier: str, files: set[str]) -> str | None:
@@ -433,16 +432,85 @@ def _ts_resolve(importer: str, specifier: str, files: set[str]) -> str | None:
     return next((cand for cand in candidates if cand in files), None)
 
 
+def _ts_code(src: str) -> tuple[str, list[int], list[int]]:
+    """`src` with comments and template-literal text blanked (newlines kept, so a line number stays the
+    file's), and the start and end offsets of each ordinary string literal, which stay in the text.
+
+    A scanner, not a parser: a `/` that opens a regular-expression literal is read as a division, so a
+    quote inside one is taken for a string."""
+    out = list(src)
+    starts: list[int] = []
+    ends: list[int] = []
+    n = len(src)
+    stack: list[str] = []  # "tpl" for the `${` of a template, "brace" for any other `{`
+
+    def blank(a: int, b: int) -> None:
+        for k in range(a, min(b, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    def template(start: int) -> int:
+        """Blank the template text from `start` (a backtick or the `}` closing a `${`); the offset after it."""
+        i = start + 1
+        while i < n:
+            if src[i] == "\\":
+                i += 2
+            elif src[i] == "`":
+                blank(start, i + 1)
+                return i + 1
+            elif src.startswith("${", i):
+                blank(start, i + 2)
+                stack.append("tpl")
+                return i + 2
+            else:
+                i += 1
+        blank(start, n)
+        return n
+
+    i = 0
+    while i < n:
+        ch = src[i]
+        if src.startswith("//", i):
+            end = src.find("\n", i)
+            end = n if end < 0 else end
+            blank(i, end)
+            i = end
+        elif src.startswith("/*", i):
+            end = src.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            blank(i, end)
+            i = end
+        elif ch in "'\"":
+            j = i + 1
+            while j < n and src[j] not in (ch, "\n"):
+                j += 2 if src[j] == "\\" else 1
+            j = min(j + 1, n)
+            starts.append(i)
+            ends.append(j)
+            i = j
+        elif ch == "`":
+            i = template(i)
+        elif ch == "{":
+            stack.append("brace")
+            i += 1
+        elif ch == "}" and stack:
+            i = template(i) if stack.pop() == "tpl" else i + 1
+        else:
+            i += 1
+    return "".join(out), starts, ends
+
+
 def typescript_edges(blobs: Iterable[tuple[str, str]]) -> Edges:
     """Edges among the TypeScript files of `blobs` (`(path, source)` pairs)."""
     sources = {p: s for p, s in blobs if p.endswith(TS_EXTENSIONS)}
     files = set(sources)
     edges: Edges = {}
     for path, src in sorted(sources.items()):
-        # Blank the comments in place so a match's line number stays the file's.
-        text = TS_BLOCK_COMMENT.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), src)
-        text = TS_LINE_COMMENT.sub(lambda m: m.group(1), text)
+        text, starts, ends = _ts_code(src)
         for m in TS_SPECIFIER.finditer(text):
+            at = bisect.bisect_right(starts, m.start()) - 1
+            if at >= 0 and m.start() < ends[at]:
+                continue
             _add(edges, path, _ts_resolve(path, m.group(2), files), text.count("\n", 0, m.start()) + 1)
     return edges
 

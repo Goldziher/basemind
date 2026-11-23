@@ -251,6 +251,36 @@ class AnalysisGenerators(unittest.TestCase):
             {"src/core/index.ts": 1, "src/index.ts": 1, "src/a.ts": 2},
         )
 
+    def test_typescript_edges_ignore_import_syntax_inside_strings_and_templates(self) -> None:
+        sources = [
+            (
+                "src/a.ts",
+                "const t = `import './b.js';`;\n"
+                "const u = 'import \"./b.js\"';\n"
+                "const v = `x ${import('./c.js')} y`;\n"
+                'const w = "// not a comment"; import "./d.js";\n',
+            ),
+            ("src/b.ts", ""),
+            ("src/c.ts", ""),
+            ("src/d.ts", ""),
+        ]
+        self.assertEqual(
+            {src: dict(t) for src, t in e.typescript_edges(sources).items()},
+            {"src/a.ts": {"src/c.ts": 3, "src/d.ts": 4}},
+            "text in a string or template is no import; code in a `${}` and after a `//` in a string is",
+        )
+
+    def test_typescript_edges_keep_an_import_between_strings_holding_comment_delimiters(self) -> None:
+        sources = [
+            ("src/a.ts", 'const o = "/*";\nimport "./b.js";\nconst c = "*/";\n/* import "./c.js" */\n'),
+            ("src/b.ts", ""),
+            ("src/c.ts", ""),
+        ]
+        self.assertEqual(
+            {src: dict(t) for src, t in e.typescript_edges(sources).items()},
+            {"src/a.ts": {"src/b.ts": 2}},
+        )
+
     def test_cycles_and_importers_on_hand_built_graphs(self) -> None:
         edges = {"a": {"b": 1}, "b": {"c": 1, "a": 2}, "c": {"d": 1}, "d": {"c": 1}, "e": {"a": 1}, "f": {"f": 1}}
         self.assertEqual(e.cycles(edges), [["a", "b"], ["c", "d"]], "a self-edge is no cycle")

@@ -81,8 +81,9 @@ structural() {
     gen gen_outline.py "${repo}" "${tmp}/outline-${ext}.jsonl" --ext py
     gen gen_references.py "${repo}" "${tmp}/references-${ext}.jsonl" --ext py --mode both
     gen gen_dependents.py "${repo}" "${tmp}/dependents-${ext}.jsonl" --ext py
+    gen gen_git.py "${repo}" "${tmp}/git-${ext}.jsonl" --ext "${ext}" --kind git_path --kind blame --kind diff
     files+=("${tmp}/symbols-${ext}.jsonl" "${tmp}/outline-${ext}.jsonl" "${tmp}/references-${ext}.jsonl"
-      "${tmp}/dependents-${ext}.jsonl")
+      "${tmp}/dependents-${ext}.jsonl" "${tmp}/git-${ext}.jsonl")
     ;;
   *)
     gen gen_git.py "${repo}" "${tmp}/git-${ext}.jsonl" --ext "${ext}" --kind git_path --kind blame --kind diff

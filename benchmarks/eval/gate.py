@@ -48,6 +48,12 @@ CODE_INTEL_PARTS = {"code-intel-js", "code-intel-stack"}
 # The task-id suffix `gen_tasks.sh` gives a language's tasks in a corpus of several languages.
 EXT_LANGUAGE = {"rs": "rust", "py": "python", "ts": "typescript", "go": "go", "java": "java"}
 NO_LANGUAGE = "(whole repository)"
+# The structural kinds a language's corpora must report (#313: symbols, references and dependents on each
+# repository), whatever the other corpora report. A language with no entry has no such gold yet.
+REQUIRED_KINDS = {
+    "rust": {"symbols", "references", "dependents"},
+    "python": {"symbols", "references", "dependents"},
+}
 
 
 def load_languages(corpus_tsv: Path) -> dict[str, list[str]]:
@@ -163,7 +169,11 @@ def verdicts(data: dict[str, tuple[dict, list[dict]]], languages: dict[str, list
             f"{k}@{corpus}"
             for k in kinds
             for corpus in sorted(data)
-            if corpus not in per[k] and any(group[other] == group[corpus] for other in per[k])
+            if corpus not in per[k]
+            and (
+                any(group[other] == group[corpus] for other in per[k])
+                or any(k in REQUIRED_KINDS.get(lang, ()) for lang in group[corpus])
+            )
         )
         if not kinds or not passes:
             verdict = "not run"

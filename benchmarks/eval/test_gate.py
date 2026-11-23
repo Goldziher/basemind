@@ -131,12 +131,25 @@ class GateSummary(unittest.TestCase):
     def test_a_kind_only_the_corpora_of_other_languages_have_is_not_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            self.write(d, "r1", {"symbols": True, "references": True, "callers": True})
-            self.write(d, "r2", {"symbols": True, "references": True})
+            self.write(d, "r1", {"symbols": True, "references": True, "callers": True, "dependents": True})
+            self.write(d, "r2", {"symbols": True, "references": True, "dependents": True})
             self.write(d, "g", {"symbols": True})
             langs = {"r1": ["rust"], "r2": ["rust"], "g": ["go"]}
             self.assertEqual(gate.verdicts(gate.load(d), langs)["code_refs"]["missing"], "callers@r2")
-            self.assertEqual(gate.verdicts(gate.load(d))["code_refs"]["missing"], "references@g, callers@g, callers@r2")
+            self.assertEqual(
+                gate.verdicts(gate.load(d))["code_refs"]["missing"],
+                "references@g, callers@g, callers@r2, dependents@g",
+            )
+
+    def test_a_language_alone_in_its_group_still_lacks_the_kinds_it_must_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            self.write(d, "r", {"symbols": True, "references": True, "dependents": True})
+            self.write(d, "p", {"symbols": True, "dependents": True})
+            langs = {"r": ["rust"], "p": ["python"]}
+            tools = gate.verdicts(gate.load(d), langs)
+            self.assertEqual(tools["code_refs"]["missing"], "references@p")
+            self.assertEqual(tools["code_refs"]["verdict"], "no verdict")
 
     def test_recall_is_reported_per_language(self) -> None:
         def row(task_id: str, mode: str, recall: float | None, base: float | None = None) -> dict:
