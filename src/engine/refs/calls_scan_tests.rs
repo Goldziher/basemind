@@ -7,7 +7,7 @@ use crate::extract::{Call, FileMapL1, FileMapL2, Implementation};
 use crate::index::IndexDb;
 use crate::path::RelPath;
 
-use super::{scan_calls_by_name, scan_calls_examining};
+use super::{EMPTY_PAGE_WINDOWS_MAX, scan_calls_by_name, scan_calls_examining, scan_calls_until_hit};
 use crate::engine::refs::impls::{scan_impls_examining, scan_impls_fjall};
 use crate::engine::refs::matching::Matching;
 
@@ -515,6 +515,45 @@ fn an_exact_call_scan_stops_at_the_examined_keys_cap_and_resumes() {
         assert_eq!(whole.total, 3, "{stage}");
         build_dicts(&db);
     }
+}
+
+/// A name scan whose first examined-keys window holds no hit does not hand back `total: 0` and a
+/// cursor: it keeps scanning, so a caller that stops on an empty page still sees the call sites.
+/// Past [`EMPTY_PAGE_WINDOWS_MAX`] windows it settles for an empty partial page that resumes.
+#[test]
+fn a_name_scan_continues_past_empty_windows_until_it_finds_a_hit() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = IndexDb::open(dir.path()).unwrap();
+    let mut calls: Vec<Call> = (0..17_000).map(|k| call("zapx", k)).collect();
+    calls.extend((0..3).map(|k| call("ns::zap", 20_000 + k)));
+    upsert(&db, &path(0), &l1(&[]), Some(&l2(calls)));
+
+    let scan = |cap| scan_calls_until_hit(&db.view(), "zap", Matching::Exact, 10, None, None, cap).unwrap();
+
+    let found = scan(EXAMINE_CAP);
+    let callees: Vec<&str> = found.hits.iter().map(|hit| hit.callee.as_str()).collect();
+    assert_eq!(callees, ["ns::zap"; 3]);
+    assert_eq!(found.total, 3);
+    assert!(!found.total_is_partial && found.next_cursor.is_none());
+
+    let cap = STARVING_KEYS / (EMPTY_PAGE_WINDOWS_MAX + 1);
+    let spent = scan(cap);
+    assert!(
+        spent.hits.is_empty() && spent.total == 0,
+        "the budget ends before any hit"
+    );
+    assert!(spent.total_is_partial && spent.stopped_after.is_some() && spent.next_cursor.is_some());
+    let resumed = scan_calls_until_hit(
+        &db.view(),
+        "zap",
+        Matching::Exact,
+        10,
+        spent.stopped_after.as_deref(),
+        None,
+        cap,
+    )
+    .unwrap();
+    assert_eq!(resumed.total, 3, "paging on still reaches the hits");
 }
 
 #[test]
