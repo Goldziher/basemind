@@ -5,12 +5,14 @@
 use std::fs;
 use std::path::Path;
 
-use basemind::git::Repo;
+use basemind::git::{ChangeKind, CommitInfo, Repo};
 use basemind::git_history::GitHistoryIndex;
 use basemind::git_history::builder::{self, RebuildOutcome};
 use basemind::git_history::fts::FtsScope;
 use basemind::git_history::fuzzy::{CommitQuery, SearchHit};
 use basemind::path::RelPath;
+
+use super::{touches, without_empty_components};
 
 fn git(repo: &Path, args: &[&str], author: (&str, &str), date: &str) {
     let status = basemind::testing::git_command()
@@ -419,9 +421,18 @@ fn a_search_path_drops_empty_components_and_keeps_the_directory_marker() {
             "{given}"
         );
     }
-    let commit = commit(&["src/config/loader.rs"]);
+    let changed = CommitInfo {
+        sha: "0".repeat(40),
+        short_sha: "0".repeat(7),
+        summary: String::new(),
+        author: String::new(),
+        author_email: String::new(),
+        author_time_unix: 0,
+        body: String::new(),
+        files: vec![(RelPath::from("src/config/loader.rs"), ChangeKind::Modified)],
+    };
     assert!(touches(
-        &commit,
+        &changed,
         &without_empty_components(&RelPath::from("src//config/"))
     ));
 }
