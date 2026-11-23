@@ -261,16 +261,16 @@ struct Excludes {
 
 impl Excludes {
     fn build(floor: &[&str], reallowed: &[String], user: &[String]) -> Result<Self, ScanError> {
-        let is_lockfile = |p: &&str| LOCKFILE_GLOBS.contains(p);
+        let is_lockfile = |p: &str| LOCKFILE_GLOBS.contains(&p);
         Ok(Self {
             always: compile_globs(
                 floor
                     .iter()
-                    .filter(|p| !is_lockfile(p))
                     .copied()
+                    .filter(|p| !is_lockfile(p))
                     .chain(user.iter().map(String::as_str)),
             )?,
-            lockfiles: compile_globs(floor.iter().filter(is_lockfile).copied())?,
+            lockfiles: compile_globs(floor.iter().copied().filter(|p| is_lockfile(p)))?,
             reallowed: compile_globs(reallowed.iter().map(String::as_str))?,
         })
     }
