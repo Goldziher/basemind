@@ -117,6 +117,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("store", Core),
     ("store_blob", Core),
     ("store_blob_codec", Core),
+    ("store_blob_layout", Core),
     ("store_cache_admin", Core),
     ("store_doc_tombstone", Core),
     ("store_gc", Core),

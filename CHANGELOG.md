@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The blob store shards each namespace into 256 buckets by the first two hex digits of the hash, and a file-view build no longer stats every blob; flat blobs migrate on first read, no rescan needed (#285)
 ### Added
 
 - `docs_search` takes `per_doc` (default 2) so one document does not fill a page, and `context` to add the chunk before and after each hit, which is off by default (#474).

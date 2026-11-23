@@ -573,7 +573,9 @@ on-disk component, is in [UPGRADING.md](UPGRADING.md).
 Extraction results live in a content-addressed blob store shared by every workspace on the machine
 (`<cache>/cache/blobs/v<schema>/`, one namespace per blob schema, so two installed versions never read
 or overwrite each other's blobs; the sweep also removes un-namespaced blobs and older namespaces,
-and leaves a newer namespace alone); a workspace's `files` (code lane) and `doc_files` (document lane) entries
+and leaves a newer namespace alone). Inside a namespace a blob sits in a bucket named for the first two hex
+digits of its hash (`v<schema>/ab/<hash>.fm.msgpack`, `src/store_blob_layout.rs`); a flat blob an older
+release wrote is moved into its bucket when first read, and the sweep walks both layouts. A workspace's `files` (code lane) and `doc_files` (document lane) entries
 reference blobs by hash. The sweep (`src/store_gc.rs`, `src/store_gc_live.rs`) is tier-aware: a `.doc`
 blob is live only if some workspace's `doc_files` references the hash, and `.fm` / `.chunk` / `.rref`
 blobs only if a `files` entry does. That matters when a path changes tier (a markdown file that used
