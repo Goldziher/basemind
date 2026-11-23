@@ -60,7 +60,7 @@ session and inbox notifications, and `basemind_call`. The bridge calls the local
 tools and returns JSON text, over one `basemind serve` session kept open per working directory
 (a failed or timed-out one is replaced on the next call). Each turn's inbox read runs only while
 a comms daemon accepts connections and gives up after 2 seconds, so an idle turn spawns no
-process. At session start the plugin runs `basemind --version` once and, for a missing binary or
+process on Linux and macOS (Windows, whose daemon listens on a named pipe, keeps the CLI read). At session start the plugin runs `basemind --version` once and, for a missing binary or
 one from another minor version, injects a notice naming the install command. Optional direct MCP configuration in `~/.hermes/config.yaml` is:
 
 ```yaml

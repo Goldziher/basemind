@@ -46,6 +46,10 @@ _VERSION_TIMEOUT_SECONDS = 5
 _PROBE_TIMEOUT_SECONDS = 0.2
 _COMMS_DIR_ENV = "BASEMIND_COMMS_DIR"
 _COMMS_SOCKET_NAME = "comms.sock"
+# The protocol generation of the basemind binary this plugin ships with: its daemon listens only in
+# `g<N>/` (`RENDEZVOUS_GENERATION` in src/daemon_lock.rs). A listener of another generation is not
+# one this binary can reach.
+_COMMS_GENERATION = 1
 
 _DISCIPLINE = (
     "basemind is available over MCP in this session: a tree-sitter code map, git history, "
@@ -222,10 +226,13 @@ def _comms_base_dir() -> Path | None:
     """The comms directory the daemon listens in, or ``None`` where the platform is not probed.
 
     Mirrors the binary's resolution: the ``BASEMIND_COMMS_DIR`` override, else ``comms/`` under
-    the per-user data directory.
+    the per-user data directory. Windows is never probed, with or without the override: its daemon
+    listens on a named pipe named by a hash of the directory.
     """
-    override = os.environ.get(_COMMS_DIR_ENV, "").strip()
-    if override:
+    if sys.platform == "win32":
+        return None
+    override = os.environ.get(_COMMS_DIR_ENV, "")
+    if override.strip():
         return Path(override)
     home = Path.home()
     if sys.platform == "darwin":
@@ -239,18 +246,15 @@ def _comms_base_dir() -> Path | None:
 def _daemon_is_up() -> bool:
     """Whether a comms daemon accepts connections, probed with no process spawn.
 
-    Looks for a socket in any generation directory (``g<N>/comms.sock``) and connects to it, so a
-    machine with no daemon costs one directory listing per turn. Where the socket cannot be
-    located (Windows names a pipe), the daemon is assumed up and the CLI answers instead.
+    Connects to the socket of this binary's generation (``g<N>/comms.sock``), so a machine with no
+    daemon costs one failed connect per turn and a daemon of another generation does not count.
+    Where the socket cannot be located (Windows names a pipe), the daemon is assumed up and the
+    CLI answers instead, so Windows keeps the per-turn CLI read.
     """
     base = _comms_base_dir()
     if base is None:
         return True
-    try:
-        sockets = sorted(base.glob(f"g*/{_COMMS_SOCKET_NAME}"))
-    except OSError:
-        return False
-    return any(_accepts_connection(path) for path in sockets)
+    return _accepts_connection(base / f"g{_COMMS_GENERATION}" / _COMMS_SOCKET_NAME)
 
 
 def _accepts_connection(path: Path) -> bool:
@@ -406,6 +410,7 @@ class _McpSession:
         self._ready: asyncio.Future = self.loop.create_future()
         self._ready.add_done_callback(lambda future: future.cancelled() or future.exception())
         self._broken = False
+        self._inflight: set[asyncio.Future] = set()
         self._task = self.loop.create_task(self._run(command, cwd))
 
     def usable_on(self, loop: asyncio.AbstractEventLoop) -> bool:
@@ -418,7 +423,7 @@ class _McpSession:
 
     async def call(self, tool: str, parameters: dict[str, object]):
         """Run one tool, or the discovery request, on the open session."""
-        await self._ready
+        await asyncio.shield(self._ready)
         if self._task.done():
             raise RuntimeError("the basemind MCP session ended")
         result = self.loop.create_future()
@@ -441,6 +446,10 @@ class _McpSession:
                 self._ready.set_result(None)
                 while True:
                     tool, parameters, result = await self._requests.get()
+                    if result.done():
+                        continue
+                    self._inflight.add(result)
+                    result.add_done_callback(self._inflight.discard)
                     requests.create_task(self._serve(session, tool, parameters, result))
         except Exception as error:
             self._fail(error)
@@ -450,10 +459,13 @@ class _McpSession:
 
     async def _serve(self, session, tool: str, parameters: dict[str, object], result: asyncio.Future) -> None:
         from mcp.shared.exceptions import McpError
+        from mcp.types import CONNECTION_CLOSED
 
         try:
             answer = await (session.list_tools() if tool == DISCOVERY_TOOL else session.call_tool(tool, parameters))
         except McpError as error:
+            if error.error.code == CONNECTION_CLOSED:
+                self._broken = True
             self._settle(result, error=error)
         except Exception as error:
             self._broken = True
@@ -466,6 +478,8 @@ class _McpSession:
             self._ready.set_exception(error)
         while not self._requests.empty():
             self._settle(self._requests.get_nowait()[2], error=error)
+        for result in list(self._inflight):
+            self._settle(result, error=error)
 
     @staticmethod
     def _settle(result: asyncio.Future, value=None, error: BaseException | None = None) -> None:
@@ -486,20 +500,23 @@ def _session_for(command: str, cwd: str) -> _McpSession:
     session = _sessions.get(cwd)
     if session is not None and session.usable_on(loop):
         return session
-    _discard(cwd)
+    _discard(cwd, session)
     session = _sessions[cwd] = _McpSession(command, cwd)
     return session
 
 
-def _discard(cwd: str) -> None:
-    """Forget the session for ``cwd`` so the next call starts a fresh server."""
-    session = _sessions.pop(cwd, None)
-    if session is not None and not session.loop.is_closed():
+def _discard(cwd: str, session: _McpSession | None) -> None:
+    """Forget ``session`` so the next call starts a fresh server, only while it is still cached for ``cwd``."""
+    if session is None or _sessions.get(cwd) is not session:
+        return
+    del _sessions[cwd]
+    if not session.loop.is_closed():
         session.close()
 
 
 async def call_tool(arguments: dict[str, object], **_kwargs: object) -> dict[str, object]:
     """Call one supported MCP tool on the session kept open for the working directory."""
+    import anyio
     from mcp.shared.exceptions import McpError
 
     if not isinstance(arguments, dict) or set(arguments) - {"tool", "tool_arguments"}:
@@ -513,17 +530,19 @@ async def call_tool(arguments: dict[str, object], **_kwargs: object) -> dict[str
         return {"error": f"Install {CLI_COMMAND} with MCP support and put it on PATH; see the plugin README."}
 
     cwd = os.getcwd()
+    session = None
     try:
         async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
-            result = await _session_for(command, cwd).call(tool, parameters)
+            session = _session_for(command, cwd)
+            result = await session.call(tool, parameters)
             return result.model_dump(mode="json", exclude_none=True)
     except TimeoutError:
-        _discard(cwd)
+        _discard(cwd, session)
         return {"error": f"{CLI_COMMAND} MCP request timed out; reduce the workload or inspect server diagnostics."}
     except McpError as error:
         return {"error": f"{CLI_COMMAND} MCP request failed: {error_details(error)}"}
-    except (OSError, ExceptionGroup, ValueError, RuntimeError) as error:
-        _discard(cwd)
+    except (OSError, ExceptionGroup, ValueError, RuntimeError, anyio.ClosedResourceError) as error:
+        _discard(cwd, session)
         return {"error": f"{CLI_COMMAND} MCP request failed: {error_details(error)}"}
 
 

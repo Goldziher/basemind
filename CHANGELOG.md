@@ -13,9 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The Hermes plugin keeps one `basemind serve` session per working directory instead of starting
-  one per `basemind_call`, skips its per-turn inbox read while no comms daemon accepts connections
-  (no process spawn when idle), gives that read 2 seconds instead of 6, and checks
-  `basemind --version` once, injecting a notice for a missing binary or another minor version
+  one per `basemind_call`, skips its per-turn inbox read while no comms daemon of the binary's
+  generation accepts connections (no process spawn when idle on Linux and macOS; Windows keeps the
+  CLI read), gives that read 2 seconds instead of 6, and checks `basemind --version` once, injecting a notice for a missing binary or another minor version
   (#330).
 
 ## [0.34.0] - 2026-11-22

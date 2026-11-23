@@ -15,6 +15,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import socket
 import sys
@@ -274,27 +275,76 @@ needs_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="the dae
 
 
 @needs_unix_sockets
-def test_daemon_is_not_up_without_a_comms_directory(comms_dir):
+def test_daemon_is_not_up_without_a_comms_directory(comms_dir, monkeypatch):
+    monkeypatch.setenv("BASEMIND_COMMS_DIR", str(comms_dir / "never-created"))
+    assert not (comms_dir / "never-created").exists()
     assert hermes._daemon_is_up() is False
 
 
 @needs_unix_sockets
+def test_the_comms_override_is_used_verbatim(monkeypatch, tmp_path):
+    monkeypatch.setenv("BASEMIND_COMMS_DIR", f"{tmp_path} ")
+    assert hermes._comms_base_dir() == Path(f"{tmp_path} ")
+
+
+@pytest.mark.parametrize("blank", ["", "  "])
+@needs_unix_sockets
+def test_a_blank_comms_override_falls_back_to_the_data_directory(monkeypatch, blank):
+    monkeypatch.setenv("BASEMIND_COMMS_DIR", blank)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    assert hermes._comms_base_dir().name == "comms"
+    assert hermes._comms_base_dir() != Path(blank)
+
+
+@pytest.mark.parametrize("override", [None, "/tmp/bm-comms"])
+def test_windows_is_never_probed_so_the_cli_answers(monkeypatch, override):
+    monkeypatch.setattr(sys, "platform", "win32")
+    if override is None:
+        monkeypatch.delenv("BASEMIND_COMMS_DIR", raising=False)
+    else:
+        monkeypatch.setenv("BASEMIND_COMMS_DIR", override)
+    assert hermes._comms_base_dir() is None
+    assert hermes._daemon_is_up() is True
+
+
+def test_the_probed_generation_is_the_one_the_binary_uses():
+    source = Path(__file__).resolve().parents[2] / "src" / "daemon_lock.rs"
+    if not source.is_file():
+        pytest.skip("the Rust sources are not next to an installed package")
+    match = re.search(r"pub const RENDEZVOUS_GENERATION: u32 = (\d+);", source.read_text())
+    assert match is not None
+    assert hermes._COMMS_GENERATION == int(match.group(1))
+
+
+@needs_unix_sockets
 def test_daemon_is_not_up_for_a_socket_nobody_listens_on(comms_dir):
-    (comms_dir / "g1").mkdir()
+    generation = comms_dir / f"g{hermes._COMMS_GENERATION}"
+    generation.mkdir()
     orphan = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    orphan.bind(str(comms_dir / "g1" / "comms.sock"))
+    orphan.bind(str(generation / "comms.sock"))
     orphan.close()
-    assert (comms_dir / "g1" / "comms.sock").exists()
+    assert (generation / "comms.sock").exists()
     assert hermes._daemon_is_up() is False
 
 
 @needs_unix_sockets
 def test_daemon_is_up_when_a_socket_accepts_connections(comms_dir):
-    (comms_dir / "g7").mkdir()
+    generation = comms_dir / f"g{hermes._COMMS_GENERATION}"
+    generation.mkdir()
     with contextlib.closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as listener:
-        listener.bind(str(comms_dir / "g7" / "comms.sock"))
+        listener.bind(str(generation / "comms.sock"))
         listener.listen()
         assert hermes._daemon_is_up() is True
+
+
+@needs_unix_sockets
+def test_daemon_is_not_up_for_a_listener_of_another_generation(comms_dir):
+    other = comms_dir / f"g{hermes._COMMS_GENERATION + 6}"
+    other.mkdir()
+    with contextlib.closing(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)) as listener:
+        listener.bind(str(other / "comms.sock"))
+        listener.listen()
+        assert hermes._daemon_is_up() is False
 
 
 def test_delta_context_spawns_nothing_while_no_daemon_runs(monkeypatch):
@@ -381,7 +431,13 @@ class FakeResult:
 
 
 @pytest.fixture
-def mcp_servers(monkeypatch):
+def mcp_behaviors():
+    """Per-tool coroutines the fake server runs instead of answering; ``initialize`` gates the handshake."""
+    return {}
+
+
+@pytest.fixture
+def mcp_servers(monkeypatch, mcp_behaviors):
     """Replace the SDK's stdio client with fakes; the returned list holds one entry per server spawned."""
     import mcp
     import mcp.client.stdio
@@ -404,9 +460,12 @@ def mcp_servers(monkeypatch):
             return False
 
         async def initialize(self):
-            return None
+            if "initialize" in mcp_behaviors:
+                await mcp_behaviors["initialize"]()
 
         async def call_tool(self, tool, parameters):
+            if tool in mcp_behaviors:
+                return await mcp_behaviors[tool](parameters)
             if tool == "index_status":
                 raise OSError("the server went away")
             return FakeResult({"tool": tool, "arguments": parameters, "cwd": os.getcwd()})
@@ -472,4 +531,129 @@ def test_a_new_event_loop_does_not_reuse_a_session_of_a_closed_one(mcp_servers):
     first = asyncio.run(call("code_outline"))
     second = asyncio.run(call("code_outline"))
     assert first["tool"] == second["tool"] == "code_outline"
+    assert len(mcp_servers) == 2
+
+
+def test_cancelling_one_caller_does_not_fail_the_others_waiting_on_startup(mcp_servers, mcp_behaviors):
+    async def scenario():
+        release = asyncio.Event()
+
+        async def hold():
+            await release.wait()
+
+        mcp_behaviors["initialize"] = hold
+        first = asyncio.create_task(call("code_outline"))
+        second = asyncio.create_task(call("find_files", query="x"))
+        await asyncio.sleep(0.05)
+        first.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        return await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 5)
+
+    first, second = asyncio.run(scenario())
+    assert isinstance(first, asyncio.CancelledError)
+    assert second["tool"] == "find_files" and second["arguments"] == {"query": "x"}
+    assert len(mcp_servers) == 1
+
+
+def test_a_request_whose_caller_cancelled_is_never_sent(mcp_servers, mcp_behaviors):
+    served = []
+
+    async def record(parameters):
+        served.append(parameters)
+        return FakeResult({"posted": True})
+
+    mcp_behaviors["agent_post"] = record
+
+    async def scenario():
+        await call("code_outline")
+        cancelled = asyncio.create_task(call("agent_post", body="late"))
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        await asyncio.sleep(0.05)
+        return await call("agent_post", body="kept")
+
+    assert asyncio.run(scenario()) == {"posted": True}
+    assert served == [{"body": "kept"}]
+
+
+def test_a_closed_connection_ends_the_session_but_an_rpc_error_does_not(mcp_servers, mcp_behaviors):
+    from mcp.shared.exceptions import McpError
+    from mcp.types import CONNECTION_CLOSED, INVALID_PARAMS, ErrorData
+
+    def failing_with(code):
+        async def fail(parameters):
+            raise McpError(ErrorData(code=code, message="boom"))
+
+        return fail
+
+    async def scenario():
+        mcp_behaviors["agent_threads"] = failing_with(INVALID_PARAMS)
+        rejected = await call("agent_threads")
+        await call("code_outline")
+        servers_after_rpc_error = len(mcp_servers)
+        mcp_behaviors["agent_threads"] = failing_with(CONNECTION_CLOSED)
+        closed = await call("agent_threads")
+        await call("code_outline")
+        return rejected, closed, servers_after_rpc_error
+
+    rejected, closed, servers_after_rpc_error = asyncio.run(scenario())
+    assert rejected == {"error": "basemind MCP request failed: boom"}
+    assert closed == {"error": "basemind MCP request failed: boom"}
+    assert servers_after_rpc_error == 1
+    assert len(mcp_servers) == 2
+
+
+def test_a_write_to_a_closed_session_is_an_error_result_and_the_next_call_recovers(mcp_servers, mcp_behaviors):
+    import anyio
+
+    async def closed(parameters):
+        raise anyio.ClosedResourceError
+
+    async def scenario():
+        mcp_behaviors["agent_threads"] = closed
+        failed = await call("agent_threads")
+        recovered = await call("code_outline")
+        return failed, recovered
+
+    failed, recovered = asyncio.run(scenario())
+    assert failed["error"].startswith("basemind MCP request failed")
+    assert recovered["tool"] == "code_outline"
+    assert len(mcp_servers) == 2
+
+
+def test_a_session_failure_settles_the_requests_already_in_flight(mcp_servers, mcp_behaviors):
+    async def hang(parameters):
+        await asyncio.Event().wait()
+
+    mcp_behaviors["agent_threads"] = hang
+
+    async def scenario():
+        await call("code_outline")
+        in_flight = asyncio.create_task(call("agent_threads"))
+        await asyncio.sleep(0.05)
+        failed = await call("index_status")
+        return failed, await asyncio.wait_for(in_flight, 5)
+
+    failed, ended = asyncio.run(scenario())
+    assert failed == {"error": "basemind MCP request failed: the server went away"}
+    assert ended == {"error": "basemind MCP request failed: the basemind MCP session ended"}
+
+
+def test_a_stale_failure_does_not_evict_the_replacement_session(mcp_servers):
+    async def scenario():
+        cwd = os.getcwd()
+        await call("code_outline")
+        stale = hermes._sessions[cwd]
+        stale._broken = True
+        await call("code_outline")
+        fresh = hermes._sessions[cwd]
+        hermes._discard(cwd, stale)
+        await asyncio.sleep(0.05)
+        await call("code_outline")
+        return stale, fresh, hermes._sessions[cwd]
+
+    stale, fresh, cached = asyncio.run(scenario())
+    assert stale is not fresh
+    assert cached is fresh
     assert len(mcp_servers) == 2
