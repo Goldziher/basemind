@@ -53,6 +53,33 @@ const FLOOR_EXCLUDES: &[&str] = &[
     "**/.basemind/**",
     "**/.idea/**",
     "**/.DS_Store",
+    // Tool and package-manager caches: regenerated on demand and never authored. Judgment calls:
+    // `.yarn/cache` holds the zip archives of Yarn's zero-install layout, committed by some
+    // repositories but binary and unreadable either way; `.hypothesis` may carry committed
+    // example databases, which are opaque data, not source; `.cache` is the generic XDG-style
+    // cache directory. `floor_allow` re-includes any of them.
+    "**/.cache/**",
+    "**/.terragrunt-cache/**",
+    "**/.turbo/**",
+    "**/.parcel-cache/**",
+    "**/.nox/**",
+    "**/.hypothesis/**",
+    "**/.pnpm-store/**",
+    "**/.yarn/cache/**",
+    "**/.angular/**",
+    "**/.sass-cache/**",
+    "**/.ccache/**",
+    "**/.dart_tool/**",
+    "**/__pypackages__/**",
+    "**/.eggs/**",
+    "**/*.egg-info/**",
+    "**/.ipynb_checkpoints/**",
+    "**/.cargo/registry/**",
+    "**/.docusaurus/**",
+    "**/.vite/**",
+    "**/.cache-loader/**",
+    "**/.eslintcache",
+    "**/.coverage",
     // Credentials and key material: indexing them makes the secret searchable by every agent that
     // can query the index. `[scan] floor_allow` lists the entry (`.env.*`, `*.pem`) to opt back in,
     // but a repository's own file may only do so with the operator grant
@@ -77,6 +104,47 @@ const FLOOR_EXCLUDES: &[&str] = &[
     "**/*.jks",
     "**/*.keystore",
 ];
+
+/// Lockfiles: machine-written dependency pins that are never source. Parsing them floods the code
+/// map with meaningless symbols (a `.terraform.lock.hcl` is valid HCL) and fills the document store
+/// with chunks no one searches for. Part of the always-on floor (see [`floor_entries`]), so
+/// `[scan] floor_allow` re-includes one by name (`go.sum`, `*.lock`). Every entry is a file name
+/// or a suffix on one; `go.mod`, `Makefile.lock.py` and `lockdown.py` do not match.
+pub(crate) const LOCKFILE_GLOBS: &[&str] = &[
+    "**/.terraform.lock.hcl",
+    "**/*.lock",
+    "**/*.lockb",
+    "**/*.lockfile",
+    "**/*.lock.json",
+    "**/*.lock.hcl",
+    "**/*.lock.yaml",
+    "**/package-lock.json",
+    "**/npm-shrinkwrap.json",
+    "**/pnpm-lock.yaml",
+    "**/yarn.lock",
+    "**/bun.lock",
+    "**/go.sum",
+    "**/Cargo.lock",
+    "**/poetry.lock",
+    "**/uv.lock",
+    "**/Pipfile.lock",
+    "**/composer.lock",
+    "**/Gemfile.lock",
+    "**/Chart.lock",
+    "**/gradle.lockfile",
+    "**/flake.lock",
+    "**/pdm.lock",
+    "**/mix.lock",
+    "**/pubspec.lock",
+    "**/Podfile.lock",
+    "**/packages.lock.json",
+    "**/deno.lock",
+];
+
+/// Every always-on floor entry: [`FLOOR_EXCLUDES`] then [`LOCKFILE_GLOBS`].
+fn floor_entries() -> impl Iterator<Item = &'static str> {
+    FLOOR_EXCLUDES.iter().chain(LOCKFILE_GLOBS).copied()
+}
 
 /// The credential/key subset of [`FLOOR_EXCLUDES`]: a repository's own `[scan] floor_allow` may not
 /// remove one of these without the operator grant [`ALLOW_REPO_CREDENTIALS_ENV`]. Kept as an
@@ -137,7 +205,7 @@ fn floor_allow_names(entry: &str, pattern: &str) -> bool {
 /// entry is ignored with a warning and the secret stays excluded.
 fn effective_floor(floor_allow: &[String], credentials_granted: bool) -> Vec<&'static str> {
     for entry in floor_allow {
-        let matched = FLOOR_EXCLUDES.iter().any(|p| floor_allow_names(entry, p));
+        let matched = floor_entries().any(|p| floor_allow_names(entry, p));
         let protected = FLOOR_PROTECTED.iter().any(|p| floor_allow_names(entry, p));
         let credential = FLOOR_CREDENTIALS.iter().any(|p| floor_allow_names(entry, p));
         if protected {
@@ -156,9 +224,7 @@ fn effective_floor(floor_allow: &[String], credentials_granted: bool) -> Vec<&'s
             );
         }
     }
-    FLOOR_EXCLUDES
-        .iter()
-        .copied()
+    floor_entries()
         .filter(|p| {
             FLOOR_PROTECTED.contains(p)
                 || !floor_allow

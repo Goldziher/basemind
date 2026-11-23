@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The always-on exclude floor now drops tool and package-manager caches (`.cache`, `.terragrunt-cache`,
+  `.turbo`, `.nox`, `.yarn/cache`, `*.egg-info`, `.cargo/registry`, `.eslintcache`, `.coverage`, ...)
+  and lockfiles (`*.lock`, `go.sum`, `package-lock.json`, `pnpm-lock.yaml`, `.terraform.lock.hcl`, ...);
+  `[scan] floor_allow` re-includes any of them (#458)
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

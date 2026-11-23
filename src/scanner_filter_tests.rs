@@ -281,6 +281,136 @@ fn should_apply_exclude_floor_even_with_a_narrow_user_exclude() {
     assert!(filter.allows_glob("src/lib.rs"), "real source file kept");
 }
 
+fn default_filters() -> Filters {
+    let config = crate::config::default_for_root(Path::new("."));
+    Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters")
+}
+
+#[test]
+fn cache_directories_and_files_are_in_the_exclude_floor() {
+    let filters = default_filters();
+    let excluded = [
+        ".cache/pip/a.py",
+        "app/.cache/x.json",
+        "infra/.terragrunt-cache/abc/main.tf",
+        ".turbo/log.json",
+        "web/.parcel-cache/data.json",
+        ".nox/py312/lib/m.py",
+        ".hypothesis/examples/a",
+        ".pnpm-store/v3/files/a.js",
+        ".yarn/cache/left-pad-npm-1.0.0.zip",
+        ".angular/cache/a.js",
+        ".sass-cache/a.scss",
+        ".ccache/tmp/a.o",
+        "pkg/.dart_tool/package_config.json",
+        "__pypackages__/3.12/lib/m.py",
+        ".eggs/a.py",
+        "src/mypkg.egg-info/PKG-INFO",
+        "nb/.ipynb_checkpoints/a-checkpoint.ipynb",
+        ".cargo/registry/src/a/lib.rs",
+        "site/.docusaurus/routes.js",
+        "web/.vite/deps/a.js",
+        ".cache-loader/a.js",
+        "web/.eslintcache",
+        ".coverage",
+        "pkg/.coverage",
+    ];
+    for path in excluded {
+        assert!(!filters.allows(path), "{path} must be excluded by the floor");
+    }
+    let kept = [
+        "src/cache.rs",
+        "src/cache/store.rs",
+        "docs/cache-notes.md",
+        "src/hypothesis.py",
+        ".yarn/releases/yarn-4.0.0.cjs",
+        ".yarn/plugins/plugin.cjs",
+        ".cargo/config.toml",
+        "src/mypkg_egg-info.md",
+        "src/coverage.py",
+        "src/eslintcache.ts",
+        "src/vite.config.ts",
+        ".github/workflows/ci.yml",
+    ];
+    for path in kept {
+        assert!(filters.allows(path), "{path} must stay indexable");
+    }
+}
+
+#[test]
+fn lockfiles_are_in_the_exclude_floor() {
+    let filters = default_filters();
+    let excluded = [
+        ".terraform.lock.hcl",
+        "infra/prod/.terraform.lock.hcl",
+        "a/b/foo.lock",
+        "a/bun.lockb",
+        "a/x.lockfile",
+        "a/gradle.lockfile",
+        "a/schema.proto.lock.json",
+        "a/deps.lock.hcl",
+        "a/deps.lock.yaml",
+        "package-lock.json",
+        "a/npm-shrinkwrap.json",
+        "a/pnpm-lock.yaml",
+        "yarn.lock",
+        "a/bun.lock",
+        "a/go.sum",
+        "Cargo.lock",
+        "a/poetry.lock",
+        "a/uv.lock",
+        "a/Pipfile.lock",
+        "a/composer.lock",
+        "a/Gemfile.lock",
+        "charts/app/Chart.lock",
+        "a/flake.lock",
+        "a/pdm.lock",
+        "a/mix.lock",
+        "a/pubspec.lock",
+        "ios/Podfile.lock",
+        "a/packages.lock.json",
+        "a/deno.lock",
+    ];
+    for path in excluded {
+        assert!(!filters.allows(path), "{path} must be excluded by the floor");
+    }
+    let kept = [
+        "go.mod",
+        "lockdown.py",
+        "block.lock.py",
+        "src/lock.rs",
+        "src/locks/mod.rs",
+        "package.json",
+        "pnpm-workspace.yaml",
+        "a/main.tf",
+        "a/Chart.yaml",
+        "a/requirements.txt",
+        "a/sum.go",
+    ];
+    for path in kept {
+        assert!(filters.allows(path), "{path} must stay indexable");
+    }
+}
+
+#[test]
+fn floor_allow_re_includes_a_lockfile_and_a_cache_directory() {
+    let mut config = crate::config::default_for_root(Path::new("."));
+    config.scan.floor_allow = vec!["go.sum".to_string(), ".cache".to_string(), "*.lock".to_string()];
+    let filters =
+        Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).expect("build filters");
+    assert!(filters.allows("a/go.sum"));
+    assert!(filters.allows(".cache/a.py"));
+    assert!(filters.allows("a/foo.lock"));
+    assert!(
+        !filters.allows("a/yarn.lock"),
+        "an unnamed lockfile entry stays excluded"
+    );
+    assert!(
+        !filters.allows(".turbo/a.json"),
+        "an unnamed cache entry stays excluded"
+    );
+}
+
 #[test]
 fn should_reject_out_of_root_and_empty_rel() {
     let (filter, root, _tmp) = filter_for(|root| {
