@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn a_budget_cut_is_flagged_and_resumable() {
         let hits: Vec<String> = (0..10).map(|rank| format!("hit {rank} {}", "x".repeat(64))).collect();
-        let cut = page_ranked(hits, 0, 10, Some(1), GENERATION);
+        let cut = page_ranked(hits, 0, 10, Some(1), GENERATION, false);
         assert_eq!(cut.hits.len(), 1);
         assert!(cut.budgeted);
         assert!(cut.next_cursor.is_some());
