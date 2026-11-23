@@ -87,7 +87,7 @@ fn blob_files_lists_flat_and_bucketed_files_but_not_other_directories() {
     let flat = tmp.path().join("flat.fm.msgpack");
     let bucketed = sharded_blob_path(tmp.path(), HASH, FM);
     let not_a_bucket = tmp.path().join("notes").join("kept.fm.msgpack");
-    let uppercase = tmp.path().join("AB").join("upper.fm.msgpack");
+    let uppercase = tmp.path().join("CD").join("upper.fm.msgpack");
     for path in [&flat, &bucketed, &not_a_bucket, &uppercase] {
         touch(path);
     }
