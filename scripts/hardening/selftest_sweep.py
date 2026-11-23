@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from wire_decode import decode  # noqa: E402
 from functional_sweep import Outcome, any_row_mentions, file_listed, items, outline_has, sweep_passes  # noqa: E402
 
 GREP_LITERAL = {
@@ -36,11 +37,49 @@ GREP_REGEX = {
 GREP_OUTSIDE_SYMBOLS = {"hits": {"src/lib.rs": {"": ["1: // total_reading"]}}}
 REFS = {"hits": {"src/lib.rs": ["28:5 compute_total"]}}
 
+GREP_TEXT = (
+    "total: 2\n# src/lib.rs\n## total_reading\n20: pub fn total_reading()\n## compute_total\n28: total_reading(&[])"
+)
+OUTLINE_TEXT = "path: src/lib.rs\nsymbols[2]{name,kind,line}:\n  compute_total,function,27\n  total_reading,function,20"
+
 PASS = [Outcome("a", "mcp", "pass")]
 SKIP = [*PASS, Outcome("b", "mcp", "skip")]
 FAIL = [*PASS, Outcome("c", "cli", "fail")]
 
 CASES: list[tuple[str, Callable[[], object], object]] = [
+    (
+        "a grep text answer decodes to grouped hits",
+        lambda: decode(GREP_TEXT),
+        {
+            "total": 2,
+            "hits": {
+                "src/lib.rs": {
+                    "total_reading": ["20: pub fn total_reading()"],
+                    "compute_total": ["28: total_reading(&[])"],
+                }
+            },
+        },
+    ),
+    (
+        "a decoded grep text answer passes the literal matcher",
+        lambda: any_row_mentions(("hits",), "total_reading", 2)(decode(GREP_TEXT)),
+        None,
+    ),
+    (
+        "a TOON outline decodes to symbol rows",
+        lambda: decode(OUTLINE_TEXT)["symbols"][0],
+        {"name": "compute_total", "kind": "function", "line": 27},
+    ),
+    (
+        "a decoded TOON outline passes the outline matcher",
+        lambda: outline_has("compute_total")(decode(OUTLINE_TEXT)),
+        None,
+    ),
+    (
+        "a TOON find_files list decodes",
+        lambda: decode("files[2]: src/lib.rs,src/settings.py"),
+        {"files": ["src/lib.rs", "src/settings.py"]},
+    ),
     (
         "grep rows flattened with path and symbol",
         lambda: items(GREP_LITERAL, "hits"),

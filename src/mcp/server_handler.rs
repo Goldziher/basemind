@@ -19,6 +19,23 @@ use super::{BasemindServer, tasks};
 /// re-listing every session. Scoped `Public` because the surface is not client- or user-specific.
 pub(super) const LIST_CACHE_TTL_MS: u64 = 300_000;
 
+impl BasemindServer {
+    /// Dispatch `tcc` through the static router. A session that is not a CLI relay answers as an MCP
+    /// client receives it: the payload once, in the text block ([`super::tool_contract::single_payload`]).
+    pub(super) async fn route(
+        &self,
+        tcc: rmcp::handler::server::tool::ToolCallContext<'_, Self>,
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let response = self.tool_router.call(tcc).await?;
+        Ok(match response {
+            rmcp::model::CallToolResponse::Complete(result) if !self.cli => {
+                rmcp::model::CallToolResponse::Complete(super::tool_contract::single_payload(result))
+            }
+            other => other,
+        })
+    }
+}
+
 #[tool_handler(router = self.tool_router.clone())]
 impl ServerHandler for BasemindServer {
     /// `tools/list`: every tool of the static router, with the SEP-2549 cache hints the generated
@@ -74,7 +91,7 @@ impl ServerHandler for BasemindServer {
         if cancel_aware {
             let ct = tcc.request_context.ct.clone();
             let deadline = self.heavy_admission.deadline();
-            return match tasks::run_bounded_read(admission, ct, deadline, self.tool_router.call(tcc)).await {
+            return match tasks::run_bounded_read(admission, ct, deadline, self.route(tcc)).await {
                 // ~keep Like `server_busy`: the agent reads a stop it can act on; a CLI keeps the error.
                 Err(stopped) if !self.cli && tasks::is_deadline_exceeded(&stopped) => {
                     Ok(rmcp::model::CallToolResponse::Complete(
@@ -84,7 +101,7 @@ impl ServerHandler for BasemindServer {
                 answered => answered,
             };
         }
-        super::admission::holding(std::sync::Arc::new(admission), self.tool_router.call(tcc)).await
+        super::admission::holding(std::sync::Arc::new(admission), self.route(tcc)).await
     }
 
     /// SEP-2663 `tasks/get`: report the current state of a spawned task. Thin delegation to the

@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Files named `Dockerfile`, `Dockerfile.<suffix>`, `Containerfile`, `Makefile`, `Jenkinsfile`, `CMakeLists.txt`, `Gemfile`, `Rakefile`, `Vagrantfile`, `BUILD` and `WORKSPACE` are classified by file name in any directory, so language filters and `index_status` counts include them (#475).
+### Fixed
+
+- A successful MCP `tools/call` answer carries its payload once, in the text block, instead of again as `structuredContent` (#481).
 
 ## [0.34.0] - 2026-11-22
 

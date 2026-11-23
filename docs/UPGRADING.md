@@ -387,8 +387,9 @@ the path unchanged from one side. It still lists every other commit that changed
 
 ### Text answers
 
-A tool's MCP text block is no longer always the JSON of its answer (ADR-0053). `structuredContent`
-and the CLI's `--json` output stay JSON for every tool, with the shapes above.
+A tool's MCP text block is no longer always the JSON of its answer (ADR-0053). The CLI's `--json`
+output stays JSON for every tool, with the shapes above. A successful MCP answer no longer repeats
+its payload as `structuredContent`: the text block carries it once, roughly halving the response.
 
 | Tool | Text block |
 | --- | --- |
@@ -396,7 +397,7 @@ and the CLI's `--json` output stay JSON for every tool, with the shapes above.
 | `code_outline`, `git_diff`, `find_files` (a list) | [TOON](https://toonformat.dev): `key: value` lines, a list of flat objects as a table `name[N]{field,...}:` with one comma-separated row each, a list of scalars inline `name[N]: a,b` |
 | every other tool, `find_files` with `min_lines` | compact JSON, as before |
 
-A client that parsed the text block as JSON reads `structuredContent` instead, or decodes the text
+A client that parsed the text block as JSON decodes the text
 with `basemind::wire::decode` (Rust) or a TOON decoder plus the `code_grep` header rules. A path or
 symbol in a `code_grep` header is a JSON string when it starts with `"`, has leading or trailing
 whitespace or holds a control character. The token budget (`max_tokens`) charges the encoding the
