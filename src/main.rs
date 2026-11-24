@@ -151,6 +151,12 @@ enum Cmd {
         /// that file launching stays off and the tools are not listed. Unix only.
         #[arg(long)]
         lead: bool,
+        /// Read the operator's agent-launch policy from this absolute file instead of the
+        /// user-level agents.toml, to try `agent_launch` against a throwaway policy. The file must
+        /// pass the same checks (owned by you, writable by nobody else, outside the workspace); a
+        /// warning on stderr names it. Needs `--lead`.
+        #[arg(long, requires = "lead", value_name = "FILE")]
+        agents_policy: Option<std::path::PathBuf>,
     },
     /// Print a compact one-line summary of the daemon's currently-hot workspaces, for a shell
     /// statusline. Fast and silent: prints nothing and exits 0 when no daemon is running.
@@ -494,7 +500,7 @@ fn run() -> Result<()> {
             LangCmd::Install => lang_cli::cmd_lang_install(&root, verbosity, no_color),
             LangCmd::Clean { yes } => lang_cli::cmd_lang_clean(yes),
         },
-        Cmd::Serve { lead } => cmd_serve(&root, &view, lead),
+        Cmd::Serve { lead, agents_policy } => cmd_serve(&root, &view, lead, agents_policy.as_deref()),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         Cmd::Upgrade(args) => basemind::cli::upgrade::run(&args, json, &mut std::io::stdout().lock()),
         Cmd::Sessions(args) => basemind::cli::sessions::run(&root, json, &args),
@@ -687,7 +693,7 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
 /// server, whose lifetime was bound to the pipe, was the "drops and never returns" bug). HTTP-native
 /// clients skip `serve` entirely and dial the daemon URL directly (see `basemind daemon ensure`).
 /// Without the `comms` feature there is no daemon to relay to, so it errors with guidance.
-fn cmd_serve(root: &std::path::Path, view: &str, lead: bool) -> Result<()> {
+fn cmd_serve(root: &std::path::Path, view: &str, lead: bool, agents_policy: Option<&std::path::Path>) -> Result<()> {
     if lead && !cfg!(unix) {
         anyhow::bail!(
             "`basemind serve --lead` is not supported on this platform: launching agents needs a Unix \
@@ -721,12 +727,16 @@ fn cmd_serve(root: &std::path::Path, view: &str, lead: bool) -> Result<()> {
         // error rather than silently degrading to a fragile pipe-bound server.
         #[cfg(unix)]
         let served = if lead {
-            serve_relay::try_serve_lead(root, view)
+            serve_relay::try_serve_lead(root, view, agents_policy)
         } else {
             serve_relay::try_serve_relay(root, view)
         };
         #[cfg(not(unix))]
-        let served = serve_relay::try_serve_relay(root, view);
+        let served = {
+            // `--lead` was refused above on this platform, so there is no policy to hand on.
+            let _ = agents_policy;
+            serve_relay::try_serve_relay(root, view)
+        };
         served.context(
             "relay to the basemind daemon failed; run `basemind daemon ensure` to check the daemon, \
              then retry",
@@ -734,7 +744,7 @@ fn cmd_serve(root: &std::path::Path, view: &str, lead: bool) -> Result<()> {
     }
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     {
-        let _ = (root, lead);
+        let _ = (root, lead, agents_policy);
         anyhow::bail!(
             "`basemind serve` needs the comms daemon to host the MCP server; rebuild with \
              `--features comms` (the stdio MCP server is served by relaying to that daemon)."
@@ -765,6 +775,23 @@ mod log_directive_tests {
     #[test]
     fn default_verbosity_keeps_basemind_info_and_dependency_warnings_only() {
         assert_eq!(enabled_by_default(), [true, false, false, false, true, true]);
+    }
+}
+
+#[cfg(test)]
+mod serve_args_tests {
+    use clap::Parser as _;
+
+    use super::Cli;
+
+    #[test]
+    fn agents_policy_needs_lead() {
+        let without = Cli::try_parse_from(["basemind", "serve", "--agents-policy", "/tmp/agents.toml"]);
+        assert_eq!(
+            without.unwrap_err().kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(Cli::try_parse_from(["basemind", "serve", "--lead", "--agents-policy", "/tmp/agents.toml"]).is_ok());
     }
 }
 

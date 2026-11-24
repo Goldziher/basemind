@@ -435,3 +435,31 @@ fn old_audit_logs_of_ended_leads_are_pruned() {
     assert!(!old.exists());
     assert!(held.exists() && recent.exists() && other.exists());
 }
+
+#[test]
+fn an_absolute_policy_override_names_the_policy_file() {
+    let fixture = Fixture::new();
+    let path = fixture.base.join("config/throwaway-agents.toml");
+    assert_eq!(policy_location(Some(&path)).unwrap(), path);
+}
+
+#[test]
+fn a_relative_policy_override_leaves_launching_off() {
+    let off = policy_location(Some(Path::new("config/agents.toml"))).unwrap_err();
+    assert_eq!(
+        off.0,
+        "agent launching is off: --agents-policy config/agents.toml is not an absolute path"
+    );
+    assert_eq!(
+        off.1,
+        "agent launching is off: the --agents-policy path is not absolute"
+    );
+}
+
+#[test]
+fn without_an_override_the_policy_is_the_user_level_file() {
+    assert_eq!(
+        policy_location(None).unwrap(),
+        crate::config::agents_policy::policy_path().expect("this user has a home directory")
+    );
+}

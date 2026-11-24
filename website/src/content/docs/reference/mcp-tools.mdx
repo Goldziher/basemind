@@ -200,7 +200,8 @@ examples.
 
 Only `basemind serve --lead` lists and answers these two (Unix, `comms` builds), and only when the
 operator's `agents.toml` in basemind's configuration directory turns launching on. The daemon, its
-HTTP front-end, a plain `basemind serve` and the CLI never list them. The design is
+HTTP front-end, a plain `basemind serve` and the CLI never list them. `basemind serve --lead
+--agents-policy <absolute file>` reads a throwaway policy file instead, under the same file checks. The design is
 [ADR-0040](https://github.com/Goldziher/basemind/blob/main/docs/adr/0040-cross-harness-agent-launch.md).
 
 | Tool | Arguments (`?` = optional) | Purpose |

@@ -74,7 +74,10 @@ user did not grant.
   `src/mcp/mod.rs`).
 - **Agent launch is off unless the user's own `agents.toml` turns it on.** The file is refused
   unless it is a regular file owned by the user and writable by nobody else; a repository, the
-  environment, a flag or a tool argument cannot enable it (`src/lead/policy_file.rs`).
+  environment or a tool argument cannot enable it (`src/lead/policy_file.rs`). The one way to
+  name another file is the operator's own `serve --lead --agents-policy <absolute file>`, for
+  trying launches against a throwaway policy: the file passes the same checks, and a host whose
+  project settings supply that argument is the operator's configuration to trust.
 
 ## Operator grants
 

@@ -72,9 +72,13 @@ impl Layout {
     }
 
     fn write_policy(&self) {
-        let dir = self.config_dir();
-        std::fs::create_dir_all(&dir).expect("config dir");
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod dir");
+        self.write_policy_in(&self.config_dir());
+    }
+
+    /// An enabling policy `agents.toml` in `dir`; returns its path.
+    fn write_policy_in(&self, dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(dir).expect("config dir");
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).expect("chmod dir");
         let path = dir.join("agents.toml");
         std::fs::write(
             &path,
@@ -87,13 +91,26 @@ impl Layout {
         )
         .expect("policy");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod policy");
+        path
     }
 
     async fn serve(&self, lead: bool, env: &[(&str, &str)]) -> RunningService<RoleClient, ()> {
+        self.serve_with(lead, None, env).await
+    }
+
+    async fn serve_with(
+        &self,
+        lead: bool,
+        agents_policy: Option<&Path>,
+        env: &[(&str, &str)],
+    ) -> RunningService<RoleClient, ()> {
         let cmd = AsyncCommand::new(env!("CARGO_BIN_EXE_basemind")).configure(|c| {
             c.arg("--root").arg(&self.repo).arg("serve");
             if lead {
                 c.arg("--lead");
+            }
+            if let Some(policy) = agents_policy {
+                c.arg("--agents-policy").arg(policy);
             }
             c.env("HOME", &self.home)
                 .env("XDG_CONFIG_HOME", &self.xdg)
@@ -279,6 +296,31 @@ async fn a_lead_with_an_operator_policy_launches_into_a_worktree_and_stops() {
         "the lead keeps an audit log in {}",
         audit_dir.display()
     );
+    lead.cancel().await.expect("close");
+}
+
+/// `--agents-policy` names the operator's file: a lead with no user-level policy enables launching
+/// from a throwaway one, and a relative path leaves it off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lead_reads_the_policy_named_by_agents_policy() {
+    let layout = Layout::new();
+    let policy = layout.write_policy_in(&layout.base.join("throwaway"));
+
+    let lead = layout.serve_with(true, Some(&policy), &[]).await;
+    let said = instructions(&lead);
+    assert!(said.contains("agent_launch / agent_stop are enabled"), "{said}");
+    lead.cancel().await.expect("close");
+
+    let lead = layout.serve_with(true, None, &[]).await;
+    let said = instructions(&lead);
+    assert!(said.contains("there is no operator policy"), "{said}");
+    lead.cancel().await.expect("close");
+
+    let lead = layout
+        .serve_with(true, Some(Path::new("throwaway/agents.toml")), &[])
+        .await;
+    let said = instructions(&lead);
+    assert!(said.contains("the --agents-policy path is not absolute"), "{said}");
     lead.cancel().await.expect("close");
 }
 
