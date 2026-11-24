@@ -234,20 +234,17 @@ fn delta_base_cache_bytes() -> usize {
     crate::config::engine::with(|config| config.git.delta_cache_bytes)
 }
 
-/// Trust-mapped open options carrying basemind's resource bounds, applied to every repository we
-/// open. Only the caches are touched: discovery, trust and permissions keep gix's defaults, so this
-/// changes what a repository *costs*, never what it *resolves to*.
+/// Open options carrying basemind's resource bounds, applied to every repository we open at either
+/// trust level. Only the caches are touched: discovery, trust and permissions keep gix's defaults,
+/// so this changes what a repository *costs*, never what it *resolves to*.
 /// `extra` adds further CLI-precedence overrides (the end-of-line spellings of [`eol_config`]).
-fn bounded_open_options(extra: &[String]) -> gix::sec::trust::Mapping<gix::open::Options> {
-    let mut mapping = gix::sec::trust::Mapping::<gix::open::Options>::default();
+fn bounded_open_options(extra: &[String]) -> impl FnOnce(gix::open::Options, gix::sec::Trust) -> gix::open::Options {
     let mut overrides = vec![format!("core.deltaBaseCacheLimit={}", delta_base_cache_bytes())];
     overrides.extend_from_slice(extra);
     // ~keep CLI precedence, not API: an API override sits with the globals and a repository-local
     // ~keep `core.deltaBaseCacheLimit` would outrank it, which would let an untrusted checkout raise
     // ~keep the bound we set for our own protection.
-    mapping.full.modify(|o| o.cli_overrides(overrides.clone()));
-    mapping.reduced.modify(|o| o.cli_overrides(overrides));
-    mapping
+    move |options, _trust| options.cli_overrides(overrides)
 }
 
 fn discover_with(start: &Path, extra: &[String]) -> Result<gix::ThreadSafeRepository, GitError> {

@@ -70,10 +70,10 @@ pub fn bound_ort_memory(intra_threads: usize) {
     if APPLIED.swap(true, std::sync::atomic::Ordering::AcqRel) {
         return;
     }
-    xberg::set_ort_session_options(xberg::OrtSessionOptions {
+    xberg::set_ort_session_options(&xberg::OrtSessionOptions {
         memory_pattern: false,
         cpu_arena: false,
-        max_threads: Some(intra_threads),
+        max_threads: Some(i32::try_from(intra_threads).unwrap_or(i32::MAX)),
     });
 }
 
