@@ -1,10 +1,12 @@
 name: docs
 
-# basemind.ai deploys from main: the github-pages environment only admits that branch. A pull
-# request or dispatch from another ref only builds the site; the build fails on a broken internal
-# link or anchor (starlight-links-validator in website/astro.config.mjs).
+# basemind.ai deploys from a release tag (`v*`), so the site documents the released binary: the
+# github-pages environment admits `v*` tags and main. A push to main, a pull request or a dispatch
+# only builds the site; the build fails on a broken internal link or anchor
+# (starlight-links-validator in website/astro.config.mjs).
 on:
   push:
+    tags: ["v*"]
     branches: [main]
     paths:
       - "website/**"
@@ -49,7 +51,7 @@ jobs:
 
   deploy:
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       pages: write
