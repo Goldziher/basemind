@@ -325,6 +325,23 @@ mod scanned {
     }
 
     #[test]
+    fn callees_of_a_definition_that_left_its_line_says_the_file_changed_and_asks_for_a_rescan() {
+        let (dir, ws) = workspace_for_answers();
+        write(
+            dir.path(),
+            "src/a.rs",
+            "use crate::b::bee;\n\n\n\n\npub fn ay() { bee(); }\n",
+        );
+        let reason = crate::engine::ops::explain::callees_of(&ws, &RelPath::from("src/a.rs"), "ay", 2)
+            .err()
+            .expect("the definition is no longer at line 2");
+        assert_eq!(
+            reason,
+            "`src/a.rs` changed since the scan and no longer holds `ay` at line 2: rescan"
+        );
+    }
+
+    #[test]
     fn a_file_target_lists_its_imports_and_no_call_level_rows() {
         let (_dir, ws) = workspace_for_answers();
         let impact = ws

@@ -368,12 +368,15 @@ pub(in crate::engine::ops) fn callees_of(
     name: &str,
     line: u32,
 ) -> Result<Vec<Callee>, String> {
-    let chosen = super::pick::symbol_named_at(ws, path.clone(), name, line).map_err(|error| error.to_string())?;
+    let moved = || format!("`{path}` changed since the scan and no longer holds `{name}` at line {line}: rescan");
+    let chosen = match super::pick::symbol_named_at(ws, path.clone(), name, line) {
+        Ok(chosen) => chosen,
+        Err(_) if load(ws, path).is_ok_and(|loaded| loaded.stale) => return Err(moved()),
+        Err(error) => return Err(error.to_string()),
+    };
     let (loaded, symbol) = (&chosen.loaded, &chosen.loaded.l1.symbols[chosen.index]);
     if loaded.stale && (symbol.name != name || symbol.start_row + 1 != line) {
-        return Err(format!(
-            "`{path}` changed since the scan and no longer holds `{name}` at line {line}: rescan"
-        ));
+        return Err(moved());
     }
     let l2 = calls_and_docs(ws, path, loaded).ok_or_else(|| format!("no call extraction for {}", loaded.language))?;
     let view = ws
