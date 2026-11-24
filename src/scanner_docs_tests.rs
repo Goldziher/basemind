@@ -519,8 +519,13 @@ fn audio_and_video_are_denied() {
 
 #[cfg(feature = "documents-ocr")]
 #[test]
-fn images_pass_with_the_ocr_tier() {
-    let cfg = DocumentsConfig::default();
+fn images_pass_only_when_ocr_is_enabled_in_an_ocr_build() {
+    let mut cfg = DocumentsConfig::default();
+    assert!(
+        should_extract_document(Path::new("assets/photo.png"), &cfg).is_none(),
+        "OCR is off by default, so a raster image has no text to index"
+    );
+    cfg.ocr.enabled = true;
     assert!(should_extract_document(Path::new("assets/photo.png"), &cfg).is_some());
 }
 
