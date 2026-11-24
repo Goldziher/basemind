@@ -18,6 +18,25 @@ const STALE_SCHEMA_VER: u16 = basemind::extract::SCHEMA_VER - 1;
 /// What a newer basemind sharing the cache stamped: never wiped by this binary.
 const NEWER_SCHEMA_VER: u16 = basemind::extract::SCHEMA_VER + 1;
 
+/// File names of every blob in `blobs_dir`, flat or inside a bucket directory.
+fn blob_file_names(blobs_dir: &std::path::Path) -> Vec<String> {
+    let mut names = Vec::new();
+    for entry in fs::read_dir(blobs_dir).expect("read global blobs").flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            names.extend(
+                fs::read_dir(&path)
+                    .expect("read blob bucket")
+                    .flatten()
+                    .filter_map(|e| e.file_name().into_string().ok()),
+            );
+        } else if let Ok(name) = entry.file_name().into_string() {
+            names.push(name);
+        }
+    }
+    names
+}
+
 /// Write a view `index.msgpack` stamped `schema_ver` that references one file; returns its path.
 fn forge_view_index(root: &std::path::Path, schema_ver: u16) -> std::path::PathBuf {
     let view_dir = basemind::store::workspace_cache_dir(root)
@@ -415,10 +434,8 @@ fn schema_bump_refreshes_blobs_in_place_and_gc_reclaims_only_orphans() {
         v
     };
     let all_blobs_for = |stems: &[String]| -> Vec<String> {
-        let mut v: Vec<String> = fs::read_dir(&blobs_dir)
-            .expect("read global blobs")
-            .filter_map(|e| e.ok())
-            .filter_map(|e| e.file_name().into_string().ok())
+        let mut v: Vec<String> = blob_file_names(&blobs_dir)
+            .into_iter()
             .filter(|n| stems.iter().any(|s| n.starts_with(s.as_str())))
             .collect();
         v.sort();

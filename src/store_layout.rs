@@ -146,7 +146,7 @@ pub fn group_index_namespace(group_dir: &Path, minor: u16) -> PathBuf {
 }
 
 /// The database directory of this binary's group index within the group directory `group_dir`
-/// (the fjall database is [`crate::index::INDEX_DIR`] inside it).
+/// (the fjall database is `index::INDEX_DIR` inside it).
 pub fn group_db_dir_in(group_dir: &Path) -> PathBuf {
     group_index_namespace(group_dir, crate::version::RELEASE_MINOR)
 }

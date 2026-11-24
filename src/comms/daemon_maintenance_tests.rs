@@ -263,10 +263,14 @@ async fn concurrent_rescan_and_blob_gc_never_reaps_a_referenced_blob() {
     let blobs_dir = crate::store::global_blobs_dir();
     for stem in referenced.stems() {
         let prefix = format!("{stem}.");
-        let present = std::fs::read_dir(&blobs_dir)
-            .expect("read blobs dir")
-            .flatten()
-            .any(|entry| entry.file_name().to_str().is_some_and(|name| name.starts_with(&prefix)));
+        let present = crate::store_blob_layout::blob_files(&blobs_dir)
+            .expect("list blobs")
+            .iter()
+            .any(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+            });
         assert!(present, "referenced blob {stem} was reaped by a concurrent GC sweep");
     }
 }

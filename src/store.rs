@@ -296,7 +296,7 @@ pub struct Store {
     pub root: PathBuf,
     pub basemind_dir: PathBuf,
     /// Directory holding the content-addressed blob cache (`<hash>.{fm,doc,rref,chunk}.msgpack`, each in
-    /// the bucket named for the first two digits of its hash: [`crate::store_blob_layout`]).
+    /// the bucket named for the first two digits of its hash: `store_blob_layout`).
     /// The GLOBAL blob store at `<data home>/cache/blobs/`, shared by every workspace on the
     /// machine, so byte-identical files across repositories/worktrees are extracted + embedded
     /// exactly once. Per-workspace state (views, LanceDB, lock) lives under [`Store::basemind_dir`].
