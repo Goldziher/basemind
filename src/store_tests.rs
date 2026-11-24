@@ -730,7 +730,8 @@ fn a_vector_store_that_would_not_open_is_tried_once_per_scan_pass() {
     let root = dir.path();
     std::fs::write(root.join("a.rs"), b"pub fn vector_store_fixture() {}\n").expect("write");
     let mut store = Store::open(root, VIEW_WORKING).expect("open");
-    let lance_dir = store.basemind_dir.join(LANCE_DIR);
+    let lance_dir = crate::lance::code_store_dir(&store.root, "model", 4);
+    std::fs::create_dir_all(lance_dir.parent().expect("stores dir")).expect("mk stores dir");
     std::fs::write(&lance_dir, b"not a directory").expect("block the store");
     assert!(store.lance_or_open(4, "model").is_err());
 
@@ -751,6 +752,26 @@ fn a_vector_store_that_would_not_open_is_tried_once_per_scan_pass() {
     )
     .expect("scan");
     assert!(store.lance_or_open(4, "model").is_ok(), "the next pass opens it");
+}
+
+/// The code-chunk store is the group's: opening it creates the group store and removes the
+/// workspace's own `lance/`, whose rows an earlier build keyed by path.
+#[cfg(feature = "intelligence")]
+#[test]
+fn opening_the_code_store_opens_the_groups_and_removes_the_workspaces_old_one() {
+    init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut store = Store::open(dir.path(), VIEW_WORKING).expect("open");
+    let legacy = store.basemind_dir.join(LANCE_DIR);
+    std::fs::create_dir_all(&legacy).expect("mk legacy store");
+    std::fs::write(legacy.join("meta.json"), b"{}").expect("write legacy meta");
+
+    let opened = store.lance_or_open(4, "model").expect("open").dir().to_path_buf();
+
+    assert_eq!(opened, crate::lance::code_store_dir(&store.root, "model", 4));
+    assert!(opened.starts_with(crate::lance::code_stores_dir(&store.root)));
+    assert!(!legacy.exists(), "the workspace's path-keyed store is gone");
+    assert!(store.code_stores_exist());
 }
 
 /// A torn or undecodable file map failed every writer open, `scan` included, until a daemon GC or a

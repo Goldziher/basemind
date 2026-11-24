@@ -3,7 +3,7 @@
 //! Every LanceDB `delete` / `add` is one dataset commit, i.e. one new table version plus a manifest
 //! write. The per-file `replace_*` writers pay two commits per document, so a 14 664-document scan
 //! produced ~28k versions per table, 28 GB on disk and ~2 h of pure commit latency (issue #76). The
-//! `replace_*_many` writers here fold N documents into ONE delete (`path IN (...)`) plus ONE append,
+//! `replace_*_many` writers here fold N documents into ONE delete (`content_hash IN (...)`) plus ONE append,
 //! and [`LanceStore::maintain`] / the commit-counting auto-maintenance compact small fragments and
 //! prune old versions so the version count stays bounded on the incremental / watch path too.
 
@@ -15,8 +15,6 @@ use lancedb::table::optimize::Duration as ChronoDuration;
 use lancedb::table::{CompactionOptions, OptimizeAction};
 
 use super::LanceStore;
-#[cfg(feature = "code-search")]
-use super::escape_sql_literal;
 
 /// Documents folded into one delete+append commit pair.
 pub const BATCH_MAX_DOCS: usize = 256;
@@ -43,7 +41,7 @@ pub const SCAN_RETENTION: Duration = Duration::from_secs(60);
 
 /// Accumulator the scanner lanes use to turn a per-file stream into bounded batches.
 pub struct PendingBatch<R> {
-    items: Vec<(String, String, Vec<R>)>,
+    items: Vec<(String, Vec<R>)>,
     rows: usize,
 }
 
@@ -57,9 +55,10 @@ impl<R> Default for PendingBatch<R> {
 }
 
 impl<R> PendingBatch<R> {
-    pub fn push(&mut self, scope: &str, path: &str, rows: Vec<R>) {
+    /// Queue `rows` under `key`, the unit a write replaces whole (a content hash for code chunks).
+    pub fn push(&mut self, key: &str, rows: Vec<R>) {
         self.rows += rows.len();
-        self.items.push((scope.to_string(), path.to_string(), rows));
+        self.items.push((key.to_string(), rows));
     }
 
     pub fn is_empty(&self) -> bool {
@@ -70,56 +69,21 @@ impl<R> PendingBatch<R> {
         self.items.len() >= BATCH_MAX_DOCS || self.rows >= BATCH_MAX_ROWS
     }
 
-    pub fn take(&mut self) -> Vec<(String, String, Vec<R>)> {
+    pub fn take(&mut self) -> Vec<(String, Vec<R>)> {
         self.rows = 0;
         std::mem::take(&mut self.items)
     }
 }
 
-/// `(scope = 'a' AND key IN ('p1', 'p2')) OR (scope = 'b' AND ...)` for every distinct scope.
-#[cfg(feature = "code-search")]
-fn replace_predicate<R>(key_col: &str, items: &[(String, String, Vec<R>)]) -> String {
-    let mut scopes: Vec<(&str, Vec<&str>)> = Vec::new();
-    for (scope, path, _) in items {
-        match scopes.iter_mut().find(|(s, _)| *s == scope.as_str()) {
-            Some((_, paths)) => paths.push(path),
-            None => scopes.push((scope, vec![path])),
-        }
-    }
-    scopes
-        .iter()
-        .map(|(scope, paths)| {
-            let list = paths
-                .iter()
-                .map(|p| format!("'{}'", escape_sql_literal(p)))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("(scope = '{}' AND {key_col} IN ({list}))", escape_sql_literal(scope))
-        })
-        .collect::<Vec<_>>()
-        .join(" OR ")
-}
-
 impl LanceStore {
-    /// Replace the `code_chunks` rows of many paths: one delete and one append per batch.
+    /// Replace the `code_chunks` rows of many contents, each keyed by its content hash: one delete
+    /// and one append per batch. A hash must appear once in `items`: its rows would be written twice.
     #[cfg(feature = "code-search")]
-    pub fn replace_code_chunks_many(&self, items: Vec<(String, String, Vec<super::CodeRow>)>) -> Result<()> {
-        self.replace_many(super::schema::CODE_CHUNKS_TABLE, "path", items, |dim, rows| {
-            super::build_code_chunks_batch(dim, rows)
-        })
-    }
-
-    #[cfg(feature = "code-search")]
-    fn replace_many<R>(
-        &self,
-        table_name: &str,
-        key_col: &str,
-        items: Vec<(String, String, Vec<R>)>,
-        build: impl Fn(u16, &[R]) -> Result<lancedb::arrow::arrow_array::RecordBatch>,
-    ) -> Result<()> {
+    pub fn replace_code_chunks_many(&self, items: Vec<(String, Vec<super::CodeRow>)>) -> Result<()> {
         if items.is_empty() {
             return Ok(());
         }
+        let table_name = super::schema::CODE_CHUNKS_TABLE;
         self.inner.rt().block_on(async {
             let table = self
                 .inner
@@ -136,18 +100,19 @@ impl LanceStore {
                 .with_context(|| format!("count {table_name} rows"))?
                 > 0
             {
+                let hashes: Vec<String> = items.iter().map(|(hash, _)| hash.clone()).collect();
                 table
-                    .delete(&replace_predicate(key_col, &items))
+                    .delete(&super::content_in(&hashes))
                     .await
-                    .with_context(|| format!("delete {} paths from {table_name}", items.len()))?;
+                    .with_context(|| format!("delete {} contents from {table_name}", items.len()))?;
                 self.after_commit(&table, table_name).await;
             }
-            let flat: Vec<R> = items.into_iter().flat_map(|(_, _, rows)| rows).collect();
+            let flat: Vec<super::CodeRow> = items.into_iter().flat_map(|(_, rows)| rows).collect();
             if flat.is_empty() {
                 return anyhow::Ok(());
             }
             table
-                .add(build(self.inner.dim, &flat)?)
+                .add(super::build_code_chunks_batch(self.inner.dim, &flat)?)
                 .execute()
                 .await
                 .with_context(|| format!("insert {} {table_name} rows", flat.len()))?;

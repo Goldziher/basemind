@@ -211,19 +211,7 @@ pub(crate) fn not_level(ws: &Workspace, vis_byte: u8, owner: &str) {
 /// name: two models never share a directory and wipe each other's rows in turn. No garbage
 /// collector lists the group directory.
 pub(crate) fn memory_lance_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
-    let model = crate::embeddings::model_key(model);
-    let slug: String = model
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let hash = crate::hashing::hex(&crate::hashing::hash_bytes(model.as_bytes()));
-    crate::store_layout::memory_vectors_dir(root).join(format!("{slug}-{dim}-{}", &hash[..8]))
+    crate::lance::store_dir(&crate::store_layout::memory_vectors_dir(root), model, dim)
 }
 
 /// Open the repo group's memory vector store for the configured embedder.

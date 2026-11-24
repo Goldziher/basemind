@@ -596,11 +596,11 @@ Nothing basemind-owned is written into the repository. State lives in a machine-
 ├── groups/<group>/             # one per repository: every worktree of a clone shares it
 │   ├── index.fjall/            # Fjall LSM index
 │   ├── lance/                  # Document retrieval stores, one per embedding model
+│   ├── code-lance/             # Code-search vector stores, one per embedding model
 │   └── .lock, .lock.meta       # The group lock: one process writes the index
 └── workspaces/<workspace_key>/ # one per worktree root
     ├── views/<view>/           # `working`, `staged`, ...
     │   └── index.msgpack       # The view's file map
-    ├── lance/                  # Code-search vector store
     ├── git-history.fjall/      # Precomputed git-history index
     ├── git-cache/              # Cached git payloads
     ├── workspace.json          # Records the worktree root this key was derived from

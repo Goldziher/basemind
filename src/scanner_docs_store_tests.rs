@@ -342,45 +342,11 @@ fn a_torn_blob_sends_its_document_to_be_extracted_again() {
     assert_eq!(owed, ["torn.md"], "its rows stay owed");
 }
 
-fn git(args: &[&str], cwd: &std::path::Path) {
-    let out = crate::testing::git_command()
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .expect("run git");
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
 /// Two worktrees of one repository: their stores are views of one group.
 fn worktrees() -> (tempfile::TempDir, Store, Store, Config, Filters) {
     crate::store::init_isolated_cache();
     let tmp = tempfile::tempdir().unwrap();
-    let main = tmp.path().join("main");
-    std::fs::create_dir(&main).unwrap();
-    git(&["init", "-q", "-b", "main"], &main);
-    git(
-        &[
-            "-c",
-            "user.email=t@example.com",
-            "-c",
-            "user.name=T",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "init",
-        ],
-        &main,
-    );
-    let linked = tmp.path().join("linked");
-    git(
-        &["worktree", "add", "-q", linked.to_str().unwrap(), "-b", "linked"],
-        &main,
-    );
+    let (main, linked) = crate::testing::linked_worktrees(tmp.path());
     let a = Store::open(&main, crate::store::VIEW_WORKING).unwrap();
     let b = Store::open(&linked, crate::store::VIEW_WORKING).unwrap();
     let mut config = crate::config::default_for_root(std::path::Path::new("."));

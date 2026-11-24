@@ -177,6 +177,12 @@ impl ContentLiveness<'_> {
     pub(crate) fn holds(&self, hash_hex: &str) -> bool {
         self.store.hash_is_held(hash_hex) || self.siblings.holds(hash_hex)
     }
+
+    /// Whether a view of the group other than the sweeping one holds `hash_hex`.
+    #[cfg(feature = "code-search")]
+    pub(crate) fn siblings_hold(&self, hash_hex: &str) -> bool {
+        self.siblings.holds(hash_hex)
+    }
 }
 
 impl Store {
@@ -187,6 +193,39 @@ impl Store {
             store: self,
             siblings: SiblingContents::read(self.sibling_view_dirs()?)?,
         })
+    }
+
+    /// [`Self::content_liveness`] for a sweep of rows every view of the group shares. Fails when the
+    /// store holds no group index handle: its sibling views are unknown, not absent.
+    #[cfg(feature = "code-search")]
+    pub(crate) fn group_content_liveness(&self) -> Result<ContentLiveness<'_>, LivenessUnknown> {
+        self.require_group()?;
+        self.content_liveness()
+    }
+
+    /// `Ok` while the store holds a handle on its group index, through which the group's other views
+    /// are listed.
+    fn require_group(&self) -> Result<(), LivenessUnknown> {
+        if self.index_db.as_ref().is_none_or(|db| db.group.is_none()) {
+            return Err(LivenessUnknown::NoGroup {
+                view_dir: self.view_dir.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    /// The distinct content hashes of this view's files, sorted, while it holds at most `cap` files:
+    /// the contents its code search may answer from. The rows of the group's code-chunk store are
+    /// keyed by them. `None` for a larger view, whose list is not built.
+    #[cfg(feature = "code-search")]
+    pub(crate) fn live_content_hashes(&self, cap: usize) -> Option<Vec<String>> {
+        if self.index.files.len() > cap {
+            return None;
+        }
+        let mut hashes: Vec<String> = self.index.files.values().map(|entry| entry.hash_hex.clone()).collect();
+        hashes.sort_unstable();
+        hashes.dedup();
+        Some(hashes)
     }
 
     /// The view directories of every other view sharing this store's index database: none for a
@@ -214,11 +253,7 @@ impl Store {
     /// from the current configuration. Fails, and a sweep must then delete nothing, when the store
     /// holds no group index handle or a sibling's file map cannot be read.
     pub fn group_live_doc_keys(&self) -> Result<AHashSet<String>, LivenessUnknown> {
-        if self.index_db.as_ref().is_none_or(|db| db.group.is_none()) {
-            return Err(LivenessUnknown::NoGroup {
-                view_dir: self.view_dir.clone(),
-            });
-        }
+        self.require_group()?;
         let mut keys = self.sibling_doc_keys()?;
         keys.extend(doc_keys_of(&self.index));
         Ok(keys)

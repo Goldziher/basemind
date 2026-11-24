@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Code-chunk vectors (`[code_search] embed = true`) live in one store per repository group and embedding model, `cache/groups/<group>/code-lance/<model>-<dim>-<hash>/`, with rows keyed by content instead of by path: worktrees and views holding the same bytes share one set of rows, a search reads only the contents its view's file map names, and a row goes when no view of the group holds its content. The first scan after the upgrade removes the workspace's `lance/` directory and writes the rows again from the cached chunk blobs, without embedding (#289)
 - The hosted read stacks of a repository's linked worktrees keep one sha-keyed `commit_files` disk tier, under the main worktree's workspace cache, instead of a copy per worktree; an existing worktree's own `commit_files/` is no longer read and is dropped with its workspace (#282). The in-memory caches are not yet shared.
 - Removed the write-only per-connection `agent_id` from the MCP server state, and the stale `#[allow(dead_code)]` on the tool router, the embeddings keyspace and the workspace scope key; the scope key is now allowed dead only in a build without `code-search` and `memory` (#225)
 - The file map layout (`blob_layout`) is `2`: an older basemind refuses a map that depends on `index.delta` as a newer one instead of reading the base without its log, and this one rebuilds a layout-1 map over the blobs already stored (#468)

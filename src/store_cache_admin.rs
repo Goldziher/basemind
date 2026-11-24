@@ -395,7 +395,8 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
         Some(dir) => (
             dir_size(dir)?,
             dir_size(&crate::store_layout::group_index_path_in(dir))?,
-            dir_size(&dir.join(crate::store_layout::GROUP_LANCE_DIR))?,
+            dir_size(&dir.join(crate::store_layout::GROUP_LANCE_DIR))?
+                + dir_size(&dir.join(crate::store_layout::GROUP_CODE_LANCE_DIR))?,
         ),
         None => (0, 0, 0),
     };
@@ -516,9 +517,9 @@ fn per_view_file_count(basemind_dir: &Path) -> Result<Vec<(String, usize)>, GcEr
     Ok(out)
 }
 
-/// Remove the workspace's vector stores: `lance/`, the repository group's document retrieval
-/// stores (shared with the group's other worktrees, whose next scans rebuild the rows from the
-/// cached blobs) and the per-view stores of earlier builds. Feature-gated: the stores only exist
+/// Remove the workspace's vector stores: `lance/`, the repository group's document retrieval and
+/// code-chunk stores (shared with the group's other worktrees, whose next scans rebuild the rows
+/// from the cached blobs) and the per-view stores of earlier builds. Feature-gated: the stores only exist
 /// in intelligence builds, so on a code-only build this is a no-op.
 ///
 /// The group stores are written by whichever process holds the group lock, for any worktree of the
@@ -532,12 +533,19 @@ fn clear_lance(basemind_dir: &Path) -> Result<(), GcError> {
             remove_dir_if_exists(&view.path().join(crate::store_layout::RETRIEVAL_DIR))?;
         }
     }
-    if let Some(group_lance) = crate::store_layout::group_lance_dir_of(basemind_dir)
-        && group_lance.exists()
-        && let Some(group_dir) = group_lance.parent()
+    for group_store in [
+        crate::store_layout::group_lance_dir_of(basemind_dir),
+        crate::store_layout::group_code_lance_dir_of(basemind_dir),
+    ]
+    .into_iter()
+    .flatten()
     {
-        let _group = crate::store_lock::try_acquire_lock_as(group_dir, crate::store::LockHolder::Maintenance)?;
-        remove_dir_if_exists(&group_lance)?;
+        if group_store.exists()
+            && let Some(group_dir) = group_store.parent()
+        {
+            let _group = crate::store_lock::try_acquire_lock_as(group_dir, crate::store::LockHolder::Maintenance)?;
+            remove_dir_if_exists(&group_store)?;
+        }
     }
     remove_dir_if_exists(&basemind_dir.join(crate::store::LANCE_DIR))
 }

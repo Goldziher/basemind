@@ -324,7 +324,8 @@ Each phase is its own commit, lands behind `[index] layered = false`, and keeps 
 ### A7 — shared Lance tables
 
 - `documents` re-keyed to `(scope, content_hash)`; queries over-fetch and filter by live
-  hashes. `code_chunks` is keyed `(scope, path)` and needs the same re-key (ADR-0016 §A7).
+  hashes. `code_chunks` is keyed by `content_hash` in the group's `code-lance/` store and
+  filtered by the view's live hashes.
 - Documented deviation: top-k overlap with a per-worktree table stays ≥0.95.
 
 ### A8 — layered by default

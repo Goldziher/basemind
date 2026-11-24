@@ -38,9 +38,6 @@ const PHASE_POLL: Duration = Duration::from_micros(500);
 const MAX_ADDED_WORKTREE_PERCENT: u64 = 75;
 /// Directory name of the Fjall index inside a view directory.
 const INDEX_DB_DIR: &str = "index.fjall";
-/// Directory name of the workspace's LanceDB store. The library exports it only on a build with
-/// the vector features, and this mode also runs without them.
-const LANCE_DIR: &str = "lance";
 
 /// Allocated bytes of one workspace's cache directory, by what holds them.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize)]
@@ -51,7 +48,8 @@ struct DiskBytes {
     journal_logical: u64,
     /// The rest of the working view's Fjall index.
     keyspaces: u64,
-    /// The workspace's LanceDB store. Zero on a build without the vector features.
+    /// What the group's code-chunk vector stores grew by across the worktree's scan. Zero on a build
+    /// without the vector features.
     vectors: u64,
     /// The working view's file map (`index.msgpack`).
     manifest: u64,
@@ -78,6 +76,11 @@ fn index_bytes(index: &Path) -> (u64, u64) {
     (journal, dir_size(index).saturating_sub(journal))
 }
 
+/// Bytes of the code-chunk vector stores of `root`'s group.
+fn group_vector_bytes(root: &Path) -> u64 {
+    dir_size(&basemind::store_layout::group_index_dir(root).join(basemind::store_layout::GROUP_CODE_LANCE_DIR))
+}
+
 /// Journal and keyspace bytes of the group index of `root`.
 fn group_index_bytes(root: &Path) -> Option<(u64, u64)> {
     Some(index_bytes(
@@ -87,8 +90,9 @@ fn group_index_bytes(root: &Path) -> Option<(u64, u64)> {
 
 /// What the worktree's cache directory holds. In the group layout its index rows live in the group
 /// index, so journal and keyspaces are what the group index grew by across the worktree's scan
-/// (`group_before`, taken before it).
-fn disk_bytes(cache_dir: &Path, root: &Path, group_before: Option<(u64, u64)>) -> DiskBytes {
+/// (`group_before`, taken before it), and vectors what the group's code-chunk stores grew by
+/// (`vectors_before`, taken before it).
+fn disk_bytes(cache_dir: &Path, root: &Path, group_before: Option<(u64, u64)>, vectors_before: u64) -> DiskBytes {
     let view = cache_dir.join(VIEWS_DIR).join(VIEW_WORKING);
     let (own_journal, own_keyspaces) = index_bytes(&view.join(INDEX_DB_DIR));
     let (journal, keyspaces) = match (group_before, group_index_bytes(root)) {
@@ -98,9 +102,9 @@ fn disk_bytes(cache_dir: &Path, root: &Path, group_before: Option<(u64, u64)>) -
         ),
         _ => (own_journal, own_keyspaces),
     };
-    let vectors = dir_size(&cache_dir.join(LANCE_DIR));
+    let vectors = group_vector_bytes(root).saturating_sub(vectors_before);
     let manifest = std::fs::metadata(view.join(INDEX_FILE)).map_or(0, |meta| on_disk_size(&meta));
-    let other = dir_size(cache_dir).saturating_sub(own_journal + own_keyspaces + vectors + manifest);
+    let other = dir_size(cache_dir).saturating_sub(own_journal + own_keyspaces + manifest);
     DiskBytes {
         journal,
         journal_logical: basemind::index::journal_bytes_on_disk(&basemind::store_layout::group_index_dir(root)),
@@ -166,6 +170,7 @@ fn measure_worktree(root: &Path, label: &str, commit: &str, diff_files: usize) -
     let cache_dir = workspace_cache_dir(root);
     let blobs_before = dir_size(&global_blobs_dir());
     let group_before = group_index_bytes(root);
+    let vectors_before = group_vector_bytes(root);
     let mut config = basemind::config::load(root).unwrap_or_else(|_| basemind::config::default_for_root(root));
     config.documents.enabled = false;
 
@@ -215,7 +220,7 @@ fn measure_worktree(root: &Path, label: &str, commit: &str, diff_files: usize) -
         scan_ms: millis(scan_ended.duration_since(scan_started)),
         resolve_ms,
         reopen_ms,
-        disk: disk_bytes(&cache_dir, root, group_before),
+        disk: disk_bytes(&cache_dir, root, group_before, vectors_before),
         new_blob_bytes: dir_size(&global_blobs_dir()).saturating_sub(blobs_before),
     }
 }
