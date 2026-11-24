@@ -514,6 +514,10 @@
             "**/*.cy.*"
           ]
         },
+        "roles": {
+          "description": "Path roles beyond the built-in ones: `[scan.roles]` lists globs per role (`test`, `infra`,\n`generated`, `vendored`, `example`). A role labels a file and never removes it from the code\nmap. Same syntax as `list_only`, ordered like a `.gitignore`: a later `!pattern` entry switches\noff what an earlier one, built-in or not, marked.",
+          "$ref": "#/$defs/RolesConfig"
+        },
         "list_only": {
           "description": "Globs naming files the scan records as present and never opens: lockfiles, archives, packet\ncaptures, fonts, columnar data and other binaries. A listed file gets a file-map entry (path,\nsize, modification time, kind) that `find_files` shows with `indexed: false` and `index_status`\ncounts per kind; no symbol, chunk, embedding or text search returns it. Same syntax as\n`exclude`, ordered like a `.gitignore`: a later `!pattern` entry re-includes a file an earlier\nentry listed (`[\"Cargo.lock\", \"!crates/app/Cargo.lock\"]`). Patterns match file names and\npaths, so `pnpm-lock.yaml` is listed although it is YAML. `exclude` and the exclude floor win:\na file they drop is not listed. Setting the key replaces the default list; `[]` lists nothing.",
           "type": "array",
@@ -636,6 +640,58 @@
           "format": "uint",
           "minimum": 0,
           "default": 500000
+        }
+      },
+      "additionalProperties": false
+    },
+    "RolesConfig": {
+      "description": "`[scan.roles]`: the repository's own globs for each role, applied after the built-in ones. Same\nsyntax as `[scan] list_only`, ordered like a `.gitignore`: a `!pattern` entry re-includes a path\nan earlier entry, built-in or not, marked.",
+      "type": "object",
+      "properties": {
+        "test": {
+          "description": "Extra `test` globs, after `[scan] test_globs`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "infra": {
+          "description": "Extra `infra` globs, after the built-in Terraform, container, Helm and Kubernetes, Ansible, CI,\nBazel, cloud-init and systemd shapes.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "generated": {
+          "description": "Extra `generated` globs, after the built-in protobuf and `*.generated.*` shapes.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "vendored": {
+          "description": "Extra `vendored` globs, after `vendor`, `third_party` and `node_modules`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "example": {
+          "description": "Extra `example` globs, after `examples`, `example` and `samples`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
         }
       },
       "additionalProperties": false

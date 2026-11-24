@@ -12,10 +12,10 @@ use crate::path::RelPath;
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GitLogParams {
-    /// Only commits touching this file, or a directory (trailing `/`); with `query`/`author`, narrows that search.
+    /// Only commits touching this file or directory (trailing `/`); narrows a `query`/`author` search.
     #[serde(default)]
     pub path: Option<RelPath>,
-    /// Words the commit message must all contain; typos, word parts (`KEY-123`) and a last-word prefix match too, after exact ones (`fuzzy`).
+    /// Words the commit message must all contain; typos, word parts and a last-word prefix match too, after exact ones.
     #[serde(default)]
     pub query: Option<String>,
     /// Words the author name or email must all contain, matched like `query`.
@@ -24,10 +24,10 @@ pub struct GitLogParams {
     /// With `query`/`author`: only commits since `YYYY-MM-DD` or `<N>d|w|m|y` ago.
     #[serde(default)]
     pub since: Option<String>,
-    /// With `query`/`author`: only commits until then, same forms, day included.
+    /// With `query`/`author`: only commits until then (same forms, day included).
     #[serde(default)]
     pub until: Option<String>,
-    /// Commits that changed this symbol's body, ignoring comments and whitespace so a pure reformat is not a change (`git log -L` lists it); needs `path`, combines only with `line`.
+    /// Commits that changed this symbol's body, ignoring comments and whitespace (`git log -L` counts them); needs `path`, combines only with `line`.
     #[serde(default)]
     pub symbol: Option<String>,
     /// With `symbol`: a 1-based line inside the definition meant.
@@ -45,7 +45,7 @@ pub struct GitLogParams {
     /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Also list each commit's changed files in a recent or directory list (capped; rest in `files_more`).
+    /// Also list each commit's changed files in a recent or directory list (capped; see `files_more`).
     #[serde(default)]
     pub files: bool,
 }
