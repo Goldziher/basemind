@@ -281,6 +281,9 @@ class Scanner(unittest.TestCase):
             ("java", "    private final String prefix = \"x\";\n", "prefix"),
             ("java", "    private int count;\n", "count"),
             ("go", "\tWalk(path string) error\n", "Walk"),
+            ("typescript", "  const $emit = make();\n", "$emit"),
+            ("typescript", "  public $emit(): void {\n", "$emit"),
+            ("java", "    private int $count;\n", "$count"),
         ]
         for lang, src, name in cases:
             with self.subTest(lang=lang, name=name), tempfile.TemporaryDirectory() as tmp:

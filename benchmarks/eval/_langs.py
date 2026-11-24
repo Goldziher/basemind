@@ -390,6 +390,7 @@ def import_statements(src: str, lang: str) -> list[tuple[str, list[str]]]:
 
 def decl_grep(lang: str, name: str) -> str:
     """The `git grep -E` pattern an agent would run to find where `name` is declared."""
+    name = re.sub(r"([$.^*+?()\[\]{}|\\])", r"\\\1", name)
     patterns = {
         "typescript": (
             f"(function|class|interface|enum|type|const|let|var)[[:space:]]+[A-Za-z_$0-9]*{name}"
