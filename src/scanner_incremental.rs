@@ -321,7 +321,7 @@ fn scan_paths_inner(
         REQUEUE_PER_INCREMENTAL,
     )?;
     run_optional_lane(LANE_CODE_REMOVALS, || {
-        flush_code_removals_if_any(store, config, filter.filters(), &scope, &removed);
+        flush_code_removals_if_any(store, config, filter.filters(), &removed);
     });
     #[cfg(feature = "documents")]
     crate::scanner_integrity::remove_docs_and_flush(store, config, filter.filters(), &scope, &doc_removed)?;

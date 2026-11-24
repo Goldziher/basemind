@@ -672,7 +672,7 @@ pub fn scan_with_observer(
     advance(&mut breadcrumb, &phase_peaks, PHASE_LANES, None);
     flush_vector_lanes(store, config, &filters, &scope, doc_batches, code_batches, REQUEUE_ALL)?;
     run_optional_lane(LANE_CODE_REMOVALS, || {
-        flush_code_removals_if_any(store, config, &filters, &scope, &stale);
+        flush_code_removals_if_any(store, config, &filters, &stale);
     });
     #[cfg(feature = "documents")]
     crate::scanner_integrity::remove_docs_and_flush(store, config, &filters, &scope, &doc_stale)?;

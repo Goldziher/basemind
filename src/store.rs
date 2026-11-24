@@ -605,12 +605,16 @@ impl Store {
         Ok(store)
     }
 
-    /// Lazy-open the LanceDB store at `.basemind/lance/`. Subsequent calls return
-    /// the cached handle; the first call pays the connection + table-init cost.
+    /// Lazy-open the repository group's code-chunk vector store for `embedding_model` at `dim`
+    /// ([`crate::lance::code_store_dir`]). Subsequent calls return the cached handle; the first call
+    /// pays the connection + table-init cost. The store is shared by every worktree of the group, and
+    /// the open removes the per-workspace `lance/` directory an earlier build kept it in: its rows
+    /// were keyed by path, and the next scan writes this view's from the cached chunk blobs without
+    /// embedding again.
     ///
-    /// A mismatch between the stored `(dim, embedding_model)` and the values
-    /// passed here wipes the whole `.basemind/lance/` directory and rebuilds —
-    /// the standard schema-bump migration story for the vector store.
+    /// A mismatch between the stored `(dim, embedding_model)` and the values passed here wipes the
+    /// whole store directory and rebuilds it, the standard schema-bump migration story for the vector
+    /// store.
     ///
     /// An open that fails is not tried again until [`Self::retry_vector_store`]: the error is
     /// remembered and returned at once.
@@ -620,10 +624,16 @@ impl Store {
             if let Some(reason) = &self.lance_unavailable {
                 return Err(anyhow::anyhow!("{reason} (in an earlier open of this scan pass)"));
             }
-            let dir = self.basemind_dir.join(LANCE_DIR);
+            let dir = crate::lance::code_store_dir(&self.root, embedding_model, dim);
             let store = LanceStore::open(&dir, dim, embedding_model)
                 .inspect_err(|error| self.lance_unavailable = Some(format!("{error:#}")))?;
             self.lance = Some(store);
+            let legacy = self.basemind_dir.join(LANCE_DIR);
+            if legacy.is_dir()
+                && let Err(error) = std::fs::remove_dir_all(&legacy)
+            {
+                tracing::debug!(%error, dir = %legacy.display(), "removing the workspace's old vector store failed");
+            }
         }
         // SAFETY of unwrap: we just populated it on the line above when None.
         Ok(self.lance.as_ref().expect("lance store just populated"))
@@ -637,13 +647,13 @@ impl Store {
         }
     }
 
-    /// Whether the LanceDB vector-store directory already exists on disk. Lets callers avoid
-    /// lazily *creating* the store (via [`Self::lance_or_open`]) just to issue a delete that would
+    /// Whether the group's code-chunk vector stores directory already exists on disk. Lets callers
+    /// avoid lazily *creating* a store (via [`Self::lance_or_open`]) just to issue a delete that would
     /// target a table that was never built (e.g. a stale-file purge on a repo that never enabled
     /// code-search embeddings).
     #[cfg(feature = "intelligence")]
-    pub fn lance_dir_exists(&self) -> bool {
-        self.basemind_dir.join(LANCE_DIR).exists()
+    pub fn code_stores_exist(&self) -> bool {
+        crate::lance::code_stores_dir(&self.root).exists()
     }
 
     pub fn upsert(&mut self, rel: impl Into<RelPath>, entry: FileEntry) {

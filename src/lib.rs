@@ -169,6 +169,31 @@ pub mod testing {
         command
     }
 
+    /// A repository at `<parent>/main` with one empty commit, and a linked worktree of it at
+    /// `<parent>/linked`: two worktrees of one repository group. Returns `(main, linked)`.
+    pub fn linked_worktrees(parent: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let git = |args: &[&str], cwd: &std::path::Path| {
+            let out = git_command()
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap_or_else(|error| panic!("run git {args:?}: {error}"));
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let main = parent.join("main");
+        std::fs::create_dir(&main).unwrap_or_else(|error| panic!("create {}: {error}", main.display()));
+        git(&["init", "-q", "-b", "main"], &main);
+        git(&["commit", "-q", "--allow-empty", "-m", "init"], &main);
+        let linked = parent.join("linked");
+        let linked_arg = linked.to_string_lossy().into_owned();
+        git(&["worktree", "add", "-q", linked_arg.as_str(), "-b", "linked"], &main);
+        (main, linked)
+    }
+
     /// The empty directory [`git_command`] points `HOME` at: created fresh for each test process,
     /// shared by every test in it and never written to.
     fn isolated_git_home() -> &'static std::path::Path {

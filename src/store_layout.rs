@@ -160,6 +160,12 @@ pub fn group_index_path_in(group_dir: &Path) -> PathBuf {
 /// `cache/groups/<group>/lance/`, one store per embedding model (`crate::lance::docs`).
 pub const GROUP_LANCE_DIR: &str = "lance";
 
+/// Directory of a repository group's code-chunk vector stores, under its [`GROUPS_DIR`] entry:
+/// `cache/groups/<group>/code-lance/`, one store per embedding model (`crate::lance::code_store_dir`).
+/// Beside [`GROUP_LANCE_DIR`], not in it: a scan prunes the model stores it finds there that no scan
+/// has opened lately, which would take an idle-looking code store.
+pub const GROUP_CODE_LANCE_DIR: &str = "code-lance";
+
 /// The group key the workspace cache dir `basemind_dir` belongs to: the group its marker records,
 /// else the group of its root while the root exists. `None` when neither names a group, or the
 /// recorded group is not a single path component.
@@ -185,6 +191,12 @@ pub fn group_dir_of(basemind_dir: &Path) -> Option<PathBuf> {
 /// its [`group_dir_of`].
 pub fn group_lance_dir_of(basemind_dir: &Path) -> Option<PathBuf> {
     group_dir_of(basemind_dir).map(|group| group.join(GROUP_LANCE_DIR))
+}
+
+/// The group code-chunk vector stores ([`GROUP_CODE_LANCE_DIR`]) of the workspace cache dir
+/// `basemind_dir`, under its [`group_dir_of`].
+pub fn group_code_lance_dir_of(basemind_dir: &Path) -> Option<PathBuf> {
+    group_dir_of(basemind_dir).map(|group| group.join(GROUP_CODE_LANCE_DIR))
 }
 
 /// The group's user-memory Fjall database: `<repo_group_dir>/memory.fjall`. Outlives every

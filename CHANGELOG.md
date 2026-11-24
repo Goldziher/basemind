@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Code-chunk vectors (`[code_search] embed = true`) live in one store per repository group and embedding model, `cache/groups/<group>/code-lance/<model>-<dim>-<hash>/`, with rows keyed by content instead of by path: worktrees and views holding the same bytes share one set of rows, a search reads only the contents its view's file map names, and a row goes when no view of the group holds its content. The first scan after the upgrade removes the workspace's `lance/` directory and writes the rows again from the cached chunk blobs, without embedding (#289)
 - The file map layout (`blob_layout`) is `2`: an older basemind refuses a map that depends on `index.delta` as a newer one instead of reading the base without its log, and this one rebuilds a layout-1 map over the blobs already stored (#468)
 - The `git_log` `symbol` description says a body comparison ignores comments and whitespace, so a formatter-only rewrite that `git log -L` lists is not reported; `hash_mode` on `symbol_history` is unchanged (#480)
 - Every `limit` argument's description states its maximum, so no limit is capped silently (#261)

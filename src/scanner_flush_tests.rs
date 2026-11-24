@@ -137,7 +137,8 @@ fn block_vector_store(store: &Store) -> std::path::PathBuf {
 /// A file where the code-chunk vector store's directory belongs: every open of it fails.
 #[cfg(feature = "code-search")]
 fn block_code_store(store: &Store) -> std::path::PathBuf {
-    let lance_dir = store.basemind_dir.join(crate::store::LANCE_DIR);
+    let lance_dir = crate::lance::code_store_dir(&store.root, PRESET, DIM);
+    std::fs::create_dir_all(lance_dir.parent().unwrap()).unwrap();
     std::fs::write(&lance_dir, b"not a directory").unwrap();
     lance_dir
 }
@@ -533,7 +534,7 @@ fn a_view_that_never_wrote_rows_owes_nothing_for_a_store_that_is_not_there() {
 
     assert_eq!(crate::store_pending::recorded_store(&store.view_dir), None);
     assert!(store.pending_vectors.is_empty());
-    assert!(!store.basemind_dir.join(crate::store::LANCE_DIR).exists());
+    assert!(!crate::lance::code_stores_dir(&store.root).exists());
 }
 
 /// LanceDB commits are not fsynced by basemind. Rows lost with the machine are absent from the
@@ -681,17 +682,42 @@ mod code {
         store.pending_vectors.owe_code(rel);
     }
 
+    /// The paths of `store` whose content has rows in the code-chunk store.
     fn code_rows(store: &mut Store) -> Vec<String> {
         let lance = store.lance_or_open(DIM, PRESET).expect("open lance").clone();
-        let mut paths: Vec<String> = lance
-            .search_code_chunks(SCOPE, vec![0.25; usize::from(DIM)], 500)
-            .expect("search")
-            .into_iter()
-            .map(|hit| hit.path)
+        let held = lance.code_content_hashes().expect("contents");
+        let mut paths: Vec<String> = store
+            .index
+            .files
+            .iter()
+            .filter(|(_, entry)| held.contains(&entry.hash_hex))
+            .map(|(path, _)| path.to_str_lossy().into_owned())
             .collect();
         paths.sort();
-        paths.dedup();
         paths
+    }
+
+    /// How many chunk rows the store holds for the contents of `rels` in `store`.
+    fn chunk_rows_of(store: &mut Store, rels: &[&str]) -> usize {
+        let lance = store.lance_or_open(DIM, PRESET).expect("open lance").clone();
+        let hashes: Vec<String> = rels
+            .iter()
+            .map(|rel| store.lookup(rel).expect("indexed").hash_hex.clone())
+            .collect();
+        lance
+            .search_code_chunks(vec![0.25; usize::from(DIM)], 500, Some(hashes.as_slice()))
+            .expect("search")
+            .len()
+    }
+
+    /// Two worktrees of one repository: their stores are views of one group.
+    fn worktrees() -> (tempfile::TempDir, Store, Store) {
+        crate::store::init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let (main, linked) = crate::testing::linked_worktrees(tmp.path());
+        let a = Store::open(&main, VIEW_WORKING).unwrap();
+        let b = Store::open(&linked, VIEW_WORKING).unwrap();
+        (tmp, a, b)
     }
 
     /// The code lane: an owed file's rows are rebuilt from its chunk sidecar, and a file no rows
@@ -753,24 +779,113 @@ mod code {
         );
     }
 
-    /// A staged or revision view shares the working view's `code_chunks` store, keyed by path, so
-    /// its scan must not write there: it would replace the working rows with other content.
+    /// The rows are keyed by content in the group's one store: worktrees holding the same bytes
+    /// write one set of rows, and each worktree's search sees the rows of the contents it holds.
     #[test]
-    fn a_staged_view_writes_no_code_vectors() {
-        let tmp = tempfile::tempdir().unwrap();
-        crate::store::init_isolated_cache();
-        let mut store = Store::open(tmp.path(), crate::store::VIEW_STAGED).unwrap();
+    fn worktrees_holding_identical_content_write_one_set_of_chunk_rows() {
+        let (_tmp, mut a, mut b) = worktrees();
         let config = code_config();
-        owe_code(&mut store, "src/good.rs", Some(&sidecar(2, DIM)));
+        owe_code(&mut a, "src/shared.rs", Some(&sidecar(2, DIM)));
+        owe_code(&mut b, "src/shared.rs", Some(&sidecar(2, DIM)));
+        owe_code(&mut b, "src/only_b.rs", Some(&sidecar(3, DIM)));
+        a.flush().unwrap();
+        b.flush().unwrap();
+
+        lanes(&mut a, &config, usize::MAX);
+        lanes(&mut b, &config, usize::MAX);
+
+        let dir_of = |store: &mut Store| store.lance_or_open(DIM, PRESET).unwrap().dir().to_path_buf();
+        assert_eq!(dir_of(&mut a), dir_of(&mut b), "one store for the group");
+        assert_eq!(
+            chunk_rows_of(&mut a, &["src/shared.rs"]),
+            2,
+            "written once, not once per view"
+        );
+        assert_eq!(chunk_rows_of(&mut b, &["src/shared.rs", "src/only_b.rs"]), 5);
+        assert!(a.pending_vectors.is_empty() && b.pending_vectors.is_empty());
+        let a_live = a.live_content_hashes(usize::MAX).unwrap();
+        let lance = a.lance_or_open(DIM, PRESET).unwrap().clone();
+        let query = vec![0.25; usize::from(DIM)];
+        let hits = lance
+            .search_code_chunks(query.clone(), 500, Some(a_live.as_slice()))
+            .unwrap();
+        assert_eq!(
+            hits.len(),
+            2,
+            "a view's search reads only the contents its file map names"
+        );
+        assert_eq!(
+            lance.search_code_chunks(query, 500, None).unwrap().len(),
+            5,
+            "unrestricted"
+        );
+        assert_eq!(a.live_content_hashes(0), None, "a view over the cap names no list");
+    }
+
+    /// Files of identical content in one scan are one set of rows, and each file's debt is settled.
+    #[test]
+    fn files_of_identical_content_in_one_pass_write_one_set_of_rows_and_settle_every_debt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = open_store(tmp.path());
+        let config = code_config();
+        owe_code(&mut store, "src/a.rs", Some(&sidecar(2, DIM)));
+        let original = store.lookup("src/a.rs").unwrap().clone();
+        store.upsert("src/copy.rs", original);
+        store.pending_vectors.owe_code("src/copy.rs");
         store.flush().unwrap();
 
         lanes(&mut store, &config, usize::MAX);
 
-        assert!(code_rows(&mut store).is_empty());
+        assert_eq!(code_rows(&mut store), ["src/a.rs", "src/copy.rs"]);
+        assert_eq!(chunk_rows_of(&mut store, &["src/a.rs"]), 2);
+        assert!(store.pending_vectors.is_empty(), "{:?}", store.pending_vectors);
+    }
+
+    /// A file removed from one worktree keeps its rows while another worktree holds its content;
+    /// they go with the last holder.
+    #[test]
+    fn removed_files_rows_stay_while_another_worktree_holds_the_content() {
+        let (_tmp, mut a, mut b) = worktrees();
+        let config = code_config();
+        owe_code(&mut a, "src/shared.rs", Some(&sidecar(2, DIM)));
+        owe_code(&mut b, "src/shared.rs", Some(&sidecar(2, DIM)));
+        a.flush().unwrap();
+        b.flush().unwrap();
+        lanes(&mut a, &config, usize::MAX);
+        lanes(&mut b, &config, usize::MAX);
+        let hashes = vec![a.lookup("src/shared.rs").unwrap().hash_hex.clone()];
+
+        a.remove("src/shared.rs");
+        a.flush().unwrap();
+        crate::scanner_flush::flush_code_removals_if_any(
+            &mut a,
+            &config,
+            &filters(&config),
+            &["src/shared.rs".to_string()],
+        );
+        let query = vec![0.25; usize::from(DIM)];
+        let lance = b.lance_or_open(DIM, PRESET).unwrap().clone();
         assert_eq!(
-            store.pending_vectors.code().len(),
-            1,
-            "owed, not written, until the working view"
+            lance
+                .search_code_chunks(query.clone(), 500, Some(hashes.as_slice()))
+                .unwrap()
+                .len(),
+            2
+        );
+
+        b.remove("src/shared.rs");
+        b.flush().unwrap();
+        crate::scanner_flush::flush_code_removals_if_any(
+            &mut b,
+            &config,
+            &filters(&config),
+            &["src/shared.rs".to_string()],
+        );
+        assert!(
+            lance
+                .search_code_chunks(query, 500, Some(hashes.as_slice()))
+                .unwrap()
+                .is_empty()
         );
     }
 

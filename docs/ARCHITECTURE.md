@@ -669,12 +669,21 @@ embeddings are in the blobs) and written by a later scan from the cached blobs: 
 full scan, 64 per incremental or cancelled one. Nothing drains them while no scan runs. LanceDB
 commits are not fsynced by basemind, and the vector store can be wiped or deleted on its own, so
 the view also records which store its rows went to (`vector-store-id`; the store's own id is in
-`lance/store-id`). A scan that finds another store there, or none, owes every indexed path its
-rows again, and so does the pass that verifies blobs.
+the store directory's `store-id`). A scan that finds no store of the group with that id owes every
+indexed path its rows again, and so does the pass that verifies blobs.
+
+Code-chunk rows are the repository group's, like document rows: one store per embedding model and
+dimension (`cache/groups/<group>/code-lance/<model>-<dim>-<hash>/`), each row keyed by the hash of
+the bytes it was cut from. Every view of every worktree writes to it, a content held by several
+files or views is one set of rows, and a code search restricts its KNN to the contents its own file
+map names (above 2000 files, it drops the hits no file of the view holds instead). When a file leaves
+a view, or stops being embed-eligible, its content's rows are deleted only once no file of any view
+of the group holds it; a sweep reads the group's liveness and deletes under the store's sweep gate,
+which row writes in the same process take shared.
 
 An open that does not hold the workspace lock writes nothing: it stamps no version in the index or
 in the notes store, flushes no journal and creates no placeholder. The vector store too: a search in
-a process without the lock opens `lance/` read-only and reports the lane unavailable, naming why,
+a process without the lock opens the vector store read-only and reports the lane unavailable, naming why,
 when the store is absent, built for another embedding model or dimension, or a newer basemind's;
 only the lock holder creates, wipes or rebuilds it. A vector debt whose cached blob exists but does
 not decode stays owed, and its file is sent to be extracted again. A scan into such a store takes the

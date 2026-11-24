@@ -68,8 +68,10 @@ pub trait VectorStore: Sync {
     /// can be written this scan.
     fn open(&self, store: &mut Store, config: &Config) -> Result<(), RetrievalError>;
 
-    /// Id of the vector store on disk at `dir`, `None` when there is none or it is unreadable.
-    fn store_id_at(&self, dir: &Path) -> Option<String>;
+    /// Whether the repository group still holds the vector store with this `id`: a store that was
+    /// wiped, removed or replaced since a view wrote its rows to it is told from the one that holds
+    /// them.
+    fn holds_store(&self, store: &Store, id: &str) -> bool;
 
     /// Id of the vector store this `store` has open, if any.
     fn open_store_id(&self, store: &Store) -> Option<String>;
@@ -83,11 +85,13 @@ pub trait VectorStore: Sync {
     /// Write the rows of every embedded batch, one file at a time from its chunk sidecar. Returns
     /// the number of files written.
     #[cfg(feature = "code-search")]
-    fn write_code_rows(&self, store: &mut Store, scope: &str, batches: Vec<PendingCodeBatch>, model: &str) -> usize;
+    fn write_code_rows(&self, store: &mut Store, batches: Vec<PendingCodeBatch>, model: &str) -> usize;
 
-    /// Delete the code rows of `paths`. `false` only when rows that exist could not be deleted.
+    /// Delete the code rows `paths` leave behind, which left the scan set or stopped being
+    /// embed-eligible: the rows of every content no other file of the group still holds. `false`
+    /// only when rows that exist could not be deleted.
     #[cfg(feature = "code-search")]
-    fn delete_code_rows(&self, store: &mut Store, config: &Config, scope: &str, paths: &[String]) -> bool;
+    fn delete_code_rows(&self, store: &mut Store, config: &Config, paths: &[String]) -> bool;
 }
 
 /// Per-file deferred-LanceDB-write descriptor. Constructed inside `process_file`'s parallel

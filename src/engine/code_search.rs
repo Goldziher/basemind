@@ -378,9 +378,10 @@ const SEMANTIC_MEANWHILE: Option<&str> = Some(
      lanes and names the vector lane in `lanes_unavailable`.",
 );
 
-/// Semantic lane: embed the query and run vector KNN over the scope-filtered LanceDB `code_chunks`
-/// table. Each hit carries an L2 `distance` (lower = closer) and no BM25 `score`. A vector store
-/// that is unavailable is refused, ending with `meanwhile`.
+/// Semantic lane: embed the query and run vector KNN over the LanceDB `code_chunks` table, restricted
+/// to the contents this view's file map names (the table is the repository group's). Each hit
+/// carries an L2 `distance` (lower = closer) and no BM25 `score`. A vector store that is unavailable
+/// is refused, ending with `meanwhile`.
 fn semantic_hits(
     ws: &Workspace,
     query: &str,
@@ -391,8 +392,9 @@ fn semantic_hits(
     let lance = ws
         .lance_store()
         .map_err(|unavailable| unavailable.refusal("code_search", meanwhile))?;
+    let live = ws.store_read().live_content_hashes(crate::lance::CODE_LIVE_PREFILTER);
     let hits_raw = lance
-        .search_code_chunks(&ws.scope, embedding, limit)
+        .search_code_chunks(embedding, limit, live.as_deref())
         .map_err(|e| EngineError::internal(format!("search_code_chunks: {e}")))?;
 
     // A row's own path and metadata are not used: the chunk and its live paths are resolved by
