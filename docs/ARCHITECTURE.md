@@ -780,7 +780,10 @@ Contract of the 15 verb tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
 - A sha-keyed disk store: `commit_files/<sha>.msgpack`,
   `log/<head_sha>__<scope>.msgpack`, `blame/<sha>__<path_hash>.msgpack`.
 
-Commits are immutable, so once a sha-keyed entry is on disk it's valid forever.
+Commits are immutable, so once a sha-keyed entry is on disk it's valid forever. For that reason
+`commit_files/` of a hosted workspace lives in the git-cache directory of the repository's main worktree
+(`git_history::shared_history_basemind_dir`): every linked worktree reads and writes the same entries,
+and one sweeper holds the directory to its budget. `log/` and `blame/` stay per workspace.
 HEAD-keyed entries (`log`) roll off naturally when HEAD moves.
 
 Each disk subdirectory is held to `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` (256 MiB) by an mtime-LRU sweep on
