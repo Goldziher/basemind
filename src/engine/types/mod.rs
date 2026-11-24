@@ -140,4 +140,22 @@ mod tests {
             "0123456789ab [modified] [removed] typo"
         );
     }
+
+    /// A forwarded call reaches the daemon of an older release, whose strict parameters reject a
+    /// field it does not know, even a defaulted one: a request that sets none of the newer fields
+    /// must not carry them.
+    #[test]
+    fn a_git_log_request_without_the_newer_fields_does_not_serialise_them() {
+        let params: super::git::GitLogParams =
+            serde_json::from_value(serde_json::json!({"path": "src/"})).expect("params");
+        let json = serde_json::to_value(&params).expect("json");
+        for field in ["since", "until", "files"] {
+            assert!(json.get(field).is_none(), "{field} is serialised: {json}");
+        }
+        let params: super::git::GitLogParams =
+            serde_json::from_value(serde_json::json!({"files": true, "since": "7d"})).expect("params");
+        let json = serde_json::to_value(&params).expect("json");
+        assert_eq!(json["files"], true);
+        assert_eq!(json["since"], "7d");
+    }
 }
