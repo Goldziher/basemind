@@ -145,6 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Windows CI leg on every pull request tests the documents, code-intel, memory and comms features (#276).
 - `basemind serve --lead --agents-policy <file>` reads the operator's agent-launch policy from a
   throwaway file, so an `agent_launch` round trip can be verified on a live host (#436).
+- `basemind code impact --symbol` lists the callers of a symbol up to `--depth` hops, each graded by how it was resolved (a `name_only` match is never proven or followed), the calls the symbol makes, and the files the target imports (#121)
 
 ## [0.34.0] - 2026-11-22
 

@@ -1,9 +1,12 @@
 //! `basemind code impact` (#121): the files that depend on a file, on the files defining a symbol,
-//! or on the files a change touches, walked through the file-level import graph by depth.
+//! or on the files a change touches, walked through the file-level import graph by depth; the files
+//! the targets import; and for a symbol the call sites that reach it (graded by how each was
+//! resolved) and the calls it makes.
 
 use ahash::AHashSet;
 
 use crate::engine::error::EngineError;
+use crate::engine::freshness;
 use crate::engine::import_graph::{DEPTH_MAX, Direction, ImportGraph, NodeId, Tiers, WalkLimits, import_graph};
 use crate::engine::scope::{ChangeSpec, change_scope};
 use crate::engine::timing::elapsed_us;
@@ -13,6 +16,7 @@ use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
 
 use super::graph_report::{coverage, index_not_ready, notes, tiers};
+use super::impact_calls::{downstream, upstream};
 
 /// Definitions of one name a symbol target reads.
 const SYMBOL_DEFINITIONS_MAX: usize = 256;
@@ -26,7 +30,8 @@ struct Targets {
 }
 
 impl Workspace {
-    /// `basemind code impact`: the files that import the target files, transitively to `depth`.
+    /// `basemind code impact`: the files that import the target files and the files they import,
+    /// transitively to `depth`, and for a symbol its graded callers and calls.
     pub(crate) fn code_impact(&self, p: ImpactParams) -> Result<ImpactResponse, EngineError> {
         let started = std::time::Instant::now();
         let named = usize::from(p.path.is_some()) + usize::from(p.symbol.is_some()) + usize::from(p.diff.is_some());
@@ -38,6 +43,7 @@ impl Workspace {
         }
         let limits = WalkLimits::new(p.depth);
         let tiers = tiers(p.include_type_imports, p.include_module_decls);
+        let symbol = p.symbol.clone();
         let targets = if let Some(path) = p.path {
             file_target(self, path)?
         } else if let Some(name) = p.symbol {
@@ -47,6 +53,9 @@ impl Workspace {
         };
         let graph = import_graph(self)?;
         let mut response = answer(&graph, targets, limits, tiers);
+        if let Some(name) = symbol {
+            add_calls(self, &mut response, &name, limits.depth);
+        }
         response.notice = self.lifecycle_notice();
         response.elapsed_us = elapsed_us(started);
         Ok(response)
@@ -87,13 +96,22 @@ fn symbol_target(ws: &Workspace, name: &str) -> Result<Targets, EngineError> {
             EngineError::busy("the symbol lookup needs the index, which another basemind process holds: retry")
         }));
     };
+    let cache = ws.cache.load_full();
     let mut definitions: Vec<ImpactDefinition> = view
         .symbols_by_name_lookup(name, SYMBOL_DEFINITIONS_MAX)
         .into_iter()
         .filter(|(found, _, path, _)| found == name && store.index.files.contains_key(path))
-        .map(|(_, kind, path, _)| ImpactDefinition {
-            path,
-            kind: kind_to_str(kind),
+        .filter_map(|(_, kind, path, start_byte)| {
+            let (_, l1) = freshness::indexed_outline(&store, &cache, &path)?;
+            let symbol = l1
+                .symbols
+                .iter()
+                .find(|symbol| symbol.start_byte == start_byte && symbol.name == name)?;
+            Some(ImpactDefinition {
+                path,
+                kind: kind_to_str(kind),
+                line: symbol.start_row + 1,
+            })
         })
         .collect();
     if definitions.is_empty() {
@@ -107,7 +125,7 @@ fn symbol_target(ws: &Workspace, name: &str) -> Result<Targets, EngineError> {
              symbols {name} --fuzzy`, or pass a file path"
         )));
     }
-    definitions.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(b.kind)));
+    definitions.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
     definitions.dedup();
     let mut paths: Vec<RelPath> = definitions.iter().map(|definition| definition.path.clone()).collect();
     paths.dedup();
@@ -148,6 +166,20 @@ fn diff_target(ws: &Workspace, diff: &str) -> Result<Targets, EngineError> {
     })
 }
 
+/// The call-level answer of a symbol target: its callers over proven edges and the calls it makes.
+fn add_calls(ws: &Workspace, response: &mut ImpactResponse, name: &str, depth: u8) {
+    let callers = upstream(ws, &response.definitions, name, depth);
+    let callees = downstream(ws, &response.definitions, name);
+    response.callers = callers.rows;
+    response.callers_truncated_reason = callers.truncated;
+    response.calls = callees.rows;
+    response.notes.extend(callers.notes);
+    response.notes.extend(callees.notes);
+    if callees.truncated {
+        response.notes.push("calls: more calls than are listed".to_string());
+    }
+}
+
 /// The walk from `targets`, without the lifecycle notice and timing the caller adds.
 fn answer(graph: &ImportGraph, targets: Targets, limits: WalkLimits, tiers: Tiers) -> ImpactResponse {
     let mut starts: Vec<NodeId> = Vec::new();
@@ -159,17 +191,21 @@ fn answer(graph: &ImportGraph, targets: Targets, limits: WalkLimits, tiers: Tier
         }
     }
     let walk = graph.walk(&starts, Direction::Importers, limits, tiers);
+    let imports = graph.walk(&starts, Direction::Dependencies, limits, tiers);
     let in_cycle: AHashSet<NodeId> = graph.cycles(tiers).into_iter().flatten().collect();
-    let affected: Vec<ImpactHit> = walk
-        .reached
-        .iter()
-        .map(|hit| ImpactHit {
-            path: graph.path(hit.node).clone(),
-            depth: hit.depth,
-            via: graph.path(hit.via).clone(),
-            in_cycle: in_cycle.contains(&hit.node),
-        })
-        .collect();
+    let hits = |walk: &crate::engine::import_graph::Walk| -> Vec<ImpactHit> {
+        walk.reached
+            .iter()
+            .map(|hit| ImpactHit {
+                path: graph.path(hit.node).clone(),
+                depth: hit.depth,
+                via: graph.path(hit.via).clone(),
+                in_cycle: in_cycle.contains(&hit.node),
+            })
+            .collect()
+    };
+    let affected = hits(&walk);
+    let dependencies = hits(&imports);
     let mut targets_in_cycles: Vec<RelPath> = starts
         .iter()
         .filter(|node| in_cycle.contains(node))
@@ -188,6 +224,11 @@ fn answer(graph: &ImportGraph, targets: Targets, limits: WalkLimits, tiers: Tier
         affected,
         truncated: walk.truncated.is_some(),
         truncated_reason: walk.truncated.map(|cut| cut.reason()),
+        callers: Vec::new(),
+        callers_truncated_reason: None,
+        dependencies,
+        dependencies_truncated_reason: imports.truncated.map(|cut| cut.reason()),
+        calls: Vec::new(),
         coverage: coverage(graph),
         notes: notes(graph),
         notice: None,
