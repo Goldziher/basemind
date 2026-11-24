@@ -51,6 +51,24 @@ cfg="$TMP/indented-build/config.toml"
 grep -q '^incremental = "x"$' "$cfg" || fail "indented-build: a key under the next indented header was deleted"
 grep -q 'incremental = true' "$cfg" && fail "indented-build: old incremental key kept in [build]"
 
+# An existing incremental key is replaced in every TOML spelling and spacing, never duplicated.
+inc_names=(bare quoted single-quoted tight spaced)
+inc_bodies=(
+  $'[build]\nincremental = true'
+  $'[build]\n"incremental" = true'
+  $'[build]\n\'incremental\' = true'
+  $'[build]\nincremental=true'
+  $'[build]\n   "incremental"   =   true'
+)
+for i in "${!inc_names[@]}"; do
+  name="inc-${inc_names[$i]}"
+  run_case "$name" "${inc_bodies[$i]}"
+  cfg="$TMP/$name/config.toml"
+  [[ "$(grep -Ec '^[[:space:]]*["'\'']?incremental["'\'']?[[:space:]]*=' "$cfg")" == 1 ]] || fail "$name: expected exactly one incremental key"
+  grep -q '^incremental = false$' "$cfg" || fail "$name: incremental not set to false"
+  grep -q 'true' "$cfg" && fail "$name: old incremental value kept"
+done
+
 # No config at all, and a config without [build], get a fresh [build] table.
 run_case fresh -
 [[ "$(wrapper_count fresh)" == 1 ]] || fail "fresh: expected one rustc-wrapper"

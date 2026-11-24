@@ -28,9 +28,9 @@ else
   # An existing [build] table gets the keys (a second table would be invalid TOML); else one is added.
   build_header='^[[:space:]]*\[build\][[:space:]]*(#.*)?$'
   if grep -Eq "$build_header" "$src"; then
-    BUILD_HEADER="$build_header" awk -v bin="$bin" '
+    BUILD_HEADER="$build_header" INCREMENTAL_KEY="^[[:space:]]*${quote}?incremental${quote}?[[:space:]]*=" awk -v bin="$bin" '
       $0 ~ /^[[:space:]]*\[/ { in_build = 0 }
-      in_build && /^[[:space:]]*incremental[[:space:]]*=/ { next }
+      in_build && $0 ~ ENVIRON["INCREMENTAL_KEY"] { next }
       { print }
       $0 ~ ENVIRON["BUILD_HEADER"] { in_build = 1; printf "rustc-wrapper = \"%s\"\nincremental = false\n", bin }
     ' "$src" >"$next"
