@@ -16,8 +16,8 @@ use super::scoped::Scoped;
 
 use super::grep_bloom::{GrepEntry, Needle};
 use super::{
-    IMPORT_PROBE_VER, IndexDb, IndexError, META_BM25_DOC_COUNT, META_BM25_TOTAL_LEN, META_IMPORT_PROBE_VER, keys,
-    name_dict, probe_candidates,
+    IMPORT_RESOLVER_PROFILE, IndexDb, IndexError, META_BM25_DOC_COUNT, META_BM25_TOTAL_LEN, META_IMPORT_PROBE_VER,
+    import_probe_stamp_matches, keys, name_dict, probe_candidates,
 };
 use crate::extract::SymbolKind;
 use crate::path::RelPath;
@@ -375,7 +375,7 @@ pub trait IndexView: Send + Sync {
         self.get(Part::Meta, META_IMPORT_PROBE_VER)
             .ok()
             .flatten()
-            .is_some_and(|v| v.first() == Some(&IMPORT_PROBE_VER))
+            .is_some_and(|stamp| import_probe_stamp_matches(&stamp, IMPORT_RESOLVER_PROFILE))
     }
 
     /// Symbols whose name starts with `name` (length-prefixed keys isolate `Foo` from `Foobar`), as

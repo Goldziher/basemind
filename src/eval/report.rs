@@ -162,6 +162,7 @@ impl BuildInfo {
             ("code-intel", umbrella),
             ("code-intel-js", cfg!(feature = "code-intel-js") && !umbrella),
             ("code-intel-stack", cfg!(feature = "code-intel-stack") && !umbrella),
+            ("code-intel-python", cfg!(feature = "code-intel-python")),
             ("intelligence", cfg!(feature = "intelligence")),
             ("documents", cfg!(feature = "documents")),
             ("code-search", cfg!(feature = "code-search")),

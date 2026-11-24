@@ -162,7 +162,12 @@ code-intel-js = [
 
 code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitter-stack-graphs"]
 
-code-intel = ["code-intel-js", "code-intel-stack"]
+# Python imports resolved by ty's module resolver (`src/intel/resolver_python_ty.rs`) before the
+# `code-intel-stack` path arithmetic, which stays the fallback. Default and `code-intel-stack`-only builds
+# omit it; `code-intel` and `full` include it. It adds salsa and ruff's parser and AST crates to the binary.
+code-intel-python = ["code-intel-stack", "dep:ruff_db", "dep:ruff_python_ast", "dep:salsa", "dep:ty_module_resolver"]
+
+code-intel = ["code-intel-js", "code-intel-stack", "code-intel-python"]
 
 full = ["documents", "documents-ocr", "documents-heic", "documents-ner", "memory", "comms", "code-intel", "code-search"]
 
@@ -240,6 +245,11 @@ regex = "1.13.2"
 regex-syntax = "0.8"
 rmcp = { version = "3.11", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
 rmp-serde = "1"
+# ~keep ty's module resolver and the ruff crates its database is built from (feature `code-intel-python`).
+# ~keep Internal components of ruff with no stable API: pinned exactly, used only in `resolver_python_ty.rs`.
+ruff_db = { version = "=0.0.23", default-features = false, optional = true }
+ruff_python_ast = { version = "=0.0.23", default-features = false, optional = true }
+salsa = { version = "0.28.5", default-features = false, features = ["macros"], optional = true }
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -270,6 +280,7 @@ tree-sitter = "0.27"
 tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.2", path = "crates/tree-sitter-graph", optional = true }
 tree-sitter-language-pack = "1.25.2"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.2", path = "crates/tree-sitter-stack-graphs", optional = true }
+ty_module_resolver = { version = "=0.0.23", optional = true }
 xberg = { version = "1.5.1", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 zstd = "0.14.4"
 

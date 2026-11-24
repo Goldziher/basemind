@@ -154,6 +154,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generation accepts connections (no process spawn when idle on Linux and macOS; Windows keeps the
   CLI read), gives that read 2 seconds instead of 6, and checks `basemind --version` once, injecting a notice for a missing binary or another minor version
   (#330).
+- Python imports resolve through ty's module resolver (`ty_module_resolver` 0.0.23) through the
+  `code-intel-python` feature (included in `code-intel` and `full`), with the path arithmetic as the
+  fallback: `src` layout, namespace and stub-only packages, and a project nested in a monorepo
+  (`services/billing/app/main.py` importing `app.models`) now give import-graph edges, importers and
+  resolved callers. An index stitched by the other resolver is re-stitched on its next scan (#455).
 
 ## [0.34.0] - 2026-11-22
 
