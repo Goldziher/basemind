@@ -1240,7 +1240,7 @@ fn retired_symbols_stay_gone() {
 /// definition; an embedder overrides both in code.
 const ALLOWED_ENV_READS: &[(&str, usize)] = &[
     ("src/config/agents_policy.rs -> directories::ProjectDirs::from", 1),
-    ("src/config/documents.rs -> std::env::var", 1),
+    ("src/config/secrets.rs -> std::env::var", 1),
     ("src/data_root.rs -> directories::ProjectDirs::from", 1),
 ];
 

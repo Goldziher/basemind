@@ -858,3 +858,7 @@ const INDEX_OPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "store_key_set_tests.rs"]
+mod key_set_tests;

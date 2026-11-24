@@ -24,7 +24,7 @@ pub(super) struct Fixture {
     /// Per-fixture blob namespace (`basemind_dir/blobs/v<schema>`), passed to the `_in` seams.
     pub(super) blobs_dir: PathBuf,
     referenced_stem: String,
-    orphan_stem: String,
+    pub(super) orphan_stem: String,
     orphan_len: u64,
 }
 

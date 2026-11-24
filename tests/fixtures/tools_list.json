@@ -615,8 +615,7 @@
         },
         "files": {
           "description": "Also list each commit's changed files in a recent or directory list (capped; see `files_more`).",
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         }
       }
     },
