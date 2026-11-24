@@ -350,6 +350,7 @@
         "max_concurrent_documents": 0,
         "embed_batch_size": 32,
         "max_footprint_mb": 0,
+        "hard_footprint_percent": 0,
         "max_map_cache_mb": 256,
         "document_models": "full",
         "onnx_provider": "cpu"
@@ -1435,8 +1436,15 @@
           "default": 32
         },
         "max_footprint_mb": {
-          "description": "Ceiling on process memory footprint, in mebibytes. Accepts a positive\ninteger (an explicit ceiling), `0` or `\"auto\"` (derive one from the\nenvironment — the default), or `\"off\"` (no ceiling at all).\n\nThe best-effort backpressure gate\n([`crate::backpressure::FootprintGate`]) samples\n[`crate::sysres::phys_footprint`] at each admit point and parks the\nworker while the process is over the ceiling, shaving the scan's peak.\nIt stays best-effort: an unreadable sample or a sustained overshoot\nadmits anyway to guarantee forward progress, so the ceiling shapes the\npeak rather than enforcing a hard invariant.\n\n**`0` used to mean \"disabled\" and now means \"auto\".** A config carrying\nthe old default therefore gains a ceiling on upgrade; `\"off\"` restores\nthe previous behaviour. See [`MaxFootprint::auto_ceiling_bytes`] for the\narithmetic.",
+          "description": "Ceiling on process memory footprint, in mebibytes. Accepts a positive\ninteger (an explicit ceiling), `0` or `\"auto\"` (derive one from the\nenvironment — the default), or `\"off\"` (no ceiling at all).\n\nThe best-effort backpressure gate\n([`crate::backpressure::FootprintGate`]) samples\n[`crate::sysres::phys_footprint`] at each admit point and parks the\nworker while the process is over the ceiling, shaving the scan's peak.\nIt stays best-effort: an unreadable sample or a sustained overshoot\nadmits anyway to guarantee forward progress, so the ceiling shapes the\npeak rather than enforcing a hard invariant; `hard_footprint_percent` opts in to one.\n\n**`0` used to mean \"disabled\" and now means \"auto\".** A config carrying\nthe old default therefore gains a ceiling on upgrade; `\"off\"` restores\nthe previous behaviour. See [`MaxFootprint::auto_ceiling_bytes`] for the\narithmetic.",
           "$ref": "#/$defs/MaxFootprint",
+          "default": 0
+        },
+        "hard_footprint_percent": {
+          "description": "Opt-in HARD ceiling, as a percentage of the resolved `max_footprint_mb`: `0` (the default)\nkeeps the footprint gate best-effort; `150` means that once the process footprint passes\none and a half times the ceiling the running scan is cancelled and the daemon sheds its\nhosted read stacks. A value below `100` is raised to `100`: the hard ceiling never sits\nunder the soft one.\n\nThe cancelled scan stops at its next chunk boundary, the same cooperative stop a daemon\ndrain uses, so the index stays consistent: completed files are committed, the stale purge\nis skipped, and the status sidecar records the scan as partial (reason\n`footprint ceiling`) so the next scan picks the rest up. It has no effect while the soft\nceiling is `\"off\"` or auto resolves to nothing, because there is no footprint to scale.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
           "default": 0
         },
         "max_map_cache_mb": {

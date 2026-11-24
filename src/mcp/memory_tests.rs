@@ -29,9 +29,7 @@ fn session(root: &std::path::Path, store: Store, read_only: bool) -> super::Serv
     let _ = shared
         .embedder
         .set(Arc::new(crate::embeddings::SharedEmbedder::fake("fake", 4, fake)));
-    super::ServerState::for_connection(
-        super::ServedWorkspace::new(Arc::new(shared), &telemetry_dir),
-    )
+    super::ServerState::for_connection(super::ServedWorkspace::new(Arc::new(shared), &telemetry_dir))
 }
 
 fn read(key: &str, visibility: Option<Visibility>) -> MemorySearchToolParams {

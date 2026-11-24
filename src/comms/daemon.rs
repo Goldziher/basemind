@@ -443,11 +443,7 @@ impl Broker {
                 }
             }
         };
-        let mut server = crate::mcp::BasemindServer::from_shared(
-            shared,
-            Arc::clone(&self.heavy_admission),
-            agents,
-        );
+        let mut server = crate::mcp::BasemindServer::from_shared(shared, Arc::clone(&self.heavy_admission), agents);
         // ~keep The client kind is the peer's own claim, so only this local socket or pipe honours it:
         // ~keep the HTTP front-end builds its sessions with `from_shared` alone.
         if hello.client == relay::RelayClient::Cli {

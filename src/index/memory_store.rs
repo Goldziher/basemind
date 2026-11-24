@@ -316,7 +316,7 @@ impl super::IndexDb {
     }
 }
 
-#[cfg(any(test, feature = "memory"))]
+#[cfg(feature = "memory")]
 impl super::IndexDb {
     /// [`rescope`] this handle's notes store to `scope`. `0` when the handle has no store.
     pub(crate) fn rescope_notes(&self, scope: &str) -> Result<usize, IndexError> {

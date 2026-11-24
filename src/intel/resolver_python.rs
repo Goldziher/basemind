@@ -28,6 +28,7 @@ use std::sync::OnceLock;
 
 use ahash::AHashSet;
 
+use super::roots::{self, SourceRoot};
 use super::{ProbeSet, probe_file};
 use crate::intel::model::ImportEdge;
 use crate::path::RelPath;

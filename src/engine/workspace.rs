@@ -94,7 +94,10 @@ pub(crate) struct Workspace {
     /// Computed once at boot. Do NOT recompute per-call.
     #[cfg_attr(
         not(any(feature = "code-search", feature = "memory")),
-        allow(dead_code, reason = "read only by code search and memory notes, which this build lacks")
+        allow(
+            dead_code,
+            reason = "read only by code search and memory notes, which this build lacks"
+        )
     )]
     pub(crate) scope: String,
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
@@ -544,7 +547,7 @@ impl Workspace {
 /// takes the snapshot current when it starts, a publish swaps in the next one, and a long read
 /// never holds a publish back nor a publish the reads that follow.
 enum StoreSlot {
-    Local(RwLock<Store>),
+    Local(Box<RwLock<Store>>),
     Hosted(ArcSwap<Store>),
 }
 
@@ -554,7 +557,7 @@ impl StoreSlot {
         if store.index_source.is_some() {
             Self::Hosted(ArcSwap::from_pointee(store))
         } else {
-            Self::Local(RwLock::new(store))
+            Self::Local(Box::new(RwLock::new(store)))
         }
     }
 }

@@ -322,8 +322,7 @@ A client that read `truncated` as "there is another page" must read `next_cursor
 
 Three fields keep their own names because they say something else: `skipped_files` (`code_grep`:
 files that could not be searched), `limit_clamped` (`find_files`: an over-large `limit` was
-lowered), `body_truncated` (`git_log` search: one commit's message was shortened; read it with
-`rev`) and `too_large` (`git_diff`: a file over 4 MiB was not diffed).
+lowered) and `too_large` (`git_diff`: a file over 4 MiB was not diffed).
 
 | Tool | Before | Now |
 | --- | --- | --- |
