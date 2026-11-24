@@ -368,6 +368,10 @@ impl SharedEmbedder {
     /// The texts are not checked here: xberg refuses a batch holding an empty text, failing the
     /// whole call. An empty batch returns an empty vector without touching the model.
     ///
+    /// At most `batch_size` texts (`[resources] embed_batch_size`) reach the model per call: a
+    /// longer input is embedded window by window, which bounds peak memory by the window, not by
+    /// the number of chunks a file produced.
+    ///
     /// The call is routed through the process-wide bounded [`embed_pool`] so it
     /// cannot saturate the global rayon pool used by the code-map scanner.
     pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
@@ -379,16 +383,18 @@ impl SharedEmbedder {
             return texts.iter().map(|text| fake(text)).collect();
         }
         load_failure::recent(&self.model_name)?;
-        let (config, model) = (self.config.clone(), self.model_name.clone());
-        let owned: Vec<String> = texts.iter().map(|t| (*t).to_string()).collect();
-        load_failure::remember(
-            &self.model_name,
-            self.run_tracked(Use::Pass, move || {
-                let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
-                xberg::embeddings::embed_texts(&refs, &config)
-                    .with_context(|| format!("embed_texts(preset={model}, batch={})", refs.len()))
-            })?,
-        )
+        embed_in_windows(texts, self.config.batch_size, |window| {
+            let (config, model) = (self.config.clone(), self.model_name.clone());
+            let owned: Vec<String> = window.iter().map(|t| (*t).to_string()).collect();
+            load_failure::remember(
+                &self.model_name,
+                self.run_tracked(Use::Pass, move || {
+                    let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+                    xberg::embeddings::embed_texts(&refs, &config)
+                        .with_context(|| format!("embed_texts(preset={model}, batch={})", refs.len()))
+                })?,
+            )
+        })
     }
 
     /// [`Self::run_on_embed_pool`] for a model call serving `kind`, recorded for the release
@@ -433,6 +439,22 @@ impl SharedEmbedder {
             Ok(Err(_)) | Err(_) => Err(anyhow!("embedding worker panicked")),
         }
     }
+}
+
+/// Embed `texts` through `embed_window` at most `batch_size` texts at a time (`0` counts as `1`),
+/// concatenating the vectors in input order. A caller handing over every chunk of a file at once
+/// therefore never makes the model hold more than one window's activations, and each window is a
+/// separate call on the embed pool, so memory is returned between windows. The first failing
+/// window fails the whole call.
+fn embed_in_windows<F>(texts: &[&str], batch_size: usize, mut embed_window: F) -> Result<Vec<Vec<f32>>>
+where
+    F: FnMut(&[&str]) -> Result<Vec<Vec<f32>>>,
+{
+    let mut vectors = Vec::with_capacity(texts.len());
+    for window in texts.chunks(batch_size.max(1)) {
+        vectors.extend(embed_window(window)?);
+    }
+    Ok(vectors)
 }
 
 /// `query` with `prefix` in front, when there is one and the query does not already carry it.
@@ -728,6 +750,58 @@ mod tests {
     fn an_explicit_embed_thread_setting_wins_outside_the_daemon() {
         assert_eq!(ort_intra_threads(EmbedProcess::OneShotScan, 3, 16), 3);
         assert_eq!(ort_intra_threads(EmbedProcess::Interactive, 6, 4), 6);
+    }
+
+    fn windowed(texts: &[&str], batch_size: usize) -> (Vec<usize>, Result<Vec<Vec<f32>>>) {
+        let mut sizes = Vec::new();
+        let result = embed_in_windows(texts, batch_size, |window| {
+            sizes.push(window.len());
+            Ok(window.iter().map(|text| vec![text.len() as f32]).collect())
+        });
+        (sizes, result)
+    }
+
+    #[test]
+    fn embed_in_windows_submits_at_most_batch_size_texts_per_call() {
+        let texts = ["a", "bb", "ccc", "dddd", "eeeee"];
+        for (batch_size, expected) in [
+            (2, vec![2, 2, 1]),
+            (5, vec![5]),
+            (32, vec![5]),
+            (1, vec![1; 5]),
+            (0, vec![1; 5]),
+        ] {
+            let (sizes, result) = windowed(&texts, batch_size);
+            assert_eq!(sizes, expected, "batch_size {batch_size}");
+            assert_eq!(
+                result.expect("every window embeds"),
+                vec![vec![1.0], vec![2.0], vec![3.0], vec![4.0], vec![5.0]],
+                "vectors keep input order across windows (batch_size {batch_size})"
+            );
+        }
+    }
+
+    #[test]
+    fn embed_in_windows_makes_no_call_for_no_texts() {
+        let (sizes, result) = windowed(&[], 8);
+        assert!(sizes.is_empty());
+        assert!(result.expect("nothing to embed").is_empty());
+    }
+
+    #[test]
+    fn embed_in_windows_stops_at_the_first_failing_window() {
+        let texts = ["a", "b", "c", "d", "e"];
+        let mut calls = 0;
+        let error = embed_in_windows(&texts, 2, |window| {
+            calls += 1;
+            if calls == 2 {
+                return Err(anyhow!("window failed"));
+            }
+            Ok(window.iter().map(|_| vec![0.0]).collect())
+        })
+        .expect_err("the second window fails the call");
+        assert_eq!(error.to_string(), "window failed");
+        assert_eq!(calls, 2, "no window runs after the failure");
     }
 
     #[test]
