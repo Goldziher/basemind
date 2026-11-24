@@ -208,14 +208,36 @@ RULES = {
         _rule(rf"\s*{_JAVA_ANNO}{_JAVA_MODS}{_JAVA_TYPE}\s+(?P<name>{IDENT})\s*[=;,]", _JAVA_MEMBER),
     ],
 }
-_ANNOTATION_LINE = re.compile(r"\s*@[\w.$]+(?:\(.*\))?\s*")
+_ANNOTATION_HEAD = re.compile(r"\s*@[\w.$]+\s*")
+# How many lines above a declaration a multi-line annotation may open.
+_ANNOTATION_SPAN = 40
+
+
+def _annotation_start(lines: list[str], end: int) -> int | None:
+    """The index of the line an annotation or decorator that ends on line `end` starts on, or None when that
+    line does not end one. The argument list may span lines: parentheses are matched backwards from the
+    closing one."""
+    tail = lines[end].rstrip()
+    if not tail.endswith(")"):
+        return end if _ANNOTATION_HEAD.fullmatch(tail) else None
+    depth = 0
+    for k in range(end, max(end - _ANNOTATION_SPAN, -1), -1):
+        text = tail if k == end else lines[k]
+        for pos in range(len(text) - 1, -1, -1):
+            depth += (text[pos] == ")") - (text[pos] == "(")
+            if text[pos] == "(" and depth == 0:
+                return k if _ANNOTATION_HEAD.fullmatch(text[:pos]) else None
+    return None
 
 
 def _decl_start(lines: list[str], idx: int, lang: str) -> int:
-    """The index of the first line of the declaration at `idx`: annotation and decorator lines above it belong
-    to the node."""
-    while lang != "go" and idx > 0 and _ANNOTATION_LINE.fullmatch(lines[idx - 1]):
-        idx -= 1
+    """The index of the first line of the declaration at `idx`: annotation and decorator lines above it, whole
+    multi-line ones included, belong to the node."""
+    while lang != "go" and idx > 0:
+        start = _annotation_start(lines, idx - 1)
+        if start is None:
+            break
+        idx = start
     return idx
 
 
@@ -274,17 +296,42 @@ def _receiver_starts_here(code: str, dot: int) -> bool:
     return not code[chain_start:].startswith(".") and (j < 0 or code[j] not in ")]")
 
 
-def _is_call(code: str, m: re.Match[str]) -> bool:
-    """True when the `name(` at `m` can only be a call expression starting on the name's own line."""
+def _continues_earlier_line(code: str, idx: int) -> bool:
+    """True when the last token before `idx`, looking back across newlines, is a `.`: the name continues a
+    member access that began on an earlier line."""
+    while idx >= 0 and code[idx] in " \t\r\n":
+        idx -= 1
+    return idx >= 0 and code[idx] == "."
+
+
+def _is_new_operand(code: str, dot: int) -> bool:
+    """True when the identifier chain that ends at the `.` at `dot` is the operand of a `new` expression."""
+    j = dot - 1
+    while j >= 0 and (code[j].isalnum() or code[j] in "_$."):
+        j -= 1
+    while j >= 0 and code[j] in " \t\r\n":
+        j -= 1
+    end = j + 1
+    while j >= 0 and (code[j].isalnum() or code[j] in "_$"):
+        j -= 1
+    return code[j + 1 : end] == "new"
+
+
+def _is_call(code: str, m: re.Match[str], *, in_interface: bool = False) -> bool:
+    """True when the `name(` at `m` can only be a call expression starting on the name's own line;
+    `in_interface` is set when that line starts directly inside an interface body, where a bodyless
+    `name(...)` is a member declaration."""
     if m.group("generic"):
         return False
     idx = _prev_index(code, m.start("name"))
     prev = code[idx] if idx >= 0 else "\n"
     if prev == "\n":
+        if in_interface or _continues_earlier_line(code, idx):
+            return False
         rest = _after_call(code, m.end() - 1)
         return rest is not None and not DECL_RESTS.match(rest)
     if prev == ".":
-        return _receiver_starts_here(code, idx)
+        return _receiver_starts_here(code, idx) and not _is_new_operand(code, idx)
     if prev.isalnum() or prev in "_$":
         end = idx + 1
         while idx >= 0 and (code[idx].isalnum() or code[idx] in "_$"):
@@ -300,14 +347,17 @@ def call_sites(src: str, lang: str) -> tuple[dict[str, list[int]], set[str]]:
     call (a declaration, a constructor, a call chained over several lines): such a name is no candidate."""
     code = blank_noncode(src, lang)
     newlines = [i for i, ch in enumerate(code) if ch == "\n"]
+    scopes = line_scopes(code, lang)
     sites: dict[str, list[int]] = {}
     unclear: set[str] = set()
     for m in CALL.finditer(code):
         name = m.group("name")
         if name in KEYWORDS:
             continue
-        if _is_call(code, m):
-            sites.setdefault(name, []).append(bisect.bisect_left(newlines, m.start("name")) + 1)
+        line = bisect.bisect_left(newlines, m.start("name"))
+        scope = scopes[line] if line < len(scopes) else None
+        if _is_call(code, m, in_interface=scope is not None and scope[0] == "interface"):
+            sites.setdefault(name, []).append(line + 1)
         else:
             unclear.add(name)
     return sites, unclear
@@ -330,16 +380,27 @@ def import_statements(src: str, lang: str) -> list[tuple[str, list[str]]]:
             if not m.group("clause").strip() or m.group("clause").rstrip().endswith("from")
         ]
     if lang == "go":
-        return [(m.group(0), GO_PATH.findall(m.group(0))) for m in GO_IMPORT.finditer(code)]
+        masked = blank_noncode(src, lang)
+        # An `import` keyword inside a raw string is blanked in `masked`; a real one is not.
+        return [
+            (m.group(0), GO_PATH.findall(m.group(0))) for m in GO_IMPORT.finditer(code) if masked[m.start()] == "i"
+        ]
     return []
 
 
 def decl_grep(lang: str, name: str) -> str:
     """The `git grep -E` pattern an agent would run to find where `name` is declared."""
     patterns = {
-        "typescript": f"(function|class|interface|enum|type|const|let|var)[[:space:]]+[A-Za-z_$0-9]*{name}",
-        "go": f"^(func|type|var|const)[[:space:]].*{name}",
-        "java": f"(class|interface|enum|record)[[:space:]]+[A-Za-z_0-9]*{name}|[[:space:]][A-Za-z_0-9]*{name}[A-Za-z_0-9]*[[:space:]]*\\(",
+        "typescript": (
+            f"(function|class|interface|enum|type|const|let|var)[[:space:]]+[A-Za-z_$0-9]*{name}"
+            f"|^[[:space:]]+([a-z]+[[:space:]]+)*[A-Za-z_$0-9]*{name}[A-Za-z_$0-9]*[[:space:]]*[?!]?[(:=<;]"
+        ),
+        "go": f"^(func|type|var|const)[[:space:]].*{name}|^[[:space:]]+[A-Za-z_0-9]*{name}[A-Za-z_0-9]*[[:space:]]*[([]",
+        "java": (
+            f"(class|interface|enum|record)[[:space:]]+[A-Za-z_0-9]*{name}"
+            f"|[[:space:]][A-Za-z_0-9]*{name}[A-Za-z_0-9]*[[:space:]]*\\("
+            f"|[[:space:]][A-Za-z_0-9$]*{name}[A-Za-z_0-9$]*[[:space:]]*[=;,]"
+        ),
     }
     return patterns[lang]
 

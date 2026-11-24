@@ -231,6 +231,67 @@ class Scanner(unittest.TestCase):
         self.assertEqual(sites, {"plain": [4]})
         self.assertEqual(unclear, {"step", "finish"})
 
+    def test_a_multi_line_annotation_belongs_to_the_declaration_start(self) -> None:
+        java = 'class A {\n    @SuppressWarnings(\n        "unchecked"\n    )\n    @Deprecated\n    public void processItems() {}\n}\n'
+        self.assertEqual(lg.symbols(java, "java"), [("A", 1), ("processItems", 2)])
+        ts = "class A {\n  @Input({\n    required: true,\n  })\n  value = 1;\n  other(): void {}\n}\n"
+        self.assertEqual(lg.symbols(ts, "typescript"), [("A", 1), ("value", 2), ("other", 6)])
+
+    def test_a_call_whose_receiver_is_on_the_previous_line_is_not_a_call_site(self) -> None:
+        src = "object.\n  methodName();\nobject\n  .other();\nplain();\n"
+        sites, unclear = lg.call_sites(src, "typescript")
+        self.assertEqual(sites, {"plain": [5]})
+        self.assertEqual(unclear, {"methodName", "other"})
+
+    def test_a_bodyless_interface_member_is_not_a_call_site(self) -> None:
+        cases = {
+            "typescript": "interface Sink {\n  flushBuffer();\n}\nfunction run() {\n  flushBuffer();\n}\n",
+            "go": "type Sink interface {\n\tFlushBuffer()\n}\nfunc run() {\n\tFlushBuffer()\n}\n",
+        }
+        for lang, src in cases.items():
+            with self.subTest(lang=lang):
+                sites, unclear = lg.call_sites(src, lang)
+                name = "flushBuffer" if lang == "typescript" else "FlushBuffer"
+                self.assertIn(name, unclear)
+                self.assertNotIn(2, sites.get(name, []))
+        sites, unclear = lg.call_sites("function run() {\n  flushBuffer();\n}\n", "typescript")
+        self.assertEqual(sites, {"flushBuffer": [2]})
+        self.assertNotIn("flushBuffer", unclear)
+
+    def test_a_qualified_constructor_is_not_a_call_site(self) -> None:
+        for lang, src in {
+            "typescript": "new makers.WidgetFactory();\nmakers.WidgetBuilder();\n",
+            "java": "class A {\n  void f() {\n    new makers.WidgetFactory();\n    makers.WidgetBuilder();\n  }\n}\n",
+        }.items():
+            with self.subTest(lang=lang):
+                sites, unclear = lg.call_sites(src, lang)
+                self.assertEqual(sites, {"WidgetBuilder": [2 if lang == "typescript" else 4]})
+                self.assertIn("WidgetFactory", unclear)
+                self.assertNotIn("WidgetBuilder", unclear)
+
+    def test_go_import_lines_inside_a_raw_string_are_not_imports(self) -> None:
+        src = 'package p\n\nimport "real/pkg"\n\nvar text = `\nimport "example.com/phantom"\n`\n'
+        found = lg.import_statements(src, "go")
+        self.assertEqual([specs for _, specs in found], [["real/pkg"]])
+
+    def test_the_declaration_grep_finds_members_the_scanner_lists(self) -> None:
+        cases = [
+            ("typescript", "  public addItem(item: T): void {\n", "addItem"),
+            ("typescript", "  private items: T[] = [];\n", "items"),
+            ("java", "    private final String prefix = \"x\";\n", "prefix"),
+            ("java", "    private int count;\n", "count"),
+            ("go", "type Walker interface {\n\tWalk(path string) error\n}\n", "Walk"),
+        ]
+        for lang, src, name in cases:
+            with self.subTest(lang=lang, name=name), tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "decl.txt"
+                target.write_text(src)
+                found = subprocess.run(
+                    ["grep", "-n", "-E", lg.decl_grep(lang, name), str(target)], capture_output=True, text=True
+                )
+                self.assertEqual(found.returncode, 0, found.stdout)
+                self.assertIn(name, found.stdout)
+
     def test_typescript_imports_are_import_statements_only(self) -> None:
         found = lg.import_statements(TS, "typescript")
         self.assertEqual([specs for _, specs in found], [["./helpers.js"], ["./config"]])
