@@ -6,6 +6,7 @@ GitHub API responses, so the script's own queries decide every verdict.
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -14,6 +15,7 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[2] / ".github" / "scripts" / "require-green-ci.sh"
+PUBLISH_WORKFLOW = SCRIPT.parents[1] / "workflows" / "publish.yaml"
 SHA = "a" * 40
 
 FAKE_GH = """#!/usr/bin/env python3
@@ -141,6 +143,23 @@ class RequireGreenCiTests(unittest.TestCase):
         }
         done = self.gate(responses)
         self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_every_job_of_publish_yaml_and_its_reusable_build_is_ignored_on_a_rerun(self) -> None:
+        names = re.findall(r"^    name: (.+)$", PUBLISH_WORKFLOW.read_text(encoding="utf-8"), re.MULTILINE)
+        self.assertGreaterEqual(len(names), 15)
+        failed = [{"name": name, "conclusion": "failure"} for name in names]
+        failed.append(
+            {"name": "Build and smoke-test archives / Smoke / x86_64-pc-windows-msvc", "conclusion": "failure"}
+        )
+        responses = green()
+        responses[r"check-runs"] = {"check_runs": failed}
+        done = self.gate(responses)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_a_failed_check_named_like_a_publish_job_prefix_is_still_refused(self) -> None:
+        responses = green()
+        responses[r"check-runs"] = {"check_runs": [{"name": "Publish npm extra", "conclusion": "failure"}]}
+        self.refused(responses, "Publish npm extra")
 
 
 if __name__ == "__main__":

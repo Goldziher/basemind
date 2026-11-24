@@ -139,6 +139,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The plugin launcher releases its install lock before it execs a binary another launch installed while it waited (#435)
+### Fixed
+
+- The publish gate ignores the failed jobs of the reusable build from an earlier attempt of a release, and `publish.yaml`'s job graph, release-notes cap and gate names are covered by tests (#449).
 
 ## [0.34.0] - 2026-11-22
 
