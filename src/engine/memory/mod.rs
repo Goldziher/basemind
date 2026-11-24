@@ -185,8 +185,31 @@ impl Workspace {
         let key_lock = memory_put_lock(&self.scope, vis_byte, owner, key);
         let _put_guard = key_lock.lock().unwrap_or_else(PoisonError::into_inner);
         let store = self.store_read();
-        let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
+        let idx = self.memory_index(&store)?;
         Ok(ops::put_core(&idx, &self.scope, vis_byte, owner, key, value, tags)?)
+    }
+
+    /// The index handle a memory call reads and writes through. The first call of a writable
+    /// workspace files every note of the group under this workspace's scope first, so a note saved
+    /// before the repository's `origin` changed is still found; the notes' vector rows, which carry
+    /// the old scope, are owed again.
+    fn memory_index(&self, store: &crate::store::Store) -> Result<crate::index::IndexDb, EngineError> {
+        use std::sync::atomic::Ordering;
+        let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
+        if !self.read_only && !self.memory_rescoped.load(Ordering::Acquire) {
+            match idx.rescope_notes(&self.scope) {
+                Ok(0) => {}
+                Ok(moved) => {
+                    tracing::info!(moved, scope = %self.scope, "memory notes filed under the current scope");
+                    vectors::owe_rows(&self.root);
+                }
+                Err(error) => {
+                    tracing::warn!(scope = %self.scope, %error, "could not file memory notes under the current scope")
+                }
+            }
+            self.memory_rescoped.store(true, Ordering::Release);
+        }
+        Ok(idx)
     }
 
     /// Read one note by key, or `None`.
@@ -203,7 +226,7 @@ impl Workspace {
         key: &str,
     ) -> Result<Option<WireMemoryEntry>, EngineError> {
         let store = self.store_read();
-        let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
+        let idx = self.memory_index(&store)?;
         Ok(ops::get_core(&idx, &self.scope, vis_byte, owner, key)?)
     }
 
@@ -222,7 +245,7 @@ impl Workspace {
             let rest = &keys[entries.len()..];
             let chunk = &rest[..rest.len().min(ops::GET_MANY_MAX_KEYS)];
             let store = self.store_read();
-            let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
+            let idx = self.memory_index(&store)?;
             entries.extend(ops::get_many_core(&idx, &self.scope, vis_byte, owner, chunk)?);
         }
         Ok(entries)
@@ -241,7 +264,7 @@ impl Workspace {
             let rest = &keys[stamps.len()..];
             let chunk = &rest[..rest.len().min(ops::STAMPS_MAX_KEYS)];
             let store = self.store_read();
-            let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
+            let idx = self.memory_index(&store)?;
             stamps.extend(ops::stamps_core(&idx, &self.scope, vis_byte, owner, chunk)?);
         }
         Ok(stamps)
@@ -283,7 +306,7 @@ impl Workspace {
         cursor: Option<Vec<u8>>,
     ) -> Result<ops::ListResult, EngineError> {
         let store = self.store_read();
-        let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
+        let idx = self.memory_index(&store)?;
         Ok(ops::list_core(
             &idx,
             &self.scope,
@@ -303,7 +326,7 @@ impl Workspace {
     pub(crate) fn memory_clear_group(&self) -> Result<MemoryClearResponse, EngineError> {
         let notes_removed = {
             let store = self.store_read();
-            let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
+            let idx = self.memory_index(&store)?;
             ops::clear_core(&idx)?
         };
         let purge = vectors::purge_every_vector_row(self);
@@ -320,7 +343,7 @@ impl Workspace {
         let (vis_byte, owner) = self.memory_namespace(params.visibility);
         let deleted = {
             let store = self.store_read();
-            let idx = store.index_handle().ok_or_else(|| index_unavailable(&self.root))?;
+            let idx = self.memory_index(&store)?;
             ops::delete_core(&idx, &self.scope, vis_byte, owner, &params.key)?
         };
         let purge = vectors::purge_vector_rows(self, params.visibility, owner, &params.key);
