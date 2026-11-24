@@ -212,7 +212,7 @@ fn build_symbol(q: &Query, m: &QueryMatch, root: Node, source: &[u8], lang: Lang
                 return None;
             }
             kind = Some(match SymbolKind::from_capture_suffix(suffix) {
-                SymbolKind::Field if is_static_final(node) => SymbolKind::Const,
+                SymbolKind::Field if is_static_final(node, source) => SymbolKind::Const,
                 other => other,
             });
             start_byte = node.start_byte() as u32;
@@ -317,8 +317,10 @@ fn shared_spec_member_signature(keyword: &str, name_node: Node, spec: Node, sour
 
 /// True when a field declaration's `modifiers` child holds both `static` and `final` (a Java
 /// constant), in either order. Read from the grammar's keyword nodes rather than a query: a
-/// separate `const` pattern would tie with the `field` one in [`dedupe_symbols`].
-fn is_static_final(node: Node) -> bool {
+/// separate `const` pattern would tie with the `field` one in [`dedupe_symbols`]. Older grammars
+/// put each keyword directly under `modifiers`; newer ones wrap it in a `modifier` node, so the
+/// keyword is read from the node's text, which is the same in both shapes.
+fn is_static_final(node: Node, source: &[u8]) -> bool {
     let mut cursor = node.walk();
     let Some(modifiers) = node.children(&mut cursor).find(|c| c.kind() == "modifiers") else {
         return false;
@@ -326,7 +328,7 @@ fn is_static_final(node: Node) -> bool {
     let mut cursor = modifiers.walk();
     let (mut is_static, mut is_final) = (false, false);
     for keyword in modifiers.children(&mut cursor) {
-        match keyword.kind() {
+        match keyword.utf8_text(source).unwrap_or_default() {
             "static" => is_static = true,
             "final" => is_final = true,
             _ => {}
@@ -692,6 +694,35 @@ fn build_import(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Import> {
 mod tests {
     use super::*;
     use crate::extract::RationaleKind;
+
+    /// A `static final` field is a constant whichever shape the grammar gives its modifiers, in
+    /// either keyword order; anything missing one keyword stays a field.
+    #[test]
+    fn java_static_final_is_detected_from_modifier_text() {
+        for (decl, expected) in [
+            ("public static final int A = 1;", true),
+            ("final static int A = 1;", true),
+            ("@Deprecated private static final int A = 1;", true),
+            ("static int A = 1;", false),
+            ("final int A = 1;", false),
+            ("int A = 1;", false),
+        ] {
+            let src = format!("class C {{ {decl} }}");
+            let tree = crate::lang::with_parser("java", |p| p.parse(src.as_bytes(), None))
+                .expect("java grammar")
+                .expect("parse");
+            let class_body = tree
+                .root_node()
+                .named_child(0)
+                .and_then(|c| c.child_by_field_name("body"))
+                .expect("class body");
+            let field = class_body
+                .named_children(&mut class_body.walk())
+                .find(|n| n.kind() == "field_declaration")
+                .expect("field declaration");
+            assert_eq!(is_static_final(field, src.as_bytes()), expected, "{decl}");
+        }
+    }
 
     /// The pruned walk counts exactly what a walk of every node counts.
     #[test]
