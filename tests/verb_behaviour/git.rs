@@ -108,23 +108,23 @@ async fn git_log_answers_byte_for_byte() {
     let cases = [
         (
             json!({}),
-            r#"{"commits":[{"sha":"c48e32cb","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b","author":"t","date":"2024-01-01","subject":"init"}]}"#,
+            r#"{"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}]}"#,
         ),
         (
             json!({ "files": true }),
-            r#"{"commits":[{"sha":"c48e32cb","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b","author":"t","date":"2024-01-01","subject":"init"}],"files":{"c48e32cb":{"src/gamma.rs":"added"},"0c2fe19c":{"src/lib.rs":"modified"},"3f38556b":{"notes/readme.txt":"added","src/lib.rs":"added"}}}"#,
+            r#"{"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"},"0c2fe19c38a2":{"src/lib.rs":"modified"},"3f38556b6d45":{"notes/readme.txt":"added","src/lib.rs":"added"}}}"#,
         ),
         (
             json!({ "path": "src/lib.rs" }),
-            r#"{"commits":[{"sha":"0c2fe19c","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b","author":"t","date":"2024-01-01","subject":"init"}]}"#,
+            r#"{"commits":[{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}]}"#,
         ),
         (
             json!({ "query": "alpha" }),
-            r#"{"commits":[{"sha":"0c2fe19c","author":"t","date":"2024-01-02","subject":"tune alpha"}]}"#,
+            r#"{"commits":[{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"}]}"#,
         ),
         (
             json!({ "author": "t", "limit": 1 }),
-            r#"{"commits":[{"sha":"c48e32cb","author":"t","date":"2024-01-03","subject":"add gamma"}],"next_cursor":"03020ab9.kgHOxI4yyw"}"#,
+            r#"{"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"}],"next_cursor":"03020ab9.kgHOxI4yyw"}"#,
         ),
         (
             json!({ "rev": "HEAD~1" }),
@@ -132,23 +132,23 @@ async fn git_log_answers_byte_for_byte() {
         ),
         (
             json!({ "path": "src/" }),
-            r#"{"window_inspected":3,"commits":[{"sha":"c48e32cb","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b","author":"t","date":"2024-01-01","subject":"init"}]}"#,
+            r#"{"window_inspected":3,"commits_reached":3,"total_commits":3,"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}]}"#,
         ),
         (
             json!({ "path": "src/", "files": true }),
-            r#"{"window_inspected":3,"commits":[{"sha":"c48e32cb","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b","author":"t","date":"2024-01-01","subject":"init"}],"files":{"c48e32cb":{"src/gamma.rs":"added"},"0c2fe19c":{"src/lib.rs":"modified"},"3f38556b":{"notes/readme.txt":"added","src/lib.rs":"added"}}}"#,
+            r#"{"window_inspected":3,"commits_reached":3,"total_commits":3,"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"},"0c2fe19c38a2":{"src/lib.rs":"modified"},"3f38556b6d45":{"notes/readme.txt":"added","src/lib.rs":"added"}}}"#,
         ),
         (
             json!({ "path": "src" }),
-            r#"{"window_inspected":3,"commits":[{"sha":"c48e32cb","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b","author":"t","date":"2024-01-01","subject":"init"}]}"#,
+            r#"{"window_inspected":3,"commits_reached":3,"total_commits":3,"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}]}"#,
         ),
         (
             json!({ "path": "src/lib.rs", "symbol": "alpha" }),
-            r#"{"history":["0c2fe19c tune alpha","3f38556b [introduced] init"]}"#,
+            r#"{"history":["0c2fe19c38a2 tune alpha","3f38556b6d45 [introduced] init"]}"#,
         ),
         (
             json!({ "limit": 1 }),
-            r#"{"commits":[{"sha":"c48e32cb","author":"t","date":"2024-01-03","subject":"add gamma"}],"next_cursor":"fc82f23e.kgHOxI4yyg"}"#,
+            r#"{"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"}],"next_cursor":"fc82f23e.kgHOxI4yyg"}"#,
         ),
     ];
     let mut rows = Vec::new();
@@ -510,11 +510,11 @@ fn git_churn_and_by_path_print_byte_for_byte() {
         ),
         (
             &["by-path", "^src/"],
-            r#"{"window_inspected":3,"commits":[{"sha":"c48e32cb","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b","author":"t","date":"2024-01-01","subject":"init"}]}"#,
+            r#"{"window_inspected":3,"commits_reached":3,"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}]}"#,
         ),
         (
             &["by-path", "^src/", "--window", "1"],
-            r#"{"window_inspected":1,"truncated":true,"truncated_reason":"span_limit","commits":[{"sha":"c48e32cb","author":"t","date":"2024-01-03","subject":"add gamma"}],"next_cursor":"ks-AAAAAAAAAAc7EjjLL"}"#,
+            r#"{"window_inspected":1,"commits_reached":1,"truncated":true,"truncated_reason":"span_limit","commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"}],"next_cursor":"ks-AAAAAAAAAAc7EjjLL"}"#,
         ),
         (
             &["by-path", "^src/", "--limit", "0"],
