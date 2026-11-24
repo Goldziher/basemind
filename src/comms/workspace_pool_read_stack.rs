@@ -108,8 +108,13 @@ impl WorkspacePool {
         let store = self.hosted_store(entry, root).context("open hosted read stack store")?;
         let repo = crate::git::Repo::discover(root).ok().map(std::sync::Arc::new);
         let git_cache = std::sync::Arc::new(
-            crate::git_cache::GitCache::open(&store.basemind_dir, crate::mcp::HOSTED_GIT_CACHE_MEM, true)
-                .context("open hosted git cache")?,
+            crate::git_cache::GitCache::open_shared(
+                &store.basemind_dir,
+                &crate::git_history::shared_history_basemind_dir(root),
+                crate::mcp::HOSTED_GIT_CACHE_MEM,
+                true,
+            )
+            .context("open hosted git cache")?,
         );
         let history = if repo.is_some() && crate::git_history::index_enabled() {
             git_history(root)
