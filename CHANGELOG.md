@@ -146,6 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `basemind serve --lead --agents-policy <file>` reads the operator's agent-launch policy from a
   throwaway file, so an `agent_launch` round trip can be verified on a live host (#436).
 - `basemind code impact --symbol` lists the callers of a symbol up to `--depth` hops, each graded by how it was resolved (a `name_only` match is never proven or followed), the calls the symbol makes, and the files the target imports (#121)
+- `basemind code impact` buckets every impacted file as prod, config, test or external with counts per bucket, lists the order of work (targets first, then nearest files, prod before tests), and `--fail-above <n>` exits 1 when more than `n` files are impacted (#209)
 
 ## [0.34.0] - 2026-11-22
 

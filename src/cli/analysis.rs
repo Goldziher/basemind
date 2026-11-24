@@ -42,7 +42,7 @@ pub enum AnalysisCmd {
 }
 
 /// A check run on a command's result after it is printed, which may fail the process.
-pub(super) type Gate = fn(&CallToolResult) -> anyhow::Result<()>;
+pub(super) type Gate = Box<dyn Fn(&CallToolResult) -> anyhow::Result<()>>;
 
 /// Run an analysis command, returning its tool name and result for `code::run` to render.
 pub(super) async fn call(tools: &Tools, cmd: AnalysisCmd) -> (&'static str, Result<CallToolResult, McpError>) {
@@ -60,15 +60,16 @@ pub(super) fn gate(cmd: &AnalysisCmd) -> Option<Gate> {
     match cmd {
         AnalysisCmd::Migration(cmd) => analysis_migration::gate(cmd),
         AnalysisCmd::Deadcode(args) if args.fail_on_dead_code => Some(if args.tier.is_some() {
-            deadcode::fail_on_listed
+            Box::new(deadcode::fail_on_listed)
         } else {
-            deadcode::fail_on_high
+            Box::new(deadcode::fail_on_high)
         }),
         AnalysisCmd::Cycles(args) if args.fail_on_cycle => Some(if args.strict {
-            cycles::fail_on_any_cycle
+            Box::new(cycles::fail_on_any_cycle)
         } else {
-            cycles::fail_on_cycle
+            Box::new(cycles::fail_on_cycle)
         }),
-        AnalysisCmd::Impact(_) | AnalysisCmd::Cycles(_) | AnalysisCmd::Deadcode(_) | AnalysisCmd::Explain(_) => None,
+        AnalysisCmd::Impact(args) => args.fail_above.map(impact::fail_above),
+        AnalysisCmd::Cycles(_) | AnalysisCmd::Deadcode(_) | AnalysisCmd::Explain(_) => None,
     }
 }

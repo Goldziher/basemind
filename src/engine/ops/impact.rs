@@ -11,12 +11,13 @@ use crate::engine::import_graph::{DEPTH_MAX, Direction, ImportGraph, NodeId, Tie
 use crate::engine::scope::{ChangeSpec, change_scope};
 use crate::engine::timing::elapsed_us;
 use crate::engine::types::code::kind_to_str;
-use crate::engine::types::graph::{ImpactDefinition, ImpactHit, ImpactParams, ImpactResponse};
+use crate::engine::types::graph::{ImpactBuckets, ImpactDefinition, ImpactHit, ImpactParams, ImpactResponse};
 use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
 
 use super::graph_report::{coverage, index_not_ready, notes, tiers};
 use super::impact_calls::{downstream, upstream};
+use super::impact_order;
 
 /// Definitions of one name a symbol target reads.
 const SYMBOL_DEFINITIONS_MAX: usize = 256;
@@ -56,6 +57,7 @@ impl Workspace {
         if let Some(name) = symbol {
             add_calls(self, &mut response, &name, limits.depth);
         }
+        impact_order::finish(&mut response);
         response.notice = self.lifecycle_notice();
         response.elapsed_us = elapsed_us(started);
         Ok(response)
@@ -229,6 +231,9 @@ fn answer(graph: &ImportGraph, targets: Targets, limits: WalkLimits, tiers: Tier
         dependencies,
         dependencies_truncated_reason: imports.truncated.map(|cut| cut.reason()),
         calls: Vec::new(),
+        impacted_files: 0,
+        buckets: ImpactBuckets::default(),
+        order: Vec::new(),
         coverage: coverage(graph),
         notes: notes(graph),
         notice: None,
