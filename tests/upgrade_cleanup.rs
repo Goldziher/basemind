@@ -52,7 +52,8 @@ fn full_scan(root: &Path, store: &mut Store, cfg: &ConfigV1) -> ScanReport {
 }
 
 fn blob_exists(store: &Store, hash_hex: &str, suffix: &str) -> bool {
-    store.blobs_dir.join(format!("{hash_hex}.{suffix}.msgpack")).exists()
+    let name = format!("{hash_hex}.{suffix}.msgpack");
+    store.blobs_dir.join(&hash_hex[..2]).join(&name).exists() || store.blobs_dir.join(&name).exists()
 }
 
 /// Backdate a file's mtime past the sweep's young-blob grace window.

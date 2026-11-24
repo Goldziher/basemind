@@ -272,7 +272,7 @@ fn collect_view_hashes(basemind_dir: &Path, skip_stale: bool) -> Result<LiveBlob
 }
 
 /// Sweep the GLOBAL blob store, deleting every blob whose hex stem is not in `referenced`. Blobs
-/// are found in both layouts (flat and bucketed, see [`crate::store_blob_layout`]); a flat blob
+/// are found in both layouts (flat and bucketed, see `store_blob_layout`); a flat blob
 /// whose bucketed twin exists is a stale duplicate and is reaped when the twin is current.
 ///
 /// Files that do not match a known blob suffix are inspected (counted in `scanned`) but

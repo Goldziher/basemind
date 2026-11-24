@@ -74,6 +74,9 @@ fn linked_worktrees_share_the_global_blob_cache() {
     let after_main = fs::read_dir(&global_blobs)
         .expect("global blobs dir exists")
         .filter_map(Result::ok)
+        .filter(|bucket| bucket.path().is_dir())
+        .flat_map(|bucket| fs::read_dir(bucket.path()).expect("read blob bucket"))
+        .filter_map(Result::ok)
         .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".fm.msgpack")))
         .count();
     assert!(
