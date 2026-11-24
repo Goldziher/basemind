@@ -1,12 +1,21 @@
 name: docs
 
 # basemind.ai deploys from main: the github-pages environment only admits that branch. A pull
-# request or dispatch from another ref only builds the site.
+# request or dispatch from another ref only builds the site; the build fails on a broken internal
+# link or anchor (starlight-links-validator in website/astro.config.mjs).
 on:
   push:
     branches: [main]
     paths:
       - "website/**"
+      - "mise.toml"
+      - "mise.lock"
+      - ".github/workflows/docs.yaml"
+  pull_request:
+    paths:
+      - "website/**"
+      - "docs/**"
+      - "skills/**"
       - "mise.toml"
       - "mise.lock"
       - ".github/workflows/docs.yaml"
