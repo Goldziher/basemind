@@ -92,7 +92,10 @@ pub(crate) struct Workspace {
     pub(crate) import_graph: crate::engine::import_graph::GraphCache,
     /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
     /// Computed once at boot. Do NOT recompute per-call.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(any(feature = "code-search", feature = "memory")),
+        allow(dead_code, reason = "read only by code search and memory notes, which this build lacks")
+    )]
     pub(crate) scope: String,
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
     #[cfg(feature = "code-search")]

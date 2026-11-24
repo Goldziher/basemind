@@ -136,7 +136,6 @@ impl HostedReadStack {
             ..options.into()
         };
         let plan = crate::engine::workspace::boot_plan(&store, &open);
-        let agent_id = identity::resolve_agent_id(&store.root);
         let telemetry_dir = store.basemind_dir.clone();
         let (git_history, work_pin) =
             match git_history.filter(|_| repo.is_some() && crate::git_history::index_enabled()) {
@@ -148,7 +147,7 @@ impl HostedReadStack {
         let workspace = Arc::new(workspace);
         let mut shared = ServedWorkspace::new(workspace, &telemetry_dir);
         shared.pool = Some(pool);
-        let warden = Arc::new(ServerState::for_connection(shared.clone(), agent_id));
+        let warden = Arc::new(ServerState::for_connection(shared.clone()));
         let watcher = background::spawn_serve_watcher(Arc::clone(&warden));
         history_sync::request(&warden.shared);
         match plan.scan {
@@ -200,7 +199,6 @@ pub struct BasemindServer {
     pub(crate) state: Arc<ServerState>,
     /// Shared by server clones so the last session handle shuts down its filesystem watcher.
     _watcher: Option<Arc<background::WatcherGuard>>,
-    #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
     /// Reusable prompt templates (`prompts/list` + `prompts/get`). Built by the
     /// `#[prompt_router]` macro in [`prompts`]; `list_prompts` / `get_prompt` delegate here.
@@ -348,7 +346,7 @@ impl BasemindServer {
             options.into(),
         ));
         let served = ServedWorkspace::new(shared, &basemind_dir);
-        let state = Arc::new(ServerState::for_connection(served, agent_id));
+        let state = Arc::new(ServerState::for_connection(served));
         let mut watcher = None;
         if options.background {
             let view_is_working = {
@@ -414,15 +412,12 @@ impl BasemindServer {
     /// accepted relay connection its own `BasemindServer` over that one stack — so the heavy state
     /// (in-RAM `MapCache`, LanceDB, ONNX, git caches) is resident once per workspace, not once per
     /// client. Spawns NO background facilities: freshness is owned by the workspace's single warden
-    /// (built alongside the shared stack), never per connection. `agent_id` comes from the
-    /// connection's [`RelayHello`](crate::comms::relay::RelayHello), so each client keeps its own
-    /// memory-owner identity even while sharing the read stack. `agents` is the session's identity
+    /// (built alongside the shared stack), never per connection. `agents` is the session's identity
     /// to the agent tools; a server without one (the HTTP front-end, ADR-0021 rule 17) neither
     /// advertises nor serves them.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) fn from_shared(
         shared: ServedWorkspace,
-        agent_id: String,
         heavy_admission: Arc<admission::HeavyAdmission>,
         agents: Option<Arc<AgentContext>>,
     ) -> Self {
@@ -432,7 +427,7 @@ impl BasemindServer {
                 tool_router.remove_route(name);
             }
         }
-        let mut state = ServerState::for_connection(shared, agent_id);
+        let mut state = ServerState::for_connection(shared);
         state.agents = agents;
         let state = Arc::new(state);
         Self {

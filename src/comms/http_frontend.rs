@@ -475,7 +475,6 @@ impl HttpRouter {
         let factory = move || {
             Ok(BasemindServer::from_shared(
                 shared.clone(),
-                agent_id.clone(),
                 Arc::clone(&heavy_admission),
                 None,
             ))

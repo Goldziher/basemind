@@ -558,7 +558,6 @@ async fn a_hosted_read_answers_from_the_index_while_a_scan_holds_the_writer() {
 
     let server = crate::mcp::BasemindServer::from_shared(
         shared,
-        "reader".to_string(),
         std::sync::Arc::new(crate::mcp::admission::HeavyAdmission::default()),
         None,
     );
@@ -615,7 +614,6 @@ async fn code_response(shared: &crate::mcp::ServedWorkspace, query: CodeQuery) -
     use rmcp::model::ContentBlock;
     let server = crate::mcp::BasemindServer::from_shared(
         shared.clone(),
-        "read-stack-tester".to_string(),
         std::sync::Arc::new(crate::mcp::admission::HeavyAdmission::default()),
         None,
     );

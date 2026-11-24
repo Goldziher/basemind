@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The hosted read stacks of a repository's linked worktrees keep one sha-keyed `commit_files` disk tier, under the main worktree's workspace cache, instead of a copy per worktree; an existing worktree's own `commit_files/` is no longer read and is dropped with its workspace (#282). The in-memory caches are not yet shared.
+- Removed the write-only per-connection `agent_id` from the MCP server state, and the stale `#[allow(dead_code)]` on the tool router, the embeddings keyspace and the workspace scope key; the scope key is now allowed dead only in a build without `code-search` and `memory` (#225)
 - The file map layout (`blob_layout`) is `2`: an older basemind refuses a map that depends on `index.delta` as a newer one instead of reading the base without its log, and this one rebuilds a layout-1 map over the blobs already stored (#468)
 - The `git_log` `symbol` description says a body comparison ignores comments and whitespace, so a formatter-only rewrite that `git log -L` lists is not reported; `hash_mode` on `symbol_history` is unchanged (#480)
 - Every `limit` argument's description states its maximum, so no limit is capped silently (#261)
