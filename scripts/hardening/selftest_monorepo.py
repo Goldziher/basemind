@@ -21,6 +21,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from analyze import rule_verdict
 from analyze_monorepo import analyze, build_parser
 from monorepo_soak import (
     CORPUS,
@@ -70,7 +71,16 @@ def healthy() -> list[dict[str, Any]]:
     records.append(
         {"kind": "gc", "exit_code": 0, "secs": 3.0, "removed": 5, "workspaces_before": 21, "workspaces_after": 16}
     )
-    records.append({"kind": "msgpack_total", "bytes": 100 * MIB, "seconds": 900, "rewrites": 40, "files": 21})
+    records.append(
+        {
+            "kind": "msgpack_total",
+            "bytes": 100 * MIB,
+            "written_upper": 150 * MIB,
+            "seconds": 900,
+            "rewrites": 40,
+            "files": 21,
+        }
+    )
     records.append({"kind": "survivors", "pids": []})
     return records
 
@@ -85,6 +95,14 @@ def mutated(change: Callable[[list[dict[str, Any]]], None]) -> list[str]:
     records = copy.deepcopy(healthy())
     change(records)
     return failing(records)
+
+
+def m9_cell(change: Callable[[list[dict[str, Any]]], None]) -> str:
+    """The verdict cell M9 gets on the healthy run after `change`."""
+    records = copy.deepcopy(healthy())
+    change(records)
+    verdict = analyze(records, build_parser().parse_args(["unused.ndjson"]))
+    return next(rule_verdict(r) for r in verdict.rules if r.name.startswith("M9"))
 
 
 def each(records: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:
@@ -145,6 +163,26 @@ def watcher_counts() -> tuple[int, int]:
         os.utime(target, ns=(2_000, 2_000))
         watcher.tick()
         return watcher.bytes, watcher.rewrites
+
+
+def write_accounting() -> tuple[object, ...]:
+    """The watcher's daemon write total: summed over pids, never shrinking, skipping an unreadable pid."""
+    readings = iter([{1: 500, 2: 70}, {1: 900, 2: 70}, {1: 400}, {1: 900}])
+    current: dict[int, int] = {}
+
+    def counter(pid: int) -> int | None:
+        return current.get(pid)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        watcher = MsgpackWatcher(Path(tmp), daemon_pids=lambda: (1, 2, 3), counter=counter)
+        before = watcher.total()["written_upper"]
+        totals = []
+        for reading in readings:
+            current.clear()
+            current.update(reading)
+            watcher.poll_counters()
+            totals.append(watcher.total()["written_upper"])
+        return before, *totals
 
 
 def rewritten_counts() -> dict[str, int]:
@@ -211,6 +249,24 @@ CASES: list[tuple[str, Callable[[], object], object]] = [
     ("a non-https URL is refused", lambda: corpus_error(tab("d", "git://x", COMMIT, "1", "p")) != "", True),
     ("bytes rewritten since a time", rewritten_counts, {"total": 50, MSGPACK: 30}),
     ("the watcher counts a rewrite once, not the first sight, and a same-mtime resize", watcher_counts, (550, 2)),
+    ("daemon write totals sum pids, never shrink, skip unreadable pids", write_accounting, (None, 570, 970, 970, 970)),
+    ("a lower bound and an upper bound under the ceiling pass M9", lambda: m9_cell(lambda r: None), "pass"),
+    (
+        "no write counter leaves M9 not measured, not failed",
+        lambda: m9_cell(lambda r: set_all(r, "msgpack_total", written_upper=None)),
+        "not measured",
+    ),
+    (
+        "a daemon writing over the ceiling in all leaves M9 not measured",
+        lambda: m9_cell(lambda r: set_all(r, "msgpack_total", written_upper=2560 * MIB)),
+        "not measured",
+    ),
+    (
+        "a polled lower bound over the ceiling fails M9 even with no counter",
+        lambda: m9_cell(lambda r: set_all(r, "msgpack_total", bytes=2560 * MIB, written_upper=None)),
+        "**FAIL**",
+    ),
+    ("no write counter fails no rule", lambda: mutated(lambda r: set_all(r, "msgpack_total", written_upper=None)), []),
     (
         "a worktree is sparse, on branch a, with both branches",
         worktree_shape,

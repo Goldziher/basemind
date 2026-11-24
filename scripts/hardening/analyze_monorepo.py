@@ -21,7 +21,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from analyze import MIB, Verdict, growth_rule, load, rule_verdict
+from analyze import MIB, Rule, Verdict, growth_rule, load, rule_verdict
 
 SECONDS_PER_HOUR = 3600
 
@@ -188,19 +188,41 @@ def retire_rule(v: Verdict, records: list[dict[str, Any]], args: argparse.Namesp
 
 
 def msgpack_rule(v: Verdict, records: list[dict[str, Any]], args: argparse.Namespace) -> None:
+    """M9 judges `index.msgpack` writes per hour against a ceiling, from two bounds. The polled rewrites are
+    a lower bound: over the ceiling is a failure. The daemon's own write counter is an upper bound (every
+    store it writes): under the ceiling is a pass. Between the two, or with only the lower bound, the write
+    volume was not measured and the rule neither passes nor fails."""
+    name = "M9 index.msgpack written"
     watch = next(iter(of_kind(records, "msgpack_total")), None)
     if watch is None or watch["seconds"] <= 0:
-        v.add("M9 index.msgpack written", False, "no index.msgpack watcher total recorded")
+        v.add(name, False, "no index.msgpack watcher total recorded")
         return
     per_hour = watch["bytes"] / watch["seconds"] * SECONDS_PER_HOUR / MIB
-    v.add(
-        "M9 index.msgpack written",
-        per_hour <= args.msgpack_mib_h,
-        f"at least {watch['bytes'] / MIB:.1f} MiB in {watch['seconds'] / 60:.1f} min = {per_hour:.0f} MiB/h; "
-        f"{watch['rewrites']} rewrites of {watch['files']} files",
-        f"{per_hour:.0f} MiB/h",
-        f"<= {args.msgpack_mib_h:g} MiB/h",
+    upper = watch.get("written_upper")
+    upper_per_hour = None if upper is None else upper / watch["seconds"] * SECONDS_PER_HOUR / MIB
+    threshold = f"<= {args.msgpack_mib_h:g} MiB/h"
+    seen = (
+        f"at least {watch['bytes'] / MIB:.1f} MiB in {watch['seconds'] / 60:.1f} min = {per_hour:.0f} MiB/h polled "
+        f"({watch['rewrites']} rewrites of {watch['files']} files)"
     )
+    if per_hour > args.msgpack_mib_h:
+        v.add(name, False, f"{seen}, over the ceiling whatever else was written", f">= {per_hour:.0f} MiB/h", threshold)
+        return
+    if upper_per_hour is not None and upper_per_hour <= args.msgpack_mib_h:
+        v.add(
+            name,
+            True,
+            f"{seen}; the daemon wrote at most {upper / MIB:.1f} MiB in all = {upper_per_hour:.0f} MiB/h",
+            f"<= {upper_per_hour:.0f} MiB/h",
+            threshold,
+        )
+        return
+    reason = (
+        "the host keeps no per-process write counter, so only the polled lower bound exists"
+        if upper_per_hour is None
+        else f"the daemon wrote {upper_per_hour:.0f} MiB/h in all, too much to tell how much was index.msgpack"
+    )
+    v.rules.append(Rule(name, True, f"not measured: {seen}; {reason}", "not measured", threshold, unmeasured=True))
 
 
 def survivor_rule(v: Verdict, records: list[dict[str, Any]], _args: argparse.Namespace) -> None:

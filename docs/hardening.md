@@ -302,7 +302,8 @@ Under 15 minutes of load (the sessions loop over cheap tools: `index_status`, `f
    many of their workspaces it reaps.
 
 Beside them the sampler of `soak.py` records the daemon's RSS and the data directory, and a watcher counts every
-rewrite of an `index.msgpack` under the data home (its bytes, from its mtime, every 5 seconds).
+rewrite of an `index.msgpack` under the data home (its bytes, from its mtime, polled every 0.5 s) and reads the
+daemon's own storage-write counter.
 
 `analyze_monorepo.py` judges the NDJSON. Every threshold is a flag; the defaults come from the 0.34.0 live-check
 decision (#166): a save costs at most 200 ms, resident memory stays under 2 GiB of the daemon's 3 GiB cap, and an added
@@ -319,12 +320,15 @@ of #267).
 | M6 call errors | calls that fail under load | <= 1% |
 | M7 answer staleness | slowest time until a watched edit, and a concurrent branch switch, is answered | <= 30 s, <= 60 s; none unanswered |
 | M8 view retire and sweep | `cache gc` after removing 5 worktrees | exit 0, <= 120 s, all 5 workspaces reaped |
-| M9 `index.msgpack` written | bytes of `index.msgpack` rewritten per hour of load, polled every 0.5 s, so a lower bound | <= 4096 MiB/h |
+| M9 `index.msgpack` written | per hour of load: the polled `index.msgpack` rewrites (a lower bound) and the daemon's total bytes written to storage (an upper bound, `/proc/<pid>/io` `write_bytes` on Linux, rusage disk I/O on macOS) | <= 4096 MiB/h; fails when the lower bound is over, passes when the upper bound is under, otherwise "not measured" |
 | M10 no survivors | processes of the run after `comms stop` | none |
 
 The daemon exposes no counter for lock waits, `read_index` calls or the bytes of one file map, so the soak reports
 what it can observe from outside: call latency (M5), and the data home's files modified since a save (the "MiB
-rewritten per save" in M2's detail). M9's 4096 MiB/h is a ceiling for a first run; once a run's number is recorded,
+rewritten per save" in M2's detail). Polling can miss rewrites that land between two polls, so M9 never judges the lower bound as the volume: it fails
+only when even the lower bound is over the ceiling, passes only when the daemon's whole write total is under it, and
+otherwise (no counter on the host, or the daemon wrote more than the ceiling across all its stores) reports "not
+measured", which neither passes nor fails the run. M9's 4096 MiB/h is a ceiling for a first run; once a run's number is recorded,
 lower it toward that number plus its noise. Revisit M2 and M7 the same way.
 
 Run one repository by hand (Linux or macOS; the first scan of llvm-project alone takes the better part of an hour):

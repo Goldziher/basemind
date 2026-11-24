@@ -92,7 +92,8 @@ def monorepo_rows(reports: Path) -> list[Row]:
         return [*rows, ("large-monorepo soak (analyze_monorepo.py)", "-", "every rule passes", verdict(None))]
     for r in data["rules"]:
         value = r.get("value") or r["detail"][:160]
-        rows.append((f"monorepo {r['name']}", value, r.get("threshold") or "-", verdict(r["passed"])))
+        cell_verdict = "not measured" if r["passed"] and r.get("unmeasured") else verdict(r["passed"])
+        rows.append((f"monorepo {r['name']}", value, r.get("threshold") or "-", cell_verdict))
     return rows
 
 

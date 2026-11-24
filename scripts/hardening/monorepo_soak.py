@@ -31,7 +31,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -55,6 +55,7 @@ from common import (
     role_of,
     run_cli,
     terminate_owned,
+    written_bytes,
 )
 from soak import Sampler
 
@@ -130,20 +131,39 @@ def rewritten_bytes(root: Path, since_ns: int) -> dict[str, int]:
 
 
 class MsgpackWatcher(threading.Thread):
-    """Counts the bytes of every `index.msgpack` under the data home each time a poll finds it replaced
-    or modified (a new inode, mtime or size). Rewrites that land between two polls collapse into one,
-    so the total is a lower bound on what was written, tighter the shorter the poll."""
+    """Accounts for the writes of the index under the data home, with two figures of different strength.
 
-    def __init__(self, root: Path, every: float = WATCH_EVERY_S) -> None:
+    - `bytes`: the size of every `index.msgpack` each time a poll finds it replaced or modified (a new
+      inode, mtime or size). Rewrites that land between two polls collapse into one, so this is only a
+      lower bound on what was written, tighter the shorter the poll.
+    - `written_upper`: the bytes the daemon processes (`daemon_pids`) had written to storage by their
+      last poll, from the host's per-process counter (`written_bytes`). It counts every store the
+      daemon writes, so it bounds `index.msgpack` writes from above; None when the host has no counter
+      or no daemon was ever seen. Writes made after a daemon's last poll are missed.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        every: float = WATCH_EVERY_S,
+        daemon_pids: Callable[[], Iterable[int]] = lambda: (),
+        counter: Callable[[int], int | None] = written_bytes,
+    ) -> None:
         super().__init__(name="msgpack-watcher", daemon=True)
         self.root, self.every = root, every
+        self.daemon_pids, self.counter = daemon_pids, counter
         self.stop_event = threading.Event()
         self.seen: dict[str, tuple[int, int, int]] = {}
+        self.daemon_writes: dict[int, int] = {}
         self.bytes = 0
         self.rewrites = 0
         self.started = time.monotonic()
 
     def tick(self) -> None:
+        self.poll_files()
+        self.poll_counters()
+
+    def poll_files(self) -> None:
         for dirpath, _dirs, files in os.walk(self.root):
             if MSGPACK not in files:
                 continue
@@ -159,6 +179,12 @@ class MsgpackWatcher(threading.Thread):
                 self.bytes += st.st_size
                 self.rewrites += 1
 
+    def poll_counters(self) -> None:
+        for pid in set(self.daemon_pids()):
+            written = self.counter(pid)
+            if written is not None:
+                self.daemon_writes[pid] = max(written, self.daemon_writes.get(pid, 0))
+
     def run(self) -> None:
         self.tick()
         while not self.stop_event.wait(self.every):
@@ -168,6 +194,7 @@ class MsgpackWatcher(threading.Thread):
         return {
             "kind": "msgpack_total",
             "bytes": self.bytes,
+            "written_upper": sum(self.daemon_writes.values()) if self.daemon_writes else None,
             "rewrites": self.rewrites,
             "files": len(self.seen),
             "seconds": round(time.monotonic() - self.started, 1),
@@ -492,7 +519,7 @@ def main() -> int:
     t0 = time.monotonic()
     sink = Ndjson(out / "monorepo.ndjson", t0)
     sampler = Sampler(iso, sink, args.sample_every)
-    watcher = MsgpackWatcher(iso.data_home)
+    watcher = MsgpackWatcher(iso.data_home, daemon_pids=lambda: sampler.daemon_pids.copy())
     rig = Rig(args, iso, sink, sampler, out)
     stop = threading.Event()
 
@@ -569,6 +596,8 @@ def main() -> int:
     sampler.phase = "retire"
     rig.retire_scenario()
     watcher.stop_event.set()
+    watcher.join(timeout=WATCH_EVERY_S * 4)
+    watcher.poll_counters()
     sink.write(watcher.total())
     rig.shutdown()
     sampler.stop_event.set()
