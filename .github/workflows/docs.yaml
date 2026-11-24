@@ -24,8 +24,8 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: pages-${{ github.ref }}
-  cancel-in-progress: true
+  group: pages-${{ startsWith(github.ref, 'refs/tags/') && 'deploy' || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 permissions:
   contents: read
@@ -51,7 +51,7 @@ jobs:
 
   deploy:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -60,5 +60,14 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - id: newest
+        name: Deploy only the newest release tag
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          latest=$(git ls-remote --tags --refs --sort=-v:refname "$REPO_URL" 'v*' | head -n1 | sed 's|.*refs/tags/||')
+          if [ "$latest" = "$TAG" ]; then echo "deploy=true" >> "$GITHUB_OUTPUT"; else echo "::notice::$TAG is not the newest release tag ($latest); skipping the deploy"; fi
       - id: deployment
+        if: steps.newest.outputs.deploy == 'true'
         uses: actions/deploy-pages@v5
