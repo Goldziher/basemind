@@ -17,7 +17,7 @@ use crate::mcp::cursor::Cursor;
 use crate::mcp::params::*;
 
 use super::analysis::{self, AnalysisCmd};
-use super::choices::{RefsMatch, RefsRelation, SearchLane};
+use super::choices::{IndexedChoice, RefsMatch, RefsRelation, SearchLane};
 use super::render::{Emit, emit};
 use super::{resolve_path, run_tool};
 
@@ -274,6 +274,9 @@ pub enum CodeCmd {
         /// changes), in `A..B` or in `A...B`; append `+importers` to add the files importing them.
         #[arg(long)]
         changed: Option<String>,
+        /// `true`: indexed files only; `false`: list-only ones (lockfiles, archives); `any` (default): both.
+        #[arg(long, value_enum)]
+        indexed: Option<IndexedChoice>,
     },
     /// List indexed files. Shorthand for `find` with no query.
     #[command(after_long_help = crate::cli::help_code::CODE_FILES)]
@@ -570,6 +573,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             max_tokens,
             min_lines,
             changed,
+            indexed,
         } => (
             "find_files",
             tools
@@ -584,7 +588,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         max_tokens,
                         min_lines,
                         changed,
-                        indexed: None,
+                        indexed: indexed.map(IndexedChoice::filter),
                     },
                     async |s, p| s.op(p, Workspace::find_files).await,
                 )

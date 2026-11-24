@@ -15,9 +15,10 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::documents::{ApiKey, SummarizationStrategy};
+use super::documents::SummarizationStrategy;
 use super::engine::bool_var;
 use super::layered::OverrideLayer;
+use super::secrets::ApiKey;
 use super::source::{ConfigSource, ProvenanceMap};
 use super::v1::ConfigV1;
 use super::{ConfigError, LoadedConfig};

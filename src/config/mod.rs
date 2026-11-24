@@ -12,6 +12,7 @@ mod resources;
 pub mod roles;
 pub mod root_guard;
 pub mod rules;
+mod secrets;
 mod source;
 pub mod trust;
 pub mod user_settings;
@@ -25,16 +26,16 @@ use thiserror::Error;
 pub use code::CodeSearchConfig;
 pub use comms::CommsConfig;
 pub use documents::{
-    AGENT_CONFIG_GLOBS, ApiKey, DependenciesConfig, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm,
-    KeywordsConfig, LOCKFILE_GLOBS, LlmConfig, NerBackend, NerConfig, OcrBackend, OcrConfig, RerankerConfig,
-    SecretString, SummarizationConfig, SummarizationStrategy, TEST_PATH_GLOBS, VENDORED_BUILD_GLOBS,
-    default_document_exclude,
+    AGENT_CONFIG_GLOBS, DependenciesConfig, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm, KeywordsConfig,
+    LOCKFILE_GLOBS, LlmConfig, NerBackend, NerConfig, OcrBackend, OcrConfig, RerankerConfig, SummarizationConfig,
+    SummarizationStrategy, TEST_PATH_GLOBS, VENDORED_BUILD_GLOBS, default_document_exclude,
 };
 #[cfg(feature = "intelligence")]
 pub(crate) use documents_validate::MAX_ABANDONED_EXTRACTIONS;
 pub use layered::{ConfigLayers, LoadedConfig, NoOverrides, OverrideLayer, defaults_only, merge_layers};
 pub use resources::{DocumentModelProfile, FootprintKeyword, MaxFootprint, OnnxProvider, ResourcesConfig};
 pub use roles::{PathRoles, Role, RolesConfig};
+pub use secrets::{ApiKey, SecretString};
 pub use source::{ConfigSource, ProvenanceMap};
 pub use v1::{CodeIntelConfig, ConfigV1, DeprecatedSection, LanguageConfig, Visibility};
 

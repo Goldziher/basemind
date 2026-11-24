@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `basemind code find --indexed true|false|any` lists indexed files, list-only files or both, as the `find_files` tool's `indexed` argument does
 - `code_grep` answers `skipped_reasons` beside `skipped_files`: how many files were skipped as `unavailable` (gone since the scan, or leading out of the repository), `too_large` (past `scan.max_file_bytes`) or `unreadable` (opening or reading failed) (#477)
 - A directory `git_log` page reports `commits_reached` and, when the git-history index serves it, `total_commits`, so an agent can tell how far into the history paging has got (#261)
 - The manual's paging page lists every `truncated_reason` with its next step (#261)
