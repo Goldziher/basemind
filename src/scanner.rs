@@ -15,7 +15,7 @@ use crate::scan_retrieval::PendingDocBatch;
 use crate::scanner_candidates::candidates_for_source;
 #[cfg(feature = "code-search")]
 use crate::scanner_code::PendingCodeBatch;
-use crate::scanner_drive::{DriveOutcome, ProgressObserver, ScanDrive, drive_scan};
+use crate::scanner_drive::{DriveOutcome, FOOTPRINT_CEILING_REASON, ProgressObserver, ScanDrive, drive_scan};
 use crate::scanner_file::scanner_pool;
 use crate::scanner_filter::Filters;
 use crate::scanner_flush::{
@@ -208,6 +208,10 @@ pub struct ScanStats {
     /// Paths that changed tier in this pass: a code-mapped path now routed to the document tier
     /// (prose, data and config files), or the reverse. Their old-tier index rows were purged.
     pub tier_migrated: usize,
+    /// The scan cancelled itself because the process footprint passed the hard ceiling
+    /// (`[resources] hard_footprint_percent`). The pass is partial; the daemon sheds its hosted
+    /// read stacks on seeing this.
+    pub footprint_ceiling_hit: bool,
 }
 
 impl ScanStats {
@@ -368,8 +372,15 @@ pub struct ScanReport {
 /// enrichment lanes. A tripped token never tears state: completed files are already committed
 /// per-batch, and the caller returns before the stale purge so unscanned files are not mistaken
 /// for deleted ones. Clone freely — all clones share the flag.
+///
+/// A [`child`](Self::child) is cancelled by its own [`cancel`](Self::cancel) or by its parent's, and
+/// cancelling it leaves the parent alone: the scan can stop itself (the footprint hard ceiling)
+/// without tripping a token that other scans, or a daemon drain, share.
 #[derive(Clone, Debug, Default)]
-pub struct ScanCancel(Arc<AtomicBool>);
+pub struct ScanCancel {
+    flag: Arc<AtomicBool>,
+    parent: Option<Arc<ScanCancel>>,
+}
 
 impl ScanCancel {
     /// A fresh, untripped token.
@@ -379,12 +390,20 @@ impl ScanCancel {
 
     /// Trip the token. Idempotent; every in-flight scan sharing it stops at its next check.
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.flag.store(true, Ordering::Relaxed);
     }
 
-    /// Whether the token has been tripped.
+    /// Whether this token, or any ancestor, has been tripped.
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.flag.load(Ordering::Relaxed) || self.parent.as_deref().is_some_and(ScanCancel::is_cancelled)
+    }
+
+    /// A token that follows this one and can also be tripped on its own.
+    pub fn child(&self) -> Self {
+        Self {
+            flag: Arc::default(),
+            parent: Some(Arc::new(self.clone())),
+        }
     }
 }
 
@@ -470,6 +489,8 @@ pub fn scan_with_observer(
     observer: &mut dyn ScanObserver,
     retrieval: Retrieval,
 ) -> Result<ScanReport, ScanError> {
+    // The pass may stop itself at the footprint hard ceiling; that must not trip the caller's token. ~keep
+    let cancel = &cancel.child();
     // Held for the whole pass and dropped on every exit — the two cancellation returns, the `?` on ~keep
     // a walk that hit the candidate ceiling, an unwinding panic. That is what makes a surviving ~keep
     // record mean "this process never ran a destructor", i.e. a hard kill (issue #62). Only the ~keep
@@ -530,7 +551,15 @@ pub fn scan_with_observer(
         report.cancelled = true;
         flush_code_map(
             store,
-            &ScanHealth::partial("cancelled", seen_count, total_candidates),
+            &ScanHealth::partial(
+                if report.stats.footprint_ceiling_hit {
+                    FOOTPRINT_CEILING_REASON
+                } else {
+                    "cancelled"
+                },
+                seen_count,
+                total_candidates,
+            ),
             false,
         )?;
         let (docs, code) = (driven.doc_batches, driven.code_batches);

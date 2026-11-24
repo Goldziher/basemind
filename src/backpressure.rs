@@ -43,6 +43,9 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// admitting anyway. Caps the worst-case stall a misconfigured ceiling can impose on a scan.
 const DEFAULT_MAX_WAIT: Duration = Duration::from_secs(5);
 
+/// Smallest `hard_footprint_percent` that arms the hard ceiling: the soft ceiling itself.
+const HARD_PERCENT_FLOOR: u64 = 100;
+
 /// Outcome of a [`FootprintGate::admit`] call. Returned for observability and to let tests
 /// assert whether throttling actually happened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +135,8 @@ where
     S: Fn() -> Option<u64>,
 {
     limit_bytes: u64,
+    /// The opt-in hard ceiling in bytes (`0` = none); see [`FootprintGate::with_hard_percent`].
+    hard_limit_bytes: u64,
     sampler: S,
     poll_interval: Duration,
     max_wait: Duration,
@@ -162,11 +167,32 @@ where
     pub fn with_sampler(max_footprint_mb: usize, sampler: S) -> Self {
         Self {
             limit_bytes: (max_footprint_mb as u64).saturating_mul(BYTES_PER_MB),
+            hard_limit_bytes: 0,
             sampler,
             poll_interval: DEFAULT_POLL_INTERVAL,
             max_wait: DEFAULT_MAX_WAIT,
             admissions: &GLOBAL_ADMISSIONS,
         }
+    }
+
+    /// Arm the hard ceiling at `percent` of the soft one (`[resources] hard_footprint_percent`).
+    /// `0` leaves it off, as does a disabled gate; a value under `100` is raised to `100` so the
+    /// hard ceiling never sits under the soft one.
+    pub fn with_hard_percent(mut self, percent: usize) -> Self {
+        self.hard_limit_bytes = if percent == 0 {
+            0
+        } else {
+            let percent = (percent as u64).max(HARD_PERCENT_FLOOR);
+            (u128::from(self.limit_bytes) * u128::from(percent) / 100).min(u128::from(u64::MAX)) as u64
+        };
+        self
+    }
+
+    /// Whether the process footprint is past the hard ceiling right now. Unlike
+    /// [`admit`](Self::admit) this never parks: a caller that sees `true` is expected to stop its
+    /// work. False when the hard ceiling is off or the sampler cannot read the footprint.
+    pub fn breaches_hard_ceiling(&self) -> bool {
+        self.hard_limit_bytes != 0 && (self.sampler)().is_some_and(|footprint| footprint > self.hard_limit_bytes)
     }
 
     /// Use `state` instead of the process-wide admission bookkeeping. Test-only.
@@ -462,6 +488,43 @@ mod tests {
         });
         assert_eq!(gate.admit(), AdmitOutcome::Disabled);
         assert_eq!(polled.load(Ordering::SeqCst), 0, "disabled gate must not sample");
+    }
+
+    /// `(soft MB, percent, footprint MB, breached)`: the hard ceiling is `percent` of the soft one,
+    /// strict (at the ceiling is not past it), raised to the soft ceiling when set lower, and off at
+    /// `0` or when the soft ceiling is disabled.
+    #[test]
+    fn the_hard_ceiling_is_a_percentage_of_the_soft_one() {
+        for (soft, percent, footprint, breached) in [
+            (100, 150, 150, false),
+            (100, 150, 151, true),
+            (100, 0, 10_000, false),
+            (0, 150, 10_000, false),
+            (100, 50, 100, false),
+            (100, 50, 101, true),
+            (100, 200, 199, false),
+        ] {
+            let gate = FootprintGate::with_sampler(soft, move || Some(footprint * MB)).with_hard_percent(percent);
+            assert_eq!(
+                gate.breaches_hard_ceiling(),
+                breached,
+                "soft {soft} MB, {percent}%, footprint {footprint} MB"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreadable_footprint_never_breaches_the_hard_ceiling() {
+        let gate = FootprintGate::with_sampler(100, || None).with_hard_percent(150);
+        assert!(!gate.breaches_hard_ceiling());
+    }
+
+    #[test]
+    fn the_hard_ceiling_never_parks_the_caller() {
+        let gate = FootprintGate::with_sampler(100, || Some(u64::MAX)).with_hard_percent(150);
+        let start = Instant::now();
+        assert!(gate.breaches_hard_ceiling());
+        assert!(start.elapsed() < DEFAULT_MAX_WAIT);
     }
 
     #[test]

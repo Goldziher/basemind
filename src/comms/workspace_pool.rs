@@ -354,6 +354,14 @@ impl WorkspacePool {
         cancel: &ScanCancel,
     ) -> Result<(ScanStats, bool), WorkspacePoolError> {
         let outcome = self.scan_workspace(root, paths, full, embed, verify, cancel);
+        // The scan stopped itself at the footprint hard ceiling: shed every hosted read stack with
+        // no live connection too, then hand the pages back below. A rebuild reads the same blobs.
+        if let Ok((stats, _)) = &outcome
+            && stats.footprint_ceiling_hit
+        {
+            let dropped = self.evict_idle_read_stacks(Duration::ZERO);
+            tracing::warn!(dropped, "footprint hard ceiling hit: shed idle hosted read stacks");
+        }
         crate::allocator::release_unused_memory();
         outcome
     }

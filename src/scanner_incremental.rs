@@ -102,6 +102,8 @@ fn scan_paths_inner(
     verify_named: bool,
     retrieval: Retrieval,
 ) -> Result<ScanReport, ScanError> {
+    // The pass may stop itself at the footprint hard ceiling; that must not trip the caller's token. ~keep
+    let cancel = &cancel.child();
     let source = ScanSource::WorkingTree;
     #[cfg(any(unix, windows))] // Blobs written without an fsync; free inside a hosting process. ~keep
     let _hosting = crate::scan_evidence::HostingMarker::begin();
