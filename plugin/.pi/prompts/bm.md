@@ -6,7 +6,7 @@ description: Ask basemind anything about the current codebase — outlines, refs
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 Content-Hash: blake3:a308775de78208b3fea4b033c74e064cdc600a4abc6a355d9cdb3ac0700b3eb3
-Source-Hash: blake3:e320d694b0258ed06394743c75847d5990c0235672b6db89060dbf11b321b37d
+Source-Hash: blake3:c571a98820fe5557d4881fd7bad48431f0dca31862064942c5994509d803dbc6
 Schema-Version: v1
 -->
 

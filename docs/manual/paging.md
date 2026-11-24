@@ -36,19 +36,19 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 
 `truncated_reason` says why an answer is incomplete; the next step is what to do about it.
 
-| Reason | Tool | Meaning | Next step |
-| --- | --- | --- | --- |
-| `scan_cap` | `code_symbols`, `code_refs`, `memory_search`, `impact` | The scan stopped at its cap; `total` is a lower bound. | Follow `next_cursor` where there is one; else narrow with `path` or `language`. |
-| `byte_budget` | `code_grep` | The corpus is larger than one call reads. | Narrow with `path` or `language`, or follow `next_cursor`. |
-| `depth` | `code_search`, `docs_search`, `impact` | A ranking goes on past 100 hits, or an import walk stopped at its depth. | Refine the query, or start the walk nearer the target. |
-| `liveness_depth` | `docs_search` | A search lane hit its candidate depth before enough live documents were found. | Narrow with `path`, `keywords` or `format`. |
-| `stale_chunks` | `code_search` | Hits in files edited since indexing were dropped; `omitted` counts them. | `index_rescan` the edited files, or repeat the call. |
-| `imports` | `code_outline` | The import list was cut at 200. | `code_grep` for the import you need. |
-| `size_cap` | `code_read` | The body was cut at the read cap. | Read a span with `line` and `end_line`. |
-| `too_large` | `git_blame` | The file is too large to blame whole; the answer is empty. | Blame a span (`line`, `end_line`) or one `symbol`. |
-| `hunk_cap`, `byte_cap` | `git_diff` | The diff stopped at 200 hunks or 128 KiB; it has no cursor. | Narrow `from` and `to`. |
-| `path_cap` | `git_diff` (no `from`/`to`) | The status list was cut; `omitted` counts the paths left out. | Pass a directory `path` ending in `/`. |
-| `span_limit` | `git_log` with a directory or symbol `path` | The page used up its span of commits before filling; older commits were not inspected. A directory page reports `commits_reached` and, when the git-history index serves it, `total_commits`. | Follow `next_cursor`, an empty page included, until it is absent; stop when `commits_reached` is far enough back. |
-| `commit_cap` | `basemind git hotspots` (CLI only) | The walk stopped at its commit cap (20,000 indexed, 1,000 live). | Shorten `since`. |
-| `unindexed_scan` | `git_log` with `query` or `author` | The git-history index could not serve the search, so only the newest commits were scanned. | Wait for the index (`index_status`), then repeat. |
-| `shallow_clone` | `git_log`, `git_blame` | The clone is shallow: an absent commit is inconclusive. | `git fetch --unshallow`, then repeat. |
+| Reason | Tool | Meaning and next step |
+| --- | --- | --- |
+| `scan_cap` | `code_symbols`, `code_refs`, `memory_search`, `impact` | Scan stopped early, `total` is a lower bound: follow `next_cursor`, else narrow with `path` or `language`. |
+| `byte_budget` | `code_grep` | Corpus larger than one call reads: narrow with `path` or `language`, or follow `next_cursor`. |
+| `depth` | `code_search`, `docs_search`, `impact` | Ranking past 100 hits, or an import walk at its depth: refine the query or start nearer the target. |
+| `liveness_depth` | `docs_search` | A lane hit its candidate depth before enough live documents: narrow with `path`, `keywords` or `format`. |
+| `stale_chunks` | `code_search` | Hits in files edited since indexing were dropped (`omitted`): `index_rescan` them, or repeat. |
+| `imports` | `code_outline` | Import list cut at 200: `code_grep` for the import. |
+| `size_cap` | `code_read` | Body cut at the read cap: read a span with `line` and `end_line`. |
+| `too_large` | `git_blame` | File too large to blame whole, answer empty: blame a span or one `symbol`. |
+| `hunk_cap`, `byte_cap` | `git_diff` | Stopped at 200 hunks or 128 KiB, no cursor: narrow `from` and `to`. |
+| `path_cap` | `git_diff` (no `from`/`to`) | Status list cut (`omitted`): pass a directory `path` ending in `/`. |
+| `span_limit` | `git_log`, directory or symbol `path` | Page used its span of commits before filling: follow `next_cursor`, an empty page included, until it is absent; `commits_reached` (and `total_commits` when indexed) shows how far back it got. |
+| `commit_cap` | `basemind git hotspots` (CLI) | Walk stopped at its cap (20,000 indexed, 1,000 live): shorten `since`. |
+| `unindexed_scan` | `git_log` with `query` or `author` | No git-history index, only the newest commits scanned: wait for it (`index_status`), repeat. |
+| `shallow_clone` | `git_log`, `git_blame` | Shallow clone, an absent commit is inconclusive: `git fetch --unshallow`. |

@@ -28,8 +28,7 @@ lists the indexed files and the other files git tracks, not an untracked file th
 Structural questions (where a symbol lives, what calls it, what shape a file has) resolve from the
 index in milliseconds and return **paths, 1-based line numbers, and signatures, not file bodies**.
 
-The tools are always loaded: call them directly, no tool search needed. Drop to raw shell only when
-no tool covers the question.
+The tools are always loaded: call them directly. Drop to raw shell only when no tool covers the question.
 
 ## The discipline
 
@@ -42,7 +41,7 @@ no tool covers the question.
   config and data file (a trigram filter skips code files that cannot match) and returns each hit's
   line and enclosing symbol. A file created since the last scan is not in it until the watcher or
   an `index_rescan {"paths":[…]}` indexes it, so a miss there is not proof of absence.
-- **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
+- **Do not re-read a mapped file** once the outline answered the question.
 - **The index follows your edits** while a server, daemon or `basemind watch` runs: no rescan and
   no server reconnect after each one. If a result says `stale` or a new file is missing, run
   `index_rescan {"paths":["src/store.rs"]}` for that file; run `index_rescan {}` only when
@@ -51,9 +50,8 @@ no tool covers the question.
   (`index_rescan {}`, or `basemind scan` with no server). With only a standalone `basemind watch`
   there is no `index_rescan` and `basemind rescan` exits 3 on its lock: stop the watcher, rescan,
   restart it.
-- **CLI only, with nothing watching**: the index does not follow edits, and a symbol added to an
-  indexed file is simply missing (no hit, no `stale` flag). Run `basemind rescan <path>…` for the
-  files you edited before querying them.
+- **CLI only, with nothing watching**: the index does not follow edits and shows no `stale` flag.
+  Run `basemind rescan <path>…` for the files you edited before querying them.
 
 ## Tool routing
 
@@ -76,54 +74,30 @@ no tool covers the question.
 | "Which definition does this reference bind to?" | `code_refs {"name":"open_store","relation":"definition","path":"src/main.rs","line":42}` | `basemind code definition src/main.rs 42 open_store` |
 | "Which file is named like X?" | `find_files {"query":"readme"}` | `basemind code find readme` |
 | "What files are indexed under a directory?" | `find_files {"path":"src/mcp/"}` | `basemind code files --path src/mcp/` |
-| "What's indexed?" | `index_status {}` | `basemind status` |
 | "A result says stale, or a new file is missing?" | `index_rescan {"paths":["src/store.rs"]}` | `basemind rescan src/store.rs` |
-| "Fetch the next page?" | pass the response's `next_cursor` back as `cursor` | `--cursor <next_cursor>` |
-
-## Examples
-
-```text
-code_symbols {"name":"MapCache"}
-→ {"results":["src/engine/map_cache.rs:10: pub(crate) struct MapCache",
-              "src/engine/map_cache.rs:39: impl MapCache"], …}
-
-code_refs {"name":"process_file"}
-→ {"total":1,"hits":{"src/scanner_file.rs":[{"line":113}]}, …}
-
-code_outline {"path":"src/wire.rs"}
-→ path: src/wire.rs
-  language: rust
-  …
-  symbols[…]{name,kind,line,end_line,signature}:
-    encode,function,31,…
-    toon,function,42,…
-```
 
 ## Notes
 
-- An argument a tool does not take is rejected with a did-you-mean and the accepted list. A failure
-  the caller can fix is a tool result with `isError` naming the fix: a path that is a document
-  points at `docs_search`, a file that exists but is not indexed at `index_rescan`, a missing file
-  at `find_files`.
-- `path` is repo-relative with forward slashes. `line`, `end_line` and `column` are 1-based.
+- An argument a tool does not take is rejected with a did-you-mean and the accepted list. A fixable
+  failure is a tool result with `isError` naming the fix: `docs_search` for a document path,
+  `index_rescan` for a file that is not indexed, `find_files` for a missing one.
+- `path` is repo-relative; `line`, `end_line` and `column` are 1-based.
 - `code_read` takes `symbol` (add `kind` when several share the name) or `line` with `end_line`,
-  not both. A body over 128 KiB is cut at a line end (a single longer line inside it) and flagged `truncated`
-  (`omitted_bytes` is what was left out): read on from `end_line + 1`. `stale: true` (also on `code_outline`) means the file changed since it was
-  indexed and was read as it is now; a file deleted since the scan is an error naming
+  not both. A body over 128 KiB is cut at a line end and flagged `truncated` (`omitted_bytes` is what was
+  left out): read on from `end_line + 1`. `stale: true` (also on `code_outline`) means the file
+  changed since it was indexed and was read as it is now; a deleted file is an error naming
   `index_rescan`.
-- `code_outline` omits `imports` when the file has none.
 - `code_grep`: `pattern` is literal text unless `"regex":true`, and a regex anchors `^` / `$` at
   every line. `path` is a substring of the repo-relative path, never a glob; a `path` or `language`
   that no indexed code or text file has is an error (it names `docs_search` when only PDFs, Office
   files or other binary documents match).
   `skipped_files` counts files that could not be searched. The answer is `key: value` lines, then
   each file as `# <path>` and each innermost enclosing symbol as `## <symbol>` over its rows
-  `<line>: <text>` (rows before any symbol header, or under a bare `##`, are outside every
-  symbol); matches sharing a line are one row `<line>:<col>,<col>: <text>`, and a clipped line
-  (over 400 bytes, cut to a window around the match) writes its column `<line>:<col>: ...`.
-  `"context":N` (0-10) adds the N lines around each hit as rows `<line>- <text>`, each written
-  once. `stale` lists files edited since they were indexed (their rows are outside every symbol).
-  `total` appears only beside `next_cursor`.
+  `<line>: <text>` (rows before any symbol header are outside every symbol); matches sharing a
+  line are one row `<line>:<col>,<col>: <text>`, and a clipped line (over 400 bytes) writes its
+  column `<line>:<col>: ...`. `"context":N` (0-10) adds the N lines around each hit as rows
+  `<line>- <text>`. `stale` lists files edited since they were indexed. `total` appears only
+  beside `next_cursor`.
 - `find_files` lists each file by its path alone: the code map, the documents, and every other
   file git tracks (images, fonts, data). A query no path holds as typed may be a typo: a file it
   names up to one swapped, missing, extra or wrong character comes first.
@@ -145,8 +119,8 @@ code_outline {"path":"src/wire.rs"}
   `total` appears only beside `next_cursor`.
 - `code_search` returns pointers (path, `line` / `end_line`, symbol), not bodies; read a hit with
   `code_read`. `lane` picks `hybrid` (default), `semantic` or `keyword`. The response lists
-  `lanes_ran` (`vector`, `keyword`, `exact`) and `lanes_unavailable` (`lane`, `reason`), so a hybrid
-  search that ran without embeddings says so. It needs the `code-search` Cargo feature.
+  `lanes_ran` and `lanes_unavailable` (`lane`, `reason`), so a hybrid search that ran without
+  embeddings says so. It needs the `code-search` Cargo feature.
 - Needs an index in the machine-global cache (Linux `~/.local/share/basemind/`, macOS
   `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`). Run `basemind scan`
   first (see the `basemind-scan` skill).
@@ -243,22 +217,22 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 
 `truncated_reason` says why an answer is incomplete; the next step is what to do about it.
 
-| Reason | Tool | Meaning | Next step |
-| --- | --- | --- | --- |
-| `scan_cap` | `code_symbols`, `code_refs`, `memory_search`, `impact` | The scan stopped at its cap; `total` is a lower bound. | Follow `next_cursor` where there is one; else narrow with `path` or `language`. |
-| `byte_budget` | `code_grep` | The corpus is larger than one call reads. | Narrow with `path` or `language`, or follow `next_cursor`. |
-| `depth` | `code_search`, `docs_search`, `impact` | A ranking goes on past 100 hits, or an import walk stopped at its depth. | Refine the query, or start the walk nearer the target. |
-| `liveness_depth` | `docs_search` | A search lane hit its candidate depth before enough live documents were found. | Narrow with `path`, `keywords` or `format`. |
-| `stale_chunks` | `code_search` | Hits in files edited since indexing were dropped; `omitted` counts them. | `index_rescan` the edited files, or repeat the call. |
-| `imports` | `code_outline` | The import list was cut at 200. | `code_grep` for the import you need. |
-| `size_cap` | `code_read` | The body was cut at the read cap. | Read a span with `line` and `end_line`. |
-| `too_large` | `git_blame` | The file is too large to blame whole; the answer is empty. | Blame a span (`line`, `end_line`) or one `symbol`. |
-| `hunk_cap`, `byte_cap` | `git_diff` | The diff stopped at 200 hunks or 128 KiB; it has no cursor. | Narrow `from` and `to`. |
-| `path_cap` | `git_diff` (no `from`/`to`) | The status list was cut; `omitted` counts the paths left out. | Pass a directory `path` ending in `/`. |
-| `span_limit` | `git_log` with a directory or symbol `path` | The page used up its span of commits before filling; older commits were not inspected. A directory page reports `commits_reached` and, when the git-history index serves it, `total_commits`. | Follow `next_cursor`, an empty page included, until it is absent; stop when `commits_reached` is far enough back. |
-| `commit_cap` | `basemind git hotspots` (CLI only) | The walk stopped at its commit cap (20,000 indexed, 1,000 live). | Shorten `since`. |
-| `unindexed_scan` | `git_log` with `query` or `author` | The git-history index could not serve the search, so only the newest commits were scanned. | Wait for the index (`index_status`), then repeat. |
-| `shallow_clone` | `git_log`, `git_blame` | The clone is shallow: an absent commit is inconclusive. | `git fetch --unshallow`, then repeat. |
+| Reason | Tool | Meaning and next step |
+| --- | --- | --- |
+| `scan_cap` | `code_symbols`, `code_refs`, `memory_search`, `impact` | Scan stopped early, `total` is a lower bound: follow `next_cursor`, else narrow with `path` or `language`. |
+| `byte_budget` | `code_grep` | Corpus larger than one call reads: narrow with `path` or `language`, or follow `next_cursor`. |
+| `depth` | `code_search`, `docs_search`, `impact` | Ranking past 100 hits, or an import walk at its depth: refine the query or start nearer the target. |
+| `liveness_depth` | `docs_search` | A lane hit its candidate depth before enough live documents: narrow with `path`, `keywords` or `format`. |
+| `stale_chunks` | `code_search` | Hits in files edited since indexing were dropped (`omitted`): `index_rescan` them, or repeat. |
+| `imports` | `code_outline` | Import list cut at 200: `code_grep` for the import. |
+| `size_cap` | `code_read` | Body cut at the read cap: read a span with `line` and `end_line`. |
+| `too_large` | `git_blame` | File too large to blame whole, answer empty: blame a span or one `symbol`. |
+| `hunk_cap`, `byte_cap` | `git_diff` | Stopped at 200 hunks or 128 KiB, no cursor: narrow `from` and `to`. |
+| `path_cap` | `git_diff` (no `from`/`to`) | Status list cut (`omitted`): pass a directory `path` ending in `/`. |
+| `span_limit` | `git_log`, directory or symbol `path` | Page used its span of commits before filling: follow `next_cursor`, an empty page included, until it is absent; `commits_reached` (and `total_commits` when indexed) shows how far back it got. |
+| `commit_cap` | `basemind git hotspots` (CLI) | Walk stopped at its cap (20,000 indexed, 1,000 live): shorten `since`. |
+| `unindexed_scan` | `git_log` with `query` or `author` | No git-history index, only the newest commits scanned: wait for it (`index_status`), repeat. |
+| `shallow_clone` | `git_log`, `git_blame` | Shallow clone, an absent commit is inconclusive: `git fetch --unshallow`. |
 <!-- /manual:paging -->
 
 For git history, blame and diffs see `basemind-git-history`; for document search see
