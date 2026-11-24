@@ -656,6 +656,10 @@ pub(crate) fn read_dir(dir: &Path) -> Result<std::fs::ReadDir, GcError> {
 mod cli_tests;
 
 #[cfg(test)]
+#[path = "store_gc_namespace_tests.rs"]
+mod namespace_tests;
+
+#[cfg(test)]
 #[path = "store_gc_tier_tests.rs"]
 mod tier_tests;
 

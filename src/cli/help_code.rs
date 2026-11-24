@@ -136,6 +136,8 @@ When to use: you know part of a file's name or path but not where it lives.
 
 Returns: matching paths, code and documents alike, a query with one typo included. With no query
 it lists indexed files; `--min-lines` lists code files of at least that many lines, largest first.
+`--indexed true|false|any` picks files whose contents are indexed, list-only files
+(lockfiles, archives), or both.
 
 Example:
   basemind code find readme
