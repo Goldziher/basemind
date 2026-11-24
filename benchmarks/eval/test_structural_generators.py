@@ -280,7 +280,7 @@ class Scanner(unittest.TestCase):
             ("typescript", "  private items: T[] = [];\n", "items"),
             ("java", "    private final String prefix = \"x\";\n", "prefix"),
             ("java", "    private int count;\n", "count"),
-            ("go", "type Walker interface {\n\tWalk(path string) error\n}\n", "Walk"),
+            ("go", "\tWalk(path string) error\n", "Walk"),
         ]
         for lang, src, name in cases:
             with self.subTest(lang=lang, name=name), tempfile.TemporaryDirectory() as tmp:
