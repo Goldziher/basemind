@@ -816,6 +816,40 @@ fn import_probes_are_incomplete_until_stamped() {
     assert!(!db.view().import_probes_complete());
 }
 
+#[test]
+fn import_probe_stamp_matches_only_the_resolver_that_wrote_the_rows() {
+    let ver = IMPORT_PROBE_VER;
+    let cases: &[(&[u8], u8, bool)] = &[
+        (&[ver, 0], 0, true),
+        (&[ver, 1], 1, true),
+        (&[ver, 1], 0, false),
+        (&[ver, 0], 1, false),
+        (&[ver], 0, true),
+        (&[ver], 1, false),
+        (&[ver - 1, 0], 0, false),
+        (&[], 0, false),
+    ];
+    for &(stamp, profile, expected) in cases {
+        assert_eq!(
+            import_probe_stamp_matches(stamp, profile),
+            expected,
+            "stamp {stamp:?} against resolver profile {profile}"
+        );
+    }
+}
+
+#[test]
+fn import_probes_are_incomplete_when_stamped_by_another_resolver() {
+    let (_d, db) = fresh_db();
+    let other = 1 - IMPORT_RESOLVER_PROFILE;
+    db.meta
+        .insert(META_IMPORT_PROBE_VER, [IMPORT_PROBE_VER, other])
+        .unwrap();
+    assert!(!db.view().import_probes_complete());
+    db.set_import_probes_complete(true).unwrap();
+    assert!(db.view().import_probes_complete());
+}
+
 #[cfg(feature = "code-search")]
 #[test]
 fn full_scan_restores_missing_legacy_bm25_postings() {

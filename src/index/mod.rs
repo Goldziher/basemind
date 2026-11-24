@@ -111,6 +111,18 @@ const META_IMPORT_PROBE_VER: &[u8] = b"import_probe_ver";
 /// imports of a submodule.
 const IMPORT_PROBE_VER: u8 = 6;
 
+/// Which Python resolver recorded the probe rows: `1` when ty's module resolver is compiled in
+/// (feature `code-intel-python`), `0` for the path arithmetic alone. The rows are only exact for the
+/// resolver that wrote them, so the stamp carries it and a build with the other resolver re-stitches
+/// every importer once. A stamp written before this byte existed has one byte and reads as `0`.
+const IMPORT_RESOLVER_PROFILE: u8 = if cfg!(feature = "code-intel-python") { 1 } else { 0 };
+
+/// Whether the `meta` row `stamp` says the probe rows were written by this layout revision and
+/// the resolver profile `profile`.
+fn import_probe_stamp_matches(stamp: &[u8], profile: u8) -> bool {
+    stamp.first() == Some(&IMPORT_PROBE_VER) && stamp.get(1).copied().unwrap_or(0) == profile
+}
+
 /// `meta` rows carrying the corpus-global BM25 stats — recomputed at the end of each scan by
 /// [`IndexDb::recompute_bm25_stats`] and read at query time. `N` = number of indexed code chunks;
 /// `total_len` = sum of their token lengths (`avgdl = total_len / N`).
@@ -907,7 +919,8 @@ impl IndexDb {
     /// the stamp before it rewrites any importer and sets it only after the stitch committed.
     pub fn set_import_probes_complete(&self, complete: bool) -> Result<(), IndexError> {
         if complete {
-            self.meta.insert(META_IMPORT_PROBE_VER, [IMPORT_PROBE_VER])?;
+            self.meta
+                .insert(META_IMPORT_PROBE_VER, [IMPORT_PROBE_VER, IMPORT_RESOLVER_PROFILE])?;
         } else {
             self.meta.remove(META_IMPORT_PROBE_VER)?;
         }

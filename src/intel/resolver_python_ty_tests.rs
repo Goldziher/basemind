@@ -246,6 +246,66 @@ fn stitch_resolver_resolves_a_from_import_name_to_the_submodule() {
 }
 
 #[test]
+fn stitch_resolver_resolves_a_bare_parent_import_of_a_sibling_module() {
+    let files = [
+        "pkg/__init__.py",
+        "pkg/other.py",
+        "pkg/inner/__init__.py",
+        "pkg/inner/app.py",
+    ];
+    let importer = "pkg/inner/app.py";
+    let (tmp, resolver) = stitch_resolver(&files);
+    let import = from_import("..", Some("other"));
+    let mut probes = ProbeSet::default();
+
+    let package = resolver.resolve(tmp.path(), importer, &import, &mut probes);
+    assert_eq!(owned(package.clone()).as_deref(), Some("pkg/__init__.py"));
+    let got = resolver.resolve_submodule(tmp.path(), importer, package.as_ref(), &import, &mut probes);
+    assert_eq!(owned(got).as_deref(), Some("pkg/other.py"));
+    assert!(
+        probes.contains("pkg/other.py"),
+        "the importer of pkg/other.py is found through this probe"
+    );
+}
+
+#[test]
+fn ty_ignores_extra_root_files_keyed_by_an_absolute_path() {
+    let files = ["/src/pkg.py", "src/pkg.py", "main.py"];
+    let resolver = TyResolver::new(files.iter().copied()).expect("the ty resolver builds");
+    let got = resolver.resolve("main.py", "pkg", &mut ProbeSet::default());
+    assert_eq!(owned(got).as_deref(), Some("src/pkg.py"));
+
+    let only_external = TyResolver::new(["/src/pkg.py", "main.py"]).expect("the ty resolver builds");
+    assert_eq!(
+        owned(only_external.resolve("main.py", "pkg", &mut ProbeSet::default())),
+        None
+    );
+}
+
+#[test]
+fn ty_records_the_src_directory_until_it_holds_python_files() {
+    let without_src = ty_over(&["util.py"], "app.py");
+    let mut probes = ProbeSet::default();
+    assert_eq!(
+        owned(without_src.resolve("app.py", "util", &mut probes)).as_deref(),
+        Some("util.py")
+    );
+    assert!(
+        probes.contains("src"),
+        "a file later indexed under src/ must re-resolve the import"
+    );
+
+    let with_src = ty_over(&["util.py", "src/other.py"], "app.py");
+    let mut probes = ProbeSet::default();
+    assert_eq!(
+        owned(with_src.resolve("app.py", "util", &mut probes)).as_deref(),
+        Some("util.py")
+    );
+    assert!(probes.contains("src/util.py"));
+    assert!(!probes.contains("src"));
+}
+
+#[test]
 fn stitch_resolver_falls_back_to_path_arithmetic_when_ty_misses() {
     let files = ["my-service/app/x.py", "my-service/app/y.py"];
     let importer = "my-service/app/x.py";

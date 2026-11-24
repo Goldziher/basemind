@@ -59,6 +59,9 @@ pub(crate) struct TyResolver {
     search_paths: SearchPaths,
     /// The first-party roots, in search order: `/src` when it holds Python files, then `/`.
     roots: Vec<SystemPathBuf>,
+    /// Whether `/src` is a search root. When it is not, every lookup records the `src` directory:
+    /// the first Python file indexed under it adds the root and moves every import.
+    has_src: bool,
     /// Set when a ty query panicked; every later lookup then misses, so the caller's path
     /// arithmetic answers for the rest of the stitch.
     failed: Cell<bool>,
@@ -66,10 +69,11 @@ pub(crate) struct TyResolver {
 
 impl TyResolver {
     /// Build the resolver over `files`, the repo-relative paths of the indexed files (other than
-    /// `.py` and `.pyi` files are skipped). `None` when ty rejects the search paths.
+    /// `.py` and `.pyi` files are skipped, as are extra-root files keyed by an absolute path). `None` when ty rejects the search paths.
     pub(crate) fn new<'a>(files: impl IntoIterator<Item = &'a str>) -> Option<Self> {
         let fs = MemoryFileSystem::with_current_directory(ROOT);
-        for rel in files.into_iter().filter(|rel| is_python_source(rel)) {
+        let mountable = |rel: &&str| is_python_source(rel) && !RelPath::from(*rel).is_external();
+        for rel in files.into_iter().filter(mountable) {
             if let Err(error) = fs.write_file_all(virtual_path(rel), "") {
                 tracing::debug!(%rel, %error, "ty resolver: file not mounted");
             }
@@ -78,7 +82,8 @@ impl TyResolver {
         fs.write_file_all(typeshed.join("stdlib/VERSIONS"), "").ok()?;
 
         let mut roots = Vec::with_capacity(2);
-        if fs.is_directory(SRC) {
+        let has_src = fs.is_directory(SRC);
+        if has_src {
             roots.push(SystemPathBuf::from(SRC));
         }
         roots.push(SystemPathBuf::from(ROOT));
@@ -97,6 +102,7 @@ impl TyResolver {
             db,
             search_paths,
             roots,
+            has_src,
             failed: Cell::new(false),
         })
     }
@@ -193,6 +199,9 @@ impl TyResolver {
     /// to the first component that is not a directory, which is recorded as a directory so that
     /// any file appearing under it re-resolves the import.
     fn record_lookup(&self, name: &ModuleName, roots: &[SystemPathBuf], probes: &mut ProbeSet) {
+        if !self.has_src {
+            probes.insert_dir(&repo_relative(SystemPath::new(SRC)));
+        }
         let first = name.first_component();
         for root in roots {
             probes.insert_dir(&repo_relative(&root.join(format!("{first}-stubs"))));

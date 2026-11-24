@@ -163,8 +163,8 @@ code-intel-js = [
 code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitter-stack-graphs"]
 
 # Python imports resolved by ty's module resolver (`src/intel/resolver_python_ty.rs`) before the
-# `code-intel-stack` path arithmetic, which stays the fallback. Opt-in, not in `code-intel` or `full`:
-# it adds salsa and ruff's parser and AST crates to the binary.
+# `code-intel-stack` path arithmetic, which stays the fallback. Default and `code-intel-stack`-only builds
+# omit it; `code-intel` and `full` include it. It adds salsa and ruff's parser and AST crates to the binary.
 code-intel-python = ["code-intel-stack", "dep:ruff_db", "dep:ruff_python_ast", "dep:salsa", "dep:ty_module_resolver"]
 
 code-intel = ["code-intel-js", "code-intel-stack", "code-intel-python"]
