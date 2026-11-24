@@ -4,7 +4,10 @@
 //! directory of the repository; the import is one edge to each indexed non-test `.go` file in that
 //! directory. Build constraints are ignored, so a package's files for every platform are targets.
 //! A path under the module with no such file is unresolved; any other path (the standard library,
-//! another module, `"C"`) is external. `replace` directives, `go.work` and `vendor/` are not read.
+//! another module, `"C"`) is external. A module the repository holds besides the nearest one also
+//! counts: a `use` directory of the nearest `go.work`, and a `replace` directive of the nearest
+//! `go.mod` whose target is a local path (`./` or `../`). The longest module path that prefixes an
+//! import wins. `vendor/` is not read.
 //!
 //! The package directory is recorded as a probe, so a file added to or removed from it re-stitches
 //! the importer through `IndexView::importers_probing`'s ancestor lookup. A package at the
@@ -24,6 +27,8 @@ pub(crate) struct GoModules {
     modules: AHashMap<String, Option<String>>,
     /// Package directory -> its indexed non-test `.go` files.
     packages: AHashMap<String, Vec<String>>,
+    /// Module directory -> the other modules of the repository it can import: `(directory, module path)`.
+    siblings: AHashMap<String, Vec<(String, String)>>,
 }
 
 impl GoModules {
@@ -45,10 +50,16 @@ impl GoModules {
     }
 
     fn resolve_path(&mut self, probe: &mut Probe<'_>, module: Option<&(String, String)>, path: &str) -> ModuleTarget {
-        let Some((module_dir, module_path)) = module else {
+        let Some(own) = module else {
             return ModuleTarget::External;
         };
-        let Some(rest) = strip_dir(path, module_path).or((path == module_path).then_some("")) else {
+        let siblings = self.siblings_of(probe, &own.0);
+        let Some((module_dir, rest)) = std::iter::once(own)
+            .chain(siblings.iter())
+            .filter_map(|(dir, module_path)| Some((dir, module_path, module_subpath(path, module_path)?)))
+            .max_by_key(|(_, module_path, _)| module_path.len())
+            .map(|(dir, _, rest)| (dir.as_str(), rest))
+        else {
             return ModuleTarget::External;
         };
         let package = join(module_dir, rest);
@@ -68,24 +79,60 @@ impl GoModules {
         }
     }
 
+    /// The module path declared by the `go.mod` in `dir`; the file is a probe.
+    fn module_at(&mut self, probe: &mut Probe<'_>, dir: &str) -> Option<String> {
+        let manifest = join(dir, "go.mod");
+        probe.record(&manifest);
+        let root = probe.root;
+        self.modules
+            .entry(manifest)
+            .or_insert_with_key(|manifest| {
+                std::fs::read_to_string(root.join(manifest))
+                    .ok()
+                    .and_then(|text| module_directive(&text))
+            })
+            .clone()
+    }
+
+    /// The other modules of the repository the module in `module_dir` can import: the `use`
+    /// directories of the nearest `go.work` above it and the local `replace` targets of its own
+    /// `go.mod`. Every file read, found or not, is a probe.
+    fn siblings_of(&mut self, probe: &mut Probe<'_>, module_dir: &str) -> Vec<(String, String)> {
+        if let Some(known) = self.siblings.get(module_dir) {
+            return known.clone();
+        }
+        let mut found = Vec::new();
+        let manifest = join(module_dir, "go.mod");
+        if let Ok(text) = std::fs::read_to_string(probe.root.join(&manifest)) {
+            found.extend(replaced_modules(&text, module_dir));
+        }
+        let mut dir = module_dir;
+        loop {
+            let work = join(dir, "go.work");
+            probe.record(&work);
+            if let Ok(text) = std::fs::read_to_string(probe.root.join(&work)) {
+                for used in workspace_dirs(&text, dir) {
+                    if let Some(module_path) = self.module_at(probe, &used) {
+                        found.push((used, module_path));
+                    }
+                }
+                break;
+            }
+            if dir.is_empty() {
+                break;
+            }
+            dir = parent_dir(dir);
+        }
+        self.siblings.insert(module_dir.to_string(), found.clone());
+        found
+    }
+
     /// The nearest `go.mod` above `importer` that declares a module: its directory and module path.
     /// Every candidate is a probe.
     fn module_of(&mut self, probe: &mut Probe<'_>, importer: &str) -> Option<(String, String)> {
         let mut dir = parent_dir(importer);
         loop {
-            let manifest = join(dir, "go.mod");
-            probe.record(&manifest);
-            let root = probe.root;
-            let declared = self
-                .modules
-                .entry(manifest)
-                .or_insert_with_key(|manifest| {
-                    std::fs::read_to_string(root.join(manifest))
-                        .ok()
-                        .and_then(|text| module_directive(&text))
-                })
-                .clone();
-            if let Some(module_path) = declared {
+            if let Some(module_path) = self.module_at(probe, dir) {
                 return Some((dir.to_string(), module_path));
             }
             if dir.is_empty() {
@@ -120,6 +167,80 @@ fn module_directive(text: &str) -> Option<String> {
         return (!path.is_empty() && path != ")").then(|| path.to_string());
     }
     None
+}
+
+/// The values of a `go.mod` / `go.work` directive written as lines (`use ./a`) or as a block
+/// (`use (` newline one value per line newline `)`), comments removed.
+fn directive_values<'a>(text: &'a str, keyword: &str) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for line in text.lines().map(|line| line.split("//").next().unwrap_or("").trim()) {
+        if in_block {
+            match line {
+                ")" => in_block = false,
+                "" => {}
+                value => out.push(value),
+            }
+            continue;
+        }
+        let Some(rest) = line.strip_prefix(keyword) else {
+            continue;
+        };
+        if !rest.starts_with([' ', '\t', '(']) {
+            continue;
+        }
+        match rest.trim() {
+            "(" => in_block = true,
+            "" => {}
+            value => out.push(value),
+        }
+    }
+    out
+}
+
+/// `dir` joined with the local path `rel` (`./x`, `../x`), lexically; `None` when it leaves the repository.
+fn join_local(dir: &str, rel: &str) -> Option<String> {
+    let mut parts: Vec<&str> = dir.split('/').filter(|part| !part.is_empty()).collect();
+    for part in rel.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// The `use` directories of a `go.work` in `work_dir`, as repo-relative directories.
+fn workspace_dirs(text: &str, work_dir: &str) -> Vec<String> {
+    directive_values(text, "use")
+        .into_iter()
+        .filter_map(|value| join_local(work_dir, value.trim_matches(['"', '`'])))
+        .collect()
+}
+
+/// The modules a `go.mod` in `module_dir` replaces with a local directory (`replace m => ../m`):
+/// each one's directory and module path.
+fn replaced_modules(text: &str, module_dir: &str) -> Vec<(String, String)> {
+    directive_values(text, "replace")
+        .into_iter()
+        .filter_map(|value| {
+            let (from, to) = value.split_once("=>")?;
+            let module_path = from.split_whitespace().next()?.trim_matches(['"', '`']);
+            let target = to.split_whitespace().next()?.trim_matches(['"', '`']);
+            if !(target.starts_with("./") || target.starts_with("../")) {
+                return None;
+            }
+            Some((join_local(module_dir, target)?, module_path.to_string()))
+        })
+        .collect()
+}
+
+/// The part of `path` below `module_path` (`""` for the module itself), or `None` when it is not under it.
+fn module_subpath<'a>(path: &'a str, module_path: &str) -> Option<&'a str> {
+    strip_dir(path, module_path).or((path == module_path).then_some(""))
 }
 
 /// The sorted non-test `.go` file names of a directory.
@@ -337,5 +458,113 @@ mod tests {
             )]
         );
         assert!(probes.contains(""), "the root package directory must be a probe");
+    }
+    fn files(rels: &[&str]) -> ModuleTarget {
+        ModuleTarget::Files(rels.iter().map(|rel| (*rel).to_string()).collect())
+    }
+
+    #[test]
+    fn a_go_work_use_directory_is_a_module_of_the_repository() {
+        let (resolved, probes) = resolve(
+            &[
+                ("go.work", "go 1.22\n\nuse (\n\t./a // first\n\t./b\n)\n"),
+                ("a/go.mod", "module example.com/a\n"),
+                ("a/main.go", ""),
+                ("b/go.mod", "module example.com/b\n"),
+                ("b/lib/lib.go", ""),
+            ],
+            "a/main.go",
+            "import (\n\t\"example.com/b/lib\"\n\t\"example.com/c\"\n)",
+        );
+        assert_eq!(
+            resolved,
+            [
+                ("example.com/b/lib".to_string(), files(&["b/lib/lib.go"])),
+                ("example.com/c".to_string(), ModuleTarget::External),
+            ]
+        );
+        assert!(probes.contains("go.work") && probes.contains("b/go.mod"));
+    }
+
+    #[test]
+    fn a_local_replace_directive_is_a_module_of_the_repository() {
+        let (resolved, _) = resolve(
+            &[
+                (
+                    "a/go.mod",
+                    "module example.com/a\n\nreplace example.com/b v1.0.0 => ../b\nreplace (\n\texample.com/c => ./vendored/c\n\texample.com/d => example.com/fork/d v2.0.0\n)\n",
+                ),
+                ("a/main.go", ""),
+                ("b/b.go", ""),
+                ("a/vendored/c/c.go", ""),
+            ],
+            "a/main.go",
+            "import (\n\t\"example.com/b\"\n\t\"example.com/c\"\n\t\"example.com/d\"\n)",
+        );
+        assert_eq!(
+            resolved,
+            [
+                ("example.com/b".to_string(), files(&["b/b.go"])),
+                ("example.com/c".to_string(), files(&["a/vendored/c/c.go"])),
+                ("example.com/d".to_string(), ModuleTarget::External),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_longest_module_path_wins_between_nested_modules() {
+        let (resolved, _) = resolve(
+            &[
+                ("go.work", "use ./app\nuse ./app/tools\n"),
+                ("app/go.mod", "module example.com/app\n"),
+                ("app/main.go", ""),
+                ("app/tools/go.mod", "module example.com/app/tools\n"),
+                ("app/tools/t.go", ""),
+                ("app/tools/sub/s.go", ""),
+            ],
+            "app/main.go",
+            "import \"example.com/app/tools/sub\"",
+        );
+        assert_eq!(
+            resolved,
+            [("example.com/app/tools/sub".to_string(), files(&["app/tools/sub/s.go"]))]
+        );
+    }
+
+    #[test]
+    fn directive_values_read_lines_and_blocks_and_skip_other_keywords() {
+        let text = "use ./a\nused ./nope\nuse (\n\t./b // note\n\n\t\"./c\"\n)\nuse(\n./d\n)\n";
+        assert_eq!(directive_values(text, "use"), ["./a", "./b", "\"./c\"", "./d"]);
+        assert_eq!(workspace_dirs(text, "w"), ["w/a", "w/b", "w/c", "w/d"]);
+    }
+
+    #[test]
+    fn join_local_stays_inside_the_repository() {
+        assert_eq!(join_local("a/b", "../c").as_deref(), Some("a/c"));
+        assert_eq!(join_local("a", "./b/./c").as_deref(), Some("a/b/c"));
+        assert_eq!(join_local("a", "../../x"), None);
+    }
+    #[test]
+    fn a_go_work_workspace_resolves_an_import_between_its_modules() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_root");
+        let lookup = |rel: &str| root.join(rel).is_file();
+        let mut probes = ProbeSet::default();
+        let raw = "import \"example.com/b/store\"";
+        let import = Import {
+            module: None,
+            raw: raw.to_string(),
+            start_byte: 0,
+            end_byte: raw.len() as u32,
+        };
+        let resolved = GoModules::default().resolve(
+            &mut Probe {
+                root: &root,
+                indexed: &lookup,
+                probes: &mut probes,
+            },
+            "go/a/cmd/main.go",
+            &[import],
+        );
+        assert_eq!(resolved[0].target, files(&["go/b/store/store.go"]));
     }
 }
