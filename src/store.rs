@@ -872,3 +872,7 @@ mod tests;
 #[cfg(test)]
 #[path = "store_key_set_tests.rs"]
 mod key_set_tests;
+
+#[cfg(test)]
+#[path = "store_vector_tests.rs"]
+mod vector_tests;

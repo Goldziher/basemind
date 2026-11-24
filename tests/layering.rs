@@ -163,7 +163,11 @@ const FORBIDDEN_CRATES: &[(Layer, &[&str])] = &[
 /// code. `<target>` is the module named (or `extern <crate>`). Remove an entry when its edge is cut.
 /// The `src/engine` edges are the interim ones of ADR-0039, each removed by the engine-unification
 /// step named beside it.
-const KNOWN_VIOLATIONS: &[&str] = &["src/config/validate.rs -> extern jsonschema", "src/store.rs -> lance"];
+const KNOWN_VIOLATIONS: &[&str] = &[
+    "src/config/validate.rs -> extern jsonschema",
+    "src/store.rs -> lance",
+    "src/store_vector_tests.rs -> lance [test]",
+];
 
 /// One module of the library: its path, the file holding it, whether it is test-only or a test hook
 /// (under the `test-support` feature, it or a module enclosing it), the names of its child modules
