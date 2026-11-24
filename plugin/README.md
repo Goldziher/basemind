@@ -57,7 +57,11 @@ python -m pip install --force-reinstall dist/hermes/basemind_hermes_plugin-*.whl
 
 Restart Hermes after installation. The plugin registers ten skills, six slash commands, scoped
 session and inbox notifications, and `basemind_call`. The bridge calls the local MCP server's
-tools and returns JSON text. Optional direct MCP configuration in `~/.hermes/config.yaml` is:
+tools and returns JSON text, over one `basemind serve` session kept open per working directory
+(a failed or timed-out one is replaced on the next call). Each turn's inbox read runs only while
+a comms daemon accepts connections and gives up after 2 seconds, so an idle turn spawns no
+process on Linux and macOS (Windows, whose daemon listens on a named pipe, keeps the CLI read). At session start the plugin runs `basemind --version` once and, for a missing binary or
+one from another minor version, injects a notice naming the install command. Optional direct MCP configuration in `~/.hermes/config.yaml` is:
 
 ```yaml
 mcp_servers:
