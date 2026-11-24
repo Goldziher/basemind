@@ -69,7 +69,7 @@ fn serve(root: &Path, view: &str, lead: bool, agents_policy: Option<&Path>) -> R
             }
             return served.context("run persistent daemon relay");
         }
-        let _ = lead;
+        let _ = (lead, agents_policy);
         stdio_relay::run(tokio::io::stdin(), tokio::io::stdout(), connect)
             .await
             .context("run persistent daemon relay")

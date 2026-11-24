@@ -115,10 +115,6 @@ Codex's read-only mode failed in the probes too: the agent's shell could not rea
    (`<home>/Library/Application Support/basemind/agents.toml` on macOS); neither variable moves
    it. Tests that run the binary as a lead name a stand-in home through
    `BASEMIND_TEST_ACCOUNT_HOME`, which only a build with the `test-support` feature reads.
-   A shipped binary takes another location only from `serve --lead --agents-policy <absolute
-   file>`, a command-line argument, never the environment. The named file passes the same checks
-   as the default one (owned by the user, writable by nobody else, outside the workspace), and the
-   serve logs a warning naming it.
 
 ## Consequences
 

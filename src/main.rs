@@ -732,7 +732,11 @@ fn cmd_serve(root: &std::path::Path, view: &str, lead: bool, agents_policy: Opti
             serve_relay::try_serve_relay(root, view)
         };
         #[cfg(not(unix))]
-        let served = serve_relay::try_serve_relay(root, view);
+        let served = {
+            // `--lead` was refused above on this platform, so there is no policy to hand on.
+            let _ = agents_policy;
+            serve_relay::try_serve_relay(root, view)
+        };
         served.context(
             "relay to the basemind daemon failed; run `basemind daemon ensure` to check the daemon, \
              then retry",

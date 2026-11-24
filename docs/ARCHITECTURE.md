@@ -1257,7 +1257,8 @@ reads the operator's `agents.toml` from basemind's configuration directory under
 `serve` and the CLI never list or answer them, and a repository's `basemind.toml` `[agents]` table is
 ignored with a warning. Without the file, launching stays off and the tools are not listed.
 `serve --lead --agents-policy <absolute file>` reads a throwaway file instead of the user-level one,
-under the same file checks, so a launch round trip can be tried without touching the operator's own
+under the same file checks (owned by the user, writable by nobody else, outside the workspace) and
+logs a warning naming it, so a launch round trip can be tried without touching the operator's own
 policy.
 
 A launched agent runs at depth 1 in a worktree of its own, with every approval request denied and
