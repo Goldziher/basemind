@@ -131,15 +131,19 @@ def rewritten_bytes(root: Path, since_ns: int) -> dict[str, int]:
 
 
 class MsgpackWatcher(threading.Thread):
-    """Accounts for the writes of the index under the data home, with two figures of different strength.
+    """Accounts for the writes of the index under the data home over the load window (from `begin_load`),
+    with figures of different strength.
 
     - `bytes`: the size of every `index.msgpack` each time a poll finds it replaced or modified (a new
       inode, mtime or size). Rewrites that land between two polls collapse into one, so this is only a
-      lower bound on what was written, tighter the shorter the poll.
-    - `written_upper`: the bytes the daemon processes (`daemon_pids`) had written to storage by their
-      last poll, from the host's per-process counter (`written_bytes`). It counts every store the
-      daemon writes, so it bounds `index.msgpack` writes from above; None when the host has no counter
-      or no daemon was ever seen. Writes made after a daemon's last poll are missed.
+      lower bound on what was written, tighter the shorter the poll. Sampled file sizes never stand for
+      the total write volume.
+    - `written_lower`: what the daemon processes (`daemon_pids`) had written to storage by their last
+      successful reading, from the host's per-process counter (`written_bytes`), less the reading at the
+      start of the load. It counts every store the daemon writes.
+    - `written_upper`: `written_lower` when it is complete, else None. It is complete only if every daemon
+      seen was read successfully at the last poll; a daemon that exited, or that the host cannot read,
+      leaves writes after its last reading uncounted, so the sum is then only a lower bound.
     """
 
     def __init__(
@@ -148,16 +152,27 @@ class MsgpackWatcher(threading.Thread):
         every: float = WATCH_EVERY_S,
         daemon_pids: Callable[[], Iterable[int]] = lambda: (),
         counter: Callable[[int], int | None] = written_bytes,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__(name="msgpack-watcher", daemon=True)
         self.root, self.every = root, every
-        self.daemon_pids, self.counter = daemon_pids, counter
+        self.daemon_pids, self.counter, self.clock = daemon_pids, counter, clock
         self.stop_event = threading.Event()
         self.seen: dict[str, tuple[int, int, int]] = {}
         self.daemon_writes: dict[int, int] = {}
+        self.baseline: dict[int, int] = {}
+        self.unread: set[int] = set()
         self.bytes = 0
         self.rewrites = 0
-        self.started = time.monotonic()
+        self.started = clock()
+
+    def begin_load(self) -> None:
+        """Start the accounting window now: earlier rewrites and counter readings no longer count."""
+        self.poll_counters()
+        self.baseline = dict(self.daemon_writes)
+        self.bytes = 0
+        self.rewrites = 0
+        self.started = self.clock()
 
     def tick(self) -> None:
         self.poll_files()
@@ -180,10 +195,13 @@ class MsgpackWatcher(threading.Thread):
                 self.rewrites += 1
 
     def poll_counters(self) -> None:
-        for pid in set(self.daemon_pids()):
+        for pid in set(self.daemon_pids()) | self.daemon_writes.keys():
             written = self.counter(pid)
-            if written is not None:
-                self.daemon_writes[pid] = max(written, self.daemon_writes.get(pid, 0))
+            if written is None:
+                self.unread.add(pid)
+                continue
+            self.unread.discard(pid)
+            self.daemon_writes[pid] = max(written, self.daemon_writes.get(pid, 0))
 
     def run(self) -> None:
         self.tick()
@@ -191,13 +209,17 @@ class MsgpackWatcher(threading.Thread):
             self.tick()
 
     def total(self) -> dict[str, Any]:
+        lower = (
+            sum(w - self.baseline.get(pid, 0) for pid, w in self.daemon_writes.items()) if self.daemon_writes else None
+        )
         return {
             "kind": "msgpack_total",
             "bytes": self.bytes,
-            "written_upper": sum(self.daemon_writes.values()) if self.daemon_writes else None,
+            "written_lower": lower,
+            "written_upper": None if self.unread else lower,
             "rewrites": self.rewrites,
             "files": len(self.seen),
-            "seconds": round(time.monotonic() - self.started, 1),
+            "seconds": round(self.clock() - self.started, 1),
         }
 
 
@@ -578,6 +600,7 @@ def main() -> int:
 
     sampler.phase = "load"
     sink.write({"kind": "phase", "name": "load_start"})
+    watcher.begin_load()
     loops = [
         threading.Thread(target=rig.load_loop, args=(n, sess, stop), name=f"load-{n}", daemon=True)
         for n, sess in enumerate([*rig.dedicated.values(), *extra])

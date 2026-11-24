@@ -191,7 +191,9 @@ def msgpack_rule(v: Verdict, records: list[dict[str, Any]], args: argparse.Names
     """M9 judges `index.msgpack` writes per hour against a ceiling, from two bounds. The polled rewrites are
     a lower bound: over the ceiling is a failure. The daemon's own write counter is an upper bound (every
     store it writes): under the ceiling is a pass. Between the two, or with only the lower bound, the write
-    volume was not measured and the rule neither passes nor fails."""
+    volume was not measured and the rule neither passes nor fails. Every figure covers the load window
+    only (`seconds` runs from the start of the load, not of the run); the counter bound is absent when
+    any daemon's counter could not be read at the end."""
     name = "M9 index.msgpack written"
     watch = next(iter(of_kind(records, "msgpack_total")), None)
     if watch is None or watch["seconds"] <= 0:

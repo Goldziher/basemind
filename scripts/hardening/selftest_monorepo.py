@@ -75,6 +75,7 @@ def healthy() -> list[dict[str, Any]]:
         {
             "kind": "msgpack_total",
             "bytes": 100 * MIB,
+            "written_lower": 150 * MIB,
             "written_upper": 150 * MIB,
             "seconds": 900,
             "rewrites": 40,
@@ -175,14 +176,42 @@ def write_accounting() -> tuple[object, ...]:
 
     with tempfile.TemporaryDirectory() as tmp:
         watcher = MsgpackWatcher(Path(tmp), daemon_pids=lambda: (1, 2, 3), counter=counter)
-        before = watcher.total()["written_upper"]
+        before = watcher.total()["written_lower"]
         totals = []
         for reading in readings:
             current.clear()
             current.update(reading)
             watcher.poll_counters()
-            totals.append(watcher.total()["written_upper"])
+            totals.append(watcher.total()["written_lower"])
         return before, *totals
+
+
+def load_window(readings: list[dict[int, int]], pids: tuple[int, ...] = (1,)) -> dict[str, Any]:
+    """The watcher's total after 3600 s of setup, `begin_load`, then 900 s of load with one counter
+    reading set per entry of `readings` (the first is read at the start of the load)."""
+    now = [0.0]
+    current: dict[int, int] = {}
+
+    def counter(pid: int) -> int | None:
+        return current.get(pid)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        watcher = MsgpackWatcher(Path(tmp), daemon_pids=lambda: pids, counter=counter, clock=lambda: now[0])
+        now[0] = 3600.0
+        current.update(readings[0])
+        watcher.begin_load()
+        now[0] += 900.0
+        for reading in readings[1:]:
+            current.clear()
+            current.update(reading)
+            watcher.poll_counters()
+        return watcher.total()
+
+
+def m9_from_watcher(total: dict[str, Any], polled_mib: int = 0) -> str:
+    """The M9 cell for a watcher total, with `polled_mib` of polled rewrites on top."""
+    total = {**{k: v for k, v in total.items() if k != "kind"}, "bytes": polled_mib * MIB}
+    return m9_cell(lambda r: set_all(r, "msgpack_total", **total))
 
 
 def rewritten_counts() -> dict[str, int]:
@@ -265,6 +294,37 @@ CASES: list[tuple[str, Callable[[], object], object]] = [
         "a polled lower bound over the ceiling fails M9 even with no counter",
         lambda: m9_cell(lambda r: set_all(r, "msgpack_total", bytes=2560 * MIB, written_upper=None)),
         "**FAIL**",
+    ),
+    (
+        "the load window excludes the setup before it and counter writes before it",
+        lambda: {k: load_window([{1: 100 * MIB}, {1: 2100 * MIB}])[k] for k in ("seconds", "written_lower", "written_upper")},
+        {"seconds": 900.0, "written_lower": 2000 * MIB, "written_upper": 2000 * MIB},
+    ),
+    (
+        "2000 MiB of rewrites in 900 s of load after 3600 s of setup fails M9 at 8000 MiB/h",
+        lambda: m9_from_watcher(load_window([{1: 0}, {1: 2000 * MIB}]), polled_mib=2000),
+        "**FAIL**",
+    ),
+    (
+        "a 1 MiB index rewritten every 0.5 s, polled every 5 s (1 MiB seen per poll), is not passed",
+        lambda: m9_from_watcher(
+            {**load_window([{1: 0}], pids=()), "seconds": 3600.0, "written_lower": None, "written_upper": None},
+            polled_mib=720,
+        ),
+        "not measured",
+    ),
+    (
+        "a daemon unreadable at the end leaves no upper bound, so 1000 MiB over 900 s is not passed",
+        lambda: (
+            load_window([{1: 0}, {1: 1000 * MIB}, {}])["written_upper"],
+            m9_from_watcher(load_window([{1: 0}, {1: 1000 * MIB}, {}])),
+        ),
+        (None, "not measured"),
+    ),
+    (
+        "a daemon read to the end keeps the upper bound, and 1000 MiB over 900 s passes",
+        lambda: m9_from_watcher(load_window([{1: 0}, {1: 1000 * MIB}])),
+        "pass",
     ),
     ("no write counter fails no rule", lambda: mutated(lambda r: set_all(r, "msgpack_total", written_upper=None)), []),
     (
