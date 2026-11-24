@@ -22,10 +22,10 @@ pub struct GitLogParams {
     #[serde(default)]
     pub author: Option<String>,
     /// With `query`/`author`: only commits since `YYYY-MM-DD` or `<N>d|w|m|y` ago.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<String>,
     /// With `query`/`author`: only commits until then (same forms, day included).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
     /// Commits that changed this symbol's body, ignoring comments and whitespace (`git log -L` counts them); needs `path`, combines only with `line`.
     #[serde(default)]
@@ -46,7 +46,7 @@ pub struct GitLogParams {
     #[serde(default)]
     pub max_tokens: Option<u32>,
     /// Also list each commit's changed files in a recent or directory list (capped; see `files_more`).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub files: bool,
 }
 

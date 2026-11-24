@@ -82,6 +82,7 @@ const CROSS_MINOR_ENV: &str = "BASEMIND_UPGRADE_REQUIRE_CROSS_MINOR";
 const FIRST_REFUSING_MINOR: u32 = 34;
 
 /// First release minor with a group index; earlier ones keep an index per workspace.
+#[cfg(feature = "comms")]
 const FIRST_GROUP_INDEX_MINOR: u32 = 34;
 
 /// Last release minor that keeps its group index directly in the group directory
