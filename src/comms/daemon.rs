@@ -445,7 +445,6 @@ impl Broker {
         };
         let mut server = crate::mcp::BasemindServer::from_shared(
             shared,
-            principal.as_str().to_string(),
             Arc::clone(&self.heavy_admission),
             agents,
         );

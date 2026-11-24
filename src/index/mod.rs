@@ -500,7 +500,6 @@ pub struct IndexDb {
     /// moved on by `ROW_VERSION` with no schema bump: the scan's sweep drops stale rows and
     /// backfills the current ones.
     pub(in crate::index) grep_bloom: scoped::Scoped,
-    #[allow(dead_code)]
     pub(crate) embeddings: Keyspace,
     /// First fatal commit error (disk full, poisoned handle) seen through any clone of this handle;
     /// shared so the writers record it where it happens and the scan polls one place.
