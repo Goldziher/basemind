@@ -606,6 +606,7 @@ fn every_job_has_a_name_the_ci_gate_can_ignore() {
         gate.contains("workflows/publish.yaml") && gate.contains("startswith($o + \" / \")"),
         "the gate must derive the ignored names from publish.yaml, and the reusable build's jobs by prefix"
     );
+}
 
 /// The value of a step input (`key: "value"`) in a workflow, if the workflow sets it.
 fn step_input(workflow: &str, key: &str) -> Option<String> {
