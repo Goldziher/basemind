@@ -72,7 +72,7 @@ members = [
 rust-version = "1.100.0"
 
 [workspace.dependencies]
-agent-client-protocol = "5.5.0"
+agent-client-protocol = "5.5.1"
 
 [workspace.lints.clippy]
 all = "warn"
@@ -198,7 +198,7 @@ futures = { version = "0.3", optional = true }
 # OS CSPRNG for the comms daemon's HTTP bearer token. Already in the graph via ahash, so this adds ~keep
 # no build cost; a hand-rolled seed mix would be rolling our own crypto for a credential. ~keep
 getrandom = { version = "0.4", features = ["std"], optional = true }
-gix = { version = "0.90.0", features = ["status", "blob-diff", "revision", "max-performance"] }
+gix = { version = "0.91.0", features = ["status", "blob-diff", "revision", "max-performance"] }
 globset = "0.4"
 hex = "0.4"
 # Loopback-TCP hyper server hosting the streamable-HTTP MCP transport (comms daemon only). ~keep
@@ -209,7 +209,7 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio"], optional = 
 ignore = "0.4"
 # ~keep Every `$ref` in the bundled config schema is internal, so no HTTP or file resolver (and no
 # ~keep reqwest/rustls in the core's graph, ADR-0032); drafts are built in, and no `idn-*` format is used.
-jsonschema = { version = "0.62", default-features = false }
+jsonschema = { version = "0.63", default-features = false }
 # ~keep `remote` is enabled only because lancedb 0.38-0.41 do not compile without it: `error.rs`
 # ~keep gates `Error::Http` behind `#[cfg(feature = "remote")]` while `job.rs` uses it unconditionally.
 # ~keep It pulls tonic/arrow-flight/reqwest in but nothing is invoked; drop it once upstream fixes the gate.
@@ -220,18 +220,18 @@ libc = "0.2"
 # ~keep The global allocator (`src/allocator.rs`). `extended` exposes `mi_option_set`, used by `alloc_tag` to
 # ~keep retag the heap off `VM_MEMORY_IOACCELERATOR`, and `mi_is_in_heap_region`, which proves the binary's allocator.
 libmimalloc-sys = { version = "0.1", features = ["extended"] }
-lru = "0.19.1"
+lru = "0.19.2"
 memchr = "2"
 memmap2 = "0.9"
 notify = "9"
 notify-debouncer-full = "0.8"
 nucleo-matcher = "0.3.1"
-oxc_allocator = { version = "0.159.0", optional = true }
-oxc_parser = { version = "0.159.0", optional = true }
+oxc_allocator = { version = "0.160.0", optional = true }
+oxc_parser = { version = "0.160.0", optional = true }
 oxc_resolver = { version = "11.24.3", optional = true }
-oxc_semantic = { version = "0.159.0", optional = true }
-oxc_span = { version = "0.159.0", optional = true }
-oxc_syntax = { version = "0.159.0", optional = true }
+oxc_semantic = { version = "0.160.0", optional = true }
+oxc_span = { version = "0.160.0", optional = true }
+oxc_syntax = { version = "0.160.0", optional = true }
 # ~keep The engine store lock: sync, task-fair, unpoisoned like the async lock it replaced, with
 # ~keep owned `Send` read guards for adapter calls that hold a read across an `.await` (ADR-0039).
 parking_lot = { version = "0.13", features = ["arc_lock", "send_guard"] }
@@ -270,7 +270,7 @@ tree-sitter = "0.27"
 tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.2", path = "crates/tree-sitter-graph", optional = true }
 tree-sitter-language-pack = "1.25.2"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.2", path = "crates/tree-sitter-stack-graphs", optional = true }
-xberg = { version = "1.4.2", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+xberg = { version = "1.5.1", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 zstd = "0.14.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
