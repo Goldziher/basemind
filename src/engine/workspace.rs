@@ -109,6 +109,10 @@ pub(crate) struct Workspace {
     #[cfg(feature = "memory")]
     pub(crate) memory_backfill:
         std::sync::Mutex<ahash::AHashMap<(u8, String), crate::engine::memory::vectors::Backfill>>,
+    /// Whether this process has filed the group's notes under [`Workspace::scope`]
+    /// ([`Workspace::memory_index`]).
+    #[cfg(feature = "memory")]
+    pub(crate) memory_rescoped: AtomicBool,
     /// Shared embedding engine. Lazy-init on first embed call ([`Workspace::shared_embedder`]).
     #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
     pub(crate) embedder: std::sync::OnceLock<Arc<crate::embeddings::SharedEmbedder>>,
@@ -348,6 +352,8 @@ impl Workspace {
             memory_lance: Default::default(),
             #[cfg(feature = "memory")]
             memory_backfill: std::sync::Mutex::new(ahash::AHashMap::new()),
+            #[cfg(feature = "memory")]
+            memory_rescoped: AtomicBool::new(false),
             initial_scan_active: AtomicBool::new(false),
             initial_scan_ms: AtomicU64::new(0),
             cache_warming: AtomicBool::new(defer_warm),

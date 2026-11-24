@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Memory notes saved before the repository's `origin` was added, removed or changed are no longer hidden: the first memory call of a session files every note of the store under the current scope, the newer note winning on a clash (#319)
 - A CLI `git log` forwarded to an older release's running daemon no longer sends the `since`, `until` and `files` parameters it does not set, which that daemon rejected as unknown fields
 - `find_files` with `indexed: true` or `false` no longer lists tracked files that are neither indexed nor list-only, and a list-only file under a `scan.extra_roots` entry is recorded like one in the repository (#495)
 - The daemon returns freed allocator pages to the OS after every rescan and every idle workspace or read-stack eviction, so an idle daemon settles at its live data instead of holding a scan's high-water mark; the hardening soak asserts a bounded idle memory swing (R6c) (#491)

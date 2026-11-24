@@ -316,6 +316,17 @@ impl super::IndexDb {
     }
 }
 
+#[cfg(any(test, feature = "memory"))]
+impl super::IndexDb {
+    /// [`rescope`] this handle's notes store to `scope`. `0` when the handle has no store.
+    pub(crate) fn rescope_notes(&self, scope: &str) -> Result<usize, IndexError> {
+        match self.memory.as_deref() {
+            Ok(memory) => rescope(memory, scope),
+            Err(_) => Ok(0),
+        }
+    }
+}
+
 /// The only fields the merge needs; a `MemoryRecord` is stored as a named msgpack map, so unknown
 /// fields are skipped.
 #[derive(Deserialize, Default)]
@@ -351,6 +362,55 @@ fn merge_keyspace(from: &Keyspace, into: &Keyspace) -> Result<(), IndexError> {
         }
     }
     Ok(())
+}
+
+/// File every note stored under a scope other than `scope` under `scope`, and return how many
+/// were moved. The store is keyed by the main worktree's path, so every scope in it belongs to this
+/// one repository: a note filed under an `origin` that has since changed (or appeared, or gone)
+/// would otherwise be hidden. A note already present under `scope` is replaced only by a newer one
+/// ([`incoming_wins`]), so the outcome never depends on the order scopes are met. The merged rows
+/// are persisted before the old ones are removed: a crash between the two leaves duplicates, never
+/// a loss.
+#[cfg(any(test, feature = "memory"))]
+pub(crate) fn rescope(memory: &MemoryDb, scope: &str) -> Result<usize, IndexError> {
+    use super::keys::{memory_by_key, parse_memory_by_key};
+
+    let Some(notes) = memory.notes()? else {
+        return Ok(0);
+    };
+    let mut foreign = Vec::new();
+    for guard in notes.iter() {
+        let (key, value) = guard.into_inner()?;
+        let Some((from, vis_byte, owner, note)) = parse_memory_by_key(&key) else {
+            continue;
+        };
+        if from != scope {
+            foreign.push((
+                key.to_vec(),
+                memory_by_key(scope, vis_byte, &owner, &note),
+                value.to_vec(),
+            ));
+        }
+    }
+    if foreign.is_empty() {
+        return Ok(0);
+    }
+    let opened = memory.open_now(Version::Stamp)?;
+    for (_, target, value) in &foreign {
+        let replace = match opened.memory_by_key.get(target)? {
+            Some(existing) => incoming_wins(value, &existing),
+            None => true,
+        };
+        if replace {
+            opened.memory_by_key.insert(target.clone(), value.clone())?;
+        }
+    }
+    opened.db.persist(PersistMode::SyncAll)?;
+    for (old, _, _) in &foreign {
+        opened.memory_by_key.remove(old.clone())?;
+    }
+    opened.db.persist(PersistMode::SyncAll)?;
+    Ok(foreign.len())
 }
 
 /// Fold the memory rows an older build left in `view_db` into `memory`, then drop that keyspace
