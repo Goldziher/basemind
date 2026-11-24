@@ -44,7 +44,7 @@ fn workspace_owing_vectors(root: &Path, git_cache: &Path) -> Workspace {
         },
     );
     ws.rescan(None, EmbedMode::Inline, false).expect("first pass");
-    let mut store = ws.store_write();
+    let mut store = ws.store_write().expect("a local store");
     for guide in GUIDES {
         let mut entry = store.lookup_doc(guide).expect("the guide is indexed").clone();
         entry.embedded = false;

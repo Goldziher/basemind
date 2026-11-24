@@ -186,7 +186,11 @@ impl Workspace {
         embed: EmbedMode,
         named: bool,
     ) -> Result<(ScanReport, RescanPaths), ScanError> {
-        let mut store = self.store_write();
+        let Some(mut store) = self.store_write() else {
+            return Err(ScanError::IndexFault(
+                "a daemon-hosted workspace scans through the daemon's pool, not in this process".to_string(),
+            ));
+        };
         // The store may have been opened via `Store::open_read_only` (the CLI / MCP query path),
         // which never creates `view_dir` on disk. On a workspace's first-ever scan that directory
         // is still missing here, and `flush()` would fail with ENOENT writing `index.msgpack.tmp`.
@@ -250,7 +254,7 @@ impl Workspace {
     pub(crate) fn publish_store(&self, store: Store) -> Option<Arc<MapCache>> {
         let current = self.cache.load_full();
         let cache = current.refreshed(&store, budget_bytes_from(&self.config.resources));
-        *self.store_write() = store;
+        self.replace_store(store);
         let published = cache.map(|cache| {
             let cache = Arc::new(cache);
             self.cache.store(Arc::clone(&cache));
@@ -269,7 +273,7 @@ impl Workspace {
                 .load_full()
                 .refreshed(&store, budget_bytes_from(&self.config.resources))?,
         );
-        *self.store_write() = store;
+        self.replace_store(store);
         self.cache.store(Arc::clone(&cache));
         self.note_index_changed();
         Some(cache)

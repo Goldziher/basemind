@@ -8,6 +8,7 @@
 //! Split out of `state.rs` so the per-connection type and the shared type each stay well under the
 //! per-file size budget.
 
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -27,10 +28,9 @@ use crate::store::Store;
 /// when these fields lived directly on `ServerState`; a future daemon can point many connections at
 /// one stack.
 pub(crate) struct Workspace {
-    /// The opened store. A synchronous, task-fair lock, so the engine names no runtime: a scan holds
-    /// the write side for its whole run, and readers wait for it as they did on the async lock this
-    /// replaces (a waiting writer holds back new readers, and a panic poisons nothing).
-    store: RwLock<Store>,
+    /// The opened store ([`StoreSlot`]): behind a lock a scan writes through, or, for a daemon-hosted
+    /// workspace, behind an `ArcSwap` a publish replaces without waiting on any reader.
+    store: StoreSlot,
     pub(crate) root: PathBuf,
     /// In-RAM mirror of every indexed file's L1 blob.
     ///
@@ -327,7 +327,7 @@ impl Workspace {
         Self {
             #[cfg(feature = "memory")]
             memory_owner,
-            store: RwLock::new(store),
+            store: StoreSlot::new(store),
             root,
             cache: ArcSwap::from(cache),
             repo,
@@ -382,19 +382,40 @@ impl Workspace {
             .get_or_init(|| crate::lang_rules::LangRules::from_config(&self.config.languages).unwrap_or_default())
     }
 
-    /// Read the store, waiting while a scan holds it.
-    pub(crate) fn store_read(&self) -> RwLockReadGuard<'_, Store> {
-        self.store.read()
+    /// Read the store: a snapshot for a hosted workspace, else the lock's read side, waiting while a
+    /// scan holds it. A hosted snapshot stays valid for as long as the caller holds it, whatever is
+    /// published meanwhile.
+    pub(crate) fn store_read(&self) -> StoreRead<'_> {
+        match &self.store {
+            StoreSlot::Local(lock) => StoreRead::Local(lock.read()),
+            StoreSlot::Hosted(current) => StoreRead::Snapshot(current.load_full()),
+        }
     }
 
-    /// Write the store, waiting for every reader to finish.
-    pub(crate) fn store_write(&self) -> RwLockWriteGuard<'_, Store> {
-        self.store.write()
+    /// Write the store, waiting for every reader to finish. `None` for a hosted workspace, whose
+    /// store the daemon's pool writes and a publish replaces.
+    pub(crate) fn store_write(&self) -> Option<RwLockWriteGuard<'_, Store>> {
+        match &self.store {
+            StoreSlot::Local(lock) => Some(lock.write()),
+            StoreSlot::Hosted(_) => None,
+        }
     }
 
-    /// Read the store if no writer holds it right now.
-    pub(crate) fn try_store_read(&self) -> Result<RwLockReadGuard<'_, Store>, StoreBusy> {
-        self.store.try_read().ok_or(StoreBusy)
+    /// Read the store if no writer holds it right now. A hosted workspace has no writer here.
+    pub(crate) fn try_store_read(&self) -> Result<StoreRead<'_>, StoreBusy> {
+        match &self.store {
+            StoreSlot::Local(lock) => lock.try_read().map(StoreRead::Local).ok_or(StoreBusy),
+            StoreSlot::Hosted(current) => Ok(StoreRead::Snapshot(current.load_full())),
+        }
+    }
+
+    /// Serve `store` from now on. A hosted workspace swaps its snapshot, so it waits for no reader
+    /// and no reader waits for it; a local one takes the write side.
+    pub(crate) fn replace_store(&self, store: Store) {
+        match &self.store {
+            StoreSlot::Local(lock) => *lock.write() = store,
+            StoreSlot::Hosted(current) => current.store(Arc::new(store)),
+        }
     }
 
     /// Mark the deferred preload finished and wake every caller of
@@ -510,6 +531,49 @@ impl Workspace {
     }
 }
 
+/// Where a workspace keeps its [`Store`].
+///
+/// A workspace that scans in this process mutates its store in place, so the store sits behind a
+/// synchronous, task-fair lock (the engine names no runtime): a scan holds the write side for its
+/// whole run, and a waiting writer holds back new readers. A daemon-hosted workspace never scans
+/// here: the pool's writer does, and a publish hands over the file map it wrote. Its store is a
+/// read-only one borrowing the writer's index per call, so it sits behind an [`ArcSwap`]: a read
+/// takes the snapshot current when it starts, a publish swaps in the next one, and a long read
+/// never holds a publish back nor a publish the reads that follow.
+enum StoreSlot {
+    Local(RwLock<Store>),
+    Hosted(ArcSwap<Store>),
+}
+
+impl StoreSlot {
+    /// A store that borrows its index from the daemon's pool ([`Store::index_source`]) is hosted.
+    fn new(store: Store) -> Self {
+        if store.index_source.is_some() {
+            Self::Hosted(ArcSwap::from_pointee(store))
+        } else {
+            Self::Local(RwLock::new(store))
+        }
+    }
+}
+
+/// A read of the workspace's [`Store`]: the lock's read guard, or the snapshot a hosted workspace
+/// served when the read began. Dereferences to the store either way.
+pub(crate) enum StoreRead<'a> {
+    Local(RwLockReadGuard<'a, Store>),
+    Snapshot(Arc<Store>),
+}
+
+impl Deref for StoreRead<'_> {
+    type Target = Store;
+
+    fn deref(&self) -> &Store {
+        match self {
+            Self::Local(guard) => guard,
+            Self::Snapshot(store) => store,
+        }
+    }
+}
+
 /// The store is held by a writer (a scan) right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StoreBusy;
@@ -601,3 +665,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "workspace_store_tests.rs"]
+mod store_tests;
