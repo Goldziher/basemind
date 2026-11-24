@@ -789,7 +789,10 @@ Contract of the 15 verb tools (`src/mcp/tool_contract.rs`, `src/mcp/strict.rs`):
 - A sha-keyed disk store: `commit_files/<sha>.msgpack`,
   `log/<head_sha>__<scope>.msgpack`, `blame/<sha>__<path_hash>.msgpack`.
 
-Commits are immutable, so once a sha-keyed entry is on disk it's valid forever.
+Commits are immutable, so once a sha-keyed entry is on disk it's valid forever. For that reason
+`commit_files/` of a hosted workspace lives in the git-cache directory of the repository's main worktree
+(`git_history::shared_history_basemind_dir`): every linked worktree reads and writes the same entries,
+and one sweeper holds the directory to its budget. `log/` and `blame/` stay per workspace.
 HEAD-keyed entries (`log`) roll off naturally when HEAD moves.
 
 Each disk subdirectory is held to `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` (256 MiB) by an mtime-LRU sweep on
@@ -852,7 +855,7 @@ basemind's footprint on a constrained machine:
 |---|---|---|
 | `scan_threads` | `0` (auto: rayon's per-core default) | Cap on the code-map scanner's rayon pool. |
 | `embed_threads` | `0` (auto: `max(2, logical_cpus / 4)`) | Cap on the ONNX embedding pool. |
-| `embed_batch_size` | `32` | Chunks submitted to ONNX per batch. |
+| `embed_batch_size` | `32` | Chunks submitted to ONNX per call. A file with more chunks than this is embedded window by window, so peak embedding memory follows this value, not the file's chunk count; smaller windows lower the peak and cost more calls. |
 | `max_concurrent_documents` | `0` (unbounded) | Cap on concurrent document extraction, enforced by a counting semaphore (`src/backpressure.rs`). Document extraction then passes `FootprintGate::admit_exclusive`: over `max_footprint_mb` only one document runs at a time, and a document whose header-derived estimate (`src/extract/doc_cost.rs`) exceeds the whole ceiling is skipped as too large. Distinct from `max_footprint_mb`, which reacts to memory already allocated: an extraction's spike lands faster than the 50 ms sampler sees it, so this bounds how many spikes may overlap before the first one starts. |
 | `document_models` | `full` | Model families document extraction runs: `full` (every configured post-processor the build has; OCR needs `documents-ocr`, NER needs `documents-ner`) \| `code_only` (embeddings only, no keywords/NER/summarization/OCR) \| `none` (metadata + keyword search only). |
 | `onnx_provider` | `cpu` | ONNX execution provider for embeddings, reranker and NER: `cpu` \| `auto` \| `coreml` \| `cuda` \| `tensorrt`. `auto` on macOS means CoreML, which compiles per input shape and measured 7.6 GB for one tiny document vs 0.8 GB on CPU. |

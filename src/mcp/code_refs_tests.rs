@@ -46,10 +46,8 @@ async fn code_refs_without_an_index_is_refused_with_the_fix() {
         }
         .into(),
     );
-    let state = crate::mcp::ServerState::for_connection(
-        crate::mcp::ServedWorkspace::new(Arc::new(shared), &telemetry_dir),
-        "test".into(),
-    );
+    let state =
+        crate::mcp::ServerState::for_connection(crate::mcp::ServedWorkspace::new(Arc::new(shared), &telemetry_dir));
     let refs = |relation: Option<&str>, path: Option<&str>| crate::mcp::params::CodeRefsParams {
         name: Some("alpha".to_string()),
         relation: relation.map(str::to_string),

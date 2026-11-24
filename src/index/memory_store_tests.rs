@@ -532,3 +532,94 @@ fn the_first_write_creates_the_memory_store_once() {
     drop((early, writer));
     assert_eq!(stored_version(&memory_dir), Some(MEMORY_STORE_VER));
 }
+
+fn note_key(scope: &str, key: &str) -> Vec<u8> {
+    crate::index::keys::memory_by_key(scope, crate::index::keys::MEMORY_VIS_GROUP, "", key)
+}
+
+fn put_note(store: &MemoryDb, scope: &str, key: &str, value: &'static str, updated_at: i64) {
+    store
+        .notes_for_write()
+        .unwrap()
+        .insert(note_key(scope, key), row(value, updated_at))
+        .unwrap();
+}
+
+fn note(store: &MemoryDb, scope: &str, key: &str) -> Option<String> {
+    store
+        .notes()
+        .unwrap()
+        .and_then(|notes| notes.get(note_key(scope, key)).unwrap())
+        .map(|bytes| value_of(&bytes))
+}
+
+#[test]
+fn rescope_files_notes_of_an_earlier_origin_under_the_current_scope() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open_shared(&tmp.path().join("repos/g/memory.fjall"), Version::Stamp).unwrap();
+    put_note(&store, "github.com/old/repo", "decision", "kept", 5);
+    put_note(&store, "path:/work/repo", "convention", "also kept", 6);
+
+    assert_eq!(rescope(&store, "github.com/new/repo").unwrap(), 2);
+
+    assert_eq!(note(&store, "github.com/new/repo", "decision").as_deref(), Some("kept"));
+    assert_eq!(
+        note(&store, "github.com/new/repo", "convention").as_deref(),
+        Some("also kept")
+    );
+    assert_eq!(note(&store, "github.com/old/repo", "decision"), None);
+    assert_eq!(note(&store, "path:/work/repo", "convention"), None);
+}
+
+#[test]
+fn rescope_keeps_the_newer_note_when_both_scopes_hold_the_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open_shared(&tmp.path().join("repos/g/memory.fjall"), Version::Stamp).unwrap();
+    put_note(&store, "current", "newer-here", "current", 20);
+    put_note(&store, "old", "newer-here", "old", 10);
+    put_note(&store, "current", "newer-there", "current", 10);
+    put_note(&store, "old", "newer-there", "old", 20);
+
+    rescope(&store, "current").unwrap();
+
+    assert_eq!(note(&store, "current", "newer-here").as_deref(), Some("current"));
+    assert_eq!(note(&store, "current", "newer-there").as_deref(), Some("old"));
+    assert_eq!(note(&store, "old", "newer-here"), None);
+    assert_eq!(note(&store, "old", "newer-there"), None);
+}
+
+#[test]
+fn rescope_to_the_scope_the_notes_already_have_moves_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open_shared(&tmp.path().join("repos/g/memory.fjall"), Version::Stamp).unwrap();
+    put_note(&store, "current", "k", "v", 5);
+
+    assert_eq!(rescope(&store, "current").unwrap(), 0);
+    assert_eq!(note(&store, "current", "k").as_deref(), Some("v"));
+}
+
+#[test]
+fn rescope_of_a_store_that_does_not_exist_creates_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("repos/g/memory.fjall");
+    let store = open_shared(&dir, Version::Check).unwrap();
+
+    assert_eq!(rescope(&store, "current").unwrap(), 0);
+    assert!(!dir.exists());
+}
+
+#[test]
+fn rescope_keeps_the_individual_tier_owner() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = open_shared(&tmp.path().join("repos/g/memory.fjall"), Version::Stamp).unwrap();
+    let old = crate::index::keys::memory_by_key("old", crate::index::keys::MEMORY_VIS_INDIVIDUAL, "agent-1", "k");
+    store.notes_for_write().unwrap().insert(old, row("mine", 5)).unwrap();
+
+    rescope(&store, "current").unwrap();
+
+    let moved = crate::index::keys::memory_by_key("current", crate::index::keys::MEMORY_VIS_INDIVIDUAL, "agent-1", "k");
+    assert_eq!(
+        value_of(&store.notes().unwrap().unwrap().get(moved).unwrap().unwrap()),
+        "mine"
+    );
+}

@@ -1,8 +1,8 @@
 ---
 title: Shared memory
 description: >
-  Per-repo memory agents can write to and search. The worktrees of one checkout with an origin
-  share it; other clones and unrelated repos do not.
+  Per-repo memory agents can write to and search. The worktrees of one checkout share it;
+  other clones and unrelated repos do not.
 ---
 
 basemind provides a shared memory layer scoped to your repository: agents can store notes and search
@@ -55,19 +55,18 @@ with `memory_search {"query":"SQL injection prevention"}`.
 ## Scoping
 
 The store is `cache/repos/<key>/memory.fjall` under the data home, where `<key>` hashes the
-canonical path of the repository's main worktree. Inside the store, notes are filed under the
-normalised `origin` URL, or `path:<worktree>` when there is no `origin`. So:
+canonical path of the repository's main worktree. Inside the store, notes are filed under a scope:
+the normalised `origin` URL, or `path:<main worktree>` when there is no `origin`. So:
 
-- The worktrees (`git worktree add`) of a repository with an `origin` share notes.
+- The worktrees (`git worktree add`) of a repository share notes, with or without an `origin`.
 - A second clone at another path has its own store and sees none of the first clone's notes, even
   with the same `origin`.
 - Moving a repository, or cloning it again at another path, starts with no notes; the old ones
-  stay under the old path's key. A clone made again at the same path with the same `origin` finds
-  the old notes while the data home remains.
-- Adding `origin`, or changing it to another host or path (`git remote set-url`), hides the
-  existing notes; they stay in the store under the old scope. A different spelling of the same
-  remote (a `.git` suffix, a trailing `/`, `https://` against `git@`, host case) keeps them.
-- A repository without `origin` files notes per worktree, so its worktrees do not share them.
+  stay under the old path's key. A clone made again at the same path finds the old notes while the
+  data home remains.
+- Adding, removing or changing `origin` (`git remote set-url`) keeps the notes: the first memory
+  call of a session files every note of the store under the current scope. When both scopes hold
+  the same key, the newer note wins. A search by meaning embeds the notes again.
 - Nothing is synced between machines.
 
 [Data and uninstall](/start/uninstall/) says where the data home is on each platform.

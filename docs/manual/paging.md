@@ -49,6 +49,6 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 | `hunk_cap`, `byte_cap` | `git_diff` | The diff stopped at 200 hunks or 128 KiB; it has no cursor. | Narrow `from` and `to`. |
 | `path_cap` | `git_diff` (no `from`/`to`) | The status list was cut; `omitted` counts the paths left out. | Pass a directory `path` ending in `/`. |
 | `span_limit` | `git_log` with a directory or symbol `path` | The page used up its span of commits before filling; older commits were not inspected. A directory page reports `commits_reached` and, when the git-history index serves it, `total_commits`. | Follow `next_cursor`, an empty page included, until it is absent; stop when `commits_reached` is far enough back. |
-| `commit_cap` | `git_hotspots` | The walk stopped at its commit cap (20,000 indexed, 1,000 live). | Shorten `since`. |
+| `commit_cap` | `basemind git hotspots` (CLI only) | The walk stopped at its commit cap (20,000 indexed, 1,000 live). | Shorten `since`. |
 | `unindexed_scan` | `git_log` with `query` or `author` | The git-history index could not serve the search, so only the newest commits were scanned. | Wait for the index (`index_status`), then repeat. |
 | `shallow_clone` | `git_log`, `git_blame` | The clone is shallow: an absent commit is inconclusive. | `git fetch --unshallow`, then repeat. |

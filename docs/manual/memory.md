@@ -38,11 +38,12 @@ agent working in the same repository should know. Notes are keyed, tagged and se
 - `visibility` is `group` (the default, shared by every agent of the repository) or `individual`
   (only the agent that saved it).
 - Notes live in one store per repository, keyed by the path of its main worktree, and inside it by
-  the normalised `origin` URL. The worktrees of a repository with an `origin` share notes; a clone
-  at another path, a moved repository and an `origin` that normalises differently do not see them.
-  Another spelling of the same remote (a `.git` suffix, a trailing `/`, `https://` against
-  `git@`) keeps its notes, and a new clone at the same path with the same `origin` finds the old
-  ones while the data directory remains. Without an `origin` each worktree has its own notes. `basemind manual data` says where the store lives.
+  a scope: the normalised `origin` URL, or `path:<main worktree>` without one. Every worktree of a
+  repository shares its notes, with or without an `origin`. A clone at another path and a moved
+  repository have their own store and do not see the notes of the first. Adding, removing or
+  changing `origin` keeps the notes: the first memory call of a session files every note of the
+  store under the current scope, the newer one winning when both scopes hold a key, and a
+  search by meaning embeds them again. `basemind manual data` says where the store lives.
 - Both tools need a build with the `memory` feature (the release binary has it); without it the
   call is an error naming the feature. With a daemon running the CLI forwards memory operations to
   it.

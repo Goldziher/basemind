@@ -11,7 +11,6 @@ use super::*;
 async fn symbols(shared: &crate::mcp::ServedWorkspace, name: &str) -> serde_json::Value {
     let server = crate::mcp::BasemindServer::from_shared(
         shared.clone(),
-        "catch-up-tester".to_string(),
         std::sync::Arc::new(crate::mcp::admission::HeavyAdmission::default()),
         None,
     );

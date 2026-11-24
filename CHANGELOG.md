@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `[resources] hard_footprint_percent` is an opt-in hard memory ceiling: past that percentage of `max_footprint_mb` the running scan cancels itself between chunks, the daemon sheds its idle hosted read stacks, and the index is left consistent and marked partial (#214)
 - `basemind code find --indexed true|false|any` lists indexed files, list-only files or both, as the `find_files` tool's `indexed` argument does
 - `code_grep` answers `skipped_reasons` beside `skipped_files`: how many files were skipped as `unavailable` (gone since the scan, or leading out of the repository), `too_large` (past `scan.max_file_bytes`) or `unreadable` (opening or reading failed) (#477)
 - A directory `git_log` page reports `commits_reached` and, when the git-history index serves it, `total_commits`, so an agent can tell how far into the history paging has got (#261)
@@ -19,9 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `[scan.roles]` marks files as `test`, `infra`, `generated`, `vendored` or `example` from built-in globs (Terraform and HCL, Dockerfiles, Helm and Kubernetes, Ansible, CI workflows, Bazel and Starlark, cloud-init and systemd for `infra`) plus the repository's own lists, with `!pattern` re-includes; a role labels a file and never drops it, and `index_status` reports `roles`, the file count per role. Role filters on the search tools, role-aware `code_refs`, RAG defaults and `basemind init` proposals are still to come (#490)
 - While the inotify watch limit leaves directories unwatched, the Linux watcher re-checks them every 30 seconds: it stat-diffs their subtrees so an edit under one is still indexed, and retries arming them; `basemind doctor` gains a `watches` row that warns when a workspace has more directories than `fs.inotify.max_user_watches` allows (#287)
 - `git_log` takes `files: true` to list what each commit changed in a recent or directory list: at most 8 entries a commit (a directory holding several changed files collapses to one `"<dir>/": "<n> files"` entry), the rest counted in `files_more` (#456)
+- Cross-file resolution finds code in other projects of a monorepo: a Python import searches the `src/` and the directory of every `pyproject.toml`, `setup.cfg` and `setup.py` (nearest the importer first) and falls back to `.pyi` stubs, a Java import searches the standard layout under every `pom.xml` and `build.gradle(.kts)` directory, and a Go import reaches the modules of the nearest `go.work` `use` list and the local `replace` targets of its `go.mod`. A project added mid-stitch is seen by the next one. JS/TS workspace packages and `require()` are still to come (#312)
 
 ### Fixed
 
+- `embed_batch_size` now bounds every embedding call: a code file or document with more chunks than the batch size is embedded in windows of that size instead of in one call, so peak memory during `[code_search] embed = true` follows the batch size and not the largest file's chunk count; lower `embed_batch_size` to trade scan time for a smaller peak (#442)
+- Memory notes saved before the repository's `origin` was added, removed or changed are no longer hidden: the first memory call of a session files every note of the store under the current scope, the newer note winning on a clash (#319)
+- A daemon-hosted workspace serves its store from a snapshot a publish swaps in, so a long read (a `code_refs` callers scan, an import-graph build) no longer holds a scan's publish back, and the reads that follow it no longer queue behind the publish (#288)
 - A CLI `git log` forwarded to an older release's running daemon no longer sends the `since`, `until` and `files` parameters it does not set, which that daemon rejected as unknown fields
 - `find_files` with `indexed: true` or `false` no longer lists tracked files that are neither indexed nor list-only, and a list-only file under a `scan.extra_roots` entry is recorded like one in the repository (#495)
 - The daemon returns freed allocator pages to the OS after every rescan and every idle workspace or read-stack eviction, so an idle daemon settles at its live data instead of holding a scan's high-water mark; the hardening soak asserts a bounded idle memory swing (R6c) (#491)
@@ -30,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Code-chunk vectors (`[code_search] embed = true`) live in one store per repository group and embedding model, `cache/groups/<group>/code-lance/<model>-<dim>-<hash>/`, with rows keyed by content instead of by path: worktrees and views holding the same bytes share one set of rows, a search reads only the contents its view's file map names, and a row goes when no view of the group holds its content. The first scan after the upgrade removes the workspace's `lance/` directory and writes the rows again from the cached chunk blobs, without embedding (#289)
+- The hosted read stacks of a repository's linked worktrees keep one sha-keyed `commit_files` disk tier, under the main worktree's workspace cache, instead of a copy per worktree; an existing worktree's own `commit_files/` is no longer read and is dropped with its workspace (#282). The in-memory caches are not yet shared.
+- Removed the write-only per-connection `agent_id` from the MCP server state, and the stale `#[allow(dead_code)]` on the tool router, the embeddings keyspace and the workspace scope key; the scope key is now allowed dead only in a build without `code-search` and `memory` (#225)
 - The file map layout (`blob_layout`) is `2`: an older basemind refuses a map that depends on `index.delta` as a newer one instead of reading the base without its log, and this one rebuilds a layout-1 map over the blobs already stored (#468)
 - The `git_log` `symbol` description says a body comparison ignores comments and whitespace, so a formatter-only rewrite that `git log -L` lists is not reported; `hash_mode` on `symbol_history` is unchanged (#480)
 - Every `limit` argument's description states its maximum, so no limit is capped silently (#261)

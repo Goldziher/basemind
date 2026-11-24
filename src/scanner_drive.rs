@@ -27,6 +27,15 @@
 //! [`RECOVERY_CLEAR_ADMITS`] consecutive clear admits. A scan that cannot hold its ceiling therefore
 //! converges on a narrower, slower pass instead of a dead one.
 //!
+//! ## Hard ceiling
+//!
+//! Everything above is best-effort: the gate admits anyway after `max_wait` to keep the scan moving.
+//! `[resources] hard_footprint_percent` adds an opt-in invariant on top. Between chunks, a footprint
+//! past that percentage of the ceiling cancels the pass through its [`ScanCancel`], which is the
+//! cooperative stop a daemon drain uses: completed files stay committed, the stale purge is skipped
+//! and the status sidecar records the scan as partial. [`ScanStats::footprint_ceiling_hit`] tells
+//! the daemon to shed its hosted read stacks.
+//!
 //! The admit runs between chunks, holding no index batch and staging nothing — parking inside the
 //! per-file Fjall staging would turn a memory problem into a liveness problem.
 
@@ -35,7 +44,7 @@ use std::path::Path;
 
 use crate::backpressure::{AdmitOutcome, FootprintGate};
 use crate::chunk_drive::{ChunkCut, drive_chunks_governed};
-use crate::config::{Config, MaxFootprint};
+use crate::config::Config;
 use crate::embed_progress::EmbedReporter;
 use crate::scan_evidence::ScanBreadcrumb;
 use crate::scanner::{FileResult, FileStatus, ScanCancel, ScanError, ScanSource, ScanStats};
@@ -164,6 +173,9 @@ impl ScanObserver for ProgressObserver<'_> {
     }
 }
 
+/// The partial-scan reason recorded when the footprint hard ceiling cancels a pass.
+pub(crate) const FOOTPRINT_CEILING_REASON: &str = "footprint ceiling";
+
 /// Consecutive clear admits before the governor widens one step back toward its baseline. Four is
 /// long enough that a single lucky sample cannot undo a narrowing, short enough that a transient
 /// spike (one oversized document, one embedding batch) does not cost the rest of the scan its
@@ -241,18 +253,17 @@ where
     clear_streak: usize,
 }
 
-impl DriveGovernor {
-    /// A governor for the `[resources] max_footprint_mb` setting, baselined at `base_items`
-    /// candidates per chunk across `base_workers` pool threads.
-    pub(crate) fn new(setting: MaxFootprint, base_items: usize, base_workers: usize) -> Self {
-        Self::with_gate(FootprintGate::new(setting), base_items, base_workers)
-    }
-}
-
 impl<S> DriveGovernor<S>
 where
     S: Fn() -> Option<u64>,
 {
+    /// Whether the process is past the hard ceiling, in which case the drive must stop.
+    pub(crate) fn breaches_hard_ceiling(&self) -> bool {
+        self.gate.breaches_hard_ceiling()
+    }
+
+    /// A governor over `gate`, baselined at `base_items` candidates per chunk across `base_workers`
+    /// pool threads.
     pub(crate) fn with_gate(gate: FootprintGate<S>, base_items: usize, base_workers: usize) -> Self {
         let base_items = base_items.max(1);
         let base_workers = base_workers.max(1);
@@ -360,11 +371,33 @@ pub(crate) fn drive_scan(
 ) -> Result<DriveOutcome, ScanError> {
     let pool = scanner_pool(drive.config.resources.scan_threads)?;
     let pool_threads = pool.current_num_threads();
-    let mut governor = DriveGovernor::new(
-        drive.config.resources.max_footprint_mb,
-        base_chunk_items(pool_threads),
-        pool_threads,
-    );
+    let gate = FootprintGate::new(drive.config.resources.max_footprint_mb)
+        .with_hard_percent(drive.config.resources.hard_footprint_percent);
+    drive_scan_governed(
+        drive,
+        candidates,
+        store,
+        stats,
+        observer,
+        DriveGovernor::with_gate(gate, base_chunk_items(pool_threads), pool_threads),
+        pool,
+    )
+}
+
+/// [`drive_scan`] under a caller-built governor, so a test can stand in for the footprint source.
+fn drive_scan_governed<S>(
+    drive: &ScanDrive<'_>,
+    candidates: &[String],
+    store: &mut Store,
+    stats: &mut ScanStats,
+    observer: &mut dyn ScanObserver,
+    mut governor: DriveGovernor<S>,
+    pool: &'static rayon::ThreadPool,
+) -> Result<DriveOutcome, ScanError>
+where
+    S: Fn() -> Option<u64>,
+{
+    let pool_threads = pool.current_num_threads();
     // The governor decides the worker ceiling in `next_cut`; `process` reads it one statement ~keep
     // later on the same thread. A `Cell` passes it across without either closure having to ~keep
     // borrow the governor, which only one of them may. ~keep
@@ -386,11 +419,18 @@ pub(crate) fn drive_scan(
         observer,
         out: DriveOutcome::default(),
     };
+    // Set by the cut closure, read after the drive: `ctx` is mutably borrowed while it runs. ~keep
+    let ceiling_hit = Cell::new(false);
 
     drive_chunks_governed(
         &mut ctx,
         candidates,
         || {
+            if !drive.cancel.is_cancelled() && governor.breaches_hard_ceiling() {
+                tracing::error!("process footprint past the hard ceiling; cancelling the scan, which stays partial");
+                ceiling_hit.set(true);
+                drive.cancel.cancel();
+            }
             if drive.cancel.is_cancelled() || index_db.as_ref().is_some_and(crate::index::IndexDb::has_fatal_fault) {
                 return None;
             }
@@ -420,6 +460,7 @@ pub(crate) fn drive_scan(
         |ctx: &mut DriveCtx<'_>, produced| apply_outcomes(ctx, produced),
     );
 
+    ctx.stats.footprint_ceiling_hit |= ceiling_hit.get();
     #[cfg(feature = "documents")]
     {
         ctx.stats.abandoned_extractions = drive.filters.retrieval.documents.abandoned_extractions();
@@ -610,6 +651,10 @@ fn apply_outcomes(ctx: &mut DriveCtx<'_>, outcomes: Vec<FileResult>) {
 #[cfg(test)]
 #[path = "scanner_drive_failure_tests.rs"]
 mod failure_tests;
+
+#[cfg(test)]
+#[path = "scanner_drive_ceiling_tests.rs"]
+mod ceiling_tests;
 
 #[cfg(test)]
 mod tests {

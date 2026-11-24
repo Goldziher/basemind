@@ -8,6 +8,7 @@ pub(crate) mod files;
 pub(crate) mod git;
 pub(crate) mod graph;
 pub(crate) mod grep;
+pub(crate) mod hotspots;
 pub(crate) mod index;
 pub(crate) mod memory;
 pub(crate) mod migration;

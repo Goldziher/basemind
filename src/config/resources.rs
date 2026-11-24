@@ -82,7 +82,7 @@ pub struct ResourcesConfig {
     /// worker while the process is over the ceiling, shaving the scan's peak.
     /// It stays best-effort: an unreadable sample or a sustained overshoot
     /// admits anyway to guarantee forward progress, so the ceiling shapes the
-    /// peak rather than enforcing a hard invariant.
+    /// peak rather than enforcing a hard invariant; `hard_footprint_percent` opts in to one.
     ///
     /// **`0` used to mean "disabled" and now means "auto".** A config carrying
     /// the old default therefore gains a ceiling on upgrade; `"off"` restores
@@ -90,6 +90,19 @@ pub struct ResourcesConfig {
     /// arithmetic.
     #[serde(default)]
     pub max_footprint_mb: MaxFootprint,
+    /// Opt-in HARD ceiling, as a percentage of the resolved `max_footprint_mb`: `0` (the default)
+    /// keeps the footprint gate best-effort; `150` means that once the process footprint passes
+    /// one and a half times the ceiling the running scan is cancelled and the daemon sheds its
+    /// hosted read stacks. A value below `100` is raised to `100`: the hard ceiling never sits
+    /// under the soft one.
+    ///
+    /// The cancelled scan stops at its next chunk boundary, the same cooperative stop a daemon
+    /// drain uses, so the index stays consistent: completed files are committed, the stale purge
+    /// is skipped, and the status sidecar records the scan as partial (reason
+    /// `footprint ceiling`) so the next scan picks the rest up. It has no effect while the soft
+    /// ceiling is `"off"` or auto resolves to nothing, because there is no footprint to scale.
+    #[serde(default)]
+    pub hard_footprint_percent: usize,
     /// Byte budget, in mebibytes, for the MCP read stack's decoded-outline cache
     /// (`crate::mcp::l1_cache::L1Cache`). `0` means unbounded — the
     /// pre-0.26 behaviour, where every indexed file's decoded L1 stayed
@@ -158,6 +171,7 @@ impl Default for ResourcesConfig {
             max_concurrent_documents: 0,
             embed_batch_size: Self::default_embed_batch_size(),
             max_footprint_mb: MaxFootprint::default(),
+            hard_footprint_percent: 0,
             max_map_cache_mb: Self::default_max_map_cache_mb(),
             document_models: DocumentModelProfile::default(),
             onnx_provider: OnnxProvider::default(),
