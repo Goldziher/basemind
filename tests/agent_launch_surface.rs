@@ -460,7 +460,7 @@ fn a_lead_that_ends_stops_its_sessions_and_records_their_exit() {
         let pidfile = layout.base.join("detached.pid");
         let stand_in = detaching_opencode(&layout, &pidfile);
         let dir = layout.config_dir();
-        std::fs::create_dir_all(dir).expect("config dir");
+        std::fs::create_dir_all(&dir).expect("config dir");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod dir");
         let policy = dir.join("agents.toml");
         std::fs::write(
