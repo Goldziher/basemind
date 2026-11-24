@@ -105,9 +105,9 @@ impl SpecifierResolver {
             #[cfg(feature = "code-intel-js")]
             "javascript" | "typescript" | "tsx" => Some(Self::Js(Box::new(js::JsResolver::new()))),
             #[cfg(feature = "code-intel-stack")]
-            "python" => Some(Self::Python(python::PythonResolver)),
+            "python" => Some(Self::Python(python::PythonResolver::default())),
             #[cfg(feature = "code-intel-stack")]
-            "java" => Some(Self::Java(java::JavaResolver)),
+            "java" => Some(Self::Java(java::JavaResolver::default())),
             _ => None,
         }
     }
@@ -484,6 +484,10 @@ pub(crate) mod js {
 }
 
 #[cfg(feature = "code-intel-stack")]
+#[path = "resolver_roots.rs"]
+mod roots;
+
+#[cfg(feature = "code-intel-stack")]
 #[path = "resolver_python.rs"]
 pub(crate) mod python;
 
@@ -496,9 +500,15 @@ pub(crate) mod java {
     //! Java fully-qualified-name resolution over conventional Maven/Gradle source roots.
     //!
     //! A Java import `com.example.Foo` names a public type `Foo` in package `com.example`, which by
-    //! convention lives at `<source-root>/com/example/Foo.java`. We try each known source root
-    //! (repo root plus the standard Maven/Gradle roots) and return the first `.java` file that
-    //! exists on disk. Wildcard imports (`com.example.*`) resolve to `None` (no single target).
+    //! convention lives at `<source-root>/com/example/Foo.java`. The source roots are the standard
+    //! layout (`src/main/java`, `src/test/java`, `src`, and the directory itself) under every
+    //! directory holding a `pom.xml`, `build.gradle` or `build.gradle.kts` and holding the import's
+    //! top-level package directory, the nearest to the importer first, then the same layout at the
+    //! repository root. The first `.java` file that exists on disk is the target. Wildcard imports
+    //! (`com.example.*`) resolve to `None` (no single target).
+    //!
+    //! The project directories are found once per resolver, by walking the repository. A project
+    //! added after that walk is seen by the next stitch, not by the importers of the current one.
     //!
     //! Known gap: **static imports** (`import static a.b.C.method;`) are not distinguished from type
     //! imports — the trailing member is treated as a type name, so the resolver builds a
@@ -506,16 +516,28 @@ pub(crate) mod java {
     //! no cross-file resolution today (a miss, never a wrong answer).
 
     use std::path::Path;
+    use std::sync::OnceLock;
 
+    use ahash::AHashSet;
+
+    use super::roots::{self, SourceRoot};
     use super::{ProbeSet, probe_file};
     use crate::intel::model::ImportEdge;
     use crate::path::RelPath;
 
-    /// Source roots searched for a fully-qualified type, most-specific first. Covers the Maven/
-    /// Gradle standard directory layout plus a bare `src/` and the repo root (flat / single-module).
+    /// Source roots of one project and of the repository root, most-specific first. Covers the
+    /// Maven/Gradle standard directory layout plus a bare `src/` and the project directory itself
+    /// (flat / single-module).
     const SOURCE_ROOTS: &[&str] = &["src/main/java", "src/test/java", "src", ""];
 
-    pub(crate) struct JavaResolver;
+    /// Files that mark a directory as a Maven or Gradle project.
+    const MANIFESTS: &[&str] = &["pom.xml", "build.gradle", "build.gradle.kts"];
+
+    /// Resolves Java imports. Discovers the repository's source roots on first use.
+    #[derive(Default)]
+    pub(crate) struct JavaResolver {
+        roots: OnceLock<Vec<SourceRoot>>,
+    }
 
     impl JavaResolver {
         /// Resolve `import`'s fully-qualified name (`com.example.Foo`) to `<root>/com/example/Foo.java`
@@ -523,7 +545,7 @@ pub(crate) mod java {
         pub(crate) fn resolve(
             &self,
             root: &Path,
-            _importer_rel: &str,
+            importer_rel: &str,
             import: &ImportEdge,
             probes: &mut ProbeSet,
         ) -> Option<RelPath> {
@@ -533,17 +555,39 @@ pub(crate) mod java {
                 return None;
             }
             let rel_java = format!("{}.java", parts.join("/"));
-            for source_root in SOURCE_ROOTS {
+            for source_root in self.source_roots(root, importer_rel, parts[0]) {
                 let mut base = root.to_path_buf();
-                for segment in source_root.split('/').filter(|segment| !segment.is_empty()) {
-                    base.push(segment);
-                }
+                base.extend(source_root.split('/').filter(|segment| !segment.is_empty()));
                 if let Some(hit) = probe_file(root, &base.join(&rel_java), probes) {
                     return Some(hit);
                 }
             }
             None
         }
+
+        /// The source roots to search for a type whose top-level package is `first`: the project
+        /// roots that hold that package, nearest to the importer first, then [`SOURCE_ROOTS`].
+        fn source_roots(&self, root: &Path, importer_rel: &str, first: &str) -> Vec<String> {
+            let project_roots = self
+                .roots
+                .get_or_init(|| roots::discover(root, MANIFESTS, SOURCE_ROOTS, SOURCE_ROOTS, package_dirs));
+            roots::nearest(project_roots, importer_rel, first)
+                .chain(SOURCE_ROOTS.iter().copied())
+                .map(str::to_string)
+                .collect()
+        }
+    }
+
+    /// The names of the subdirectories of `dir`: the top-level packages it holds.
+    fn package_dirs(dir: &Path) -> AHashSet<String> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return AHashSet::new();
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect()
     }
 }
 
@@ -795,6 +839,92 @@ mod stack_tests {
         ] {
             assert!(probes.contains(candidate), "{candidate} must be a recorded probe");
         }
+    }
+
+    fn multi_root_fixture() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/multi_root")
+    }
+
+    fn resolved_in(root: &Path, language: &str, importer: &str, specifier: &str) -> Option<String> {
+        let resolver = SpecifierResolver::for_language(language).unwrap();
+        resolve_unprobed(&resolver, root, importer, &import(specifier, None))
+            .and_then(|rel| rel.as_str().map(str::to_string))
+    }
+
+    #[test]
+    fn python_import_resolves_across_project_roots_and_to_stubs() {
+        let root = multi_root_fixture();
+        for (specifier, expected) in [
+            ("beta.core", Some("py/b/src/beta/core.py")),
+            ("beta", Some("py/b/src/beta/__init__.py")),
+            ("beta.typed", Some("py/b/src/beta/typed.pyi")),
+            ("beta.gone", None),
+            ("gamma.core", None),
+        ] {
+            assert_eq!(
+                resolved_in(&root, "python", "py/a/src/alpha/app.py", specifier).as_deref(),
+                expected,
+                "{specifier}"
+            );
+        }
+    }
+
+    #[test]
+    fn python_prefers_the_project_root_nearest_the_importer() {
+        let tmp = TempDir::new().unwrap();
+        for project in ["a", "b"] {
+            write(tmp.path(), &format!("{project}/pyproject.toml"), "");
+            write(tmp.path(), &format!("{project}/shared/mod.py"), "");
+        }
+        assert_eq!(
+            resolved_in(tmp.path(), "python", "b/app.py", "shared.mod").as_deref(),
+            Some("b/shared/mod.py")
+        );
+        assert_eq!(
+            resolved_in(tmp.path(), "python", "a/app.py", "shared.mod").as_deref(),
+            Some("a/shared/mod.py")
+        );
+    }
+
+    #[test]
+    fn python_module_file_beats_its_stub() {
+        let tmp = TempDir::new().unwrap();
+        write(tmp.path(), "pkg/mod.py", "");
+        write(tmp.path(), "pkg/mod.pyi", "");
+        assert_eq!(
+            resolved_in(tmp.path(), "python", "app.py", "pkg.mod").as_deref(),
+            Some("pkg/mod.py")
+        );
+    }
+
+    #[test]
+    fn java_import_resolves_across_project_roots() {
+        let root = multi_root_fixture();
+        for (specifier, expected) in [
+            ("com.beta.Lib", Some("java/b/src/main/java/com/beta/Lib.java")),
+            ("com.alpha.App", Some("java/a/src/main/java/com/alpha/App.java")),
+            ("com.beta.Gone", None),
+            ("org.other.Lib", None),
+        ] {
+            assert_eq!(
+                resolved_in(&root, "java", "java/a/src/main/java/com/alpha/App.java", specifier).as_deref(),
+                expected,
+                "{specifier}"
+            );
+        }
+    }
+
+    #[test]
+    fn java_prefers_the_project_root_nearest_the_importer() {
+        let tmp = TempDir::new().unwrap();
+        for project in ["a", "b"] {
+            write(tmp.path(), &format!("{project}/build.gradle.kts"), "");
+            write(tmp.path(), &format!("{project}/src/main/java/com/x/T.java"), "");
+        }
+        assert_eq!(
+            resolved_in(tmp.path(), "java", "b/src/main/java/com/y/U.java", "com.x.T").as_deref(),
+            Some("b/src/main/java/com/x/T.java")
+        );
     }
 
     #[test]
