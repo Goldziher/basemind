@@ -37,6 +37,13 @@ ceiling is skipped, counted as too large in the scan summary, and logged with th
 limit. The size is estimated from the file header, so a 30,000 x 30,000 pixel image is priced by its
 dimensions, not its byte size.
 
+`hard_footprint_percent` turns the ceiling into a hard one. With `hard_footprint_percent = 150`, a
+footprint past one and a half times the ceiling, seen between scan chunks, cancels the running scan
+and makes the daemon shed its idle hosted read stacks. The index stays consistent: completed files
+are committed, nothing is purged as stale and the index is marked partial, so the next scan
+continues. It is off by default; use it on a shared machine where a ceiling must hold. A single
+chunk can still overshoot before the check, so leave headroom.
+
 <Aside type="note">
 The ceiling shapes peak memory; it is not a hard limit. After a capped wait, work is admitted anyway
 so a scan always makes progress.

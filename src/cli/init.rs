@@ -179,6 +179,7 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # max_concurrent_documents = 0
 # embed_batch_size = 32
 # max_footprint_mb = 0
+# hard_footprint_percent = 0
 # max_map_cache_mb = 256
 "##;
 
