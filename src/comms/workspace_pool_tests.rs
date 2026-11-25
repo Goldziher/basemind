@@ -909,3 +909,7 @@ mod agent_tests;
 #[cfg(feature = "comms")]
 #[path = "workspace_pool_stack_tests.rs"]
 mod stack_tests;
+
+#[cfg(feature = "comms")]
+#[path = "workspace_pool_outline_tests.rs"]
+mod outline_tests;

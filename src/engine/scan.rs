@@ -8,7 +8,6 @@ use std::sync::atomic::Ordering;
 
 use crate::engine::MapCache;
 use crate::engine::error::EngineError;
-use crate::engine::l1_cache::budget_bytes_from;
 use crate::engine::workspace::Workspace;
 use crate::path::{RelPath, is_external_key, normalize_query_path};
 use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanError, ScanObserver, ScanReport};
@@ -116,7 +115,7 @@ impl Workspace {
             if was_scoped {
                 Some(current.with_delta(&store, &updated, &removed))
             } else {
-                current.refreshed(&store, budget_bytes_from(&self.config.resources))
+                current.refreshed(&store, self.outlines())
             }
         };
         if let Some(cache) = new_cache {
@@ -253,7 +252,7 @@ impl Workspace {
     )]
     pub(crate) fn publish_store(&self, store: Store) -> Option<Arc<MapCache>> {
         let current = self.cache.load_full();
-        let cache = current.refreshed(&store, budget_bytes_from(&self.config.resources));
+        let cache = current.refreshed(&store, self.outlines());
         self.replace_store(store);
         let published = cache.map(|cache| {
             let cache = Arc::new(cache);
@@ -268,11 +267,7 @@ impl Workspace {
     /// the map served now; `None` when it does not, and nothing is replaced or bumped.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) fn publish_store_if_changed(&self, store: Store) -> Option<Arc<MapCache>> {
-        let cache = Arc::new(
-            self.cache
-                .load_full()
-                .refreshed(&store, budget_bytes_from(&self.config.resources))?,
-        );
+        let cache = Arc::new(self.cache.load_full().refreshed(&store, self.outlines())?);
         self.replace_store(store);
         self.cache.store(Arc::clone(&cache));
         self.note_index_changed();
@@ -297,7 +292,7 @@ impl Workspace {
         let gate = OpenGate(self);
         let cache = {
             let store = self.store_read();
-            MapCache::build(&store, budget_bytes_from(&self.config.resources))
+            MapCache::build(&store, self.outlines())
         };
         let files = cache.len();
         let cache = Arc::new(cache);

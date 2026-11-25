@@ -676,8 +676,8 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
                         continue;
                     }
                 };
-                let budget = super::l1_cache::budget_bytes_from(&state.shared.config.resources);
-                let Some(new_cache) = state.shared.cache.load_full().refreshed(&new_store, budget) else {
+                let outlines = state.shared.outlines();
+                let Some(new_cache) = state.shared.cache.load_full().refreshed(&new_store, outlines) else {
                     tracing::debug!("view watcher: index rewritten but unchanged; keeping the current MapCache");
                     continue;
                 };

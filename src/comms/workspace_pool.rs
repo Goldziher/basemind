@@ -31,7 +31,8 @@ pub(crate) const DEFAULT_HOT_CAP: usize = 4;
 /// [`DEFAULT_HOT_CAP`], which governs something much cheaper.
 ///
 /// A hot entry is an open `Store` handle. A warm read stack is an O(corpus) resident structure per
-/// workspace (the in-RAM code map and its L1 outline cache, git caches, LanceDB, ONNX), so letting
+/// workspace (the in-RAM code map, term index, git caches, LanceDB, ONNX; its decoded outlines live
+/// in the cache every hosted stack shares, under one budget), so letting
 /// one grow per hot entry multiplies the whole read stack by 16 — the daemon-specific multiplier
 /// behind issue #62's 43.8 GiB. Three lets a developer alternate between a couple of repos without
 /// paying a rebuild, and a rebuild is transparent anyway: dropping a stack changes latency, not
@@ -274,6 +275,10 @@ pub(crate) struct WorkspacePool {
     cleanup_signal: std::sync::Arc<tokio::sync::Notify>,
     /// Held shared by every scan this pool runs, exclusively by the blob sweep.
     blob_gc: std::sync::Arc<super::blob_gc_gate::BlobGcGate>,
+    /// The decoded-outline cache every hosted read stack shares: outlines are keyed by content, so
+    /// the worktrees of a repository decode a file they hold in common once, under one budget.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    outlines: std::sync::Arc<crate::engine::l1_shared::SharedOutlines>,
 }
 
 impl WorkspacePool {
@@ -286,7 +291,15 @@ impl WorkspacePool {
             scan_cancel: ScanCancel::new(),
             cleanup_signal: std::sync::Arc::new(tokio::sync::Notify::new()),
             blob_gc: std::sync::Arc::default(),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            outlines: std::sync::Arc::default(),
         }
+    }
+
+    /// The outline cache the pool's hosted read stacks share.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) fn shared_outlines(&self) -> std::sync::Arc<crate::engine::l1_shared::SharedOutlines> {
+        std::sync::Arc::clone(&self.outlines)
     }
 
     /// The gate the blob sweep must hold exclusively (see [`super::blob_gc_gate`]).

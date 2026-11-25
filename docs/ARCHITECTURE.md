@@ -213,7 +213,8 @@ src/
 │   │                         search)
 │   ├── refs/, memory/      — code_refs resolution; memory notes and their vectors
 │   ├── term_index.rs, l1_cache.rs, map_cache.rs — resident term index, decoded-outline and
-│   │                         file-map caches (max_map_cache_mb)
+│   │                         file-map caches (max_map_cache_mb); l1_shared.rs — the
+│   │                         outline cache the daemon's hosted read stacks share
 │   └── budget.rs, cursor.rs, filters.rs, freshness.rs, pick.rs, files.rs, error.rs — the
 │                             contract every body shares: token budget, cursors, refused
 │                             filters, files changed since the scan, pinned symbols, indexed
@@ -882,7 +883,7 @@ basemind's footprint on a constrained machine:
 | `document_models` | `full` | Model families document extraction runs: `full` (every configured post-processor the build has; OCR needs `documents-ocr`, NER needs `documents-ner`) \| `code_only` (embeddings only, no keywords/NER/summarization/OCR) \| `none` (metadata + keyword search only). |
 | `onnx_provider` | `cpu` | ONNX execution provider for embeddings, reranker and NER: `cpu` \| `auto` \| `coreml` \| `cuda` \| `tensorrt`. `auto` on macOS means CoreML, which compiles per input shape and measured 7.6 GB for one tiny document vs 0.8 GB on CPU. |
 | `max_footprint_mb` | `0` (auto) | Ceiling on process memory footprint. A positive integer is an explicit mebibyte ceiling; `0` or `"auto"` derives one from the environment (75% of an enforced cgroup limit, else 25% of machine RAM, floored at 2048 MiB); `"off"` disables the gate. |
-| `max_map_cache_mb` | `256` | Byte budget for the MCP read stack's decoded-outline cache (`src/engine/l1_cache.rs`), per workspace. `0` = unbounded. A miss costs one blob read and never changes an answer. A read-only session's projected call / implementation indexes are charged against it. |
+| `max_map_cache_mb` | `256` | Byte budget for the MCP read stack's decoded-outline cache (`src/engine/l1_cache.rs`), per workspace; the daemon's hosted read stacks share one cache (`src/engine/l1_shared.rs`), charged against the largest budget any of them sets. `0` = unbounded. A miss costs one blob read and never changes an answer. A read-only session's projected call / implementation indexes are charged against it. |
 
 In the shared daemon these values are ceilings, not settings: `src/config/daemon.rs` applies
 `min(file, cap)` to each (and to `[scan]` / `[documents]` limits), with `0` / `"auto"` /
@@ -912,7 +913,10 @@ Other bounds that are not `[resources]` keys:
 `[resources]` bounds **one** read stack. The daemon holds several, and that multiplier is its own
 bound (`src/comms/workspace_pool.rs`). A hot pool entry is an open `Store` handle, capped at 4
 (`DEFAULT_HOT_CAP`); a *warm read stack* is the O(corpus) structure `max_map_cache_mb` governs, and
-it is capped separately and far lower:
+it is capped separately and far lower. Decoded outlines are not part of that per-stack cost: they
+are keyed by content hash and read from the one content-addressed blob directory, so every hosted
+stack reads them from a single shared cache under one `max_map_cache_mb` ceiling, and the worktrees
+of a repository decode each shared file once:
 
 | Knob | Default | Purpose |
 |---|---|---|

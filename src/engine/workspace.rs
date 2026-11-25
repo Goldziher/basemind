@@ -61,6 +61,9 @@ pub(crate) struct Workspace {
     /// Held on the server so the `rescan` MCP tool can re-run a scan in-process
     /// without re-reading `basemind.toml`.
     pub(crate) config: Arc<crate::config::Config>,
+    /// The host's outline caches shared between its read stacks, for a daemon-hosted workspace;
+    /// `None` gives every map a cache of its own ([`Workspace::outlines`]).
+    shared_outlines: Option<Arc<crate::engine::l1_shared::SharedOutlines>>,
     /// Sum of `size_bytes` across every indexed file. Captured at boot and
     /// after each `rescan`. Feeds the corpus-baseline cost in
     /// [`crate::mcp::savings::estimate_from_text`].
@@ -301,6 +304,25 @@ impl Workspace {
         git_history: Option<Arc<crate::git_history::GitHistoryIndex>>,
         options: OpenOptions,
     ) -> Self {
+        Self::sharing_outlines(store, root, config, repo, git_cache, git_history, options, None)
+    }
+
+    /// [`Workspace::new`] whose maps take their decoded outlines from `shared_outlines`, the cache a
+    /// daemon shares between every read stack it hosts ([`crate::engine::l1_shared`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Workspace::new's parts plus the one cache a host shares"
+    )]
+    pub(crate) fn sharing_outlines(
+        store: Store,
+        root: PathBuf,
+        config: Arc<crate::config::Config>,
+        repo: Option<Arc<crate::git::Repo>>,
+        git_cache: Arc<crate::git_cache::GitCache>,
+        git_history: Option<Arc<crate::git_history::GitHistoryIndex>>,
+        options: OpenOptions,
+        shared_outlines: Option<Arc<crate::engine::l1_shared::SharedOutlines>>,
+    ) -> Self {
         let scope = repo
             .as_ref()
             .map(|r| crate::git::scope_key(r))
@@ -312,7 +334,7 @@ impl Workspace {
         } else {
             Arc::new(MapCache::build(
                 &store,
-                crate::engine::l1_cache::budget_bytes_from(&config.resources),
+                outlines_of(shared_outlines.as_deref(), &config),
             ))
         };
         tracing::info!(
@@ -339,6 +361,7 @@ impl Workspace {
             outline_cache,
             lang_rules: std::sync::OnceLock::new(),
             config,
+            shared_outlines,
             corpus_bytes: AtomicU64::new(corpus_bytes),
             cache_generation: AtomicU32::new(1),
             index_generation: AtomicU32::new(1),
@@ -377,7 +400,26 @@ impl Workspace {
     }
 }
 
+/// Where a map of a workspace configured by `config` takes its outline cache from: `shared`, else
+/// a cache of its own, either charged against `[resources] max_map_cache_mb`.
+fn outlines_of<'a>(
+    shared: Option<&'a crate::engine::l1_shared::SharedOutlines>,
+    config: &crate::config::Config,
+) -> crate::engine::l1_shared::Outlines<'a> {
+    let budget = crate::engine::l1_cache::budget_bytes_from(&config.resources);
+    match shared {
+        Some(shared) => crate::engine::l1_shared::Outlines::shared(shared, budget),
+        None => crate::engine::l1_shared::Outlines::private(budget),
+    }
+}
+
 impl Workspace {
+    /// Where this workspace's next map takes its outline cache from: the host's shared one, else a
+    /// cache of its own.
+    pub(crate) fn outlines(&self) -> crate::engine::l1_shared::Outlines<'_> {
+        outlines_of(self.shared_outlines.as_deref(), &self.config)
+    }
+
     /// The compiled `[languages]` overrides. A table that does not compile was already reported
     /// when the config was loaded; detection then falls back to the built-in rules.
     pub(crate) fn lang_rules(&self) -> &crate::lang_rules::LangRules {
@@ -457,8 +499,7 @@ impl Workspace {
         self.lazy_cache_built.get_or_init(|| {
             let started = std::time::Instant::now();
             let store = self.store_read();
-            let budget = crate::engine::l1_cache::budget_bytes_from(&self.config.resources);
-            let cache = Arc::new(MapCache::build(&store, budget));
+            let cache = Arc::new(MapCache::build(&store, self.outlines()));
             let files = cache.len();
             self.cache.store(Arc::clone(&cache));
             self.cache_generation.fetch_add(1, Ordering::Relaxed);
