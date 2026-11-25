@@ -160,6 +160,9 @@ class MsgpackWatcher(threading.Thread):
         self.root, self.every = root, every
         self.daemon_pids, self.counter, self.clock = daemon_pids, counter, clock
         self.stop_event = threading.Event()
+        # The watcher thread polls while the main thread opens and closes the window: one reentrant lock
+        # guards every counter and snapshot (`begin_load` polls under it).
+        self.lock = threading.RLock()
         self.seen: dict[str, tuple[int, int, int]] = {}
         self.daemon_writes: dict[int, int] = {}
         self.baseline: dict[int, int] = {}
@@ -171,16 +174,18 @@ class MsgpackWatcher(threading.Thread):
 
     def begin_load(self) -> None:
         """Start the accounting window now: earlier rewrites and counter readings no longer count."""
-        self.poll_counters()
-        self.baseline = {pid: w for pid, w in self.daemon_writes.items() if pid not in self.unread}
-        self.unbaselined = set(self.daemon_writes) - self.baseline.keys() | self.unread
-        self.bytes = 0
-        self.rewrites = 0
-        self.started = self.clock()
+        with self.lock:
+            self.poll_counters()
+            self.baseline = {pid: w for pid, w in self.daemon_writes.items() if pid not in self.unread}
+            self.unbaselined = set(self.daemon_writes) - self.baseline.keys() | self.unread
+            self.bytes = 0
+            self.rewrites = 0
+            self.started = self.clock()
 
     def tick(self) -> None:
-        self.poll_files()
-        self.poll_counters()
+        with self.lock:
+            self.poll_files()
+            self.poll_counters()
 
     def poll_files(self) -> None:
         for dirpath, _dirs, files in os.walk(self.root):
@@ -199,13 +204,14 @@ class MsgpackWatcher(threading.Thread):
                 self.rewrites += 1
 
     def poll_counters(self) -> None:
-        for pid in set(self.daemon_pids()) | self.daemon_writes.keys():
-            written = self.counter(pid)
-            if written is None:
-                self.unread.add(pid)
-                continue
-            self.unread.discard(pid)
-            self.daemon_writes[pid] = max(written, self.daemon_writes.get(pid, 0))
+        with self.lock:
+            for pid in set(self.daemon_pids()) | self.daemon_writes.keys():
+                written = self.counter(pid)
+                if written is None:
+                    self.unread.add(pid)
+                    continue
+                self.unread.discard(pid)
+                self.daemon_writes[pid] = max(written, self.daemon_writes.get(pid, 0))
 
     def run(self) -> None:
         self.tick()
@@ -213,17 +219,18 @@ class MsgpackWatcher(threading.Thread):
             self.tick()
 
     def total(self) -> dict[str, Any]:
-        counted = {pid: w for pid, w in self.daemon_writes.items() if pid not in self.unbaselined}
-        lower = sum(w - self.baseline.get(pid, 0) for pid, w in counted.items()) if counted else None
-        return {
-            "kind": "msgpack_total",
-            "bytes": self.bytes,
-            "written_lower": lower,
-            "written_upper": None if self.unread or self.unbaselined else lower,
-            "rewrites": self.rewrites,
-            "files": len(self.seen),
-            "seconds": round(self.clock() - self.started, 1),
-        }
+        with self.lock:
+            counted = {pid: w for pid, w in self.daemon_writes.items() if pid not in self.unbaselined}
+            lower = sum(w - self.baseline.get(pid, 0) for pid, w in counted.items()) if counted else None
+            return {
+                "kind": "msgpack_total",
+                "bytes": self.bytes,
+                "written_lower": lower,
+                "written_upper": None if self.unread or self.unbaselined else lower,
+                "rewrites": self.rewrites,
+                "files": len(self.seen),
+                "seconds": round(self.clock() - self.started, 1),
+            }
 
 
 def git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
