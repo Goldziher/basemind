@@ -305,6 +305,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
+        with:
+          use-sccache: "false"
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -323,6 +325,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-rust
+        with:
+          # ~keep The doc build runs in a network namespace; sccache's GitHub Actions backend needs the network.
+          use-sccache: "false"
       - uses: Swatinem/rust-cache@v2
         with:
           key: docs-rs

@@ -16,7 +16,7 @@ pnpm = "12.21.0"
 "github:nextest-rs/nextest" = { version = "0.9.152", version_prefix = "cargo-nextest-" }
 "github:EmbarkStudios/cargo-about" = "0.9.3"
 ripgrep = "15.2.0"
-sccache = "0.20.0"
+sccache = "0.19.0"
 
 [tasks.setup]
 description = "Install all dependencies and initialize project. Idempotent."
