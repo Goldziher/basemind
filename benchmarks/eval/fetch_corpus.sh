@@ -40,7 +40,7 @@ wanted() {
 }
 
 status=0
-while IFS=$'\t' read -r name url commit sum files; do
+while IFS=$'\t' read -r name url commit sum files _; do
   case "${name}" in '' | '#'*) continue ;; esac
   wanted "${name}" "$@" || continue
   dest="${dir}/${name}"

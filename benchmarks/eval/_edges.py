@@ -35,6 +35,18 @@ Python (from `ast`):
   when that is a module, else to `a.b`. Relative imports resolve from the importer's package.
   `if TYPE_CHECKING:` imports count like any other.
 
+TypeScript (from the source text, no compiler):
+
+- Only relative specifiers (`./x`, `../x`) are edges; a bare specifier is a package, external to the
+  graph. The specifier sits in `import ... from`, `export ... from` (a barrel's `export * from`
+  and `export {a} from`), a side-effect `import '...'`, `import('...')` or `require('...')`; text
+  in comments is ignored.
+- A specifier resolves like the compiler's: the file itself, else the same path with `.js` /
+  `.jsx` / `.mjs` / `.cjs` read as the `.ts` / `.tsx` / `.mts` / `.cts` source beside it, else the
+  path plus an extension, else the directory's `index` file. An edge goes to the file the specifier
+  names, so an importer of a barrel points at the barrel, and the barrel points at what it
+  re-exports; no edge skips over the barrel.
+
 Both: an edge to the importer itself is dropped, and each `(importer, target)` pair is kept once
 at its first line. `#[cfg]` and other conditions are ignored.
 """
@@ -42,7 +54,9 @@ at its first line. `#[cfg]` and other conditions are ignored.
 from __future__ import annotations
 
 import ast
+import bisect
 import posixpath
+import re
 import tomllib
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable
@@ -397,6 +411,107 @@ def python_edges(blobs: Iterable[tuple[str, str]]) -> Edges:
                     sub = f"{module}.{alias.name}" if module else alias.name
                     target = modules.get(sub) if alias.name != "*" else None
                     _add(edges, path, target or (deepest(module) if module else None), node.lineno)
+    return edges
+
+
+TS_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts")
+TS_JS_TO_SOURCE = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
+TS_SPECIFIER = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])(\.{1,2}(?:/[^'"\n]*)?)\1""")
+
+
+def _ts_resolve(importer: str, specifier: str, files: set[str]) -> str | None:
+    """The file `specifier` names from `importer`, by the compiler's rules for a relative path."""
+    base = posixpath.normpath(posixpath.join(posixpath.dirname(importer), specifier))
+    if base == ".." or base.startswith("../"):
+        return None
+    stem, ext = posixpath.splitext(base)
+    candidates = [base]
+    candidates += [stem + alt for alt in TS_JS_TO_SOURCE.get(ext, ())]
+    candidates += [base + e for e in TS_EXTENSIONS]
+    candidates += [f"{base}/index{e}" for e in TS_EXTENSIONS]
+    return next((cand for cand in candidates if cand in files), None)
+
+
+def _ts_code(src: str) -> tuple[str, list[int], list[int]]:
+    """`src` with comments and template-literal text blanked (newlines kept, so a line number stays the
+    file's), and the start and end offsets of each ordinary string literal, which stay in the text.
+
+    A scanner, not a parser: a `/` that opens a regular-expression literal is read as a division, so a
+    quote inside one is taken for a string."""
+    out = list(src)
+    starts: list[int] = []
+    ends: list[int] = []
+    n = len(src)
+    stack: list[str] = []  # "tpl" for the `${` of a template, "brace" for any other `{`
+
+    def blank(a: int, b: int) -> None:
+        for k in range(a, min(b, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    def template(start: int) -> int:
+        """Blank the template text from `start` (a backtick or the `}` closing a `${`); the offset after it."""
+        i = start + 1
+        while i < n:
+            if src[i] == "\\":
+                i += 2
+            elif src[i] == "`":
+                blank(start, i + 1)
+                return i + 1
+            elif src.startswith("${", i):
+                blank(start, i + 2)
+                stack.append("tpl")
+                return i + 2
+            else:
+                i += 1
+        blank(start, n)
+        return n
+
+    i = 0
+    while i < n:
+        ch = src[i]
+        if src.startswith("//", i):
+            end = src.find("\n", i)
+            end = n if end < 0 else end
+            blank(i, end)
+            i = end
+        elif src.startswith("/*", i):
+            end = src.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            blank(i, end)
+            i = end
+        elif ch in "'\"":
+            j = i + 1
+            while j < n and src[j] not in (ch, "\n"):
+                j += 2 if src[j] == "\\" else 1
+            j = min(j + 1, n)
+            starts.append(i)
+            ends.append(j)
+            i = j
+        elif ch == "`":
+            i = template(i)
+        elif ch == "{":
+            stack.append("brace")
+            i += 1
+        elif ch == "}" and stack:
+            i = template(i) if stack.pop() == "tpl" else i + 1
+        else:
+            i += 1
+    return "".join(out), starts, ends
+
+
+def typescript_edges(blobs: Iterable[tuple[str, str]]) -> Edges:
+    """Edges among the TypeScript files of `blobs` (`(path, source)` pairs)."""
+    sources = {p: s for p, s in blobs if p.endswith(TS_EXTENSIONS)}
+    files = set(sources)
+    edges: Edges = {}
+    for path, src in sorted(sources.items()):
+        text, starts, ends = _ts_code(src)
+        for m in TS_SPECIFIER.finditer(text):
+            at = bisect.bisect_right(starts, m.start()) - 1
+            if at >= 0 and m.start() < ends[at]:
+                continue
+            _add(edges, path, _ts_resolve(path, m.group(2), files), text.count("\n", 0, m.start()) + 1)
     return edges
 
 
