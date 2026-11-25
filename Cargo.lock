@@ -833,6 +833,7 @@ dependencies = [
  "directories",
  "dunce",
  "encoding_rs",
+ "file-id",
  "fjall",
  "form_urlencoded",
  "fs2",

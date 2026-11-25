@@ -11,7 +11,7 @@
 //! build's (`crate::retrieval_wiring::backend`), so no core module picks one. A build without
 //! `documents` or `code-search` has no retrieval stack, and its `Retrieval` carries nothing.
 
-#[cfg(any(feature = "documents", feature = "code-search"))]
+#[cfg(feature = "documents")]
 use std::path::Path;
 
 #[cfg(any(feature = "documents", feature = "code-search"))]

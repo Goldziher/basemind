@@ -287,6 +287,11 @@ zstd = "0.14.4"
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.7"
 
+# ~keep `src/store_file_map_log.rs` tells a replaced file map base from the original by file index, which
+# ~keep `std` exposes on Windows only unstably; already in the graph through `notify`.
+[target.'cfg(windows)'.dependencies]
+file-id = "0.2.3"
+
 # ~keep `basemind serve --lead` (ADR-0040) hosts the agent-launch supervisor; launching is Unix-only.
 [target.'cfg(unix)'.dependencies]
 basemind-agents = { version = "0.34.0", path = "crates/basemind-agents", optional = true }

@@ -227,7 +227,7 @@ fn read_base(path: &Path) -> Result<(Index, BaseStamp), StoreError> {
     };
     let mut file = std::fs::File::open(path).map_err(io_error)?;
     let meta = file.metadata().map_err(io_error)?;
-    let stamp = BaseStamp::of(&meta);
+    let stamp = BaseStamp::of(&meta, path);
     let mut bytes = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
     file.read_to_end(&mut bytes).map_err(io_error)?;
     // The version is read on its own first: a newer map need not decode as this one, and a decode

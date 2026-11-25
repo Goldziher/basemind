@@ -361,7 +361,11 @@ fn a_failed_baseline_scores_recall_0_and_a_tool_error_still_runs_its_baseline() 
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    let code_intel = cfg!(all(feature = "code-intel-js", feature = "code-intel-stack"));
+    let code_intel = cfg!(all(
+        feature = "code-intel-js",
+        feature = "code-intel-stack",
+        feature = "code-intel-python"
+    ));
     assert_eq!(
         features.contains(&"code-intel"),
         code_intel,

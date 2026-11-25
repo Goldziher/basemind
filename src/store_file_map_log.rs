@@ -43,11 +43,8 @@ pub(super) struct BaseStamp {
 }
 
 impl BaseStamp {
-    pub(super) fn of(meta: &Metadata) -> Self {
-        #[cfg(unix)]
-        let inode = std::os::unix::fs::MetadataExt::ino(meta);
-        #[cfg(not(unix))]
-        let inode = 0;
+    /// The stamp of the file at `path`, whose metadata is `meta`.
+    pub(super) fn of(meta: &Metadata, path: &Path) -> Self {
         let modified_ns = meta
             .modified()
             .ok()
@@ -57,13 +54,36 @@ impl BaseStamp {
         Self {
             len: meta.len(),
             modified_ns,
-            inode,
+            inode: file_identity(meta, path),
         }
     }
 
     pub(super) fn of_path(path: &Path) -> Option<Self> {
-        std::fs::metadata(path).ok().map(|meta| Self::of(&meta))
+        std::fs::metadata(path).ok().map(|meta| Self::of(&meta, path))
     }
+}
+
+/// What tells one file from the file that replaced it at the same path: the inode on unix. On
+/// Windows the file index, which is never reused while both files exist, because a replacement of
+/// the same length written within the clock's tick has the same modification time too.
+#[cfg(unix)]
+fn file_identity(meta: &Metadata, _path: &Path) -> u64 {
+    std::os::unix::fs::MetadataExt::ino(meta)
+}
+
+#[cfg(windows)]
+fn file_identity(_meta: &Metadata, path: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+    file_id::get_file_id(path).map_or(0, |id| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        id.hash(&mut hasher);
+        hasher.finish()
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn file_identity(_meta: &Metadata, _path: &Path) -> u64 {
+    0
 }
 
 /// The on-disk state of a view's file map (base file and delta log), cheap to take and to compare:

@@ -84,6 +84,42 @@ const RESULT_VOCABULARY: &[(&str, &str)] = &[
         "rescan_needed",
         "index_status on an index only a scan can rebuild (src/engine/types/index.rs)",
     ),
+    ("byte_budget", "code_grep `truncated_reason` (src/engine/types/grep.rs)"),
+    ("byte_cap", "git_diff `truncated_reason` (src/engine/git/file.rs)"),
+    (
+        "commits_reached",
+        "git_log directory and symbol pages (src/engine/types/git.rs)",
+    ),
+    ("hunk_cap", "git_diff `truncated_reason` (src/engine/git/file.rs)"),
+    (
+        "limit_clamped",
+        "find_files `truncated_reason` (src/engine/types/files.rs)",
+    ),
+    (
+        "liveness_depth",
+        "docs_search `truncated_reason` (src/lance/docs_types.rs)",
+    ),
+    ("path_cap", "git_diff `truncated_reason` (src/engine/git/log.rs)"),
+    (
+        "scan_cap",
+        "the scanning tools' `truncated_reason` (src/engine/types/mod.rs)",
+    ),
+    (
+        "shallow_clone",
+        "git_log and git_blame `truncated_reason` (src/engine/types/git.rs)",
+    ),
+    ("size_cap", "code_read `truncated_reason` (src/engine/types/code.rs)"),
+    ("span_limit", "git_log `truncated_reason` (src/engine/types/git.rs)"),
+    (
+        "stale_chunks",
+        "code_search `truncated_reason` (src/engine/types/search.rs)",
+    ),
+    ("too_large", "git_blame `truncated_reason` (src/engine/types/git.rs)"),
+    (
+        "total_commits",
+        "git_log directory and symbol pages (src/engine/types/git.rs)",
+    ),
+    ("unindexed_scan", "git_log `truncated_reason` (src/engine/types/git.rs)"),
 ];
 
 /// Identifiers that appear on a line naming a tool but are not part of any tool's vocabulary: shell

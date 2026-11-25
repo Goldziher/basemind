@@ -158,7 +158,7 @@ fn human_output_writes_a_row_a_line() {
         [
             "",
             "commits (1 items):",
-            "  sha       author  date        subject",
+            "  sha           author  date        subject",
             "  <sha>  t       <date>  init",
         ],
     );
@@ -172,7 +172,7 @@ fn human_output_writes_a_row_a_line() {
             "    c.rs  added",
             "",
             "commits (1 items):",
-            "  sha       author  date        subject",
+            "  sha           author  date        subject",
             "  <sha>  t       <date>  init",
         ],
     );
