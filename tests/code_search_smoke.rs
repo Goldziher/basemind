@@ -698,12 +698,16 @@ fn search_code_changed_keeps_the_hits_of_the_branch_since_its_merge_base() {
 }
 
 /// Find the `.chunk.msgpack` sidecar for `stem` in the machine-global blob store. The blob store
-/// is content-addressed and shared across workspaces now, so we look up THIS test's own stem rather
+/// is content-addressed and shared across workspaces, so we look up THIS test's own stem rather
 /// than "the first sidecar anywhere" (which could belong to a sibling test's identical content).
-/// Returns `None` when the sidecar does not exist (clean scan or chunker disabled).
+/// A blob lives in a bucket named for the first two hex digits of its hash; the flat name an older
+/// release wrote is accepted too. Returns `None` when the sidecar does not exist (chunking off).
 fn find_chunk_sidecar(stem: &str) -> Option<std::path::PathBuf> {
-    let path = basemind::store::global_blobs_dir().join(format!("{stem}.chunk.msgpack"));
-    path.exists().then_some(path)
+    let name = format!("{stem}.chunk.msgpack");
+    let blobs = basemind::store::global_blobs_dir();
+    [blobs.join(&stem[..2]).join(&name), blobs.join(&name)]
+        .into_iter()
+        .find(|path| path.exists())
 }
 
 /// Content hash (hex stem) of `bytes` — the key under which the blob store addresses this file's
