@@ -261,6 +261,12 @@ pub fn spawn_detached_daemon_with(paths: &CommsPaths, grants: Grants) -> std::io
     spawn_detached(daemon_command(&exe, paths, grants))
 }
 
+/// [`spawn_detached`] for a process other than the daemon (the background embedding worker): the
+/// caller sets its arguments, working directory and stdio.
+pub fn spawn_detached_process(command: std::process::Command) -> std::io::Result<()> {
+    spawn_detached(command)
+}
+
 /// Spawn `command` so that it outlives this process and is never this process's child once it runs.
 ///
 /// Unix: the forked child starts a new session, forks again and exits; the grandchild execs.

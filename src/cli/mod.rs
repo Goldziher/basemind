@@ -14,6 +14,7 @@
 //! - `spelling.rs` — a tool's usage refusal rewritten in the spelling of the command that was typed.
 //! - `help_json.rs` — `--help-json`, a command's arguments as JSON from its clap definition.
 //! - `help.rs` / `help_code.rs` — every command's long help (`--help`).
+//! - `embed_worker.rs` — `basemind embed-worker`, the background embedding pass a one-shot scan hands off to.
 
 pub mod admin;
 pub mod agent;
@@ -25,6 +26,7 @@ pub mod code;
 pub mod comms_daemon;
 pub mod context;
 pub mod docs;
+pub mod embed_worker;
 pub mod env_config;
 pub mod exit;
 #[cfg(all(feature = "comms", any(unix, windows)))]

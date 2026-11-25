@@ -165,8 +165,9 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # Embedding scope for source files (only used when embed = true): embed_include is an allow-list
 # (empty = all chunked files), embed_exclude wins over it; files left out are still chunked +
 # BM25-indexed. Changing either removes the vectors of newly ineligible files on the next scan.
+# The default embed_exclude is the test paths of [scan] test_globs, so test code is never embedded;
+# `embed_exclude = []` embeds it too.
 # embed_include = []
-# embed_exclude = []
 
 [resources]
 # Footprint bounds. 0 = auto for the thread / concurrency caps. The shared daemon treats these as

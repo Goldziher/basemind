@@ -36,5 +36,15 @@ The hidden `memory documents` command is the same search under its earlier name.
 - Structured data (JSON, JSON Lines, YAML, TOML, CSV, TSV, XML) is not embedded by default: it is
   ranked by its words, not by meaning. `[documents] embed_exclude` holds that default list; setting
   it replaces the list, so `embed_exclude = []` embeds those formats too.
+- Tests and test data stay out of the document tier by default. Test code under a test path
+  (`tests/`, `test_*/`, `*_tests/`, `__mocks__/`, `*_test.*`, `*.spec.*` and the rest of
+  `[scan] test_globs`) stays in the code map, marked as test, and is never embedded. Test data
+  (`test_data/`, `testdata/`, `*_test_data/`, `__snapshots__/`, `golden/`, `*.snap`, and the JSON,
+  YAML, CSV, XML and text files under a test, fixture or mock directory) is only listed
+  (`[scan] list_only`): `find_files` lists it, nothing extracts, chunks, indexes or embeds it. A
+  `!pattern` entry in those lists re-includes a path.
+- Structured data certain to pass `[documents] max_chunks_per_document` (at least
+  `max_characters` × (`max_chunks_per_document` + 1) bytes) is skipped before it is read, as too
+  large, instead of being chunked and indexed without vectors.
 - Archives (`.zip`, `.tar`, …) are never extracted. Which files become documents, the embedding
   model and the size and time limits are set in the `[documents]` table of `basemind.toml`.

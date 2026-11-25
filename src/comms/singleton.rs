@@ -888,7 +888,9 @@ pub fn daemon_is_up() -> bool {
 /// an executable that is not `basemind` is refused outright rather than merely discouraged.
 #[path = "singleton_spawn.rs"]
 mod spawn;
-pub use spawn::{DAEMON_BINARY_ENV, Grants, daemon_log_path, spawn_detached_daemon, trim_daemon_log};
+pub use spawn::{
+    DAEMON_BINARY_ENV, Grants, daemon_log_path, spawn_detached_daemon, spawn_detached_process, trim_daemon_log,
+};
 
 #[cfg(test)]
 #[path = "singleton_tests.rs"]

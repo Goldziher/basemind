@@ -36,25 +36,29 @@ impl ScanOutput {
     }
 
     /// Report a finished scan of `root` begun at `started`: the summary lines on `out`, or the JSON
-    /// answer on stdout.
+    /// answer on stdout. `embeddings` is what a working-tree scan left owed and where it went.
     pub(super) fn summary(
         self,
         out: &mut impl std::io::Write,
         root: &std::path::Path,
         report: &basemind::scanner::ScanReport,
         started: std::time::Instant,
+        embeddings: Option<EmbeddingsHandOff>,
     ) -> Result<()> {
         if self.json {
-            let value = basemind::cli::rescan::scan_json(&report.stats, started.elapsed(), root)?;
+            let mut value = basemind::cli::rescan::scan_json(&report.stats, started.elapsed(), root)?;
+            insert_embeddings(&mut value, embeddings);
             return basemind::cli::render::render_json(&value, &mut std::io::stdout().lock());
         }
         render::render_summary(out, &report.stats, self.verbosity);
         render::render_phase_peaks(out, &report.phase_peaks, self.verbosity);
+        render_embeddings(out, embeddings, self.verbosity);
         Ok(())
     }
 
     /// Report the counts the daemon returned for a forwarded `scan` or `rescan` (`what`) of `root`:
-    /// the summary line on `out`, or the JSON answer on stdout.
+    /// the summary line on `out`, or the JSON answer on stdout. `embeddings` as for
+    /// [`summary`](Self::summary).
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(super) fn forwarded(
         self,
@@ -62,14 +66,46 @@ impl ScanOutput {
         what: &str,
         root: &std::path::Path,
         report: &basemind::cli::rescan::RescanReport,
+        embeddings: Option<EmbeddingsHandOff>,
     ) -> Result<()> {
         if self.json {
-            let value = basemind::cli::rescan::forwarded_json(report, root)?;
+            let mut value = basemind::cli::rescan::forwarded_json(report, root)?;
+            insert_embeddings(&mut value, embeddings);
             return basemind::cli::render::render_json(&value, &mut std::io::stdout().lock());
         }
         super::main_rescan::print_forwarded(out, what, report);
+        render_embeddings(out, embeddings, self.verbosity);
         Ok(())
     }
+}
+
+/// What a working-tree scan left owed for the embedding pass, and where it was handed.
+pub(super) type EmbeddingsHandOff = (basemind::cli::embed_worker::Pending, basemind::cli::embed_worker::Background);
+
+/// Add the `embeddings` object to a scan's JSON answer when the scan left vectors owed; with none
+/// owed the answer stays exactly the `index_rescan` response.
+fn insert_embeddings(value: &mut serde_json::Value, embeddings: Option<EmbeddingsHandOff>) {
+    let owed = embeddings.filter(|(pending, _)| pending.any());
+    if let (Some((pending, background)), Some(object)) = (owed, value.as_object_mut()) {
+        object.insert(
+            "embeddings".to_string(),
+            basemind::cli::embed_worker::json(pending, background),
+        );
+    }
+}
+
+/// The `embeddings: pending …` line, unless nothing is owed or `--quiet` is set.
+fn render_embeddings(out: &mut impl std::io::Write, embeddings: Option<EmbeddingsHandOff>, verbosity: Verbosity) {
+    let line = embeddings.and_then(|(pending, background)| basemind::cli::embed_worker::summary_line(pending, background));
+    if let Some(line) = line.filter(|_| !matches!(verbosity, Verbosity::Quiet)) {
+        let _ = writeln!(out, "{line}");
+    }
+}
+
+/// Hand what the working-tree scan of `root` left owed to the background embedding worker.
+pub(super) fn hand_off_embeddings(root: &std::path::Path, store: &Store, config: &Config) -> EmbeddingsHandOff {
+    let pending = basemind::cli::embed_worker::Pending::of(root, store, config);
+    (pending, basemind::cli::embed_worker::hand_off(root, pending))
 }
 
 /// Build / refresh the repo-global git-history index after a working-tree scan (a separate phase
@@ -118,7 +154,8 @@ pub(super) fn sync_git_history_after_scan(
     }
 }
 
-/// Run a full scan, reporting each file as `output` says as the scan absorbs it.
+/// Run a full scan, reporting each file as `output` says as the scan absorbs it. `embed` says
+/// whether the scan embeds as it goes or leaves the vectors to the background pass.
 ///
 /// The observer owns its own stdout stream, so it never collides with the caller's `out` and the
 /// CLI never holds a per-file result for the whole repo just to print one line each. The caller
@@ -130,6 +167,7 @@ pub(super) fn scan_streaming(
     store: &mut Store,
     config: &basemind::config::Config,
     cancel: &basemind::scanner::ScanCancel,
+    embed: basemind::scanner::EmbedMode,
 ) -> std::result::Result<basemind::scanner::ScanReport, basemind::scanner::ScanError> {
     // The pass releases the embedding engine it loaded when the scan ends, so the model is not held
     // through the git-history sync and until exit.
@@ -141,7 +179,7 @@ pub(super) fn scan_streaming(
             store,
             config,
             source,
-            basemind::scanner::EmbedMode::Inline,
+            embed,
             cancel,
             observer,
             basemind::retrieval_wiring::backend(),
@@ -208,12 +246,13 @@ pub(super) fn cmd_scan(
             &mut store,
             &config,
             &cancel,
+            basemind::scanner::EmbedMode::Inline,
         )
         .context("scan staged")?;
         if report.cancelled {
             return interrupted(&mut out, &report, verbosity, "scan --staged");
         }
-        return output.summary(&mut out, root, &report, started);
+        return output.summary(&mut out, root, &report, started, None);
     }
     if let Some(rev_spec) = &args.rev {
         let repo = basemind::git::Repo::discover(root).context("`--rev` requires being inside a git repository")?;
@@ -232,18 +271,22 @@ pub(super) fn cmd_scan(
             &mut store,
             &config,
             &cancel,
+            basemind::scanner::EmbedMode::Inline,
         )
         .context("scan rev")?;
         if report.cancelled {
             return interrupted(&mut out, &report, verbosity, "scan --rev");
         }
-        return output.summary(&mut out, root, &report, started);
+        return output.summary(&mut out, root, &report, started, None);
     }
 
     if let Some(notice) = writer_collision_notice(root) {
         return Err(basemind::cli::exit::CliExit::busy(notice));
     }
     let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "scan", LockHolder::Scan)?;
+    // The working tree is scanned without embedding: the code map, the documents' text and the
+    // keyword lane are written without the model, and the vectors are paid by the background pass
+    // the scan hands off to below (`basemind::cli::embed_worker`).
     let report = scan_streaming(
         output,
         basemind::scanner::ScanSource::WorkingTree,
@@ -251,14 +294,17 @@ pub(super) fn cmd_scan(
         &mut store,
         &config,
         &cancel,
+        basemind::scanner::EmbedMode::Deferred,
     )
     .context("scan")?;
     if report.cancelled {
         return interrupted(&mut out, &report, verbosity, "scan");
     }
+    // Started while this process still holds the store lock: the worker waits for it to go.
+    let embeddings = hand_off_embeddings(root, &store, &config);
     // A failed write of the summary (stdout closed under `--json`) must not skip the maintenance
     // below, which the index just written is owed; it is returned once that has run.
-    let summary = output.summary(&mut out, root, &report, started);
+    let summary = output.summary(&mut out, root, &report, started, Some(embeddings));
     render::render_deps_unavailable(&mut out, &report.deps_unavailable, verbosity);
     // This process exits next: flushed, the rows open as tables instead of a journal the next
     // writer (usually the daemon) replays into memtables and holds in its heap until they fill.

@@ -109,6 +109,7 @@ not raise it. `BASEMIND_DAEMON_MIN_DEBOUNCE_MS` is a floor instead.
 | `BASEMIND_BLOB_GC_GRACE_SECS` | `21600` | CLI, daemon | Age under which `basemind cache gc` keeps an unreferenced blob. |
 | `BASEMIND_INDEX_CACHE_BYTES` | sized from the index | CLI, daemon | Block cache of an opened index, in bytes. |
 | `BASEMIND_GREP_BLOOM` | on | CLI, daemon | False makes `code_grep` read every file instead of skipping those its trigram filter rules out. |
+| `BASEMIND_EMBED_BACKGROUND` | on | CLI | False stops `basemind scan` from starting the background embedding worker; the vectors it leaves owed wait for the hidden `embed-worker` command, a later scan or the daemon. |
 | `BASEMIND_GIT_DELTA_CACHE_BYTES` | `8388608` | CLI, daemon | Git's delta-base cache per repository; `0` disables it. |
 | `BASEMIND_BLAME_MAX_BYTES` | `1048576` | CLI, daemon | A larger file is not blamed. |
 | `BASEMIND_BLAME_MAX_LINES` | `5000` | CLI, daemon | A file with more lines is not blamed. |
