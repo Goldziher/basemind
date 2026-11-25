@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:a8d779c6162e4af5b1e83b2ad07b3407b3563d051ff0daf8813d97d4ae84f5ee
-Source-Hash: blake3:4de00cf6d038a0593942a00de2715aee86fec71d79c7cd37e50f4de8ebc9fe02
+Content-Hash: blake3:13e25596958c945a26d3a9b69ba83e36fa38efa7137b86285a17056d39b4951c
+Source-Hash: blake3:1f14402d1840126cf7337c9a7a6a73d47e87cb3514a182fbf7b927a76a3322f9
 Schema-Version: v1
 -->
 
@@ -219,22 +219,20 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 
 `truncated_reason` says why an answer is incomplete.
 
-| Reason | Tool | Next step |
-| --- | --- | --- |
-| `scan_cap` | `code_symbols`, `code_refs`, `memory_search`, `impact` | `total` is a lower bound: follow `next_cursor`, else narrow with `path` or `language`. |
-| `byte_budget` | `code_grep` | Follow `next_cursor`, or narrow with `path` or `language`. |
-| `time_budget` | `code_grep` | Sweep stopped at 10 s (see `notice`): follow `next_cursor`, or narrow. |
-| `depth` | `code_search`, `docs_search`, `impact` | Past 100 hits, or an import walk at its depth: refine the query. |
-| `liveness_depth` | `docs_search` | Narrow with `path`, `keywords` or `format`. |
-| `stale_chunks` | `code_search` | Hits in files edited since indexing were dropped (`omitted`): `index_rescan` them. |
-| `imports` | `code_outline` | Import list cut at 200: `code_grep` for the import. |
-| `size_cap` | `code_read` | Read a span with `line` and `end_line`. |
-| `too_large` | `git_blame` | Blame a span or one `symbol`. |
-| `hunk_cap`, `byte_cap` | `git_diff` | Stopped at 200 hunks or 128 KiB, no cursor: narrow `from` and `to`. |
-| `path_cap` | `git_diff` | Status list cut (`omitted`): pass a directory `path` ending in `/`. |
-| `span_limit` | `git_log` | Follow `next_cursor`, an empty page included, until it is absent. |
-| `unindexed_scan` | `git_log` | No history index, newest commits only: wait for it (`index_status`), repeat. |
-| `shallow_clone` | `git_log`, `git_blame` | An absent commit is inconclusive: `git fetch --unshallow`.
+- `scan_cap`, `code_symbols`, `code_refs`, `memory_search`, `impact`: `total` is a lower bound: follow `next_cursor`, else narrow with `path` or `language`.
+- `byte_budget`, `code_grep`: Follow `next_cursor`, or narrow with `path` or `language`.
+- `time_budget`, `code_grep`: Sweep stopped at 10 s (see `notice`): follow `next_cursor`, or narrow.
+- `depth`, `code_search`, `docs_search`, `impact`: Past 100 hits, or an import walk at its depth: refine the query.
+- `liveness_depth`, `docs_search`: Narrow with `path`, `keywords` or `format`.
+- `stale_chunks`, `code_search`: Hits in files edited since indexing were dropped (`omitted`): `index_rescan` them.
+- `imports`, `code_outline`: Import list cut at 200: `code_grep` for the import.
+- `size_cap`, `code_read`: Read a span with `line` and `end_line`.
+- `too_large`, `git_blame`: Blame a span or one `symbol`.
+- `hunk_cap`, `byte_cap`, `git_diff`: Stopped at 200 hunks or 128 KiB, no cursor: narrow `from` and `to`.
+- `path_cap`, `git_diff`: Status list cut (`omitted`): pass a directory `path` ending in `/`.
+- `span_limit`, `git_log`: Follow `next_cursor`, an empty page included, until it is absent.
+- `unindexed_scan`, `git_log`: No history index, newest commits only: wait for it (`index_status`), repeat.
+- `shallow_clone`, `git_log`, `git_blame`: An absent commit is inconclusive: `git fetch --unshallow`.
 <!-- /manual:paging -->
 
 For git history, blame and diffs see `basemind-git-history`; for document search see
