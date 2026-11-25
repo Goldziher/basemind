@@ -162,6 +162,15 @@ the rows per grade, before any filter.
   when you need completeness.
 - **Coverage.** JavaScript and TypeScript (oxc), Python and Java (stack-graphs rules) resolve
   across files through imports; every other language gets tree-sitter scope binding.
+- **JS/TS workspaces.** A bare import of a workspace package (`@acme/ui`, `@acme/ui/button`)
+  resolves to the package's source with no `node_modules` installed. Packages come from the root
+  `pnpm-workspace.yaml` `packages:` globs and the root `package.json` `workspaces` field (an array
+  or `{"packages": [...]}`; `!` globs exclude), each directory they match with a named
+  `package.json`. The entry is the first existing of `exports`, `source`, `types`, `module`,
+  `main`, `src/index` and `index`; `@acme/ui/button` tries its `exports` entry, `button` and
+  `src/button`. A symlink that leads into the repository resolves to its real path, and a literal
+  `require('./x')` of the global `require` is a file edge. A package added after the walk is seen
+  by the next stitch.
 - **From a reference to its definition.** `relation: "definition"` returns the definition the
   reference at `path` / `line` binds to, or a `resolution_note` when there is none.
 - **HTTP routes.** A route is a `route` symbol named `METHOD /path`, parameters written `:param`;

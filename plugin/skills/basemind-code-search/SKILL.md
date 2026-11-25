@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:140c19e1e95fe3b4d17f5bde845310ed48ec05a392415c8bb33bfb23c0e9bd5b
-Source-Hash: blake3:5dffe2f21bef1d8c6b26aef4af84c91901b2df5c656b37d0e65bd7ba7b257103
+Content-Hash: blake3:cb215f0f9304845aebc58b30a1c089fb8c5ffc5387b093adf36cc2615403c827
+Source-Hash: blake3:5830b0937c4526540f26e07a2868f5d85a53e50c194cdcfeea6f0d81f21f9b35
 Schema-Version: v1
 -->
 
@@ -88,7 +88,8 @@ The tools are always loaded: call them directly. Drop to raw shell only when no 
   every line. `path` is a substring of the repo-relative path, never a glob; a `path` or `language`
   that no indexed code or text file has is an error (it names `docs_search` when only PDFs, Office
   files or other binary documents match).
-  `skipped_files` counts files that could not be searched. The answer is `key: value` lines, then
+  `skipped_files` counts files that could not be searched; `skipped_reasons` splits them into
+  `unavailable`, `too_large` and `unreadable`. The answer is `key: value` lines, then
   each file as `# <path>` and each innermost enclosing symbol as `## <symbol>` over its rows
   `<line>: <text>` (rows before any symbol header are outside every symbol); matches sharing a
   line are one row `<line>:<col>,<col>: <text>`, and a clipped line (over 400 bytes) writes its
@@ -158,6 +159,15 @@ the rows per grade, before any filter.
   when you need completeness.
 - **Coverage.** JavaScript and TypeScript (oxc), Python and Java (stack-graphs rules) resolve
   across files through imports; every other language gets tree-sitter scope binding.
+- **JS/TS workspaces.** A bare import of a workspace package (`@acme/ui`, `@acme/ui/button`)
+  resolves to the package's source with no `node_modules` installed. Packages come from the root
+  `pnpm-workspace.yaml` `packages:` globs and the root `package.json` `workspaces` field (an array
+  or `{"packages": [...]}`; `!` globs exclude), each directory they match with a named
+  `package.json`. The entry is the first existing of `exports`, `source`, `types`, `module`,
+  `main`, `src/index` and `index`; `@acme/ui/button` tries its `exports` entry, `button` and
+  `src/button`. A symlink that leads into the repository resolves to its real path, and a literal
+  `require('./x')` of the global `require` is a file edge. A package added after the walk is seen
+  by the next stitch.
 - **From a reference to its definition.** `relation: "definition"` returns the definition the
   reference at `path` / `line` binds to, or a `resolution_note` when there is none.
 - **HTTP routes.** A route is a `route` symbol named `METHOD /path`, parameters written `:param`;
@@ -218,6 +228,7 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 | --- | --- | --- |
 | `scan_cap` | `code_symbols`, `code_refs`, `memory_search`, `impact` | Scan stopped early, `total` is a lower bound: follow `next_cursor`, else narrow with `path` or `language`. |
 | `byte_budget` | `code_grep` | Corpus larger than one call reads: narrow with `path` or `language`, or follow `next_cursor`. |
+| `time_budget` | `code_grep` | Sweep ran 10 s and stopped (see `notice`): follow `next_cursor`, or narrow with `path` or `language`. |
 | `depth` | `code_search`, `docs_search`, `impact` | Ranking past 100 hits, or an import walk at its depth: refine the query or start nearer the target. |
 | `liveness_depth` | `docs_search` | A lane hit its candidate depth before enough live documents: narrow with `path`, `keywords` or `format`. |
 | `stale_chunks` | `code_search` | Hits in files edited since indexing were dropped (`omitted`): `index_rescan` them, or repeat. |

@@ -9,7 +9,9 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use basemind::git_history::{GitHistoryIndex, progress, shared_history_basemind_dir};
+#[cfg(all(feature = "comms", any(unix, windows)))]
+use basemind::git_history::progress;
+use basemind::git_history::{GitHistoryIndex, shared_history_basemind_dir};
 
 fn git(root: &Path, args: &[&str]) -> String {
     let out = basemind::testing::git_command()

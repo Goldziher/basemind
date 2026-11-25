@@ -48,9 +48,11 @@ pub const EMBED_BACKGROUND_ENV: &str = "BASEMIND_EMBED_BACKGROUND";
 const WORKER_LOCK_FILE: &str = "embed-worker.lock";
 
 /// Where a detached worker writes its log, in the workspace cache dir.
+#[cfg(all(feature = "comms", any(unix, windows)))]
 const WORKER_LOG_FILE: &str = "embed-worker.log";
 
 /// A log past this size is started afresh when the next worker is spawned.
+#[cfg(all(feature = "comms", any(unix, windows)))]
 const WORKER_LOG_MAX_BYTES: u64 = 1024 * 1024;
 
 /// Owed documents a batch embeds: few enough that a writer asking for the lock waits for one
