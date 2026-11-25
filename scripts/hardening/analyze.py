@@ -65,6 +65,7 @@ class Rule:
     value: str = ""
     threshold: str = ""
     waived: bool = False
+    unmeasured: bool = False
 
 
 @dataclass
@@ -701,9 +702,12 @@ def call_table(calls: list[dict[str, Any]], records: list[dict[str, Any]]) -> st
 
 
 def rule_verdict(r: Rule) -> str:
-    """A rule's verdict cell: a waived pass says so, so the waiver stays visible until it is lifted."""
+    """A rule's verdict cell: a waived pass says so, so the waiver stays visible until it is lifted, and a
+    rule the run could not measure says "not measured" rather than passing."""
     if not r.passed:
         return "**FAIL**"
+    if r.unmeasured:
+        return "not measured"
     return "waived" if r.waived else "pass"
 
 

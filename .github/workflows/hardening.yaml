@@ -2,8 +2,11 @@ name: hardening
 
 # The pre-release hardening pass (docs/hardening.md) on Linux, macOS and Windows: the analyze.py
 # selftest, the functional sweep, a soak judged by analyze.py's pass rules, and a one-shot leak
-# check. Nightly and on demand; on a pull request or a push to main only when the scripts or this
-# workflow change, with a short soak, so the workflow verifies itself.
+# check, then a large-monorepo soak on four pinned public repositories (docs/hardening.md). Nightly
+# and on demand; on a pull request or a push to main only when the scripts or this workflow change,
+# with a short soak and without the monorepo job, so the workflow verifies itself. The release gate
+# (.github/scripts/require-green-ci.sh) needs a scheduled or dispatched run of this workflow to
+# succeed, which makes the monorepo soak a release gate.
 
 on:
   workflow_dispatch:
@@ -24,17 +27,23 @@ on:
         description: Soak a clone of this repository instead of the generated fixture
         type: boolean
         default: false
+      monorepo_minutes:
+        description: Large-monorepo soak load phase in minutes (scenarios included)
+        type: number
+        default: 15
   schedule:
     - cron: "0 5 * * *"
   pull_request:
     branches: [main]
     paths:
       - scripts/hardening/**
+      - scripts/harden_fetch.sh
       - .github/workflows/hardening.yaml
   push:
     branches: [main]
     paths:
       - scripts/hardening/**
+      - scripts/harden_fetch.sh
       - .github/workflows/hardening.yaml
 
 concurrency:
@@ -53,6 +62,7 @@ env:
   SOAK_MINUTES: ${{ inputs.soak_minutes || ((github.event_name == 'pull_request' || github.event_name == 'push') && 10 || 45) }}
   INJECT_ORPHAN: ${{ inputs.inject_orphan && '1' || '' }}
   SOAK_SELF: ${{ inputs.soak_self && '1' || '' }}
+  MONOREPO_MINUTES: ${{ inputs.monorepo_minutes || 15 }}
 
 jobs:
   harden:
@@ -72,7 +82,7 @@ jobs:
           - os: windows-2022
             leak_tool: ""
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # ~keep The soak indexes a clone of this checkout; real history exercises the git tools.
           fetch-depth: 0
@@ -109,12 +119,12 @@ jobs:
 
       # ~keep ort-sys links against libonnxruntime.a in its download dir and never reruns when that
       # ~keep dir is gone, so the dir is cached with target/ (see ci.yaml).
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: hardening-${{ matrix.os }}-${{ env.FEATURES }}
           cache-directories: ${{ runner.os == 'Windows' && '~/AppData/Local/ort.pyke.io' || runner.os == 'macOS' && '~/Library/Caches/ort.pyke.io' || '~/.cache/ort.pyke.io' }}
 
-      - uses: xberg-io/actions/setup-mise@v1
+      - uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
           install-args: python
 
@@ -129,13 +139,14 @@ jobs:
           } >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/hardening-reports"
 
-      - name: Selftest (analyze.py rules and the sweep's matchers fire on known-bad input)
+      - name: Selftest (analyze.py rules, the sweep's matchers and the monorepo soak's rules fire on known-bad input)
         shell: bash
         run: |
           set -euo pipefail
           python scripts/hardening/selftest_analyze.py --out "$HARDENING_REPORTS/selftest" 2>&1 |
             tee "$HARDENING_REPORTS/selftest.log"
           python scripts/hardening/selftest_sweep.py 2>&1 | tee "$HARDENING_REPORTS/selftest-sweep.log"
+          python scripts/hardening/selftest_monorepo.py 2>&1 | tee "$HARDENING_REPORTS/selftest-monorepo.log"
 
       - name: Selftest (leak_check.py judges synthetic reports and a timed-out run)
         shell: bash
@@ -245,9 +256,104 @@ jobs:
 
       - name: Upload reports
         if: ${{ always() }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: hardening-${{ matrix.os }}
+          path: ${{ runner.temp }}/hardening-reports
+          if-no-files-found: warn
+          retention-days: 14
+
+  # ~keep The soak of a large repository with many worktrees runs where the dataset fits: a 150 000-file
+  # ~keep checkout, its sparse worktrees and the index of all of them need the Linux runner's disk after the
+  # ~keep purge below. It is nightly and on demand, never per push; docs/hardening.md lists the rules.
+  monorepo:
+    name: monorepo soak / ${{ matrix.repo }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: [llvm-project, kibana, tensorflow, terraform-provider-aws]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo rm -rf /usr/local/.ghcup /usr/share/swift /usr/lib/jvm \
+            /usr/local/share/powershell /usr/share/miniconda /opt/az || true
+          sudo apt-get clean || true
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - uses: ./.github/actions/setup-rust
+
+      - name: Install system dependencies
+        uses: ./.github/actions/install-system-deps
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: hardening-ubuntu-latest-${{ env.FEATURES }}
+          cache-directories: ~/.cache/ort.pyke.io
+
+      - uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
+        with:
+          install-args: python
+
+      - name: Isolate basemind state
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "BASEMIND_DATA_HOME=$RUNNER_TEMP/bm-data"
+            echo "BASEMIND_COMMS_DIR=$RUNNER_TEMP/bm-comms"
+            echo "HARDENING_REPORTS=$RUNNER_TEMP/hardening-reports"
+          } >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/hardening-reports"
+
+      - name: Selftest (the monorepo soak's pins, setup and rules)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/hardening/selftest_monorepo.py 2>&1 | tee "$HARDENING_REPORTS/selftest-monorepo.log"
+
+      - name: Build the binary under test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --bin basemind --features "$FEATURES"
+          echo "BASEMIND_BIN=$GITHUB_WORKSPACE/target/release/basemind" >> "$GITHUB_ENV"
+          target/release/basemind --version
+
+      - name: Soak ${{ matrix.repo }} (20 worktrees, 30 sessions)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/hardening/monorepo_soak.py --binary "$BASEMIND_BIN" --name "${{ matrix.repo }}" \
+            --out "$HARDENING_REPORTS/monorepo" --worktrees 20 --sessions 30 \
+            --duration "$((MONOREPO_MINUTES * 60))"
+
+      - name: Judge the soak (analyze_monorepo.py pass rules)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          python scripts/hardening/analyze_monorepo.py "$HARDENING_REPORTS/monorepo/monorepo.ndjson" \
+            --worktrees 20 --sessions 30 --json "$HARDENING_REPORTS/monorepo/verdict.json"
+
+      - name: Job summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          python scripts/hardening/ci_summary.py --title "monorepo soak / ${{ matrix.repo }}" \
+            --reports "$HARDENING_REPORTS" --monorepo
+
+      - name: Upload reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hardening-monorepo-${{ matrix.repo }}
           path: ${{ runner.temp }}/hardening-reports
           if-no-files-found: warn
           retention-days: 14
