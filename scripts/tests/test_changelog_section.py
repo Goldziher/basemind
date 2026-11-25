@@ -130,6 +130,12 @@ class MainTests(unittest.TestCase):
         self.assertTrue(out.startswith("This minor bumps the persisted blob"), out[:80])
         self.assertNotIn("## [0.32.0]", out)
 
+    def test_the_0_34_0_release_body_is_its_curated_summary_under_the_ceiling(self) -> None:
+        code, out, err = self.run_main(["0.34.0"])
+        self.assertEqual((code, err), (0, ""))
+        self.assertLess(len(out), self.module.DEFAULT_CEILING)
+        self.assertTrue(out.startswith("**The first scan after upgrading rebuilds every index"), out[:80])
+
 
 class CeilingTests(unittest.TestCase):
     """An oversized section needs a curated summary; a curated summary replaces the section."""
