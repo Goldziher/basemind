@@ -17,7 +17,7 @@ unchanged file is never extracted twice, across worktrees and repositories alike
 (the counts, `elapsed_ms` and `root`), for a scan run here or forwarded to the daemon. A
 working-tree `scan --json` that left vectors owed adds `embeddings`: `pending_documents`,
 `pending_code`, `pending_policy` and `background` (`started`, `already_running`, `disabled` or
-`unavailable`), and one that handed the git-history build to the background adds `git_history`:
+`unavailable`), and one that handed the git-history build to the background adds a git-history object holding
 `pending_commits` and `background` (`started` or `already_running`).
 
 ## Embeddings run in the background

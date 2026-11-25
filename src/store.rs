@@ -563,6 +563,9 @@ impl Store {
         // A stale layout leaves an index of the current schema over a map that is gone: the scan
         // that takes the lock replaces both ([`Store::open_index_owed_to_scan`]). ~keep
         let mut index_rebuild_needed = stale_layout;
+        if matches!(index_access, Some(group::ReadAccess::BriefLock)) {
+            wait_for_embed_worker(&basemind_dir);
+        }
         let index_db = if let Some(access) = index_access.filter(|_| schema_ok && !writer_lock_is_held(&basemind_dir)) {
             let (db, rebuild) = group::open_index_read_only(root, view, &index, access)?;
             index_rebuild_needed |= rebuild;
@@ -877,3 +880,22 @@ mod key_set_tests;
 #[cfg(test)]
 #[path = "store_vector_tests.rs"]
 mod vector_tests;
+
+/// A one-shot query finding the background embedding worker on the workspace lock asks it to give
+/// the lock up and waits for it ([`store_lock::embed_yield`]), so the query reads the index rather
+/// than only the blobs. Any other holder is left alone.
+fn wait_for_embed_worker(basemind_dir: &Path) {
+    let held_by_worker = matches!(
+        probe_writer_lock(basemind_dir),
+        WriterProbe::Held { holder: Some(meta) } if crate::store_lock::embed_yield::held_by_worker(&meta.command)
+    );
+    if held_by_worker {
+        let _ = crate::store_lock::embed_yield::wait_for_worker(basemind_dir, || {
+            if writer_lock_is_held(basemind_dir) {
+                Err(())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}

@@ -108,6 +108,7 @@ fn the_json_carries_the_pending_counts_and_the_hand_off() {
 fn a_poll_trips_the_pass_once_a_writer_asks_and_not_before() {
     let tmp = tempfile::tempdir().expect("tmp");
     let asks = Asks {
+        root: tmp.path().to_path_buf(),
         workspace: tmp.path().join("workspace"),
         group: tmp.path().join("group"),
     };
@@ -124,4 +125,16 @@ fn a_poll_trips_the_pass_once_a_writer_asks_and_not_before() {
         std::thread::sleep(Duration::from_millis(10));
     }
     drop(poll);
+}
+
+#[test]
+fn a_worker_ends_when_its_workspace_is_gone() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let asks = Asks {
+        root: tmp.path().join("removed"),
+        workspace: tmp.path().join("workspace"),
+        group: tmp.path().join("group"),
+    };
+    let opened = take_writer(&asks, || -> Result<(), StoreError> { Ok(()) }).expect("no error");
+    assert_eq!(opened, None, "a removed workspace is not opened");
 }

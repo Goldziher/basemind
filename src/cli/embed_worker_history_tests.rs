@@ -133,6 +133,7 @@ fn a_long_lived_writer_holding_the_lock_stops_the_phase() {
 fn the_build_stops_once_a_writer_asks_for_the_lock_and_records_its_progress() {
     let tmp = tempfile::tempdir().expect("tmp");
     let asks = Asks {
+        root: tmp.path().to_path_buf(),
         workspace: tmp.path().join("workspace"),
         group: tmp.path().join("group"),
     };

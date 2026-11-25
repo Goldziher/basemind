@@ -171,6 +171,19 @@ fn open_group_for_query(dir: &Path) -> Result<Option<Arc<GroupDb>>, StoreError> 
     }
     let lock = match super::try_acquire_lock_as(dir, LockHolder::Query) {
         Ok(lock) => lock,
+        Err(StoreError::Locked { holder: Some(meta), .. })
+            if crate::store_lock::embed_yield::held_by_worker(&meta.command) =>
+        {
+            // The background pass asks to be waited for rather than answered around: it gives the
+            // lock up at its next file boundary.
+            match crate::store_lock::embed_yield::wait_for_worker(dir, || {
+                super::try_acquire_lock_as(dir, LockHolder::Query)
+            }) {
+                Ok(lock) => lock,
+                Err(StoreError::Locked { .. }) => return Ok(None),
+                Err(error) => return Err(error),
+            }
+        }
         Err(StoreError::Locked { .. }) => return Ok(None),
         Err(error) => return Err(error),
     };

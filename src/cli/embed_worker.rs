@@ -527,6 +527,10 @@ fn open_writer(root: &Path, asks: &Asks) -> anyhow::Result<Option<Store>> {
 fn take_writer<T>(asks: &Asks, open: impl Fn() -> Result<T, StoreError>) -> Result<Option<T>, StoreError> {
     let started = Instant::now();
     loop {
+        if !asks.root.is_dir() {
+            tracing::info!(root = %asks.root.display(), "the workspace is gone; ending the background pass");
+            return Ok(None);
+        }
         asks.wait_while_asked();
         match open() {
             Ok(held) => return Ok(Some(held)),
@@ -556,6 +560,7 @@ fn held_by_long_lived_writer(basemind_dir: &Path) -> bool {
 /// workspace's and its repository group's.
 #[derive(Clone, Debug)]
 struct Asks {
+    root: PathBuf,
     workspace: PathBuf,
     group: PathBuf,
 }
@@ -563,6 +568,7 @@ struct Asks {
 impl Asks {
     fn of(root: &Path) -> Self {
         Self {
+            root: root.to_path_buf(),
             workspace: crate::store::workspace_cache_dir(root),
             group: crate::store_layout::group_index_dir(root),
         }
@@ -574,7 +580,7 @@ impl Asks {
     }
 
     fn wait_while_asked(&self) {
-        while self.asked() {
+        while self.asked() && self.root.is_dir() {
             std::thread::sleep(YIELD_POLL);
         }
     }
