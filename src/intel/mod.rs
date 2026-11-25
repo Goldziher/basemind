@@ -21,12 +21,18 @@ pub(crate) mod module_go;
 /// from its L1 outline with no binding join.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 pub(crate) mod module_resolver;
+/// Protocol Buffers import resolution (`import "a/b.proto"` → the file under a source root).
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+pub(crate) mod module_proto;
 /// Rust file-level module resolution (`mod` and `use` paths → module files), for the import graph.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 pub(crate) mod module_rust;
 /// What a `Cargo.toml` tells the Rust module resolver: target roots, dependencies, workspace paths.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 pub(crate) mod module_rust_crates;
+/// Starlark `load()` label resolution (`//pkg:file.bzl` → the file).
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+pub(crate) mod module_starlark;
 pub mod resolve;
 pub(crate) mod resolve_pass;
 /// Per-language module-specifier resolution (importer specifier → repo-relative target file),

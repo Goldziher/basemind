@@ -1,5 +1,6 @@
 //! File-level module resolution for languages whose imports name modules rather than bindings:
-//! Rust (`mod`, `use`) and Go (package import paths).
+//! Rust (`mod`, `use`), Go (package import paths), Protocol Buffers (`import` paths) and Starlark
+//! (`load` labels).
 //!
 //! The binding stitch ([`crate::intel::xfile`]) joins an import to the export it binds and needs
 //! per-file import/export facts. These resolvers need neither: they read the importer's L1 outline
@@ -12,6 +13,8 @@
 //! - [`crate::intel::module_rust`]: `mod` declarations and `crate::` / `self::` / `super::` paths
 //!   to module files.
 //! - [`crate::intel::module_go`]: import paths under the `go.mod` module to the package's files.
+//! - [`crate::intel::module_proto`]: `import` paths under a proto source root to the file.
+//! - [`crate::intel::module_starlark`]: `load` labels to the `.bzl` file.
 
 use std::path::Path;
 
@@ -23,7 +26,9 @@ use crate::index::IndexDb;
 use crate::index::keys::EdgeKinds;
 use crate::intel::model::FileResolvedRefs;
 use crate::intel::module_go::{GoModules, is_package_file};
+use crate::intel::module_proto::ProtoImports;
 use crate::intel::module_rust::RustModules;
+use crate::intel::module_starlark::StarlarkLoads;
 use crate::intel::resolver::ProbeSet;
 use crate::intel::stage_budget::BudgetedWriter;
 use crate::intel::xfile::FileEdgesBuilder;
@@ -93,12 +98,14 @@ impl Probe<'_> {
 pub(crate) enum ModuleResolver {
     Rust(RustModules),
     Go(GoModules),
+    Proto(ProtoImports),
+    Starlark(StarlarkLoads),
 }
 
 impl ModuleResolver {
     /// Whether `language` (a TSLP pack name) has a file-level module resolver.
     pub(crate) fn supports(language: &str) -> bool {
-        matches!(language, "rust" | "go")
+        matches!(language, "rust" | "go" | "proto" | "starlark")
     }
 
     /// Whether adding or removing the repo-relative `rel` can change a listing of the repository
@@ -113,6 +120,8 @@ impl ModuleResolver {
         match language {
             "rust" => Some(Self::Rust(RustModules::default())),
             "go" => Some(Self::Go(GoModules::default())),
+            "proto" => Some(Self::Proto(ProtoImports)),
+            "starlark" => Some(Self::Starlark(StarlarkLoads)),
             _ => None,
         }
     }
@@ -127,6 +136,8 @@ impl ModuleResolver {
         match self {
             Self::Rust(resolver) => resolver.resolve(probe, importer, content_hash, &l1.symbols, &l1.imports),
             Self::Go(resolver) => resolver.resolve(probe, importer, &l1.imports),
+            Self::Proto(resolver) => resolver.resolve(probe, importer, &l1.imports),
+            Self::Starlark(resolver) => resolver.resolve(probe, importer, &l1.imports),
         }
     }
 }
@@ -356,6 +367,15 @@ mod tests {
         assert_eq!(strip_dir("a/b/c.rs", "a"), Some("b/c.rs"));
         assert_eq!(strip_dir("ab/c.rs", "a"), None);
         assert_eq!(strip_dir("c.rs", ""), Some("c.rs"));
+    }
+
+    #[test]
+    fn every_module_resolver_language_builds_a_resolver() {
+        for language in ["rust", "go", "proto", "starlark"] {
+            assert!(ModuleResolver::supports(language), "{language}");
+            assert!(ModuleResolver::for_language(language).is_some(), "{language}");
+        }
+        assert!(!ModuleResolver::supports("sql"));
     }
 
     #[test]

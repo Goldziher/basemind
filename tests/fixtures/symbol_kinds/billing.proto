@@ -1,0 +1,19 @@
+syntax = "proto3";
+package acme.billing.v1;
+import "google/protobuf/timestamp.proto";
+import public "acme/common.proto";
+import weak "acme/w.proto";
+option java_package = "com.acme";
+message Invoice {
+  string id = 1;
+  message Line { int32 qty = 1; enum Kind { K_UNSET = 0; K_A = 1; } }
+  oneof payment { string card = 2; string iban = 3; }
+  map<string, string> tags = 4;
+  extensions 100 to 199;
+}
+enum Status { STATUS_UNSPECIFIED = 0; PAID = 1; }
+service Billing {
+  rpc Create(Invoice) returns (Invoice);
+  rpc Watch(stream Invoice) returns (stream Status) { option deprecated = true; }
+}
+extend google.protobuf.MessageOptions { optional string tag = 50000; }

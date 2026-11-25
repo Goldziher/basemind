@@ -22,6 +22,9 @@ pub mod locals;
 mod query_walk;
 mod rationale;
 mod rust_macro_items;
+mod starlark_header;
+#[cfg(test)]
+mod symbol_kinds_proto_tests;
 #[cfg(test)]
 mod symbol_kinds_tests;
 
@@ -122,7 +125,10 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 /// - 9: HCL and Terraform files gain an outline: resources, data sources, variables, outputs, locals,
 ///   modules, providers and the `terraform` block, plus Terragrunt `include`, `dependency` and
 ///   `inputs`.
-pub const EXTRACT_EPOCH: u16 = 9;
+/// - 11: Protocol Buffers files gain an outline (package, messages, enums and values, services and rpcs,
+///   oneofs, extends, file options) and `import` edges; Starlark files gain functions, top-level
+///   variables, rule targets and `load()` imports.
+pub const EXTRACT_EPOCH: u16 = 11;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {
