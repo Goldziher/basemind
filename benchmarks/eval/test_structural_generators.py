@@ -278,7 +278,7 @@ class Scanner(unittest.TestCase):
         cases = [
             ("typescript", "  public addItem(item: T): void {\n", "addItem"),
             ("typescript", "  private items: T[] = [];\n", "items"),
-            ("java", "    private final String prefix = \"x\";\n", "prefix"),
+            ("java", '    private final String prefix = "x";\n', "prefix"),
             ("java", "    private int count;\n", "count"),
             ("go", "\tWalk(path string) error\n", "Walk"),
             ("typescript", "  const $emit = make();\n", "$emit"),

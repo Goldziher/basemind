@@ -323,7 +323,9 @@ CASES: list[tuple[str, Callable[[], object], object]] = [
     ),
     (
         "the load window excludes the setup before it and counter writes before it",
-        lambda: {k: load_window([{1: 100 * MIB}, {1: 2100 * MIB}])[k] for k in ("seconds", "written_lower", "written_upper")},
+        lambda: {
+            k: load_window([{1: 100 * MIB}, {1: 2100 * MIB}])[k] for k in ("seconds", "written_lower", "written_upper")
+        },
         {"seconds": 900.0, "written_lower": 2000 * MIB, "written_upper": 2000 * MIB},
     ),
     (

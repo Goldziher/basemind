@@ -382,9 +382,7 @@ def import_statements(src: str, lang: str) -> list[tuple[str, list[str]]]:
     if lang == "go":
         masked = blank_noncode(src, lang)
         # An `import` keyword inside a raw string is blanked in `masked`; a real one is not.
-        return [
-            (m.group(0), GO_PATH.findall(m.group(0))) for m in GO_IMPORT.finditer(code) if masked[m.start()] == "i"
-        ]
+        return [(m.group(0), GO_PATH.findall(m.group(0))) for m in GO_IMPORT.finditer(code) if masked[m.start()] == "i"]
     return []
 
 
