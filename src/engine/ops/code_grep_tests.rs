@@ -818,7 +818,7 @@ fn a_grep_whose_page_fills_early_reads_fewer_files_than_the_corpus_holds() {
         count_all(&sweep, &refs[range], None, &re, None, skip_hits, &|| false)
     };
 
-    let counted = count_until_page_full(files, &step, 0, 20, &|| false);
+    let counted = count_until_page_full(files, &step, 0, 20, &|| false, &|| false);
     assert_eq!(counted.counts.len(), COUNT_STEP_FILES, "one step of {files} files");
     assert!(counted.stopped_early);
     assert_eq!(counted.counts[0], 30);
@@ -826,7 +826,7 @@ fn a_grep_whose_page_fills_early_reads_fewer_files_than_the_corpus_holds() {
     assert_eq!(selected[0].take, 20);
     assert_eq!(unpack_cursor(resume.expect("the page has a next one")), (0, 20));
 
-    let whole = count_until_page_full(files, &step, 0, 100, &|| false);
+    let whole = count_until_page_full(files, &step, 0, 100, &|| false, &|| false);
     assert_eq!(whole.counts.len(), files, "a page the corpus cannot fill reads it all");
     assert!(!whole.stopped_early);
 }
@@ -841,7 +841,7 @@ fn the_sweep_stops_only_once_more_matches_than_the_limit_are_known() {
         (counts, SkippedBreakdown::default())
     };
 
-    let counted = count_until_page_full(files, &step, 3, 10, &|| false);
+    let counted = count_until_page_full(files, &step, 3, 10, &|| false, &|| false);
     assert_eq!(
         *steps.borrow(),
         [(0..COUNT_STEP_FILES, 3), (COUNT_STEP_FILES..COUNT_STEP_FILES * 2, 0)],
@@ -851,7 +851,54 @@ fn the_sweep_stops_only_once_more_matches_than_the_limit_are_known() {
     assert_eq!(counted.counts.len(), COUNT_STEP_FILES * 2);
 
     steps.borrow_mut().clear();
-    let cancelled = count_until_page_full(files, &step, 0, 10, &|| true);
+    let cancelled = count_until_page_full(files, &step, 0, 10, &|| true, &|| false);
     assert!(steps.borrow().is_empty(), "a cancelled sweep counts no step");
     assert!(cancelled.counts.is_empty() && !cancelled.stopped_early);
+}
+
+#[test]
+fn a_sweep_past_its_time_budget_stops_between_steps_and_says_how_far_it_got() {
+    let files = COUNT_STEP_FILES * 4;
+    let reads = std::cell::Cell::new(0usize);
+    let step = |range: std::ops::Range<usize>, _skip_hits: u32| {
+        reads.set(reads.get() + 1);
+        (vec![0; range.len()], SkippedBreakdown::default())
+    };
+    // A fake clock that is past the deadline from the second check on.
+    let checks = std::cell::Cell::new(0usize);
+    let clock = || {
+        checks.set(checks.get() + 1);
+        checks.get() > 1
+    };
+
+    let counted = count_until_page_full(files, &step, 0, 10, &|| false, &clock);
+    assert!(counted.timed_out);
+    assert!(!counted.stopped_early, "the page was not full: the clock cut it");
+    assert_eq!(reads.get(), 2, "the step the clock allowed ran, the next did not");
+    assert_eq!(counted.counts.len(), COUNT_STEP_FILES * 2);
+}
+
+#[test]
+fn a_sweep_always_reads_its_first_step_even_when_out_of_time() {
+    let step = |range: std::ops::Range<usize>, _skip_hits: u32| (vec![0; range.len()], SkippedBreakdown::default());
+    let counted = count_until_page_full(COUNT_STEP_FILES * 3, &step, 0, 10, &|| false, &|| true);
+    assert!(counted.timed_out);
+    assert_eq!(counted.counts.len(), COUNT_STEP_FILES, "one step, so a paging caller advances");
+}
+
+#[test]
+fn a_sweep_inside_its_time_budget_is_not_cut() {
+    let step = |range: std::ops::Range<usize>, _skip_hits: u32| (vec![0; range.len()], SkippedBreakdown::default());
+    let counted = count_until_page_full(COUNT_STEP_FILES * 3, &step, 0, 10, &|| false, &|| false);
+    assert!(!counted.timed_out && !counted.stopped_early);
+    assert_eq!(counted.counts.len(), COUNT_STEP_FILES * 3);
+}
+
+#[test]
+fn the_time_budget_names_the_cut_when_the_byte_budget_fired_too() {
+    assert_eq!(truncation_of(false, false), None);
+    assert_eq!(truncation_of(true, false), Some(GrepTruncation::ByteBudget));
+    assert_eq!(truncation_of(false, true), Some(GrepTruncation::TimeBudget));
+    assert_eq!(truncation_of(true, true), Some(GrepTruncation::TimeBudget));
+    assert_eq!(time_budget_notice().state, "time_budget");
 }

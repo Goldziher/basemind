@@ -40,6 +40,7 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 | --- | --- | --- |
 | `scan_cap` | `code_symbols`, `code_refs`, `memory_search`, `impact` | Scan stopped early, `total` is a lower bound: follow `next_cursor`, else narrow with `path` or `language`. |
 | `byte_budget` | `code_grep` | Corpus larger than one call reads: narrow with `path` or `language`, or follow `next_cursor`. |
+| `time_budget` | `code_grep` | Sweep ran 10 s and stopped (see `notice`): follow `next_cursor`, or narrow with `path` or `language`. |
 | `depth` | `code_search`, `docs_search`, `impact` | Ranking past 100 hits, or an import walk at its depth: refine the query or start nearer the target. |
 | `liveness_depth` | `docs_search` | A lane hit its candidate depth before enough live documents: narrow with `path`, `keywords` or `format`. |
 | `stale_chunks` | `code_search` | Hits in files edited since indexing were dropped (`omitted`): `index_rescan` them, or repeat. |
