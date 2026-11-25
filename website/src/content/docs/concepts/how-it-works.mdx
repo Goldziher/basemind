@@ -88,7 +88,9 @@ has embedded its first document, `eta_secs`) and `docs_search` serves its keywor
 `notice`; a lifecycle notice (a rescan, for example) takes the place of that one while it applies,
 so its absence does not mean the embeddings are done. The pass writes its progress to the workspace
 cache, so a daemon killed mid-way resumes it at the next start instead of embedding from the top; the
-documents already embedded are not embedded again.
+documents already embedded are not embedded again. A one-shot `basemind scan` works the same way: it
+returns once the text is indexed, and with no daemon running it starts a detached background worker
+for the vectors, which the next scan resumes if it is killed.
 
 ## Code versus documents
 

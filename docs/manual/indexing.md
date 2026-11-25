@@ -14,7 +14,33 @@ unchanged file is never extracted twice, across worktrees and repositories alike
 | Build the index from scratch | none | `basemind scan` |
 
 `basemind scan --json` and `basemind rescan --json` print only the response `index_rescan` gives
-(the counts, `elapsed_ms` and `root`), for a scan run here or forwarded to the daemon.
+(the counts, `elapsed_ms` and `root`), for a scan run here or forwarded to the daemon. A
+working-tree `scan --json` that left vectors owed adds `embeddings`: `pending_documents`,
+`pending_code`, `pending_policy` and `background` (`started`, `already_running`, `disabled` or
+`unavailable`).
+
+## Embeddings run in the background
+
+A working-tree `basemind scan` never waits on the embedding model: it writes the code map, every
+document's text and chunks and the keyword lane, then returns. The vectors it leaves owed (documents
+without them, code chunks when `[code_search] embed = true`, rows a changed embed policy rebuilds)
+are paid by a background pass, and the summary says so with an `embeddings: pending …` line.
+
+- With a daemon running, the scan is forwarded to it and the daemon embeds afterwards.
+- Otherwise the scan starts the hidden `embed-worker` command detached, at a lower CPU priority.
+  It embeds the owed documents 32 at a time, then runs one embedding pass over the tree when code
+  embedding is on, the embed policy changed or documents are left over. Its log is
+  `embed-worker.log` in the workspace's cache directory.
+- One worker runs per workspace; a scan that finds one running starts no other. The worker hands
+  the index back to any other writer that needs it (a scan, a rescan, `basemind cache`) and
+  resumes once that writer is done; it stops when `serve`, `watch` or the daemon takes the index.
+- What is owed stays recorded in the index, so a worker that is killed loses nothing: the next
+  `basemind scan`, a daemon or `embed-worker` run by hand in the repository (it finishes the pass
+  in the foreground) continues where it stopped.
+- `index_status` (`basemind status`) reports `embeddings: {done, total, eta_secs}` while vectors
+  are owed, and `docs_search` answers from the keyword lane with a notice for the documents still
+  without vectors. `BASEMIND_EMBED_BACKGROUND=false` stops the scan from starting the worker.
+- `scan --staged` and `scan --rev` embed as they go, as `basemind rescan` does.
 
 Besides the counts per language, `index_status` lists `large_files` (code files too long to read
 whole) and `most_imported` (the five files most others import at runtime, absent when no import

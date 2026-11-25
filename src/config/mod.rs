@@ -28,7 +28,7 @@ pub use comms::CommsConfig;
 pub use documents::{
     AGENT_CONFIG_GLOBS, DependenciesConfig, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm, KeywordsConfig,
     LOCKFILE_GLOBS, LlmConfig, NerBackend, NerConfig, OcrBackend, OcrConfig, RerankerConfig, SummarizationConfig,
-    SummarizationStrategy, TEST_PATH_GLOBS, VENDORED_BUILD_GLOBS, default_document_exclude,
+    SummarizationStrategy, TEST_DATA_GLOBS, TEST_PATH_GLOBS, VENDORED_BUILD_GLOBS, default_document_exclude,
 };
 #[cfg(feature = "intelligence")]
 pub(crate) use documents_validate::MAX_ABANDONED_EXTRACTIONS;

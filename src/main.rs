@@ -89,6 +89,11 @@ enum Cmd {
     /// edits, or to rebuild a stale/empty index without starting the server.
     #[command(after_long_help = basemind::cli::help::RESCAN)]
     Rescan(RescanArgs),
+    /// Embed what one-shot scans left owed: documents indexed without vectors and, with
+    /// `[code_search] embed = true`, code chunks. `basemind scan` starts it in the background; run
+    /// it by hand to finish the embedding in the foreground. Exits at once when one already runs.
+    #[command(name = "embed-worker", hide = true)]
+    EmbedWorker,
     /// Long-running watcher; keeps the code map current as files change.
     #[command(after_long_help = basemind::cli::help::WATCH)]
     Watch,
@@ -469,6 +474,7 @@ fn run() -> Result<()> {
             cmd_scan(&root, &args, scan_matches, scan_output)
         }
         Cmd::Rescan(args) => cmd_rescan(&root, &args, scan_output),
+        Cmd::EmbedWorker => cmd_embed_worker(&root, verbosity),
         Cmd::Watch => cmd_watch(&root, verbosity, no_color),
         Cmd::Code(c) => {
             let _ = basemind::lang::ensure_grammars();
@@ -561,6 +567,25 @@ fn bootstrap_grammars(out: &mut impl std::io::Write, verbosity: Verbosity) -> Re
     Ok(())
 }
 
+/// `basemind embed-worker`: pay the vectors the scans of `root` left owed, then exit.
+fn cmd_embed_worker(root: &std::path::Path, verbosity: Verbosity) -> Result<()> {
+    let root = &guard_workspace_root(root)?;
+    bootstrap_grammars(&mut std::io::sink(), verbosity)?;
+    let config = load_or_default(root)?;
+    let Some(report) = basemind::cli::embed_worker::run(root, &config)? else {
+        return Ok(());
+    };
+    tracing::info!(
+        settled = report.documents_settled,
+        owed = report.documents_owed,
+        whole_pass = report.whole_pass,
+        stopped = report.stopped,
+        daemon = report.daemon,
+        "background embedding pass finished"
+    );
+    Ok(())
+}
+
 fn load_or_default(root: &std::path::Path) -> Result<Config> {
     load_or_default_with(root, None)
 }
@@ -620,6 +645,12 @@ fn writer_collision_notice(root: &std::path::Path) -> Option<String> {
     let basemind_dir = basemind::store::workspace_cache_dir(root);
     match basemind::store::probe_writer_lock(&basemind_dir) {
         basemind::store::WriterProbe::Free => None,
+        // The background embedding worker gives the lock up when the store open asks for it.
+        basemind::store::WriterProbe::Held { holder: Some(meta) }
+            if meta.command == LockHolder::EmbedWorker.command() =>
+        {
+            None
+        }
         basemind::store::WriterProbe::Held { holder: Some(meta) } => Some(format!(
             "`{}` (pid {}) is already running against this repo and keeping the index fresh — \
              running this directly is unnecessary and would collide with it. Use `basemind rescan` \

@@ -55,10 +55,12 @@ pub struct CodeSearchConfig {
     pub embed_include: Vec<String>,
     /// Glob patterns (repo-relative, forward-slash) for files that are still chunked + indexed
     /// (BM25 / code-map) but **never** embedded. Use it to keep vectors off large generated or
-    /// vendored files while leaving them searchable by keyword. Beats `embed_include`. Empty by
-    /// default. Only consulted when `embed = true`; changing it removes the vector rows of newly
-    /// excluded files on the next scan.
-    #[serde(default)]
+    /// vendored files while leaving them searchable by keyword. Beats `embed_include`. Defaults to
+    /// the test paths (`[scan] test_globs`' default list), so test code is never embedded; setting
+    /// the key replaces the list, and `embed_exclude = []` embeds test code too. Only consulted
+    /// when `embed = true`; changing it removes the vector rows of newly excluded files on the next
+    /// scan.
+    #[serde(default = "CodeSearchConfig::default_embed_exclude")]
     #[schemars(inner(length(min = 1)))]
     pub embed_exclude: Vec<String>,
     /// Optional cross-encoder rerank of the fused hits. Reuses the same xberg reranker as the
@@ -100,6 +102,12 @@ impl CodeSearchConfig {
     fn default_embed() -> bool {
         false
     }
+    fn default_embed_exclude() -> Vec<String> {
+        super::documents::TEST_PATH_GLOBS
+            .iter()
+            .map(|glob| (*glob).to_string())
+            .collect()
+    }
 }
 
 impl Default for CodeSearchConfig {
@@ -111,7 +119,7 @@ impl Default for CodeSearchConfig {
             max_chunks_per_file: Self::default_max_chunks_per_file(),
             embed: Self::default_embed(),
             embed_include: Vec::new(),
-            embed_exclude: Vec::new(),
+            embed_exclude: Self::default_embed_exclude(),
             reranker: RerankerConfig::default(),
         }
     }

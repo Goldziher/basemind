@@ -424,12 +424,13 @@ pub(crate) fn submodule_roots_for_source(root: &Path, source: &ScanSource<'_>) -
 
 /// Whether the expensive embedding step runs during the scan.
 ///
-/// - `Inline` (today's default; used by the CLI `basemind scan`, the watcher, and manual `rescan`)
+/// - `Inline` (the watcher, `rescan`, `scan --staged` / `--rev` and the background embedding pass)
 ///   embeds during the scan — code chunks and documents get their vectors + LanceDB rows in one pass.
 /// - `Deferred` skips embedding: the scan still writes the code-map, the BM25 keyword lane, and the
 ///   content-addressed blobs, but emits **no** vector rows and does **not** persist the
-///   embedding-completion markers (the `.chunk.msgpack` sidecar / the doc `DocEntry`). Serve boot uses
-///   this for a fast first pass, then runs a second `Inline` scan in the background to fill vectors in.
+///   embedding-completion markers (the `.chunk.msgpack` sidecar / the doc `DocEntry`). A one-shot
+///   working-tree `basemind scan` and serve boot use it for a fast pass, then an `Inline` pass in the
+///   background fills the vectors in (`basemind embed-worker`, or the server's own).
 ///
 /// It is threaded as an explicit parameter rather than mutated onto `config` because the serve path
 /// shares a single `Arc<Config>` across every reader — mutating it would poison concurrent queries.

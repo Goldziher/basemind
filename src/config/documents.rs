@@ -7,14 +7,17 @@ use serde::{Deserialize, Serialize};
 use super::DeprecatedSection;
 use super::secrets::ApiKey;
 
-/// Globs naming test, fixture, mock, story, snapshot and end-to-end paths. The single source for
-/// two uses that never drift: `[scan] test_globs` names the test paths (they stay indexed in the
-/// code map for symbols, outlines, refs and grep), and the document tier's default `exclude`
-/// drops them from RAG (document indexing and embedding).
+/// Globs naming test, fixture, mock, story, snapshot, golden and end-to-end paths. The single source
+/// for every default that must not drift: `[scan] test_globs` names the test paths (they stay in the
+/// code map for symbols, outlines, refs and grep, marked as test, and the path roles' `test` role
+/// reads that list), the document tier's default `exclude` drops them from RAG (document indexing
+/// and embedding), and `[code_search] embed_exclude` keeps their code out of the vector store.
+/// [`TEST_DATA_GLOBS`] narrows them to the data the scan only lists.
 ///
-/// Patterns are anchored on a directory or a suffix. `**/test_*.*` can also hit a production
-/// module such as `test_runner.py`; that is accepted because a user can
-/// re-include with `!pattern` in `[documents] exclude`.
+/// Patterns are anchored on a directory, a directory-name prefix or suffix (`test_*/`,
+/// `*_test_data/`), or a file-name suffix. `**/test_*.*` can also hit a production module such as
+/// `test_runner.py`; that is accepted because a user can re-include with `!pattern` in
+/// `[documents] exclude` or set `[scan] test_globs`.
 pub const TEST_PATH_GLOBS: &[&str] = &[
     "**/tests/**",
     "**/test/**",
@@ -51,6 +54,61 @@ pub const TEST_PATH_GLOBS: &[&str] = &[
     "**/tests.py",
     "**/*.e2e.*",
     "**/*.cy.*",
+    "**/test_*/**",
+    "**/*_test/**",
+    "**/*_tests/**",
+    "**/test-data/**",
+    "**/*_test_data/**",
+    "**/*-test-data/**",
+    "**/*_testdata/**",
+    "**/fixture/**",
+    "**/__fixtures__/**",
+    "**/*_fixtures/**",
+    "**/*_mocks/**",
+    "**/*_snapshots/**",
+    "**/golden/**",
+    "**/goldens/**",
+    "**/*_fixture.*",
+    "**/*_fixtures.*",
+    "**/*_mock.*",
+    "**/*_mocks.*",
+    "**/*.golden",
+];
+
+/// Test data: fixtures, recorded responses, snapshots and golden files. The scan lists these
+/// (`[scan] list_only`) and never opens them, so they are not code-mapped, extracted, chunked,
+/// keyword-indexed or embedded; `find_files` still finds them. A data directory is listed whole,
+/// and under the test, fixture and mock directories of [`TEST_PATH_GLOBS`] only the data formats
+/// are: test code there stays in the code map, marked as test. A `!pattern` in `[scan] list_only`
+/// re-includes a path.
+pub const TEST_DATA_GLOBS: &[&str] = &[
+    "**/test_data/**",
+    "**/testdata/**",
+    "**/test-data/**",
+    "**/*_test_data/**",
+    "**/*-test-data/**",
+    "**/*_testdata/**",
+    "**/__snapshots__/**",
+    "**/*_snapshots/**",
+    "**/golden/**",
+    "**/goldens/**",
+    "**/*.snap",
+    "**/*.golden",
+    "**/tests/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/test/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/__tests__/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/test_*/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/*_test/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/*_tests/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/e2e/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/fixtures/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/fixture/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/__fixtures__/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/*_fixtures/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/mocks/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/mock/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/__mocks__/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/*_mocks/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
 ];
 
 /// Agent instruction and configuration files: they describe how agents should work, not the
@@ -802,3 +860,7 @@ mod tests {
         assert!(opted_in.embed_exclude.is_empty(), "an empty list replaces the default");
     }
 }
+
+#[cfg(test)]
+#[path = "test_paths_tests.rs"]
+mod test_paths_tests;

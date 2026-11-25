@@ -87,8 +87,18 @@ const BINARIES: &[&str] = &[
     "*.webm", "*.mp3", "*.wav", "*.flac", "*.ogg",
 ];
 
-/// The default `[scan] list_only` list, in the order `basemind init` writes it.
-pub const LIST_ONLY_GLOBS: &[&[&str]] = &[LOCKFILES, ARCHIVES, CAPTURES, FONTS, DATA, BINARIES];
+/// The default `[scan] list_only` list, in the order `basemind init` writes it. The last group is
+/// the test data of [`super::documents::TEST_DATA_GLOBS`], so the scan lists fixtures and recorded
+/// responses instead of extracting them.
+pub const LIST_ONLY_GLOBS: &[&[&str]] = &[
+    LOCKFILES,
+    ARCHIVES,
+    CAPTURES,
+    FONTS,
+    DATA,
+    BINARIES,
+    super::documents::TEST_DATA_GLOBS,
+];
 
 /// [`LIST_ONLY_GLOBS`] flattened into the owned list a config holds.
 pub fn default_list_only() -> Vec<String> {
@@ -287,7 +297,11 @@ mod tests {
 
     #[test]
     fn every_default_glob_has_a_non_fallback_kind() {
-        for glob in LIST_ONLY_GLOBS.iter().flat_map(|group| group.iter()) {
+        // Test data is data by design: its globs name directories and formats, not a known suffix.
+        let named = LIST_ONLY_GLOBS
+            .iter()
+            .filter(|group| !std::ptr::eq(**group, super::super::documents::TEST_DATA_GLOBS));
+        for glob in named.flat_map(|group| group.iter()) {
             let sample = glob.replace('*', "sample");
             let kind = kind_of(&sample);
             if kind == ListKind::Data {
