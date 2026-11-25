@@ -13,8 +13,7 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
   `budgeted` means the token budget trimmed it. `truncated` with `truncated_reason` marks a cut you
   did not ask for, with `omitted` counting what was left out where it is known; the codes and
   what to do about each are listed under "Truncation reasons" below.
-- **Limits are stated, not silent.** Each `limit` argument's description gives its default and
-  maximum; a larger value is capped to the maximum. `find_files` also sets `limit_clamped`.
+- A `limit` above its maximum is capped; each argument's description states both. `find_files` sets `limit_clamped`.
 - **Cursors are bound to their query.** A cursor continues only the call that returned it. Passed
   to another query, or used after a rescan or a HEAD move, the call is an error: repeat it without
   `cursor`. No tool answers a stale cursor with an empty page.
@@ -34,22 +33,21 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 
 ## Truncation reasons
 
-`truncated_reason` says why an answer is incomplete; the next step is what to do about it.
+`truncated_reason` says why an answer is incomplete.
 
-| Reason | Tool | Meaning and next step |
+| Reason | Tool | Next step |
 | --- | --- | --- |
-| `scan_cap` | `code_symbols`, `code_refs`, `memory_search`, `impact` | Scan stopped early, `total` is a lower bound: follow `next_cursor`, else narrow with `path` or `language`. |
-| `byte_budget` | `code_grep` | Corpus larger than one call reads: narrow with `path` or `language`, or follow `next_cursor`. |
-| `time_budget` | `code_grep` | Sweep ran 10 s and stopped (see `notice`): follow `next_cursor`, or narrow with `path` or `language`. |
-| `depth` | `code_search`, `docs_search`, `impact` | Ranking past 100 hits, or an import walk at its depth: refine the query or start nearer the target. |
-| `liveness_depth` | `docs_search` | A lane hit its candidate depth before enough live documents: narrow with `path`, `keywords` or `format`. |
-| `stale_chunks` | `code_search` | Hits in files edited since indexing were dropped (`omitted`): `index_rescan` them, or repeat. |
+| `scan_cap` | `code_symbols`, `code_refs`, `memory_search`, `impact` | `total` is a lower bound: follow `next_cursor`, else narrow with `path` or `language`. |
+| `byte_budget` | `code_grep` | Follow `next_cursor`, or narrow with `path` or `language`. |
+| `time_budget` | `code_grep` | Sweep stopped at 10 s (see `notice`): follow `next_cursor`, or narrow. |
+| `depth` | `code_search`, `docs_search`, `impact` | Past 100 hits, or an import walk at its depth: refine the query. |
+| `liveness_depth` | `docs_search` | Narrow with `path`, `keywords` or `format`. |
+| `stale_chunks` | `code_search` | Hits in files edited since indexing were dropped (`omitted`): `index_rescan` them. |
 | `imports` | `code_outline` | Import list cut at 200: `code_grep` for the import. |
-| `size_cap` | `code_read` | Body cut at the read cap: read a span with `line` and `end_line`. |
-| `too_large` | `git_blame` | File too large to blame whole, answer empty: blame a span or one `symbol`. |
+| `size_cap` | `code_read` | Read a span with `line` and `end_line`. |
+| `too_large` | `git_blame` | Blame a span or one `symbol`. |
 | `hunk_cap`, `byte_cap` | `git_diff` | Stopped at 200 hunks or 128 KiB, no cursor: narrow `from` and `to`. |
-| `path_cap` | `git_diff` (no `from`/`to`) | Status list cut (`omitted`): pass a directory `path` ending in `/`. |
-| `span_limit` | `git_log`, directory or symbol `path` | Page used its span of commits before filling: follow `next_cursor`, an empty page included, until it is absent; `commits_reached` (and `total_commits` when indexed) shows how far back it got. |
-| `commit_cap` | `basemind git hotspots` (CLI) | Walk stopped at its cap (20,000 indexed, 1,000 live): shorten `since`. |
-| `unindexed_scan` | `git_log` with `query` or `author` | No git-history index, only the newest commits scanned: wait for it (`index_status`), repeat. |
-| `shallow_clone` | `git_log`, `git_blame` | Shallow clone, an absent commit is inconclusive: `git fetch --unshallow`. |
+| `path_cap` | `git_diff` | Status list cut (`omitted`): pass a directory `path` ending in `/`. |
+| `span_limit` | `git_log` | Follow `next_cursor`, an empty page included, until it is absent. |
+| `unindexed_scan` | `git_log` | No history index, newest commits only: wait for it (`index_status`), repeat. |
+| `shallow_clone` | `git_log`, `git_blame` | An absent commit is inconclusive: `git fetch --unshallow`.
