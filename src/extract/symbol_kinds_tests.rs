@@ -6,7 +6,7 @@
 use super::SymbolKind::{self, *};
 use super::l1::extract_l1;
 
-type Symbols = Vec<(String, SymbolKind)>;
+pub(super) type Symbols = Vec<(String, SymbolKind)>;
 type Impls = Vec<(String, String)>;
 
 /// Sorted by name, then kind, so the assertions do not depend on match order.
@@ -17,7 +17,7 @@ fn sorted_symbols(mut pairs: Symbols) -> Symbols {
 
 /// The outline of `src` as `(name, kind)` pairs and its implementations as `(implementor, parent)`
 /// pairs, both sorted.
-fn outline(lang: &'static str, src: &str) -> (Symbols, Impls) {
+pub(super) fn outline(lang: &'static str, src: &str) -> (Symbols, Impls) {
     let map = extract_l1(lang, src.as_bytes()).expect("extract l1");
     let symbols = map.symbols.into_iter().map(|s| (s.name, s.kind)).collect();
     let mut impls: Impls = map
@@ -29,7 +29,7 @@ fn outline(lang: &'static str, src: &str) -> (Symbols, Impls) {
     (sorted_symbols(symbols), impls)
 }
 
-fn symbols(pairs: &[(&str, SymbolKind)]) -> Symbols {
+pub(super) fn symbols(pairs: &[(&str, SymbolKind)]) -> Symbols {
     sorted_symbols(pairs.iter().map(|(name, kind)| (name.to_string(), *kind)).collect())
 }
 
@@ -171,7 +171,7 @@ fn go_outlines_type_aliases_and_interface_methods() {
 }
 
 /// The `(kind, signature)` of the symbol `name` in `src`.
-fn signature_of(lang: &'static str, src: &str, name: &str) -> (SymbolKind, Option<String>) {
+pub(super) fn signature_of(lang: &'static str, src: &str, name: &str) -> (SymbolKind, Option<String>) {
     let map = extract_l1(lang, src.as_bytes()).expect("extract l1");
     let sym = map
         .symbols

@@ -22,6 +22,9 @@ pub mod locals;
 mod query_walk;
 mod rationale;
 mod rust_macro_items;
+mod sql_header;
+#[cfg(test)]
+mod symbol_kinds_script_tests;
 #[cfg(test)]
 mod symbol_kinds_tests;
 
@@ -122,7 +125,9 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 /// - 9: HCL and Terraform files gain an outline: resources, data sources, variables, outputs, locals,
 ///   modules, providers and the `terraform` block, plus Terragrunt `include`, `dependency` and
 ///   `inputs`.
-pub const EXTRACT_EPOCH: u16 = 9;
+/// - 10: SQL, shell and SCSS files gain an outline: SQL `CREATE` statements, shell functions and
+///   top-level variables, SCSS variables, mixins, functions and placeholder selectors.
+pub const EXTRACT_EPOCH: u16 = 10;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {
