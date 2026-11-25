@@ -69,6 +69,8 @@ pub const OVERRIDE_LANGUAGES: &[LangId] = &[
     "java",
     "hcl",
     "terraform",
+    "proto",
+    "starlark",
 ];
 
 /// Back-compat alias used by `basemind lang install` and tests that pre-warm the cache.
@@ -88,6 +90,8 @@ fn override_query_source(lang: LangId) -> Option<&'static str> {
         "markdown" => include_str!("queries/markdown.scm"),
         "java" => include_str!("queries/java.scm"),
         "hcl" | "terraform" => include_str!("queries/hcl.scm"),
+        "proto" => include_str!("queries/proto.scm"),
+        "starlark" => include_str!("queries/starlark.scm"),
         _ => return None,
     })
 }
