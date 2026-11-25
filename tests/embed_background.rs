@@ -151,5 +151,9 @@ fn the_worker_embeds_only_what_is_still_owed_and_settles_the_record() {
     );
     assert!(embedded(root, "orchard.md"));
     let cache_dir = basemind::store::workspace_cache_dir(root);
-    assert_eq!(basemind::embed_progress::read(&cache_dir), None, "the record is settled");
+    assert_eq!(
+        basemind::embed_progress::read(&cache_dir),
+        None,
+        "the record is settled"
+    );
 }

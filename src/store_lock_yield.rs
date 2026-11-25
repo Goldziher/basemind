@@ -122,7 +122,10 @@ mod tests {
         });
         let scan = acquire_lock_as(&dir, LockHolder::Scan).expect("the scan gets the lock the worker gave up");
         worker.join().expect("worker thread");
-        assert!(!requested(&dir), "the request is withdrawn once the writer holds the lock");
+        assert!(
+            !requested(&dir),
+            "the request is withdrawn once the writer holds the lock"
+        );
         assert!(
             try_acquire_lock_as(&dir, LockHolder::EmbedWorker).is_err(),
             "the scan holds the lock now"
@@ -136,7 +139,10 @@ mod tests {
         let _serve = acquire_lock_as(tmp.path(), LockHolder::Serve).expect("serve takes the lock");
         let started = std::time::Instant::now();
         assert!(acquire_lock_as(tmp.path(), LockHolder::Scan).is_err());
-        assert!(started.elapsed() < YIELD_WAIT / 4, "a serve holder is reported, not waited out");
+        assert!(
+            started.elapsed() < YIELD_WAIT / 4,
+            "a serve holder is reported, not waited out"
+        );
         assert!(!requested(tmp.path()), "a serve holder is never asked to yield");
     }
 

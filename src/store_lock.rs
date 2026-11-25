@@ -187,9 +187,9 @@ pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<LockGuard, StoreError>
 pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<LockGuard, StoreError> {
     const LOCK_ATTEMPTS: u32 = 25;
     match acquire_lock_within(basemind_dir, holder, LOCK_ATTEMPTS) {
-        Err(StoreError::Locked {
-            holder: Some(meta), ..
-        }) if holder != LockHolder::EmbedWorker && embed_yield::held_by_worker(&meta.command) => {
+        Err(StoreError::Locked { holder: Some(meta), .. })
+            if holder != LockHolder::EmbedWorker && embed_yield::held_by_worker(&meta.command) =>
+        {
             embed_yield::wait_for_worker(basemind_dir, || acquire_lock_within(basemind_dir, holder, 1))
         }
         outcome => outcome,

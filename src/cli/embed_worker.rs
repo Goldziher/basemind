@@ -421,11 +421,7 @@ fn embed_owed_documents(
         };
         let owed = reachable_owed_documents(root, &store);
         let reporter = reporter.get_or_insert_with(|| {
-            crate::embed_progress::EmbedReporter::begin(
-                crate::store::workspace_cache_dir(root),
-                owed.len(),
-                &settled,
-            )
+            crate::embed_progress::EmbedReporter::begin(crate::store::workspace_cache_dir(root), owed.len(), &settled)
         });
         if owed.is_empty() {
             return Ok(true);
@@ -447,7 +443,8 @@ fn embed_owed_documents(
             .context("a background document embedding batch")?
             .cancelled
         };
-        let still_owed: std::collections::HashSet<PathBuf> = reachable_owed_documents(root, &store).into_iter().collect();
+        let still_owed: std::collections::HashSet<PathBuf> =
+            reachable_owed_documents(root, &store).into_iter().collect();
         drop(store);
         let paid = batch.iter().filter(|path| !still_owed.contains(*path)).count();
         report.documents_settled += paid;
@@ -529,7 +526,8 @@ impl Asks {
     }
 
     fn asked(&self) -> bool {
-        crate::store_lock::embed_yield::requested(&self.workspace) || crate::store_lock::embed_yield::requested(&self.group)
+        crate::store_lock::embed_yield::requested(&self.workspace)
+            || crate::store_lock::embed_yield::requested(&self.group)
     }
 
     fn wait_while_asked(&self) {
@@ -561,7 +559,9 @@ impl YieldPoll {
                     std::thread::sleep(YIELD_POLL);
                 }
             })
-            .map_err(|error| tracing::warn!(%error, "no yield poll: the pass runs to its end before a writer gets the lock"))
+            .map_err(
+                |error| tracing::warn!(%error, "no yield poll: the pass runs to its end before a writer gets the lock"),
+            )
             .ok();
         Self { done, thread }
     }

@@ -300,7 +300,7 @@ mod tests {
         // Test data is data by design: its globs name directories and formats, not a known suffix.
         let named = LIST_ONLY_GLOBS
             .iter()
-            .filter(|group| !std::ptr::eq(**group, super::super::documents::TEST_DATA_GLOBS));
+            .filter(|group| **group != super::super::documents::TEST_DATA_GLOBS);
         for glob in named.flat_map(|group| group.iter()) {
             let sample = glob.replace('*', "sample");
             let kind = kind_of(&sample);

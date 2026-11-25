@@ -348,7 +348,10 @@ fn structured_data_over_chunk_cap(abs: &Path, follow_symlinks: bool, mime: &str,
     if !crate::extract::doc_guard::is_structured_data(mime) {
         return None;
     }
-    let size = doc_stat(abs, follow_symlinks).ok().filter(std::fs::Metadata::is_file)?.len();
+    let size = doc_stat(abs, follow_symlinks)
+        .ok()
+        .filter(std::fs::Metadata::is_file)?
+        .len();
     let least_chunks = size / u64::try_from(cfg.max_characters.max(1)).unwrap_or(u64::MAX);
     let cap = u64::try_from(cfg.max_chunks_per_document).unwrap_or(u64::MAX);
     (least_chunks > cap).then(|| {
@@ -408,7 +411,10 @@ mod tests {
             structured_data_over_chunk_cap(&over, false, "application/json", &cfg),
             Some(401)
         );
-        assert_eq!(structured_data_over_chunk_cap(&at_cap, false, "application/yaml", &cfg), None);
+        assert_eq!(
+            structured_data_over_chunk_cap(&at_cap, false, "application/yaml", &cfg),
+            None
+        );
         assert_eq!(
             structured_data_over_chunk_cap(&prose, false, "text/markdown", &cfg),
             None,

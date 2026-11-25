@@ -57,7 +57,10 @@ fn the_summary_line_names_what_is_owed_and_where_it_goes() {
             "embeddings: pending 3 documents, embedding in the background (progress: `embeddings` in `basemind status`)",
         ),
         (
-            Pending { code: true, ..DOCUMENTS },
+            Pending {
+                code: true,
+                ..DOCUMENTS
+            },
             Background::AlreadyRunning,
             "embeddings: pending 3 documents and code chunk vectors, a background embedding pass is already running and \
              takes them",

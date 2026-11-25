@@ -80,7 +80,10 @@ impl ScanOutput {
 }
 
 /// What a working-tree scan left owed for the embedding pass, and where it was handed.
-pub(super) type EmbeddingsHandOff = (basemind::cli::embed_worker::Pending, basemind::cli::embed_worker::Background);
+pub(super) type EmbeddingsHandOff = (
+    basemind::cli::embed_worker::Pending,
+    basemind::cli::embed_worker::Background,
+);
 
 /// Add the `embeddings` object to a scan's JSON answer when the scan left vectors owed; with none
 /// owed the answer stays exactly the `index_rescan` response.
@@ -96,7 +99,8 @@ fn insert_embeddings(value: &mut serde_json::Value, embeddings: Option<Embedding
 
 /// The `embeddings: pending …` line, unless nothing is owed or `--quiet` is set.
 fn render_embeddings(out: &mut impl std::io::Write, embeddings: Option<EmbeddingsHandOff>, verbosity: Verbosity) {
-    let line = embeddings.and_then(|(pending, background)| basemind::cli::embed_worker::summary_line(pending, background));
+    let line =
+        embeddings.and_then(|(pending, background)| basemind::cli::embed_worker::summary_line(pending, background));
     if let Some(line) = line.filter(|_| !matches!(verbosity, Verbosity::Quiet)) {
         let _ = writeln!(out, "{line}");
     }
