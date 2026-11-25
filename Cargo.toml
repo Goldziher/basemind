@@ -280,7 +280,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.27"
 tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.2", path = "crates/tree-sitter-graph", optional = true }
-tree-sitter-language-pack = "1.25.2"
+tree-sitter-language-pack = "1.27.2"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.2", path = "crates/tree-sitter-stack-graphs", optional = true }
 ty_module_resolver = { version = "=0.0.23", optional = true }
 xberg = { version = "1.5.1", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
