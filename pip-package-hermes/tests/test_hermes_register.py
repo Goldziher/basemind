@@ -439,9 +439,8 @@ def mcp_behaviors():
 @pytest.fixture
 def mcp_servers(monkeypatch, mcp_behaviors):
     """Replace the SDK's stdio client with fakes; the returned list holds one entry per server spawned."""
-    import mcp.client.stdio
-
     import mcp
+    import mcp.client.stdio
 
     spawned = []
 

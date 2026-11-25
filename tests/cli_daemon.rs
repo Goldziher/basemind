@@ -56,6 +56,7 @@ impl Env {
             .env("BASEMIND_DATA_HOME", self.home.path())
             .env("BASEMIND_COMMS_DIR", self.comms_dir())
             .env("BASEMIND_AGENT_ID", "cli-daemon-test")
+            .env("BASEMIND_EMBED_BACKGROUND", "false")
             .stdin(Stdio::null());
         cmd
     }

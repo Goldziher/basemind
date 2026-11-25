@@ -194,6 +194,14 @@ fn a_refresh_after_one_edit_decodes_one_outline() {
     let rel = RelPath::from("f7.rs");
     let old_hash = store.lookup(&rel).unwrap().hash_hex.clone();
     std::fs::write(root.join("f7.rs"), source(token, 100)).unwrap();
+    // A stamp inside the scanner's racy window is recorded as 0 and restamped by the next scan, which
+    // would publish a map for a rescan that changed nothing; an old stamp settles at once.
+    std::fs::File::options()
+        .write(true)
+        .open(root.join("f7.rs"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+        .unwrap();
     scan(root, &mut store);
     let new_hash = store.lookup(&rel).unwrap().hash_hex.clone();
     let next = cache.refreshed(&store, 0).expect("an edit changes the map");

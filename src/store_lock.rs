@@ -37,7 +37,7 @@ pub enum LockHolder {
     /// A one-shot CLI query with no daemon, reading the group index for the length of one command.
     Query,
     /// The background embedding worker a one-shot `basemind scan` starts (`basemind embed-worker`).
-    /// It gives the lock up to any other writer that asks ([`embed_yield`]).
+    /// It gives the lock up to any other writer that asks (`embed_yield`).
     EmbedWorker,
 }
 
