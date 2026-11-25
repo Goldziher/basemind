@@ -316,22 +316,23 @@ fn publish_is_never_cancelled_mid_flight() {
     );
 }
 
-/// The github-pages environment admits only `main`, so the site deploys from a push to main and
-/// never from a release tag, whose deploy job the environment's protection rules refuse.
+/// The github-pages environment admits `main` and `v*` tags, and the site documents the released
+/// binary, so only a pushed release tag deploys it; main and pull requests build and check links.
 #[test]
-fn the_website_deploys_only_from_main() {
+fn the_website_deploys_only_from_a_release_tag() {
     let docs = read_workflow("docs.yaml");
     let deploy = job_block(&docs, "deploy");
+    let triggers = &docs[..docs.find("\njobs:\n").unwrap()];
     assert!(
-        deploy.contains("if: github.ref == 'refs/heads/main'"),
-        "the docs deploy job must run only on main:\n{deploy}"
+        deploy.contains("if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"),
+        "the docs deploy job must run only for a pushed release tag:\n{deploy}"
     );
     assert!(
-        !docs[..docs.find("\njobs:\n").unwrap()].contains("tags:"),
-        "a release tag must not trigger the docs workflow"
+        triggers.contains("tags: [\"v*\"]"),
+        "a release tag must trigger the docs workflow"
     );
     assert!(
-        deploy.contains("pages: write") && !docs[..docs.find("\njobs:\n").unwrap()].contains("pages: write"),
+        deploy.contains("pages: write") && !triggers.contains("pages: write"),
         "only the deploy job may write to Pages"
     );
 }

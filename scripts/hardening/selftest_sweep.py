@@ -15,8 +15,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from functional_sweep import (  # noqa: E402
+    Outcome,
+    any_row_mentions,
+    file_listed,
+    items,
+    outline_has,
+    sweep_passes,
+)
 from wire_decode import decode  # noqa: E402
-from functional_sweep import Outcome, any_row_mentions, file_listed, items, outline_has, sweep_passes  # noqa: E402
 
 GREP_LITERAL = {
     "hits": {

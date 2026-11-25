@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:bad1ce2af290d6d81b8319c4c1b92c81b30e947a69c7ff6efee9a3a7a9e516fe
-Source-Hash: blake3:5f41e1deb2e08b220d154d16bddb39e865490ee82163ea3e769e244b2867b35b
+Content-Hash: blake3:140c19e1e95fe3b4d17f5bde845310ed48ec05a392415c8bb33bfb23c0e9bd5b
+Source-Hash: blake3:5dffe2f21bef1d8c6b26aef4af84c91901b2df5c656b37d0e65bd7ba7b257103
 Schema-Version: v1
 -->
 
@@ -80,8 +80,8 @@ The tools are always loaded: call them directly. Drop to raw shell only when no 
   `index_rescan` for a file that is not indexed, `find_files` for a missing one.
 - `path` is repo-relative; `line`, `end_line` and `column` are 1-based.
 - `code_read` takes `symbol` (add `kind` when several share the name) or `line` with `end_line`,
-  not both. A body over 128 KiB is cut at a line end and flagged `truncated` (`omitted_bytes` is what was
-  left out): read on from `end_line + 1`. `stale: true` (also on `code_outline`) means the file
+  not both. A `code_read` body over 128 KiB is cut at a line end and flagged `truncated`
+  (`omitted_bytes` is what was left out): read on from `end_line + 1`. `stale: true` (also on `code_outline`) means the file
   changed since it was indexed and was read as it is now; a deleted file is an error naming
   `index_rescan`.
 - `code_grep`: `pattern` is literal text unless `"regex":true`, and a regex anchors `^` / `$` at

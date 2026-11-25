@@ -96,11 +96,6 @@ number = 32
 status = "accepted"
 blake3 = "ac2ac5737e8169dc7064cdac0447b6c3ab6cc59fa3a8c5b87edac2ac66bbec52"
 
-[adrs."docs/adr/0033-store-evidence-collection-and-recovery-rules.md"]
-number = 33
-status = "accepted"
-blake3 = "8240c762be489977b94142a08ac8fb5a02486d8490ab966dbe3663201f80263e"
-
 [adrs."docs/adr/0034-lean-locating-rows.md"]
 number = 34
 status = "accepted"
@@ -195,11 +190,6 @@ blake3 = "d12964305ab9c1e859e2449e126dcae7f9f7c45affacda49ab0bf2c915f893f9"
 number = 52
 status = "accepted"
 blake3 = "a3e6312694be687f119a49deaa6c1916ce1bcdee92b76c68bd924c8c4343624c"
-
-[adrs."docs/adr/0053-text-answers-encoded-per-tool.md"]
-number = 53
-status = "accepted"
-blake3 = "9a63b75f67766f21d5187b3a165642c55fabb8f99d1faf69e894916e00beac14"
 
 [adrs."docs/adr/0055-read-around-reducing-floor.md"]
 number = 55

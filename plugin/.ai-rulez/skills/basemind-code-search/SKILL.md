@@ -83,8 +83,8 @@ The tools are always loaded: call them directly. Drop to raw shell only when no 
   `index_rescan` for a file that is not indexed, `find_files` for a missing one.
 - `path` is repo-relative; `line`, `end_line` and `column` are 1-based.
 - `code_read` takes `symbol` (add `kind` when several share the name) or `line` with `end_line`,
-  not both. A body over 128 KiB is cut at a line end and flagged `truncated` (`omitted_bytes` is what was
-  left out): read on from `end_line + 1`. `stale: true` (also on `code_outline`) means the file
+  not both. A `code_read` body over 128 KiB is cut at a line end and flagged `truncated`
+  (`omitted_bytes` is what was left out): read on from `end_line + 1`. `stale: true` (also on `code_outline`) means the file
   changed since it was indexed and was read as it is now; a deleted file is an error naming
   `index_rescan`.
 - `code_grep`: `pattern` is literal text unless `"regex":true`, and a regex anchors `^` / `$` at

@@ -364,7 +364,7 @@ def call_sites(src: str, lang: str) -> tuple[dict[str, list[int]], set[str]]:
 
 
 TS_IMPORT = re.compile(
-    rf"^[ \t]*import(?![\w$(.])\s*(?P<clause>[^;'\"`]*?)(?P<q>['\"])(?P<spec>[^'\"\n]*)(?P=q)", re.MULTILINE
+    r"^[ \t]*import(?![\w$(.])\s*(?P<clause>[^;'\"`]*?)(?P<q>['\"])(?P<spec>[^'\"\n]*)(?P=q)", re.MULTILINE
 )
 GO_IMPORT = re.compile(r"^import\b(?:\s*\((?P<block>[^)]*)\)|(?P<single>[^\n]*))", re.MULTILINE)
 GO_PATH = re.compile(r'"([^"\n]+)"')
