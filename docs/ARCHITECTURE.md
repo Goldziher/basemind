@@ -590,8 +590,10 @@ Extraction results live in a content-addressed blob store shared by every worksp
 (`<cache>/cache/blobs/v<schema>/`, one namespace per blob schema, so two installed versions never read
 or overwrite each other's blobs; the sweep also removes un-namespaced blobs and older namespaces,
 and leaves a newer namespace alone). Inside a namespace a blob sits in a bucket named for the first two hex
-digits of its hash (`v<schema>/ab/<hash>.fm.msgpack`, `src/store_blob_layout.rs`); a flat blob an older
-release wrote is moved into its bucket when first read, and the sweep walks both layouts. A workspace's `files` (code lane) and `doc_files` (document lane) entries
+digits of its hash (`v<schema>/ab/<hash>.fm.msgpack`, `src/store_blob_layout.rs`), from the namespace
+after `v34`: `v34` stays flat, because 0.34.0 shares it and looks for flat names only. A blob found
+in the other layout of its namespace is moved into place when first read, a live blob whose twin is
+in place is reaped as a duplicate, and the sweep walks both layouts. A workspace's `files` (code lane) and `doc_files` (document lane) entries
 reference blobs by hash. The sweep (`src/store_gc.rs`, `src/store_gc_live.rs`) is tier-aware: a `.doc`
 blob is live only if some workspace's `doc_files` references the hash, and `.fm` / `.chunk` / `.rref`
 blobs only if a `files` entry does. That matters when a path changes tier (a markdown file that used
@@ -647,12 +649,16 @@ only when those fields read as this binary's; one whose fields cannot be read at
 set and runs even when the current namespace cannot be swept.
 
 A file map also records the layout of the blob store it was written for (`blob_layout`; `1` is
-the namespaced store, `2` adds the delta log `index.delta`). A map without it was written when blobs
-lay flat in `cache/blobs/`: it is discarded with the index built from it and the workspace is
-scanned again, whatever schema it carries. The delta log is what a layout-2 base depends on, so the
-layout is also the mixed-version guard: a binary of layout 1 reads a layout-2 map as a newer
-basemind's and refuses it, instead of reading the base without its log or rewriting the base over
-the log's changes; this binary discards a layout-1 map and scans again over the blobs already stored.
+the namespaced store). A map without it was written when blobs lay flat in `cache/blobs/`: it is
+discarded with the index built from it and the workspace is scanned again, whatever schema it
+carries. The delta log `index.delta` does not change the layout, so a release of the same minor
+that does not know the log (0.34.0) reads and writes the map instead of refusing it as a newer
+basemind's. It reads the base alone, the map of the last full write, and its scan indexes what
+differs from the working tree, replacing a file's rows by path. Its blob sweep counts the hashes
+the base names, so a blob only the log names can be reaped after the grace period, and the next
+scan here extracts that file again, since an unchanged file is skipped only when its blobs exist.
+It writes the base by renaming a new file over it, which changes the base's identity: the log's
+stamp no longer matches, the log is ignored, and the next full write here removes it.
 
 ### Durability
 

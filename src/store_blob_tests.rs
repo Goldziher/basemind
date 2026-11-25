@@ -486,8 +486,10 @@ fn plant(path: &Path, bytes: &[u8]) {
     std::fs::write(path, bytes).expect("plant the blob");
 }
 
+const FM: &str = ".fm.msgpack";
+
 #[test]
-fn a_written_blob_lands_in_the_bucket_of_its_first_two_hash_digits() {
+fn a_written_blob_lands_in_the_layout_of_its_namespace() {
     init_isolated_cache();
     let tmp = tempfile::tempdir().unwrap();
     let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
@@ -495,38 +497,33 @@ fn a_written_blob_lands_in_the_bucket_of_its_first_two_hash_digits() {
 
     store.write_filemap_hex(&hash_hex, &sample_l1(), None).expect("write");
 
-    let expected = store.blobs_dir.join("ab").join(format!("{hash_hex}.fm.msgpack"));
+    let expected = crate::store_blob_layout::blob_path(&store.blobs_dir, &hash_hex, FM);
     assert_eq!(store.blob_path_fm_hex(&hash_hex), expected);
-    assert!(expected.is_file(), "the blob is in its bucket");
+    assert!(expected.is_file(), "the blob is in place");
     assert!(
-        !store.blobs_dir.join(format!("{hash_hex}.fm.msgpack")).exists(),
-        "nothing is written flat"
+        !crate::store_blob_layout::displaced_blob_path(&store.blobs_dir, &hash_hex, FM).exists(),
+        "nothing is written in the other layout"
     );
 }
 
 #[test]
-fn a_flat_blob_of_an_older_release_is_read_and_moved_into_its_bucket() {
+fn a_blob_of_the_other_layout_is_read_and_moved_into_place() {
     init_isolated_cache();
     let tmp = tempfile::tempdir().unwrap();
     let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
     let hash_hex = format!("0f{}", "1".repeat(62));
-    let flat = store.blobs_dir.join(format!("{hash_hex}.fm.msgpack"));
-    std::fs::write(
-        &flat,
-        crate::store_blob::frame_filemap(&sample_l1(), Some(&sample_l2())).unwrap(),
-    )
-    .expect("plant a flat blob");
+    let displaced = crate::store_blob_layout::displaced_blob_path(&store.blobs_dir, &hash_hex, FM);
+    plant(
+        &displaced,
+        &crate::store_blob::frame_filemap(&sample_l1(), Some(&sample_l2())).unwrap(),
+    );
 
     assert_eq!(store.read_l1_by_hex(&hash_hex).unwrap(), Some(sample_l1()));
 
-    assert!(!flat.exists(), "the flat blob moved");
+    assert!(!displaced.exists(), "the displaced blob moved");
     assert!(
-        store
-            .blobs_dir
-            .join("0f")
-            .join(format!("{hash_hex}.fm.msgpack"))
-            .is_file(),
-        "into its bucket"
+        crate::store_blob_layout::blob_path(&store.blobs_dir, &hash_hex, FM).is_file(),
+        "into place"
     );
     assert_eq!(
         store.read_l2_by_hex(&hash_hex).unwrap(),
@@ -536,18 +533,18 @@ fn a_flat_blob_of_an_older_release_is_read_and_moved_into_its_bucket() {
 }
 
 #[test]
-fn a_blob_written_over_a_flat_one_replaces_it_instead_of_leaving_a_twin() {
+fn a_blob_written_over_a_displaced_one_replaces_it_instead_of_leaving_a_twin() {
     init_isolated_cache();
     let tmp = tempfile::tempdir().unwrap();
     let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
     let hash_hex = format!("7e{}", "2".repeat(62));
-    let flat = store.blobs_dir.join(format!("{hash_hex}.fm.msgpack"));
-    std::fs::write(&flat, b"stale").expect("plant a flat blob");
+    let displaced = crate::store_blob_layout::displaced_blob_path(&store.blobs_dir, &hash_hex, FM);
+    plant(&displaced, b"stale");
 
     store
         .overwrite_filemap_hex(&hash_hex, &sample_l1(), None)
         .expect("overwrite");
 
-    assert!(!flat.exists(), "no flat twin is left");
+    assert!(!displaced.exists(), "no twin is left in the other layout");
     assert_eq!(store.read_l1_by_hex(&hash_hex).unwrap(), Some(sample_l1()));
 }

@@ -272,8 +272,8 @@ fn collect_view_hashes(basemind_dir: &Path, skip_stale: bool) -> Result<LiveBlob
 }
 
 /// Sweep the GLOBAL blob store, deleting every blob whose hex stem is not in `referenced`. Blobs
-/// are found in both layouts (flat and bucketed, see `store_blob_layout`); a flat blob
-/// whose bucketed twin exists is a stale duplicate and is reaped when the twin is current.
+/// are found in both layouts (flat and bucketed, see `store_blob_layout`); a live blob outside this
+/// binary's layout whose twin is in place is a stale duplicate and is reaped.
 ///
 /// Files that do not match a known blob suffix are inspected (counted in `scanned`) but
 /// never deleted — a conservative choice so a stray file under `blobs/` is never reaped.
@@ -327,10 +327,10 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &LiveBlobs, grace: Duration) -> Res
         };
         report.scanned += 1;
         if referenced.keeps(file_name) {
-            reap_flat_twin(blobs_dir, &path, file_name, &mut report)?;
+            reap_displaced_twin(blobs_dir, &path, file_name, &mut report)?;
             continue;
         }
-        // A reader may have moved a flat blob into its bucket since the listing: it is no longer here.
+        // A reader may have moved the blob into place since the listing: it is no longer here.
         let meta = match std::fs::metadata(&path) {
             Ok(meta) => meta,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
@@ -361,18 +361,14 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &LiveBlobs, grace: Duration) -> Res
     Ok(report)
 }
 
-/// Remove `path`, a live blob, when it sits flat in `blobs_dir` and the same blob is already in its
-/// bucket: an older release rewrote it flat after a newer one moved it. The bucketed copy is the one
-/// every reader of this release finds first, so the flat one only costs space.
-fn reap_flat_twin(blobs_dir: &Path, path: &Path, file_name: &str, report: &mut GcReport) -> Result<(), GcError> {
-    if path.parent() != Some(blobs_dir) {
-        return Ok(());
-    }
+/// Remove `path`, a live blob, when it is a twin outside this binary's blob layout of a copy that is
+/// in place ([`crate::store_blob_layout::is_displaced_twin`]).
+fn reap_displaced_twin(blobs_dir: &Path, path: &Path, file_name: &str, report: &mut GcReport) -> Result<(), GcError> {
     let Some(stem) = blob_stem(file_name) else {
         return Ok(());
     };
     let suffix = &file_name[stem.len()..];
-    if !crate::store_blob_layout::sharded_blob_path(blobs_dir, stem, suffix).is_file() {
+    if !crate::store_blob_layout::is_displaced_twin(blobs_dir, path, stem, suffix) {
         return Ok(());
     }
     let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
