@@ -139,6 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The plugin launcher releases its install lock before it execs a binary another launch installed while it waited (#435)
+
 ### Fixed
 
 - The publish gate ignores the failed jobs of the reusable build from an earlier attempt of a release, and `publish.yaml`'s job graph, release-notes cap and gate names are covered by tests (#449).
@@ -147,6 +148,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   throwaway file, so an `agent_launch` round trip can be verified on a live host (#436).
 - `basemind code impact --symbol` lists the callers of a symbol up to `--depth` hops, each graded by how it was resolved (a `name_only` match is never proven or followed), the calls the symbol makes, and the files the target imports (#121)
 - `basemind code impact` buckets every impacted file as prod, config, test or external with counts per bucket, lists the order of work (targets first, then nearest files, prod before tests), and `--fail-above <n>` exits 1 when more than `n` files are impacted (#209)
+
 ### Changed
 
 - The Hermes plugin keeps one `basemind serve` session per working directory instead of starting
