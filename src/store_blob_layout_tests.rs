@@ -47,11 +47,18 @@ fn a_flat_namespace_keeps_its_blobs_flat() {
     let layout = layout_of(LAST_FLAT_BLOB_SCHEMA);
     let tmp = tempfile::tempdir().unwrap();
     let flat = flat_blob_path(tmp.path(), HASH, FM);
-    assert_eq!(locate_in(layout, tmp.path(), HASH, FM), flat, "a writer creates it flat");
+    assert_eq!(
+        locate_in(layout, tmp.path(), HASH, FM),
+        flat,
+        "a writer creates it flat"
+    );
     touch(&flat);
 
     assert_eq!(locate_in(layout, tmp.path(), HASH, FM), flat);
-    assert!(flat.is_file(), "a read leaves the flat blob where a flat-only release reads it");
+    assert!(
+        flat.is_file(),
+        "a read leaves the flat blob where a flat-only release reads it"
+    );
     assert!(!tmp.path().join("ab").exists(), "no bucket is created");
 }
 
@@ -130,7 +137,10 @@ fn a_displaced_twin_is_the_copy_outside_the_layout_of_a_blob_in_place() {
         touch(&placed);
 
         assert!(is_displaced_twin_in(layout, tmp.path(), &twin, HASH, FM), "{layout:?}");
-        assert!(!is_displaced_twin_in(layout, tmp.path(), &placed, HASH, FM), "{layout:?}");
+        assert!(
+            !is_displaced_twin_in(layout, tmp.path(), &placed, HASH, FM),
+            "{layout:?}"
+        );
     }
 }
 

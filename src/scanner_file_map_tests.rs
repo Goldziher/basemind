@@ -311,10 +311,9 @@ fn a_file_map_with_a_delta_log_reads_as_the_layout_of_an_earlier_release_of_the_
         "the incremental pass appended to a delta log"
     );
 
-    let base: crate::store::Index = rmp_serde::from_slice(
-        &std::fs::read(view_dir.join(crate::store::INDEX_FILE)).expect("read the base"),
-    )
-    .expect("the base decodes alone");
+    let base: crate::store::Index =
+        rmp_serde::from_slice(&std::fs::read(view_dir.join(crate::store::INDEX_FILE)).expect("read the base"))
+            .expect("the base decodes alone");
 
     assert_eq!(
         (base.schema_ver, base.blob_layout),
@@ -339,10 +338,9 @@ fn a_base_rewritten_by_a_release_without_the_log_is_read_without_the_stale_log()
     let logged = store.lookup("alpha.rs").expect("indexed").clone();
     let view_dir = store.view_dir.clone();
     drop(store);
-    let base_alone: crate::store::Index = rmp_serde::from_slice(
-        &std::fs::read(view_dir.join(crate::store::INDEX_FILE)).expect("read the base"),
-    )
-    .expect("decode");
+    let base_alone: crate::store::Index =
+        rmp_serde::from_slice(&std::fs::read(view_dir.join(crate::store::INDEX_FILE)).expect("read the base"))
+            .expect("decode");
     assert_ne!(
         base_alone.files.get(bstr::BStr::new("alpha.rs")),
         Some(&logged),
@@ -374,6 +372,9 @@ fn a_base_rewritten_by_a_release_without_the_log_is_read_without_the_stale_log()
     drop(reopened);
 
     let after = crate::store::read_index(&view_dir).expect("read").expect("a file map");
-    assert_eq!(after.files, expected.files, "the next store's own base and log read back whole");
+    assert_eq!(
+        after.files, expected.files,
+        "the next store's own base and log read back whole"
+    );
     assert!(after.files.get(bstr::BStr::new("beta.rs")).is_none());
 }
