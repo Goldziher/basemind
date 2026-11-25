@@ -720,22 +720,31 @@ fn the_sweep_sees_flat_and_bucketed_blobs_in_one_pass() {
     );
 }
 
+/// A referenced blob in place stays; its twin in the other layout, written again by a release of
+/// that layout, is reaped. In the flat `v34` namespace the twin is the bucketed copy, so an earlier
+/// 0.34 release keeps the flat one it reads.
 #[test]
-fn the_sweep_reaps_the_flat_twin_of_a_referenced_bucketed_blob() {
+fn the_sweep_reaps_the_displaced_twin_of_a_referenced_blob() {
     let fx = build_fixture();
-    let bucketed = shard_fm_blob(&fx, &fx.referenced_stem);
-    let twin = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.referenced_stem));
+    let flat = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.referenced_stem));
+    let placed = crate::store_blob_layout::blob_path(&fx.blobs_dir, &fx.referenced_stem, ".fm.msgpack");
+    let twin = crate::store_blob_layout::displaced_blob_path(&fx.blobs_dir, &fx.referenced_stem, ".fm.msgpack");
+    if placed != flat {
+        fs::create_dir_all(placed.parent().unwrap()).expect("mk bucket");
+        fs::rename(&flat, &placed).expect("place the blob");
+    }
+    fs::create_dir_all(twin.parent().unwrap()).expect("mk the twin's directory");
     fs::write(&twin, b"fm").expect("write twin");
     let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
 
     gc_blobs_in(&fx.blobs_dir, &referenced, Duration::from_secs(3600)).expect("gc");
 
-    assert!(bucketed.exists(), "the bucketed copy stays");
-    assert!(!twin.exists(), "the flat twin is reaped");
+    assert!(placed.exists(), "the copy in place stays");
+    assert!(!twin.exists(), "the displaced twin is reaped");
 }
 
 #[test]
-fn a_flat_referenced_blob_with_no_bucketed_twin_is_kept() {
+fn a_flat_referenced_blob_with_no_twin_is_kept() {
     let fx = build_fixture();
     let flat = fx.blobs_dir.join(format!("{}.fm.msgpack", fx.referenced_stem));
     let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");

@@ -670,7 +670,7 @@ mod tests {
         let blobs = crate::store::global_blobs_dir();
         std::fs::create_dir_all(&blobs).unwrap();
         let hash = "d".repeat(64);
-        let path = crate::store_blob_layout::sharded_blob_path(&blobs, &hash, ".fm.msgpack");
+        let path = crate::store_blob_layout::blob_path(&blobs, &hash, ".fm.msgpack");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut torn = crate::store_blob::frame_filemap(&l1_with("a", 64), None).unwrap();
         torn.truncate(torn.len() / 2);
@@ -688,7 +688,7 @@ mod tests {
     fn an_outline_cached_before_an_epoch_refresh_is_read_again() {
         let dir = tempfile::tempdir().unwrap();
         let hash = "e".repeat(64);
-        let path = crate::store_blob_layout::sharded_blob_path(dir.path(), &hash, ".fm.msgpack");
+        let path = crate::store_blob_layout::blob_path(dir.path(), &hash, ".fm.msgpack");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let old_epoch = crate::extract::EXTRACT_EPOCH - 1;
         let mut stale = l1_with("before", 1);

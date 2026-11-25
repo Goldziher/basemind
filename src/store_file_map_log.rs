@@ -11,6 +11,15 @@
 //! replaced by a compaction, a rebuild or anything else is never combined with a log of an earlier
 //! one. Replaying a frame is idempotent (last writer per path wins), and a torn or damaged frame
 //! ends the replay: the map then holds the last durable flush, which is what it may claim.
+//!
+//! A release that does not know the log shares the file map (same schema and blob layout) and reads
+//! the base alone: the map of the last full write, so files the log changed since show as they were
+//! then. Its scan compares that map with the working tree and indexes what differs, and a file's
+//! rows are replaced by path, so the map and index it leaves are whole. It writes the base by
+//! renaming a new file over it, which changes the base's identity: the log no longer matches, is
+//! ignored by the next read here, and is removed by this binary's next full write (every store's
+//! first flush is one). A store appends only while it holds the workspace's writer lock, which no
+//! other writer of any release takes meanwhile, so no base is replaced under a log being appended to.
 
 use std::fs::{Metadata, OpenOptions};
 use std::io::Write;
