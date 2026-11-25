@@ -49,7 +49,14 @@ symbol or span you need. Paths are repository-relative with forward slashes.
   overlapping windows written once, as `rg -C N` prints them. In JSON (`structuredContent`,
   `--json`) the rows are `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`. The sweep stops
   reading once the files read hold more matches than `limit`; `total` then counts only those
-  files and `total_is_partial` says so, and each `next_cursor` page counts on from there.
+  files and `total_is_partial` says so, and each `next_cursor` page counts on from there. A sweep
+  that runs 10 seconds stops the same way: it keeps the matches it found, sets `truncated_reason`
+  to `time_budget` and a `notice`, and `next_cursor` resumes at the first file it did not read.
+  `skipped_files` counts the files it could not search, and `skipped_reasons` splits them into
+  `unavailable` (gone since the scan, or leading out of the repository), `too_large` (past
+  `scan.max_file_bytes`) and `unreadable` (opening or reading failed). The first search after a
+  start waits for the code map to load, and while a scan runs it reads every file instead of
+  using the trigram prefilter; both make it slower than the ones after it.
 - `code_search` returns pointers (path, `line` / `end_line`, symbol), not bodies. It reports the
   lanes that ran and `lanes_unavailable` for the ones that did not. It needs a build with the
   `code-search` feature; without it the call is an error naming the feature.

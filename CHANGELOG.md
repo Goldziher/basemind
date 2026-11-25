@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `code_grep` stops a sweep after 10 seconds and answers the matches it found with `truncated_reason: time_budget`, a `notice` and a `next_cursor` resuming at the first file it did not read; the manual documents `skipped_files` and `skipped_reasons` and why the first search after a start is slower (#477)
 - `scripts/changelog_section.py` fails a release whose changelog section is over 60000 characters (`RELEASE_NOTES_CEILING`) and uses a hand-written `docs/release-notes/<version>.md` as the release body when one exists, so the release page stays a summary and the long list stays in CHANGELOG.md (#450)
 - `[resources] hard_footprint_percent` is an opt-in hard memory ceiling: past that percentage of `max_footprint_mb` the running scan cancels itself between chunks, the daemon sheds its idle hosted read stacks, and the index is left consistent and marked partial (#214)
 - `basemind code find --indexed true|false|any` lists indexed files, list-only files or both, as the `find_files` tool's `indexed` argument does
@@ -27,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `code_grep` no longer waits for a running scan to release the index before it starts: it searches without the trigram prefilter instead, so the first search after a change is not held up for the length of the scan (#477)
 - `embed_batch_size` now bounds every embedding call: a code file or document with more chunks than the batch size is embedded in windows of that size instead of in one call, so peak memory during `[code_search] embed = true` follows the batch size and not the largest file's chunk count; lower `embed_batch_size` to trade scan time for a smaller peak (#442)
 - Memory notes saved before the repository's `origin` was added, removed or changed are no longer hidden: the first memory call of a session files every note of the store under the current scope, the newer note winning on a clash (#319)
 - A daemon-hosted workspace serves its store from a snapshot a publish swaps in, so a long read (a `code_refs` callers scan, an import-graph build) no longer holds a scan's publish back, and the reads that follow it no longer queue behind the publish (#288)

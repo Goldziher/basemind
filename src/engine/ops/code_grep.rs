@@ -14,6 +14,7 @@ use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
 use crate::engine::files::{IndexedFiles, Sweep};
 use crate::engine::filters::{Filters, parse_path};
+use crate::engine::types::LifecycleNotice;
 use crate::engine::grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
 use crate::engine::types::grep::{
     CodeGrepParams, GREP_CONTEXT_MAX, GrepHit, GrepHits, GrepTruncation, SkippedBreakdown, WorkspaceGrepParams,
@@ -31,8 +32,15 @@ use crate::path::RelPath;
 /// is precisely what one greps for, is exactly what does not live in the first N files. The budget
 /// exists only to keep a single call from reading an unbounded workspace (a repo of vendored
 /// minified bundles), and it is derived from indexed sizes rather than from a wall-clock deadline so
-/// that the cut point is deterministic — a non-deterministic cut would corrupt cursor pagination.
+/// that the cut point is deterministic. The wall-clock cut is [`GREP_TIME_BUDGET`], which resumes
+/// from the number of files it actually counted, so it needs no deterministic cut point.
 const GREP_BYTE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Wall-clock budget of one `code_grep` sweep. Checked between counting steps, never inside one, so a
+/// step already started finishes and the first step always runs: a call cannot return nothing and a
+/// paging caller always advances. Past it the sweep stops, returns what it counted with a `notice`,
+/// `truncated_reason: time_budget` and a `next_cursor` resuming at the first file not counted.
+const GREP_TIME_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Workspace {
     /// `code_grep`: content search over every indexed code file and text document.
@@ -40,13 +48,24 @@ impl Workspace {
         self.code_grep_until(p, &|| false)
     }
 
-    /// [`code_grep`](Self::code_grep) that reads no further file once `cancelled` says so, and then
-    /// fails with [`EngineError::Cancelled`]: the sweep runs on rayon threads, which aborting the
-    /// caller's task does not stop.
+    /// [`code_grep_until`](Self::code_grep_until) with the wall-clock budget [`GREP_TIME_BUDGET`].
     pub(crate) fn code_grep_until(
         &self,
         p: CodeGrepParams,
         cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Result<WorkspaceGrepResponse, EngineError> {
+        let deadline = std::time::Instant::now() + GREP_TIME_BUDGET;
+        self.code_grep_with_clock(p, cancelled, &|| std::time::Instant::now() >= deadline)
+    }
+
+    /// [`code_grep`](Self::code_grep) that reads no further file once `cancelled` says so, and then
+    /// fails with [`EngineError::Cancelled`]: the sweep runs on rayon threads, which aborting the
+    /// caller's task does not stop.
+    pub(crate) fn code_grep_with_clock(
+        &self,
+        p: CodeGrepParams,
+        cancelled: &(dyn Fn() -> bool + Sync),
+        out_of_time: &dyn Fn() -> bool,
     ) -> Result<WorkspaceGrepResponse, EngineError> {
         if p.pattern.is_empty() {
             return Err(EngineError::invalid_argument(
@@ -76,6 +95,7 @@ impl Workspace {
             },
             scope.as_ref(),
             cancelled,
+            out_of_time,
         )?;
         response.scope_files = scope.map(|scope| scope.len());
         Ok(response)
@@ -97,6 +117,7 @@ fn workspace_grep(
     params: WorkspaceGrepParams,
     scope: Option<&crate::engine::scope::ChangeScope>,
     cancelled: &(dyn Fn() -> bool + Sync),
+    out_of_time: &dyn Fn() -> bool,
 ) -> Result<WorkspaceGrepResponse, EngineError> {
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let generation = ws.cache_generation.load(Ordering::Relaxed);
@@ -185,8 +206,11 @@ fn workspace_grep(
     let paths: Vec<&RelPath> = scanned.iter().map(|(path, _)| *path).collect();
     // Documents have no bloom row: they sit after the code files and are always read.
     let code_files = scanned.partition_point(|(_, meta)| !meta.hash_hex.is_empty());
+    // A scan holds the store's write side for its whole run: waiting for it would stall the first grep
+    // after a change for as long as the scan takes. Without the view the sweep reads every file, which
+    // is always correct, so a busy store only costs the prefilter.
     let index = bloom_prefilter_enabled()
-        .then(|| ws.store_read().read_index_view())
+        .then(|| ws.try_store_read().ok().and_then(|store| store.read_index_view()))
         .flatten();
     // Files the per-file trigram blooms prove cannot match are never opened. They keep their slot in
     // `paths` (counted as zero), so window order, `file_idx` and every cursor are those of the full sweep.
@@ -219,7 +243,7 @@ fn workspace_grep(
             cancelled,
         )
     };
-    let counted = count_until_page_full(paths.len(), &count_step, skip_hits, limit, cancelled);
+    let counted = count_until_page_full(paths.len(), &count_step, skip_hits, limit, cancelled, out_of_time);
     if cancelled() {
         return Err(EngineError::Cancelled);
     }
@@ -227,9 +251,11 @@ fn workspace_grep(
         counts,
         skipped: skipped_reasons,
         stopped_early,
+        timed_out,
     } = counted;
 
     let total = counts.iter().fold(0u32, |acc, &c| acc.saturating_add(c));
+    let counts_len = counts.len();
 
     let (selected, limit_resume) = select_hits(&counts, limit, skip_files, skip_hits);
     // Judged against the file the bytes were read from: an external path is not under `root`.
@@ -242,14 +268,19 @@ fn workspace_grep(
 
     // A page cut by `limit` is paging and says so with its cursor alone. Files the byte budget
     // left unread are a cut the caller did not ask for, on whichever page it shows.
-    let next_cursor = match (limit_resume, byte_budget_hit) {
-        (Some(offset), _) => Some(Cursor::encode_in_memory(offset, generation)),
-        (None, true) => Some(Cursor::encode_in_memory(
+    let next_cursor = match (limit_resume, timed_out, byte_budget_hit) {
+        (Some(offset), _, _) => Some(Cursor::encode_in_memory(offset, generation)),
+        (None, true, _) => Some(Cursor::encode_in_memory(
+            pack_cursor(skip_files + counts_len, 0),
+            generation,
+        )),
+        (None, false, true) => Some(Cursor::encode_in_memory(
             pack_cursor(skip_files + scanned.len(), 0),
             generation,
         )),
-        (None, false) => None,
+        (None, false, false) => None,
     };
+    let truncated_reason = truncation_of(byte_budget_hit, timed_out);
 
     // Rows are the text answer's plain block (ADR-0053).
     let budget = apply_budget_grep_rows(hits, params.max_tokens);
@@ -267,9 +298,9 @@ fn workspace_grep(
 
     Ok(WorkspaceGrepResponse {
         total: next_cursor.is_some().then_some(total),
-        total_is_partial: stopped_early,
-        truncated: byte_budget_hit,
-        truncated_reason: byte_budget_hit.then_some(GrepTruncation::ByteBudget),
+        total_is_partial: stopped_early || timed_out,
+        truncated: truncated_reason.is_some(),
+        truncated_reason,
         budgeted,
         stale: hits.stale_files(),
         hits,
@@ -278,8 +309,33 @@ fn workspace_grep(
         skipped_reasons,
         cursor_invalidated: false,
         scope_files: None,
-        notice: ws.lifecycle_notice(),
+        notice: if timed_out {
+            Some(time_budget_notice())
+        } else {
+            ws.lifecycle_notice()
+        },
     })
+}
+
+/// Why the answer is cut, when it is: the time budget names the earlier cut point, so it wins over
+/// the byte budget when both fired.
+fn truncation_of(byte_budget_hit: bool, timed_out: bool) -> Option<GrepTruncation> {
+    if timed_out {
+        Some(GrepTruncation::TimeBudget)
+    } else {
+        byte_budget_hit.then_some(GrepTruncation::ByteBudget)
+    }
+}
+
+/// The notice of a sweep the time budget stopped.
+fn time_budget_notice() -> LifecycleNotice {
+    LifecycleNotice {
+        state: "time_budget",
+        message: "The search hit its time budget and stopped before reading every file. These are the \
+                  matches in the files read so far: pass `next_cursor` to continue, or narrow with \
+                  `path` or `language`.",
+        retry: false,
+    }
 }
 
 /// Operator kill switch for the trigram-bloom prefilter: `BASEMIND_GREP_BLOOM=0` forces the full
@@ -331,6 +387,8 @@ struct Counted {
     skipped: SkippedBreakdown,
     /// It stopped before the end of the window because the page was full.
     stopped_early: bool,
+    /// It stopped before the end of the window because `out_of_time` said so.
+    timed_out: bool,
 }
 
 /// Count the window's `files` [`COUNT_STEP_FILES`] at a time with `count_step(range, skip_hits)`
@@ -338,17 +396,22 @@ struct Counted {
 /// matches: the page and the cursor resuming after it are then fixed, and the files after them are
 /// counted by the page that reads them. More than `limit`, not as many: a page of exactly `limit`
 /// hits gets a cursor only when a further match is known. `skip_hits` applies to the first step.
+///
+/// Once `out_of_time` says so the sweep stops between steps, after the first: it never returns
+/// without having read a step, so a paging caller always advances.
 fn count_until_page_full(
     files: usize,
     count_step: &dyn Fn(std::ops::Range<usize>, u32) -> (Vec<u32>, SkippedBreakdown),
     skip_hits: u32,
     limit: usize,
     cancelled: &dyn Fn() -> bool,
+    out_of_time: &dyn Fn() -> bool,
 ) -> Counted {
     let mut counted = Counted {
         counts: Vec::with_capacity(files.min(COUNT_STEP_FILES)),
         skipped: SkippedBreakdown::default(),
         stopped_early: false,
+        timed_out: false,
     };
     let mut matches: u64 = 0;
     for start in (0..files).step_by(COUNT_STEP_FILES) {
@@ -357,6 +420,10 @@ fn count_until_page_full(
         }
         if matches > limit as u64 {
             counted.stopped_early = true;
+            break;
+        }
+        if start > 0 && out_of_time() {
+            counted.timed_out = true;
             break;
         }
         let end = (start + COUNT_STEP_FILES).min(files);

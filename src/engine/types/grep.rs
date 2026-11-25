@@ -298,6 +298,9 @@ pub(crate) enum GrepTruncation {
     /// The corpus was larger than one call may read. Narrow with `path` / `language`, or
     /// page with `next_cursor`. Only reachable on workspaces of multiple gigabytes of source.
     ByteBudget,
+    /// The sweep ran out of wall-clock time before reading every file. `notice` says so and
+    /// `next_cursor` continues with the files it did not reach.
+    TimeBudget,
 }
 
 /// Why `code_grep` could not search the files it counts in `skipped_files`. A reason with no file
@@ -341,18 +344,19 @@ pub(crate) struct WorkspaceGrepResponse {
     /// a `next_cursor`: a page without one lists every hit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<u32>,
-    /// True when the sweep stopped reading once the files read held more than `limit` hits, so
+    /// True when the sweep stopped reading once the files read held more than `limit` hits, or at its
+    /// time budget, so
     /// `total` is a lower bound. `next_cursor` continues, and each later page counts on from where
     /// this one stopped. Absent when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub total_is_partial: bool,
-    /// True when the byte budget left files unread, so `total` does not cover them. Never true
+    /// True when the byte or time budget left files unread, so `total` does not cover them. Never true
     /// because `limit` cut the page or because the sweep stopped once the page was full. Absent when
     /// false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// `byte_budget` whenever `truncated` is true. There is no `omitted`: the matches in the
-    /// unread files were never counted. `next_cursor` continues with those files.
+    /// `byte_budget` or `time_budget` whenever `truncated` is true. There is no `omitted`: the matches
+    /// in the unread files were never counted. `next_cursor` continues with those files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<GrepTruncation>,
     /// True when a `max_tokens` budget dropped trailing hits. Page the rest with `next_cursor`.
