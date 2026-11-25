@@ -859,6 +859,7 @@ dependencies = [
  "notify-debouncer-full",
  "nucleo-matcher",
  "oxc_allocator",
+ "oxc_ast",
  "oxc_parser",
  "oxc_resolver",
  "oxc_semantic",

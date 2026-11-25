@@ -386,7 +386,7 @@ pub fn stitch_cross_file_edges(
         let Some(resolver) = resolver.as_ref() else {
             continue;
         };
-        resolver.begin_importer();
+        resolver.begin_importer(importer_key);
         let importer_rel = crate::path::RelPath::from(importer_key.as_str());
         let mut probes = ProbeSet::default();
         let mut targets: Vec<(u32, crate::path::RelPath, u32)> = Vec::new();
