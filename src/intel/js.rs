@@ -12,6 +12,8 @@
 use std::path::Path;
 
 use oxc_allocator::Allocator;
+use oxc_ast::AstKind;
+use oxc_ast::ast::{Argument, Expression};
 use oxc_parser::Parser;
 use oxc_semantic::SemanticBuilder;
 use oxc_span::{GetSpan, SourceType};
@@ -136,6 +138,8 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
         })
         .collect();
     imports.extend(module_only_imports(&parsed.module_record, &imports));
+    let required = require_imports(source, &semantic, &imports);
+    imports.extend(required);
 
     let exports = parsed
         .module_record
@@ -194,6 +198,45 @@ fn module_only_imports(record: &ModuleRecord<'_>, bound: &[JsImport]) -> Vec<JsI
             })
         })
         .collect();
+    out.sort_unstable_by_key(|import| import.local_start);
+    out
+}
+
+/// One `module_only` import per distinct literal `require('x')` the module makes whose specifier no
+/// ESM import already names. Only the global `require` counts: a local binding of that name is some
+/// other function. A call with a computed or template argument has no single target and is skipped.
+fn require_imports(source: &str, semantic: &oxc_semantic::Semantic<'_>, known: &[JsImport]) -> Vec<JsImport> {
+    let scoping = semantic.scoping();
+    let mut seen: ahash::AHashSet<&str> = known.iter().map(|import| import.specifier.as_str()).collect();
+    let mut out = Vec::new();
+    for node in semantic.nodes().iter() {
+        let AstKind::CallExpression(call) = node.kind() else {
+            continue;
+        };
+        let (Expression::Identifier(callee), [Argument::StringLiteral(literal)]) = (&call.callee, &call.arguments[..])
+        else {
+            continue;
+        };
+        if callee.name.as_str() != "require" || scoping.get_reference(callee.reference_id()).symbol_id().is_some() {
+            continue;
+        }
+        let Some(specifier) = source
+            .get(literal.span.start as usize + 1..literal.span.end as usize - 1)
+            .filter(|text| !text.is_empty() && !text.contains('\\'))
+        else {
+            continue;
+        };
+        if seen.insert(specifier) {
+            out.push(JsImport {
+                local: String::new(),
+                specifier: specifier.to_string(),
+                imported: None,
+                is_type: false,
+                local_start: literal.span.start,
+                module_only: true,
+            });
+        }
+    }
     out.sort_unstable_by_key(|import| import.local_start);
     out
 }
@@ -271,6 +314,24 @@ mod tests {
             .expect("inner x use must resolve");
         assert_eq!(r.def_start as usize, inner_x, "must bind to inner x, not outer");
         assert_ne!(r.def_start as usize, outer_x);
+    }
+
+    #[test]
+    fn literal_require_calls_are_module_only_imports() {
+        let src = "const a = require('./a');\nconst b = require(`./b`);\nconst c = require(name);\nrequire('./a');\nimport d from './d';\nrequire('./d');\n";
+        let analysis = analyze(src, SourceType::ts());
+        let required: Vec<(&str, bool)> = analysis
+            .imports
+            .iter()
+            .map(|import| (import.specifier.as_str(), import.module_only))
+            .collect();
+        assert_eq!(required, vec![("./d", false), ("./a", true)]);
+    }
+
+    #[test]
+    fn a_locally_bound_require_is_not_an_import() {
+        let src = "function f(require) { return require('./a'); }\nconst g = (require) => require('./b');\n";
+        assert!(analyze(src, SourceType::ts()).imports.is_empty());
     }
 
     #[test]

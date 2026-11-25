@@ -153,6 +153,7 @@ comms = [
 
 code-intel-js = [
   "dep:oxc_allocator",
+  "dep:oxc_ast",
   "dep:oxc_parser",
   "dep:oxc_semantic",
   "dep:oxc_span",
@@ -232,6 +233,7 @@ notify = "9"
 notify-debouncer-full = "0.8"
 nucleo-matcher = "0.3.1"
 oxc_allocator = { version = "0.160.0", optional = true }
+oxc_ast = { version = "0.160.0", optional = true }
 oxc_parser = { version = "0.160.0", optional = true }
 oxc_resolver = { version = "11.24.3", optional = true }
 oxc_semantic = { version = "0.160.0", optional = true }
