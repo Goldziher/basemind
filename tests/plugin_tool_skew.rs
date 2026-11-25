@@ -86,10 +86,6 @@ const RESULT_VOCABULARY: &[(&str, &str)] = &[
     ),
     ("byte_budget", "code_grep `truncated_reason` (src/engine/types/grep.rs)"),
     ("byte_cap", "git_diff `truncated_reason` (src/engine/git/file.rs)"),
-    (
-        "commits_reached",
-        "git_log directory and symbol pages (src/engine/types/git.rs)",
-    ),
     ("hunk_cap", "git_diff `truncated_reason` (src/engine/git/file.rs)"),
     (
         "limit_clamped",
@@ -118,10 +114,6 @@ const RESULT_VOCABULARY: &[(&str, &str)] = &[
     (
         "too_large",
         "git_blame `truncated_reason` (src/engine/types/git.rs); code_grep `skipped_reasons`",
-    ),
-    (
-        "total_commits",
-        "git_log directory and symbol pages (src/engine/types/git.rs)",
     ),
     ("unindexed_scan", "git_log `truncated_reason` (src/engine/types/git.rs)"),
 ];
