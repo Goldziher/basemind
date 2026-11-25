@@ -48,7 +48,19 @@ pub enum RebuildOutcome {
 /// And only a repository the caller actually rooted at is built: `repo` reaching here from a
 /// workspace root *below* its workdir means an ancestor repository was inherited, which
 /// [`history_scope_ok`](super::history_scope_ok) refuses.
-pub fn sync(index: &GitHistoryIndex, repo: &Repo, _basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
+pub fn sync(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
+    sync_with(index, repo, basemind_dir, &Unattended)
+}
+
+/// [`sync`] steered by `control`: asked between chunks of commits whether to stop, and told how far
+/// the walk got. A sync that succeeds owes the background nothing, so it removes the progress
+/// record of a handed-off build in `basemind_dir` ([`super::progress`]).
+pub fn sync_with(
+    index: &GitHistoryIndex,
+    repo: &Repo,
+    basemind_dir: &Path,
+    control: &dyn BuildControl,
+) -> Result<RebuildOutcome, GitHistoryError> {
     let _building = index
         .local()
         .build_lock
@@ -59,10 +71,14 @@ pub fn sync(index: &GitHistoryIndex, repo: &Repo, _basemind_dir: &Path) -> Resul
     // (a read-stack warm that takes 12 s took 469 s while a 248k-commit build was running).
     // Under thread exhaustion the pool cannot be built; degrade to the caller's thread (slower, and on
     // rayon's global pool) rather than panicking.
-    match history_pool() {
-        Some(pool) => pool.install(|| sync_inner(index, repo)),
-        None => sync_inner(index, repo),
+    let outcome = match history_pool() {
+        Some(pool) => pool.install(|| sync_inner(index, repo, control)),
+        None => sync_inner(index, repo, control),
+    };
+    if outcome.is_ok() {
+        super::progress::clear(basemind_dir);
     }
+    outcome
 }
 
 /// Threads given to history indexing. Enough to finish a first build in minutes without taking the
@@ -82,43 +98,62 @@ fn history_pool() -> Option<&'static rayon::ThreadPool> {
     .as_ref()
 }
 
-fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, GitHistoryError> {
+/// How a caller steers a build or append from outside it.
+pub trait BuildControl: Sync {
+    /// Whether the walk stops before its next chunk of commits. A stopped walk fails with
+    /// [`GitHistoryError::Cancelled`] and leaves the index marked in progress: no reader trusts it,
+    /// and the next sync rebuilds it.
+    fn stop(&self) -> bool {
+        false
+    }
+
+    /// `done` of the `total` commits the walk stores are stored.
+    fn progress(&self, _done: u32, _total: u32) {}
+}
+
+/// The control of a sync nobody steers: it never stops and reports nothing.
+struct Unattended;
+
+impl BuildControl for Unattended {}
+
+/// What the next sync of an index does, decided before it walks a commit.
+enum Plan {
+    /// HEAD does not resolve: nothing to index.
+    NoHead,
+    /// HEAD is an indexed tip.
+    Current(String),
+    /// HEAD becomes a tip by appending the commits not stored yet.
+    Append(String),
+    /// A build at HEAD failed within the hour.
+    BackingOff,
+    /// Wiped and rebuilt from scratch, for `reason`.
+    Rebuild { reason: &'static str, head: String },
+}
+
+fn plan(index: &GitHistoryIndex, repo: &Repo) -> Result<Plan, GitHistoryError> {
     if !super::history_scope_ok(repo) {
         return Err(GitHistoryError::ForeignHistory {
             root: repo.origin().to_path_buf(),
             workdir: repo.workdir().to_path_buf(),
         });
     }
-    let head = match repo.resolve_rev("HEAD") {
-        Ok(h) => h,
-        Err(_) => return Ok(RebuildOutcome::Fresh),
+    let Ok(head) = repo.resolve_rev("HEAD") else {
+        return Ok(Plan::NoHead);
     };
-
     let deepened = root_deepened(index, repo);
     if !deepened && index.has_tip(&head) {
-        // Already indexed, perhaps for another worktree: make it the latest tip again, which a read
-        // at no head answers for, and renew its sync time so eviction drops older tips first.
-        if let Some(head20) = keys::sha_hex_to_raw(&head)
-            && index.last_indexed_head() != Some(head20)
-        {
-            index.touch_tip(&head20)?;
-        }
-        return Ok(RebuildOutcome::Fresh);
+        return Ok(Plan::Current(head));
     }
-
     // Any other state with a stamped head and nothing deepened is safe to extend, whatever the
     // relation of HEAD to the tips already indexed: the store is head-independent, so a divergence
     // appends the commits it adds and wipes nothing. An interrupted index has no stamped head and so
     // reads as empty here, as does one never built.
     if !deepened && !index.is_empty() {
-        return append_tip(index, repo, &head).inspect_err(|_| record_failure(index, &head));
+        return Ok(Plan::Append(head));
     }
-
     let interrupted = index.build_interrupted();
     if interrupted && backing_off(index, &head, now_unix()) {
-        return Ok(RebuildOutcome::Skipped {
-            reason: "a build at this head failed within the hour",
-        });
+        return Ok(Plan::BackingOff);
     }
     let reason = if interrupted {
         "interrupted"
@@ -127,8 +162,48 @@ fn sync_inner(index: &GitHistoryIndex, repo: &Repo) -> Result<RebuildOutcome, Gi
     } else {
         "deepened"
     };
-    index.clear()?;
-    rebuild(index, repo, reason).inspect_err(|_| record_failure(index, &head))
+    Ok(Plan::Rebuild { reason, head })
+}
+
+/// Why the next sync of `index` rebuilds it from scratch (`"initial"`, `"interrupted"` or
+/// `"deepened"`, as [`RebuildOutcome::FullRebuild`] names it), or `None` when it finds HEAD
+/// indexed, appends to it, backs off a failed build or refuses the repository. Walks no commit: a
+/// caller asks this to hand the minutes-long rebuild of a deep history to the background.
+pub fn full_rebuild_due(index: &GitHistoryIndex, repo: &Repo) -> Option<&'static str> {
+    match plan(index, repo) {
+        Ok(Plan::Rebuild { reason, .. }) => Some(reason),
+        _ => None,
+    }
+}
+
+fn sync_inner(
+    index: &GitHistoryIndex,
+    repo: &Repo,
+    control: &dyn BuildControl,
+) -> Result<RebuildOutcome, GitHistoryError> {
+    match plan(index, repo)? {
+        Plan::NoHead => Ok(RebuildOutcome::Fresh),
+        Plan::Current(head) => {
+            // Already indexed, perhaps for another worktree: make it the latest tip again, which a
+            // read at no head answers for, and renew its sync time so eviction drops older tips first.
+            if let Some(head20) = keys::sha_hex_to_raw(&head)
+                && index.last_indexed_head() != Some(head20)
+            {
+                index.touch_tip(&head20)?;
+            }
+            Ok(RebuildOutcome::Fresh)
+        }
+        Plan::Append(head) => {
+            append_tip(index, repo, &head, control).inspect_err(|error| record_failure(index, &head, error))
+        }
+        Plan::BackingOff => Ok(RebuildOutcome::Skipped {
+            reason: "a build at this head failed within the hour",
+        }),
+        Plan::Rebuild { reason, head } => {
+            index.clear()?;
+            rebuild(index, repo, reason, control).inspect_err(|error| record_failure(index, &head, error))
+        }
+    }
 }
 
 /// How long a sync at the HEAD a build or append failed for leaves the index to the live walk. A
@@ -143,7 +218,12 @@ fn backing_off(index: &GitHistoryIndex, head: &str, now: u64) -> bool {
         .is_some_and(|failed| now.saturating_sub(failed) < FAILED_BUILD_BACKOFF_SECS)
 }
 
-fn record_failure(index: &GitHistoryIndex, head: &str) {
+/// Record that the sync at `head` failed with `error`, unless it was stopped: a stopped walk failed
+/// nothing, and is rebuilt by the next sync instead of being left to the live walk for the hour.
+fn record_failure(index: &GitHistoryIndex, head: &str, error: &GitHistoryError) {
+    if matches!(error, GitHistoryError::Cancelled) {
+        return;
+    }
     if let Some(head20) = keys::sha_hex_to_raw(head) {
         index.record_failed_build(&head20, now_unix());
     }
@@ -166,7 +246,12 @@ pub fn root_deepened(index: &GitHistoryIndex, repo: &Repo) -> bool {
 }
 
 /// Full rebuild over all commits reachable from HEAD.
-fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result<RebuildOutcome, GitHistoryError> {
+fn rebuild(
+    index: &GitHistoryIndex,
+    repo: &Repo,
+    reason: &'static str,
+    control: &dyn BuildControl,
+) -> Result<RebuildOutcome, GitHistoryError> {
     let newest_first = repo.all_commit_shas()?;
     if newest_first.is_empty() {
         return Ok(RebuildOutcome::FullRebuild { reason, commits: 0 });
@@ -196,6 +281,7 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
         &mut term_postings,
         &mut reach,
         &mut writer,
+        control,
     )?;
     for (path_id, ords) in postings {
         writer.put_posting(path_id, &encoding::encode_ords(&ords))?;
@@ -222,7 +308,12 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
 ///
 /// Every walk starts at `head` itself, never at the repository's HEAD again: HEAD may have moved
 /// since the caller resolved it, and the commits walked must be the ones the tip is stamped for.
-fn append_tip(index: &GitHistoryIndex, repo: &Repo, head: &str) -> Result<RebuildOutcome, GitHistoryError> {
+fn append_tip(
+    index: &GitHistoryIndex,
+    repo: &Repo,
+    head: &str,
+    control: &dyn BuildControl,
+) -> Result<RebuildOutcome, GitHistoryError> {
     let Some(head20) = keys::sha_hex_to_raw(head) else {
         return Ok(RebuildOutcome::Fresh);
     };
@@ -293,6 +384,7 @@ fn append_tip(index: &GitHistoryIndex, repo: &Repo, head: &str) -> Result<Rebuil
         &mut term_postings,
         &mut reach,
         &mut writer,
+        control,
     )?;
     for (path_id, new_ords) in postings {
         let mut all = index
@@ -379,7 +471,8 @@ const RECORD_CHUNK: usize = 8192;
 /// then Fjall puts), then dropped before the next chunk is computed. Ordinals are assigned by their
 /// absolute position in `chrono` (`start_ord` plus the global offset) so a `None`/unparsable record
 /// still consumes its slot, preserving the positional ordinal contract the non-chunked fold had.
-/// Returns the number of commits actually written; each one's ordinal is added to `reach`. The
+/// Returns the number of commits actually written; each one's ordinal is added to `reach`. Before
+/// each chunk `control` is told how far the fold got and asked whether to stop. The
 /// caller passes only commits no row exists for: a row a cut-off run left is never met, because such
 /// a run leaves the index marked in progress and the next sync rebuilds it.
 #[allow(clippy::too_many_arguments)]
@@ -392,11 +485,17 @@ fn fold_chunked(
     term_postings: &mut AHashMap<Vec<u8>, Vec<u32>>,
     reach: &mut Reach,
     writer: &mut super::GitHistoryWriter,
+    control: &dyn BuildControl,
 ) -> Result<u32, GitHistoryError> {
     let mut written = 0u32;
+    let total = chrono.len() as u32;
     for (chunk_index, chunk) in chrono.chunks(RECORD_CHUNK).enumerate() {
-        let records = compute_records(repo, chunk);
         let base = chunk_index * RECORD_CHUNK;
+        if control.stop() {
+            return Err(GitHistoryError::Cancelled);
+        }
+        control.progress(base as u32, total);
+        let records = compute_records(repo, chunk);
         for (offset, record) in records.into_iter().enumerate() {
             let ord = start_ord + (base + offset) as u32;
             let Some(record) = record else { continue };
@@ -503,353 +602,5 @@ impl<'a> PathInterner<'a> {
 }
 
 #[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    #[test]
-    fn a_walk_is_ordered_only_when_its_ordinals_strictly_descend() {
-        // `Ok` is a stored ordinal, `Err(n)` the n-th unstored commit in walk order, which takes the
-        // ordinals from `start` in reverse: with three unstored from 10, positions 0, 1, 2 are 12, 11, 10.
-        let cases: [(&[Result<u32, usize>], bool); 6] = [
-            (&[], true),
-            (&[Err(0), Err(1), Err(2)], true),
-            (&[Err(0), Ok(7), Ok(3)], true),
-            (&[Err(1), Err(0)], false),
-            (&[Ok(7), Err(0)], false),
-            (&[Err(0), Ok(5), Ok(5)], false),
-        ];
-        for (walk, expected) in cases {
-            let count = walk.iter().filter(|slot| slot.is_err()).count();
-            assert_eq!(walk_descends(walk, 10, count), expected, "{walk:?}");
-        }
-    }
-
-    fn git(root: &Path, args: &[&str]) -> String {
-        let out = crate::testing::git_command()
-            .args(args)
-            .current_dir(root)
-            .output()
-            .expect("git in PATH");
-        assert!(out.status.success(), "git {args:?} failed");
-        String::from_utf8(out.stdout).expect("utf8")
-    }
-
-    fn commit(root: &Path, path: &str, content: &str, msg: &str) {
-        std::fs::write(root.join(path), content).expect("write the file");
-        git(root, &["add", path]);
-        git(root, &["commit", "-qm", msg]);
-    }
-
-    fn touching(index: &GitHistoryIndex, path: &str) -> Vec<String> {
-        index
-            .commits_touching(&RelPath::from(path.as_bytes()), 0, 100)
-            .expect("read the posting list")
-            .into_iter()
-            .map(|c| c.sha)
-            .collect()
-    }
-
-    /// A sync killed after the writer's first batch commit leaves the new commits' rows durable and
-    /// their postings and head not. The retry used to skip every commit it found a row for, so they
-    /// never reached a posting list and the index then claimed to be fresh.
-    #[test]
-    fn an_append_cut_off_after_a_batch_commit_is_rebuilt_not_skipped() {
-        let repo_dir = tempfile::tempdir().expect("tempdir");
-        let root = repo_dir.path();
-        git(root, &["init", "-q"]);
-        git(root, &["symbolic-ref", "HEAD", "refs/heads/main"]);
-        git(root, &["config", "commit.gpgsign", "false"]);
-        commit(root, "a.rs", "1", "c1");
-        let cache = tempfile::tempdir().expect("cache dir");
-        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
-        let repo = Repo::discover(root).expect("discover");
-        sync(&index, &repo, cache.path()).expect("first build");
-
-        commit(root, "a.rs", "2", "c2");
-        commit(root, "a.rs", "3", "c3");
-        let repo = Repo::discover(root).expect("rediscover");
-        let last = index.last_indexed_head_hex().expect("an indexed head");
-        let new_shas = repo.new_commit_shas(&last).expect("new commits");
-        assert_eq!(new_shas.len(), 2);
-        let chrono: Vec<&String> = new_shas.iter().rev().collect();
-        {
-            let mut writer = index.writer().expect("writer");
-            writer.begin().expect("mark the append");
-            let mut interner = PathInterner::new(&index, index.next_path_id());
-            let mut postings = AHashMap::new();
-            let mut term_postings = AHashMap::new();
-            fold_chunked(
-                &repo,
-                &chrono,
-                index.next_ord(),
-                &mut interner,
-                &mut postings,
-                &mut term_postings,
-                &mut Reach::default(),
-                &mut writer,
-            )
-            .expect("fold the new commits");
-            writer.flush().expect("commit the batch");
-        }
-        assert_eq!(
-            index.last_indexed_head_hex(),
-            None,
-            "a cut-off append is never served as fresh"
-        );
-
-        let outcome = sync(&index, &repo, cache.path()).expect("resync");
-        assert_eq!(
-            outcome,
-            RebuildOutcome::FullRebuild {
-                reason: "interrupted",
-                commits: 3
-            }
-        );
-        let head = git(root, &["rev-parse", "HEAD"]);
-        assert_eq!(index.last_indexed_head_hex().as_deref(), Some(head.trim()));
-        let expected: Vec<String> = git(root, &["log", "--full-history", "--format=%H", "--", "a.rs"])
-            .lines()
-            .map(str::to_owned)
-            .collect();
-        assert_eq!(expected.len(), 3);
-        assert_eq!(
-            touching(&index, "a.rs"),
-            expected,
-            "every commit is in the posting list"
-        );
-    }
-
-    /// A build that fails at a commit it cannot read fails again at that commit: a sync at the same
-    /// HEAD leaves the marked index to the live walk for an hour instead of walking the whole
-    /// history each time, then tries again.
-    #[test]
-    fn a_failed_build_is_not_retried_at_the_same_head_within_the_hour() {
-        let repo_dir = tempfile::tempdir().expect("tempdir");
-        let root = repo_dir.path();
-        git(root, &["init", "-q"]);
-        git(root, &["config", "commit.gpgsign", "false"]);
-        commit(root, "a.rs", "1", "c1");
-        let cache = tempfile::tempdir().expect("cache dir");
-        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
-        let repo = Repo::discover(root).expect("discover");
-        let head = git(root, &["rev-parse", "HEAD"]);
-        let head20 = keys::sha_hex_to_raw(head.trim()).expect("a sha");
-        index
-            .writer()
-            .expect("writer")
-            .begin()
-            .expect("a build that was cut off");
-        index.record_failed_build(&head20, now_unix());
-
-        let outcome = sync(&index, &repo, cache.path()).expect("sync");
-        assert!(matches!(outcome, RebuildOutcome::Skipped { .. }), "{outcome:?}");
-        assert!(index.build_interrupted(), "the marked index is left as it was");
-
-        index.record_failed_build(&head20, now_unix() - FAILED_BUILD_BACKOFF_SECS);
-        let outcome = sync(&index, &repo, cache.path()).expect("sync");
-        assert_eq!(
-            outcome,
-            RebuildOutcome::FullRebuild {
-                reason: "interrupted",
-                commits: 1
-            }
-        );
-        assert_eq!(index.failed_build_at(&head20), None, "a stamped head clears the record");
-    }
-
-    /// An append cut off after a batch commit left a new path's id rows durable while the next free
-    /// id was never advanced. A retry that reused the id gave it to another path, whose history then
-    /// served the first path's commits. The cut-off index is rebuilt instead, so no id names two
-    /// paths and each path's history is its own.
-    #[test]
-    fn a_retry_after_a_cut_off_append_never_gives_one_path_id_to_two_paths() {
-        let repo_dir = tempfile::tempdir().expect("tempdir");
-        let root = repo_dir.path();
-        git(root, &["init", "-q"]);
-        git(root, &["config", "commit.gpgsign", "false"]);
-        commit(root, "a.rs", "1", "c1");
-        let cache = tempfile::tempdir().expect("cache dir");
-        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
-        sync(&index, &Repo::discover(root).expect("discover"), cache.path()).expect("first build");
-
-        commit(root, "b.rs", "1", "adds b");
-        let repo = Repo::discover(root).expect("rediscover");
-        let last = index.last_indexed_head_hex().expect("an indexed head");
-        let new_shas = repo.new_commit_shas(&last).expect("new commits");
-        let chrono: Vec<&String> = new_shas.iter().rev().collect();
-        {
-            let mut writer = index.writer().expect("writer");
-            writer.begin().expect("mark the append");
-            let mut interner = PathInterner::new(&index, index.next_path_id());
-            let (mut postings, mut term_postings) = (AHashMap::new(), AHashMap::new());
-            fold_chunked(
-                &repo,
-                &chrono,
-                index.next_ord(),
-                &mut interner,
-                &mut postings,
-                &mut term_postings,
-                &mut Reach::default(),
-                &mut writer,
-            )
-            .expect("fold");
-            writer.flush().expect("commit the batch: b.rs's id rows are durable");
-        }
-        commit(root, "c.rs", "1", "adds c");
-        commit(root, "b.rs", "2", "edits b");
-        let repo = Repo::discover(root).expect("rediscover");
-
-        sync(&index, &repo, cache.path()).expect("retry");
-
-        let local = index.local();
-        let paths: Vec<RelPath> = (0..index.next_path_id())
-            .map(|id| local.path_for_id(id).expect("every id names a path"))
-            .collect();
-        let distinct: ahash::AHashSet<&RelPath> = paths.iter().collect();
-        assert_eq!(distinct.len(), paths.len(), "no id names two paths: {paths:?}");
-        for path in ["a.rs", "b.rs", "c.rs"] {
-            let expected: Vec<String> = git(root, &["log", "--full-history", "--format=%H", "--", path])
-                .lines()
-                .map(str::to_owned)
-                .collect();
-            assert_eq!(touching(&index, path), expected, "{path}'s history is its own");
-        }
-    }
-
-    /// Every table file of the git-history database under `cache`, by path.
-    fn table_files(cache: &Path) -> Vec<std::path::PathBuf> {
-        fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-            for entry in std::fs::read_dir(dir).expect("read the index dir").flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    walk(&path, out);
-                } else if path.parent().and_then(Path::file_name) == Some("tables".as_ref()) {
-                    out.push(path);
-                }
-            }
-        }
-        let mut out = Vec::new();
-        walk(&cache.join(super::super::GIT_HISTORY_DIR), &mut out);
-        out.sort();
-        out
-    }
-
-    /// A one-commit append used to flush and major-compact all eight keyspaces, rewriting every
-    /// table of the history (seconds on a deep repository). It now leaves the tables as they were,
-    /// and the appended commit is still indexed after a reopen.
-    #[test]
-    fn a_one_commit_append_rewrites_no_table() {
-        let repo_dir = tempfile::tempdir().expect("tempdir");
-        let root = repo_dir.path();
-        git(root, &["init", "-q"]);
-        git(root, &["config", "commit.gpgsign", "false"]);
-        commit(root, "a.rs", "1", "c1");
-        commit(root, "b.rs", "1", "c2");
-        let cache = tempfile::tempdir().expect("cache dir");
-        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
-        sync(&index, &Repo::discover(root).expect("discover"), cache.path()).expect("first build");
-        let built = table_files(cache.path());
-        assert!(
-            built.len() >= 7,
-            "the build compacted each written keyspace to a table: {built:?}"
-        );
-
-        commit(root, "a.rs", "2", "c3");
-        let outcome = sync(&index, &Repo::discover(root).expect("rediscover"), cache.path()).expect("append");
-        assert_eq!(outcome, RebuildOutcome::Incremental { added: 1 });
-        assert_eq!(
-            table_files(cache.path()),
-            built,
-            "the append flushed or compacted a table"
-        );
-
-        drop(index);
-        let index = GitHistoryIndex::open(cache.path()).expect("reopen the index");
-        let head = git(root, &["rev-parse", "HEAD"]);
-        assert_eq!(index.last_indexed_head_hex().as_deref(), Some(head.trim()));
-        let expected: Vec<String> = git(root, &["log", "--format=%H", "--", "a.rs"])
-            .lines()
-            .map(str::to_owned)
-            .collect();
-        assert_eq!(touching(&index, "a.rs"), expected);
-    }
-
-    /// A sync resolves HEAD once, then appends the tip. When HEAD moves in between, the append used
-    /// to walk from the moved HEAD and stamp the captured head with that walk's commits: nothing
-    /// appended, and the tip claiming another checkout's history. It walks from the captured head,
-    /// with an indexed ancestor tip (`side` forks off the synced HEAD) and without one (`side` forks
-    /// off an older commit).
-    #[test]
-    fn an_append_walks_the_head_it_was_given_not_a_head_moved_since() {
-        for (fork_at, expected_len) in [("HEAD~1", 2), ("HEAD", 3)] {
-            let repo_dir = tempfile::tempdir().expect("tempdir");
-            let root = repo_dir.path();
-            git(root, &["init", "-q", "-b", "main"]);
-            git(root, &["config", "commit.gpgsign", "false"]);
-            commit(root, "a.rs", "1", "c1");
-            commit(root, "a.rs", "2", "c2");
-            let cache = tempfile::tempdir().expect("cache dir");
-            let index = GitHistoryIndex::open(cache.path()).expect("open the index");
-            sync(&index, &Repo::discover(root).expect("discover"), cache.path()).expect("build main");
-
-            git(root, &["checkout", "-q", "-b", "side", fork_at]);
-            commit(root, "b.rs", "1", "side");
-            let captured = git(root, &["rev-parse", "HEAD"]).trim().to_string();
-            git(root, &["checkout", "-q", "main"]);
-
-            let repo = Repo::discover(root).expect("rediscover");
-            let outcome = append_tip(&index, &repo, &captured).expect("append the captured head");
-            assert_eq!(outcome, RebuildOutcome::Incremental { added: 1 }, "fork at {fork_at}");
-            let listed: Vec<String> = index
-                .at(&captured)
-                .expect("an ordered view of the captured head")
-                .recent_commits(0, 10, false)
-                .into_iter()
-                .map(|c| c.sha)
-                .collect();
-            let expected: Vec<String> = git(root, &["log", "--format=%H", &captured])
-                .lines()
-                .map(str::to_owned)
-                .collect();
-            assert_eq!(expected.len(), expected_len, "fork at {fork_at}");
-            assert_eq!(listed, expected, "fork at {fork_at}: the captured head's history");
-        }
-    }
-
-    /// Syncing A, a diverged B, then A again leaves A the latest tip: a read at no head answers for
-    /// the checkout that synced last.
-    #[test]
-    fn syncing_an_indexed_tip_again_makes_it_the_latest_tip() {
-        let repo_dir = tempfile::tempdir().expect("tempdir");
-        let root = repo_dir.path();
-        git(root, &["init", "-q", "-b", "main"]);
-        git(root, &["config", "commit.gpgsign", "false"]);
-        commit(root, "a.rs", "1", "c1");
-        let cache = tempfile::tempdir().expect("cache dir");
-        let index = GitHistoryIndex::open(cache.path()).expect("open the index");
-        sync(&index, &Repo::discover(root).expect("discover"), cache.path()).expect("sync A");
-        let a = git(root, &["rev-parse", "HEAD"]).trim().to_string();
-
-        git(root, &["checkout", "-q", "-b", "other"]);
-        commit(root, "b.rs", "1", "c2");
-        let b = git(root, &["rev-parse", "HEAD"]).trim().to_string();
-        sync(&index, &Repo::discover(root).expect("rediscover"), cache.path()).expect("sync B");
-        assert_eq!(index.last_indexed_head_hex().as_deref(), Some(b.as_str()));
-
-        git(root, &["checkout", "-q", "main"]);
-        let outcome = sync(&index, &Repo::discover(root).expect("rediscover"), cache.path()).expect("sync A again");
-        assert_eq!(outcome, RebuildOutcome::Fresh);
-        assert_eq!(index.last_indexed_head_hex().as_deref(), Some(a.as_str()));
-        assert!(index.has_tip(&b), "B stays an indexed tip");
-        assert_eq!(
-            index
-                .latest()
-                .expect("a latest view")
-                .recent_commits(0, 10, false)
-                .len(),
-            1,
-            "a read at no head sees A's history, not B's"
-        );
-    }
-}
+#[path = "builder_tests.rs"]
+mod tests;

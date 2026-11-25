@@ -36,7 +36,8 @@ impl ScanOutput {
     }
 
     /// Report a finished scan of `root` begun at `started`: the summary lines on `out`, or the JSON
-    /// answer on stdout. `embeddings` is what a working-tree scan left owed and where it went.
+    /// answer on stdout. `embeddings` is what a working-tree scan left owed and where it went, and
+    /// `history` the git-history build it handed to the background.
     pub(super) fn summary(
         self,
         out: &mut impl std::io::Write,
@@ -44,15 +45,18 @@ impl ScanOutput {
         report: &basemind::scanner::ScanReport,
         started: std::time::Instant,
         embeddings: Option<EmbeddingsHandOff>,
+        history: Option<HistoryHandOff>,
     ) -> Result<()> {
         if self.json {
             let mut value = basemind::cli::rescan::scan_json(&report.stats, started.elapsed(), root)?;
             insert_embeddings(&mut value, embeddings);
+            insert_history(&mut value, history);
             return basemind::cli::render::render_json(&value, &mut std::io::stdout().lock());
         }
         render::render_summary(out, &report.stats, self.verbosity);
         render::render_phase_peaks(out, &report.phase_peaks, self.verbosity);
         render_embeddings(out, embeddings, self.verbosity);
+        render_history(out, history, self.verbosity);
         Ok(())
     }
 
@@ -106,55 +110,130 @@ fn render_embeddings(out: &mut impl std::io::Write, embeddings: Option<Embedding
     }
 }
 
-/// Hand what the working-tree scan of `root` left owed to the background embedding worker.
-pub(super) fn hand_off_embeddings(root: &std::path::Path, store: &Store, config: &Config) -> EmbeddingsHandOff {
-    let pending = basemind::cli::embed_worker::Pending::of(root, store, config);
-    (pending, basemind::cli::embed_worker::hand_off(root, pending))
+/// A git-history build of this many commits a working-tree scan handed to the background worker,
+/// and the worker that takes it.
+pub(super) type HistoryHandOff = (usize, basemind::cli::embed_worker::Background);
+
+/// Add the `git_history` object to a scan's JSON answer when the scan handed a build off; with
+/// none the answer stays exactly the `index_rescan` response.
+fn insert_history(value: &mut serde_json::Value, history: Option<HistoryHandOff>) {
+    if let (Some((commits, background)), Some(object)) = (history, value.as_object_mut()) {
+        object.insert(
+            "git_history".to_string(),
+            basemind::cli::embed_worker::history::json(commits, background),
+        );
+    }
 }
 
-/// Build / refresh the repo-global git-history index after a working-tree scan (a separate phase
-/// from the core file scan). Best-effort: a non-git dir, a disabled toggle, or any failure leaves
-/// the index untouched and the history tools fall back to the live walk — never fails the scan.
+/// The `git-history: building in the background …` line, unless no build was handed off or
+/// `--quiet` is set.
+fn render_history(out: &mut impl std::io::Write, history: Option<HistoryHandOff>, verbosity: Verbosity) {
+    if let Some((commits, background)) = history.filter(|_| !matches!(verbosity, Verbosity::Quiet)) {
+        let _ = writeln!(
+            out,
+            "{}",
+            basemind::cli::embed_worker::history::summary_line(commits, background)
+        );
+    }
+}
+
+/// Hand what the working-tree scan of `root` left owed to the background worker: the vectors, and
+/// a git-history build when `history_owed`.
+pub(super) fn hand_off_embeddings(
+    root: &std::path::Path,
+    store: &Store,
+    config: &Config,
+    history_owed: bool,
+) -> EmbeddingsHandOff {
+    let pending = basemind::cli::embed_worker::Pending::of(root, store, config);
+    (
+        pending,
+        basemind::cli::embed_worker::start(root, pending.any() || history_owed),
+    )
+}
+
+/// The repo-global git-history index a scan of a workspace keeps, open, and the repository it
+/// indexes.
+pub(super) struct HistorySync {
+    index: basemind::git_history::GitHistoryIndex,
+    repo: basemind::git::Repo,
+    basemind_dir: std::path::PathBuf,
+}
+
+impl HistorySync {
+    /// Open the git-history index of `root` for the sync after a scan, emptied first when
+    /// `force_rebuild`. `None` when the CLI or the configuration turns the index off, `root` is no
+    /// git repository, or the index cannot be opened.
+    pub(super) fn open(root: &std::path::Path, cli_enabled: bool, force_rebuild: bool) -> Option<Self> {
+        if !cli_enabled || !basemind::git_history::index_enabled() {
+            return None;
+        }
+        let repo = basemind::git::Repo::discover(root).ok()?;
+        let basemind_dir = basemind::git_history::shared_history_basemind_dir(root);
+        let index = basemind::git_history::GitHistoryIndex::open(&basemind_dir)
+            .inspect_err(|error| tracing::warn!(?error, "git-history index unavailable; skipping"))
+            .ok()?;
+        if force_rebuild && let Err(error) = index.clear() {
+            tracing::warn!(?error, "git-history index clear failed");
+        }
+        Some(Self {
+            index,
+            repo,
+            basemind_dir,
+        })
+    }
+
+    /// Record a from-scratch build as owed to the background worker, and return the commits it
+    /// stores, when the sync owes one and the worker may run. `None` leaves the sync to [`run`](Self::run).
+    pub(super) fn defer(&self) -> Option<usize> {
+        if !basemind::cli::embed_worker::background_enabled() {
+            return None;
+        }
+        let commits = basemind::cli::embed_worker::history::owed(&self.index, &self.repo)?;
+        basemind::git_history::progress::record_owed(&self.basemind_dir, commits);
+        Some(commits)
+    }
+
+    /// The hand-off of the build [`defer`](Self::defer) recorded, `None` (the record withdrawn)
+    /// when no worker takes it.
+    pub(super) fn handed_to(
+        &self,
+        commits: usize,
+        background: basemind::cli::embed_worker::Background,
+    ) -> Option<HistoryHandOff> {
+        basemind::cli::embed_worker::history::taken(&self.basemind_dir, background).then_some((commits, background))
+    }
+
+    /// Sync the index with HEAD in this process, reporting the outcome on `out`.
+    pub(super) fn run(self, out: &mut impl std::io::Write) {
+        use basemind::git_history::builder::RebuildOutcome;
+        let summary = match basemind::git_history::builder::sync(&self.index, &self.repo, &self.basemind_dir) {
+            Ok(RebuildOutcome::Fresh) => "git-history index: up to date".to_string(),
+            Ok(RebuildOutcome::Skipped { reason }) => format!("git-history index: not updated ({reason})"),
+            Ok(RebuildOutcome::Incremental { added }) => format!("git-history index: +{added} commits"),
+            Ok(RebuildOutcome::FullRebuild { reason, commits }) => {
+                format!("git-history index: rebuilt {commits} commits ({reason})")
+            }
+            Err(error) => {
+                tracing::warn!(?error, "git-history index sync failed");
+                return;
+            }
+        };
+        let _ = writeln!(out, "{summary}");
+    }
+}
+
+/// Build / refresh the repo-global git-history index after a scan (a separate phase from the core
+/// file scan). Best-effort: a non-git dir, a disabled toggle, or any failure leaves the index
+/// untouched and the history tools fall back to the live walk — never fails the scan.
 pub(super) fn sync_git_history_after_scan(
     root: &std::path::Path,
     cli_enabled: bool,
     force_rebuild: bool,
     out: &mut impl std::io::Write,
 ) {
-    if !cli_enabled || !basemind::git_history::index_enabled() {
-        return;
-    }
-    let Ok(repo) = basemind::git::Repo::discover(root) else {
-        return;
-    };
-    let basemind_dir = basemind::git_history::shared_history_basemind_dir(root);
-    let index = match basemind::git_history::GitHistoryIndex::open(&basemind_dir) {
-        Ok(index) => index,
-        Err(error) => {
-            tracing::warn!(?error, "git-history index unavailable; skipping");
-            return;
-        }
-    };
-    if force_rebuild && let Err(error) = index.clear() {
-        tracing::warn!(?error, "git-history index clear failed");
-    }
-    match basemind::git_history::builder::sync(&index, &repo, &basemind_dir) {
-        Ok(outcome) => {
-            let summary = match outcome {
-                basemind::git_history::builder::RebuildOutcome::Fresh => "git-history index: up to date".to_string(),
-                basemind::git_history::builder::RebuildOutcome::Skipped { reason } => {
-                    format!("git-history index: not updated ({reason})")
-                }
-                basemind::git_history::builder::RebuildOutcome::Incremental { added } => {
-                    format!("git-history index: +{added} commits")
-                }
-                basemind::git_history::builder::RebuildOutcome::FullRebuild { reason, commits } => {
-                    format!("git-history index: rebuilt {commits} commits ({reason})")
-                }
-            };
-            let _ = writeln!(out, "{summary}");
-        }
-        Err(error) => tracing::warn!(?error, "git-history index sync failed"),
+    if let Some(history) = HistorySync::open(root, cli_enabled, force_rebuild) {
+        history.run(out);
     }
 }
 
@@ -256,7 +335,7 @@ pub(super) fn cmd_scan(
         if report.cancelled {
             return interrupted(&mut out, &report, verbosity, "scan --staged");
         }
-        return output.summary(&mut out, root, &report, started, None);
+        return output.summary(&mut out, root, &report, started, None, None);
     }
     if let Some(rev_spec) = &args.rev {
         let repo = basemind::git::Repo::discover(root).context("`--rev` requires being inside a git repository")?;
@@ -281,7 +360,7 @@ pub(super) fn cmd_scan(
         if report.cancelled {
             return interrupted(&mut out, &report, verbosity, "scan --rev");
         }
-        return output.summary(&mut out, root, &report, started, None);
+        return output.summary(&mut out, root, &report, started, None, None);
     }
 
     if let Some(notice) = writer_collision_notice(root) {
@@ -304,11 +383,19 @@ pub(super) fn cmd_scan(
     if report.cancelled {
         return interrupted(&mut out, &report, verbosity, "scan");
     }
+    // A from-scratch git-history build is minutes on a deep history: it goes to the background
+    // worker with the vectors, and only an append runs before the scan returns.
+    let history = HistorySync::open(root, !args.no_git_history, args.rebuild_git_history);
+    let deferred = history.as_ref().and_then(HistorySync::defer);
     // Started while this process still holds the store lock: the worker waits for it to go.
-    let embeddings = hand_off_embeddings(root, &store, &config);
+    let embeddings = hand_off_embeddings(root, &store, &config, deferred.is_some());
+    let history_hand_off = history
+        .as_ref()
+        .zip(deferred)
+        .and_then(|(history, commits)| history.handed_to(commits, embeddings.1));
     // A failed write of the summary (stdout closed under `--json`) must not skip the maintenance
     // below, which the index just written is owed; it is returned once that has run.
-    let summary = output.summary(&mut out, root, &report, started, Some(embeddings));
+    let summary = output.summary(&mut out, root, &report, started, Some(embeddings), history_hand_off);
     render::render_deps_unavailable(&mut out, &report.deps_unavailable, verbosity);
     // This process exits next: flushed, the rows open as tables instead of a journal the next
     // writer (usually the daemon) replays into memtables and holds in its heap until they fill.
@@ -316,7 +403,11 @@ pub(super) fn cmd_scan(
         db.reclaim_journal();
     }
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
-    sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
+    // Handed off, the index is closed here so the worker can open it once this process lets go of
+    // the store lock.
+    if let Some(history) = history.filter(|_| history_hand_off.is_none()) {
+        history.run(&mut out);
+    }
     summary
 }
 

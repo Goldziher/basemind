@@ -139,6 +139,10 @@ impl Workspace {
         let cache_dir = crate::store::workspace_cache_dir(&self.root);
         let scan_progress = crate::scan_evidence::live_progress(&cache_dir);
         let embeddings = crate::embed_progress::status(&cache_dir, crate::embed_progress::now_unix_ms());
+        let git_history_build = crate::git_history::progress::status(
+            &crate::git_history::shared_history_basemind_dir(&self.root),
+            crate::embed_progress::now_unix_ms(),
+        );
         let identity = self.repo_identity();
         let submodules = self.repo.as_ref().map(|r| r.submodule_paths()).unwrap_or_default();
         let Ok(store) = self.try_store_read() else {
@@ -164,6 +168,7 @@ impl Workspace {
                 watches,
                 scan_progress,
                 embeddings,
+                git_history_build,
                 total_size_bytes: 0,
                 languages: BTreeMap::new(),
                 listed: BTreeMap::new(),
@@ -221,6 +226,7 @@ impl Workspace {
             watches,
             scan_progress,
             embeddings,
+            git_history_build,
             total_size_bytes: total_size,
             languages: by_lang,
             listed: listed_by_kind(&store.index.listed),
@@ -653,6 +659,22 @@ mod tests {
 
         crate::embed_progress::clear(&cache_dir);
         assert_eq!(ws.index_status(IndexStatusParams {}).expect("status").embeddings, None);
+    }
+
+    #[test]
+    fn status_reports_a_handed_off_history_build_and_drops_it_once_it_is_built() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = unscanned_workspace(dir.path());
+        let status = |ws: &Workspace| ws.index_status(IndexStatusParams {}).expect("status").git_history_build;
+        assert_eq!(status(&ws), None, "no build is owed");
+
+        let history_dir = crate::git_history::shared_history_basemind_dir(dir.path());
+        crate::git_history::progress::record_owed(&history_dir, 9);
+        let build = status(&ws).expect("the owed build is reported");
+        assert_eq!((build.done, build.total, build.eta_secs), (0, 9, None));
+
+        crate::git_history::progress::clear(&history_dir);
+        assert_eq!(status(&ws), None);
     }
 
     /// `rescanning` and a progress block are claims that a scan is running: with no pass holding the

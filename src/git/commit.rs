@@ -383,6 +383,16 @@ impl Repo {
             .collect()
     }
 
+    /// How many commits HEAD reaches, counted by a walk that sorts nothing and reads no tree: what a
+    /// full git-history rebuild stores, without its cost. `0` when HEAD is unborn.
+    pub fn reachable_commit_count(&self) -> Result<usize, GitError> {
+        let local = self.local();
+        let Ok(head) = local.head_id() else {
+            return Ok(0);
+        };
+        walk_step(local.rev_walk([head.detach()]).all())?.try_fold(0, |count, step| walk_step(step).map(|_| count + 1))
+    }
+
     /// The commits at `skip..skip + take` of [`Repo::log_paths`]' list for `head`, with their
     /// changed files when `include_files`. The `skip` commits before them are walked without listing
     /// files, so a page deep in the history costs one walk to it and a file listing per commit on the

@@ -1,8 +1,9 @@
 # Git history
 
 The git tools read history, blame and diffs without shelling out to `git`. History queries go
-through a git-history index built after a scan, so commits touching a path come back in tens of
-microseconds; before it is ready they walk git directly. They need the workspace to be a git
+through a git-history index built after a scan (a first build runs in the background, see
+`basemind manual indexing`), so commits touching a path come back in tens of microseconds; before
+it is ready they walk git directly. They need the workspace to be a git
 repository.
 
 | Question | MCP call | CLI |

@@ -410,3 +410,45 @@ fn an_indexed_page_reports_the_total_commit_count() {
     assert_eq!(page.response.total_commits, Some(COMMITS as u64 + 1));
     assert_eq!(page.response.commits_reached, 2);
 }
+
+/// A control that stops a build before its first chunk of commits.
+struct StopAtOnce;
+
+impl crate::git_history::builder::BuildControl for StopAtOnce {
+    fn stop(&self) -> bool {
+        true
+    }
+}
+
+/// While the git-history build a scan handed to the background is pending (begun and not finished,
+/// or killed), a history call answers from the live walk, with the matches it gives without the
+/// index, instead of failing or serving the half-built index.
+#[test]
+fn a_pending_history_build_is_answered_by_the_live_walk() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let ws = workspace(repo_dir.path(), cache_dir.path());
+    let summaries = |page: &crate::engine::types::git::FindCommitsByPathResponse| -> Vec<String> {
+        page.commits.iter().map(|c| c.summary.clone()).collect()
+    };
+    let live = by_path(&ws, "git_by_path", params(Some(COMMITS as u32 + 1), None, None)).expect("live page");
+    drop(ws);
+    let history_dir = tempfile::tempdir().unwrap();
+    let index = crate::git_history::GitHistoryIndex::open(history_dir.path()).expect("open the index");
+    let repo = crate::git::Repo::discover(repo_dir.path()).expect("repo");
+    let stopped = crate::git_history::builder::sync_with(&index, &repo, history_dir.path(), &StopAtOnce);
+    assert!(
+        matches!(stopped, Err(crate::git_history::GitHistoryError::Cancelled)),
+        "{stopped:?}"
+    );
+    assert!(index.build_interrupted(), "the build is pending");
+    let ws = workspace_with_index(repo_dir.path(), cache_dir.path(), Some(Arc::new(index)));
+
+    let pending = by_path(&ws, "git_by_path", params(Some(COMMITS as u32 + 1), None, None)).expect("page");
+    assert_eq!(summaries(&pending.response), ["round 5", "round 3", "round 1"]);
+    assert_eq!(summaries(&pending.response), summaries(&live.response));
+    assert_eq!(
+        pending.response.total_commits, None,
+        "the live walk answered, not the index"
+    );
+}
