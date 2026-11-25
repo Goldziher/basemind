@@ -298,15 +298,15 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--save-ms", type=float, default=200, help="p95 ms of one save (default 200)")
     ap.add_argument("--min-saves", type=int, default=5, help="saves the run must complete (default 5)")
     ap.add_argument(
-        "--worktree-pct", type=float, default=75, help="bytes an added worktree adds, % of the first scan (default 75)"
+        "--worktree-pct", type=float, default=75, help="bytes an added worktree adds, %% of the first scan (default 75)"
     )
     ap.add_argument("--dir-tol", type=float, default=2.0, help="data dir MiB/min, journals excluded (default 2.0)")
     ap.add_argument(
         "--status-p99-ms", type=float, default=2000, help="p99 ms of index_status under load (default 2000)"
     )
-    ap.add_argument("--busy-pct", type=float, default=1.0, help="calls answered busy, % (default 1)")
+    ap.add_argument("--busy-pct", type=float, default=1.0, help="calls answered busy, %% (default 1)")
     ap.add_argument("--min-calls", type=int, default=100, help="index_status calls the load must make (default 100)")
-    ap.add_argument("--error-pct", type=float, default=1.0, help="calls that fail, % (default 1)")
+    ap.add_argument("--error-pct", type=float, default=1.0, help="calls that fail, %% (default 1)")
     ap.add_argument("--edit-stale-s", type=float, default=30, help="seconds until a save is answered (default 30)")
     ap.add_argument(
         "--switch-stale-s", type=float, default=60, help="seconds until a branch switch is answered (default 60)"
