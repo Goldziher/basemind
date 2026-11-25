@@ -417,7 +417,7 @@ fn trim_signature(sym: &mut Symbol, lang: LangId) {
     let Some(sig) = sym.signature.as_deref() else {
         return;
     };
-    let keeps_name = matches!(sym.kind, SymbolKind::Const) || matches!(lang, "hcl" | "terraform");
+    let keeps_name = matches!(sym.kind, SymbolKind::Const) || matches!(lang, "hcl" | "terraform" | "sql" | "scss");
     let mut out = match sig.find(sym.name.as_str()) {
         Some(i) if !keeps_name && whole_word(sig, i, sym.name.len()) => {
             let mut t = String::with_capacity(sig.len());
@@ -480,6 +480,7 @@ fn detect_accessor(slice: &str) -> Option<SymbolKind> {
 fn header_text<'a>(node: Node, text: &'a str) -> &'a str {
     node.child_by_field_name("body")
         .map(|body| body.start_byte().saturating_sub(node.start_byte()))
+        .or_else(|| super::sql_header::header_len(node.kind(), text))
         .or_else(|| super::starlark_header::header_len(node.kind(), text))
         .and_then(|len| text.get(..len))
         .unwrap_or(text)

@@ -69,6 +69,9 @@ pub const OVERRIDE_LANGUAGES: &[LangId] = &[
     "java",
     "hcl",
     "terraform",
+    "sql",
+    "bash",
+    "scss",
     "proto",
     "starlark",
 ];
@@ -90,6 +93,9 @@ fn override_query_source(lang: LangId) -> Option<&'static str> {
         "markdown" => include_str!("queries/markdown.scm"),
         "java" => include_str!("queries/java.scm"),
         "hcl" | "terraform" => include_str!("queries/hcl.scm"),
+        "sql" => include_str!("queries/sql.scm"),
+        "bash" => include_str!("queries/bash.scm"),
+        "scss" => include_str!("queries/scss.scm"),
         "proto" => include_str!("queries/proto.scm"),
         "starlark" => include_str!("queries/starlark.scm"),
         _ => return None,
@@ -720,7 +726,7 @@ fn classify_combined_l1(lang: LangId) -> Result<ClassifiedOutcome, LangError> {
 /// and `Err` only on a compile error in source we do have.
 ///
 /// Language coverage is three concentric rings over TSLP's ~306-grammar registry:
-/// - **Override ring** ([`OVERRIDE_LANGUAGES`], 10 today): hand-written
+/// - **Override ring** ([`OVERRIDE_LANGUAGES`], 15 today): hand-written
 ///   `src/queries/<lang>.scm` with full symbol/import/call/doc sections.
 /// - **TSLP `tags.scm` ring** (~100 grammars in the published bundle — e.g. kotlin,
 ///   csharp, swift, cpp, scala, solidity): adapted on the fly via `adapt_tslp_tags`.

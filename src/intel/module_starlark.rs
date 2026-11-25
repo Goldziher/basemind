@@ -113,7 +113,13 @@ mod tests {
         let (targets, probes) = resolve(
             &indexed,
             "pkg/BUILD",
-            &["//tools:defs.bzl", "//:defs.bzl", ":local.bzl", "//pkg/sub:deep.bzl", "local.bzl"],
+            &[
+                "//tools:defs.bzl",
+                "//:defs.bzl",
+                ":local.bzl",
+                "//pkg/sub:deep.bzl",
+                "local.bzl",
+            ],
         );
         assert_eq!(
             targets,
@@ -139,7 +145,12 @@ mod tests {
         let (targets, probes) = resolve(
             &[],
             "pkg/BUILD",
-            &["@rules_python//python:defs.bzl", "@@bazel_tools//tools:x.bzl", "//tools:gone.bzl", "//x:../y.bzl"],
+            &[
+                "@rules_python//python:defs.bzl",
+                "@@bazel_tools//tools:x.bzl",
+                "//tools:gone.bzl",
+                "//x:../y.bzl",
+            ],
         );
         assert_eq!(
             targets,

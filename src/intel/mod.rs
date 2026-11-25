@@ -17,13 +17,13 @@ pub mod model;
 /// Go file-level module resolution (import path → the package's files), for the import graph.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 pub(crate) mod module_go;
+/// Protocol Buffers import resolution (`import "a/b.proto"` → the file under a source root).
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+pub(crate) mod module_proto;
 /// File-level module resolution for Rust and Go: each importer's file-edge and probe rows, written
 /// from its L1 outline with no binding join.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 pub(crate) mod module_resolver;
-/// Protocol Buffers import resolution (`import "a/b.proto"` → the file under a source root).
-#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
-pub(crate) mod module_proto;
 /// Rust file-level module resolution (`mod` and `use` paths → module files), for the import graph.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 pub(crate) mod module_rust;

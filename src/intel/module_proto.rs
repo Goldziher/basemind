@@ -102,13 +102,21 @@ mod tests {
 
     #[test]
     fn a_path_resolves_from_the_repository_root() {
-        let (targets, _) = resolve(&["acme/common.proto"], "svc/billing/v1/billing.proto", &["acme/common.proto"]);
+        let (targets, _) = resolve(
+            &["acme/common.proto"],
+            "svc/billing/v1/billing.proto",
+            &["acme/common.proto"],
+        );
         assert_eq!(targets, [files("acme/common.proto")]);
     }
 
     #[test]
     fn a_path_resolves_from_a_source_root_above_the_importer() {
-        let (targets, probes) = resolve(&["proto/acme/common.proto"], "proto/svc/billing.proto", &["acme/common.proto"]);
+        let (targets, probes) = resolve(
+            &["proto/acme/common.proto"],
+            "proto/svc/billing.proto",
+            &["acme/common.proto"],
+        );
         assert_eq!(targets, [files("proto/acme/common.proto")]);
         assert!(probes.contains("proto/svc/acme/common.proto"));
         assert!(probes.contains("proto/acme/common.proto"));
@@ -130,7 +138,11 @@ mod tests {
         );
         assert_eq!(
             targets,
-            [ModuleTarget::Unresolved, ModuleTarget::External, ModuleTarget::Unresolved]
+            [
+                ModuleTarget::Unresolved,
+                ModuleTarget::External,
+                ModuleTarget::Unresolved
+            ]
         );
         assert!(probes.contains("svc/acme/gone.proto"));
         assert!(probes.contains("acme/gone.proto"));

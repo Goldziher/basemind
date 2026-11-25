@@ -22,9 +22,12 @@ pub mod locals;
 mod query_walk;
 mod rationale;
 mod rust_macro_items;
+mod sql_header;
 mod starlark_header;
 #[cfg(test)]
 mod symbol_kinds_proto_tests;
+#[cfg(test)]
+mod symbol_kinds_script_tests;
 #[cfg(test)]
 mod symbol_kinds_tests;
 
@@ -125,6 +128,8 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 /// - 9: HCL and Terraform files gain an outline: resources, data sources, variables, outputs, locals,
 ///   modules, providers and the `terraform` block, plus Terragrunt `include`, `dependency` and
 ///   `inputs`.
+/// - 10: SQL, shell and SCSS files gain an outline: SQL `CREATE` statements, shell functions and
+///   top-level variables, SCSS variables, mixins, functions and placeholder selectors.
 /// - 11: Protocol Buffers files gain an outline (package, messages, enums and values, services and rpcs,
 ///   oneofs, extends, file options) and `import` edges; Starlark files gain functions, top-level
 ///   variables, rule targets and `load()` imports.

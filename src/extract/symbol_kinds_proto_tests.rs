@@ -49,7 +49,11 @@ fn proto_signatures_are_the_declaration_header() {
         ("Billing", Interface, "service Billing"),
         ("Create", Method, "rpc Create(Invoice) returns (Invoice)"),
         ("Watch", Method, "rpc Watch(stream Invoice) returns (stream Status)"),
-        ("google.protobuf.MessageOptions", Impl, "extend google.protobuf.MessageOptions"),
+        (
+            "google.protobuf.MessageOptions",
+            Impl,
+            "extend google.protobuf.MessageOptions",
+        ),
         ("java_package", Variable, "option = \"com.acme\""),
     ];
     for (name, kind, signature) in cases {
@@ -63,7 +67,8 @@ fn proto_signatures_are_the_declaration_header() {
 
 #[test]
 fn proto_ignores_options_inside_declarations() {
-    let src = "syntax = \"proto3\";\nmessage M {\n  option deprecated = true;\n  string a = 1 [deprecated = true];\n}\n";
+    let src =
+        "syntax = \"proto3\";\nmessage M {\n  option deprecated = true;\n  string a = 1 [deprecated = true];\n}\n";
     let (got, _) = outline("proto", src);
     assert_eq!(got, symbols(&[("M", Struct)]));
 }
@@ -122,5 +127,8 @@ fn starlark_loads_are_imports_by_label() {
 
 #[test]
 fn starlark_only_load_calls_are_imports() {
-    assert_eq!(import_modules("starlark", "other(\"//a:b.bzl\")\n"), Vec::<Option<String>>::new());
+    assert_eq!(
+        import_modules("starlark", "other(\"//a:b.bzl\")\n"),
+        Vec::<Option<String>>::new()
+    );
 }
