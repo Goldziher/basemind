@@ -227,14 +227,22 @@ struct Charged {
 ///
 /// Shared (behind an [`Arc`]) by every [`MapCache`](crate::engine::MapCache) snapshot derived from one
 /// another, so a watcher rescan does not throw away a warm cache or transiently double its
-/// residency.
+/// residency. A daemon shares one further, across every read stack it hosts over the same blob
+/// directory ([`crate::engine::l1_shared`]).
 pub(crate) struct L1Cache {
     /// Global content-addressed blob directory. Reading a blob needs nothing but this path, which
     /// is why a miss can be served without ever taking the store lock.
     blobs_dir: PathBuf,
-    /// Byte ceiling for decoded values; `0` means unbounded (the pre-split behaviour).
-    budget_bytes: u64,
+    /// Byte ceiling for decoded values; `0` means unbounded (the pre-split behaviour). Atomic
+    /// because a cache shared by several read stacks ([`crate::engine::l1_shared`]) is widened to
+    /// the largest budget any of them configures.
+    budget_bytes: AtomicU64,
     inner: Mutex<Charged>,
+    /// Whether a rescan drops the outlines its own view stopped naming
+    /// ([`forget_superseded`](Self::forget_superseded)). Off for a cache several read stacks share:
+    /// content one stack replaced is usually still named by a sibling worktree, and the shared LRU
+    /// ages out what no stack reads any more.
+    forgets_superseded: bool,
     /// Cumulative miss count. Diagnostic only — a test asserts a small budget really does force
     /// misses, so an "equivalent output" claim is not silently vacuous.
     misses: AtomicU64,
@@ -244,12 +252,21 @@ impl L1Cache {
     pub(crate) fn new(blobs_dir: PathBuf, budget_bytes: u64) -> Self {
         Self {
             blobs_dir,
-            budget_bytes,
+            budget_bytes: AtomicU64::new(budget_bytes),
             inner: Mutex::new(Charged {
                 lru: LruCache::unbounded(),
                 charged: 0,
             }),
+            forgets_superseded: true,
             misses: AtomicU64::new(0),
+        }
+    }
+
+    /// A cache for several read stacks to share: superseded content is left to the LRU.
+    pub(crate) fn shared(blobs_dir: PathBuf, budget_bytes: u64) -> Self {
+        Self {
+            forgets_superseded: false,
+            ..Self::new(blobs_dir, budget_bytes)
         }
     }
 
@@ -261,6 +278,25 @@ impl L1Cache {
     /// The global content-addressed blob directory this cache reads from.
     pub(crate) fn from_store(store: &crate::store::Store, budget_bytes: u64) -> Self {
         Self::new(store.blobs_dir.clone(), budget_bytes)
+    }
+
+    /// Raise the byte ceiling to `budget_bytes` when that is larger, `0` (unbounded) being larger
+    /// than any other. Never lowers it: a stack sharing the cache cannot shrink what another
+    /// configured.
+    pub(crate) fn widen_budget(&self, budget_bytes: u64) {
+        let widened = |current: u64| {
+            let wider = current != 0 && (budget_bytes == 0 || budget_bytes > current);
+            wider.then_some(budget_bytes)
+        };
+        let _ = self
+            .budget_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, widened);
+    }
+
+    /// The current byte ceiling; `0` is unbounded.
+    #[cfg(test)]
+    pub(crate) fn budget_bytes(&self) -> u64 {
+        self.budget_bytes.load(Ordering::Relaxed)
     }
 
     /// Bytes currently charged to the cache. Test surface for the budget assertions.
@@ -395,6 +431,9 @@ impl L1Cache {
     /// can reach them. A reader still on the previous snapshot reads such a blob again on a miss,
     /// which costs latency, never an answer.
     pub(crate) fn forget_superseded(&self, mut superseded: ahash::AHashSet<&str>, next: &FileIndexView) {
+        if !self.forgets_superseded {
+            return;
+        }
         for meta in next.files.values() {
             if superseded.is_empty() {
                 return;
@@ -432,10 +471,11 @@ impl L1Cache {
             guard.charged = guard.charged.saturating_sub(l1_heap_bytes(&previous));
         }
         guard.charged = guard.charged.saturating_add(bytes);
-        if self.budget_bytes == 0 {
+        let budget_bytes = self.budget_bytes.load(Ordering::Relaxed);
+        if budget_bytes == 0 {
             return;
         }
-        while guard.charged > self.budget_bytes && guard.lru.len() > 1 {
+        while guard.charged > budget_bytes && guard.lru.len() > 1 {
             let Some((_, evicted)) = guard.lru.pop_lru() else {
                 break;
             };

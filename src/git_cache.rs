@@ -129,7 +129,7 @@ type CommitFileChange = (crate::path::RelPath, ChangeKind);
 /// these values has a natural size: one `CommitInfo` carries the full commit body plus one entry per
 /// path the commit touched, and one `BlameResult` is a hunk per contiguous run of lines in a whole
 /// file. A lockfile merge is orders of magnitude bigger than a typo fix, so the same 1024 entries
-/// are a few megabytes on one repo and gigabytes on the next — `crate::mcp::l1_cache` reached the
+/// are a few megabytes on one repo and gigabytes on the next — `crate::engine::l1_cache` reached the
 /// same conclusion about decoded outlines: an entry-count LRU is the same unbounded structure with a
 /// different constant.
 ///
@@ -141,7 +141,7 @@ type CommitFileChange = (crate::path::RelPath, ChangeKind);
 /// dominant term in a daemon holding 16 hot workspaces.
 const CATEGORY_MEM_BUDGET_BYTES: u64 = 32 * 1024 * 1024;
 
-/// One category's LRU plus the running byte charge over its values — the `crate::mcp::l1_cache`
+/// One category's LRU plus the running byte charge over its values — the `crate::engine::l1_cache`
 /// shape, generalised over the three value types this cache holds.
 ///
 /// The `LruCache` is `unbounded` and the entry cap is enforced here so that EVERY eviction passes

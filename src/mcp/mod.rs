@@ -42,7 +42,6 @@ pub(crate) mod identity;
 pub mod in_memory;
 #[cfg(test)]
 mod index_view_tests;
-pub(crate) use crate::engine::l1_cache;
 #[cfg(all(test, feature = "memory"))]
 mod memory_tests;
 mod notifications;
@@ -114,7 +113,8 @@ impl HostedReadStack {
     /// ([`BasemindServer::from_shared`]) spawn nothing.
     ///
     /// `store` is read-only and borrows the pool writer's index handle per call, so reads never wait
-    /// on a scan. Scans run through `pool`, which holds the writer store.
+    /// on a scan. Scans run through `pool`, which holds the writer store, and the stack's maps take
+    /// their decoded outlines from the cache the pool shares between its hosted stacks.
     pub(crate) fn start(
         store: Store,
         config: Arc<crate::config::Config>,
@@ -142,7 +142,17 @@ impl HostedReadStack {
                 Some(history) => (Some(history.index), Some(history.pin)),
                 None => (None, None),
             };
-        let mut workspace = Workspace::new(store, root.clone(), config, repo, git_cache, git_history, open);
+        let outlines = Some(pool.shared_outlines());
+        let mut workspace = Workspace::sharing_outlines(
+            store,
+            root.clone(),
+            config,
+            repo,
+            git_cache,
+            git_history,
+            open,
+            outlines,
+        );
         workspace.work_pin = work_pin;
         let workspace = Arc::new(workspace);
         let mut shared = ServedWorkspace::new(workspace, &telemetry_dir);

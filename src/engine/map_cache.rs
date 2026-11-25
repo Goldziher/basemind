@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::config::list_only::ListedEntry;
 use crate::engine::l1_cache;
+use crate::engine::l1_shared::Outlines;
 use crate::engine::paged_map::PagedSet;
 use crate::extract::FileMapL1;
 use crate::path::RelPath;
@@ -55,14 +56,15 @@ fn doc_paths_of(store: &Store) -> Arc<PagedSet<RelPath>> {
 }
 
 impl MapCache {
-    /// Build the read stack's map over `store`, charging decoded L1s against `budget_bytes`
-    /// (`0` = unbounded).
+    /// Build the read stack's map over `store`, with the outline cache `outlines` names: one of the
+    /// map's own charged against a byte budget (a bare `u64`, `0` = unbounded), or the cache the host
+    /// shares between its read stacks ([`crate::engine::l1_shared`]).
     ///
     /// Unlike the whole-corpus map this replaces, `build` decodes NO L1 blobs: it projects the
     /// index into [`l1_cache::FileIndexView`] and leaves the outlines to be faulted in on demand.
-    pub(crate) fn build(store: &Store, budget_bytes: u64) -> Self {
+    pub(crate) fn build<'a>(store: &Store, outlines: impl Into<Outlines<'a>>) -> Self {
         let files = l1_cache::FileIndexView::build(store);
-        let l1 = Arc::new(l1_cache::L1Cache::from_store(store, budget_bytes));
+        let l1 = outlines.into().cache_for(store);
         Self {
             files,
             l1,
@@ -345,9 +347,10 @@ impl MapCache {
     ///
     /// `None` is what keeps a no-op daemon scan from transiently doubling the map's residency. The
     /// boot placeholder, or a cache over other blob directories than `store` reads, is rebuilt.
-    pub(crate) fn refreshed(&self, store: &Store, budget_bytes: u64) -> Option<Self> {
+    /// `outlines` is where a rebuilt map takes its outline cache from, as for [`build`](Self::build).
+    pub(crate) fn refreshed<'a>(&self, store: &Store, outlines: impl Into<Outlines<'a>>) -> Option<Self> {
         if !self.l1.serves(store) {
-            return Some(Self::build(store, budget_bytes));
+            return Some(Self::build(store, outlines));
         }
         let (updated, removed) = self.files.diff(store);
         let doc_paths = doc_paths_of(store);

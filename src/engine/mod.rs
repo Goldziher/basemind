@@ -22,6 +22,7 @@ mod handle;
 )]
 pub(crate) mod import_graph;
 pub(crate) mod l1_cache;
+pub(crate) mod l1_shared;
 #[cfg(any(feature = "memory", feature = "code-search"))]
 pub(crate) mod lance_cell;
 pub(crate) mod manifests;
