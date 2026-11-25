@@ -163,9 +163,12 @@ fn the_shared_cache_goes_with_its_last_holder() {
 #[test]
 fn only_a_private_cache_forgets_superseded_content() {
     let hash = "b".repeat(64);
-    let cases: [(fn(PathBuf, u64) -> L1Cache, bool); 2] = [(L1Cache::new, false), (L1Cache::shared, true)];
-    for (open, kept) in cases {
-        let cache = open(PathBuf::new(), 0);
+    for (shared, kept) in [(false, false), (true, true)] {
+        let cache = if shared {
+            L1Cache::shared(PathBuf::new(), 0)
+        } else {
+            L1Cache::new(PathBuf::new(), 0)
+        };
         cache.seed(&hash, empty_outline());
 
         cache.forget_superseded([hash.as_str()].into_iter().collect(), &FileIndexView::default());

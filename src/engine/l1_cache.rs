@@ -290,7 +290,7 @@ impl L1Cache {
         };
         let _ = self
             .budget_bytes
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, widened);
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, widened);
     }
 
     /// The current byte ceiling; `0` is unbounded.

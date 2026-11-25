@@ -823,7 +823,10 @@ mod js_tests {
 
         resolver.begin_importer("b.ts");
         let (_, second) = resolve(&resolver, tmp.path(), "b.ts", "./util");
-        assert!(second.contains("util.ts"), "served from oxc's cache, so only the window log has it");
+        assert!(
+            second.contains("util.ts"),
+            "served from oxc's cache, so only the window log has it"
+        );
     }
 
     /// A new directory starts a new window: its importers are not charged with the last one's probes.

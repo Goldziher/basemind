@@ -115,10 +115,10 @@ const RESULT_VOCABULARY: &[(&str, &str)] = &[
         "code_search `truncated_reason` (src/engine/types/search.rs)",
     ),
     ("time_budget", "code_grep `truncated_reason` (src/engine/types/grep.rs)"),
-    ("too_large", "git_blame `truncated_reason` (src/engine/types/git.rs); code_grep `skipped_reasons`"),
-    ("skipped_reasons", "code_grep (src/engine/types/grep.rs)"),
-    ("unavailable", "code_grep `skipped_reasons` (src/engine/types/grep.rs)"),
-    ("unreadable", "code_grep `skipped_reasons` (src/engine/types/grep.rs)"),
+    (
+        "too_large",
+        "git_blame `truncated_reason` (src/engine/types/git.rs); code_grep `skipped_reasons`",
+    ),
     (
         "total_commits",
         "git_log directory and symbol pages (src/engine/types/git.rs)",

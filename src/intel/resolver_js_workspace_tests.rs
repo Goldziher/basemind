@@ -99,7 +99,10 @@ fn a_package_outside_the_declared_globs_is_not_a_workspace_package() {
 
 #[test]
 fn an_excluded_package_is_not_a_workspace_package() {
-    let tmp = two_packages(("pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n  - '!packages/lib'\n"));
+    let tmp = two_packages((
+        "pnpm-workspace.yaml",
+        "packages:\n  - 'packages/*'\n  - '!packages/lib'\n",
+    ));
     let (hit, _) = resolve(tmp.path(), "packages/app/src/main.ts", "@acme/lib");
     assert_eq!(hit, None);
 }

@@ -313,11 +313,11 @@ fn process_doc(
     }
 }
 
-/// The entry a `Deferred` pass records for a document whose vectors are still to come, so the
-/// document is tracked and searchable by text at the end of the fast pass and a later `Inline`
-/// pass finds it owing them. `None` for a document that owes none (embedding is off for it, it has
-/// no chunks, it is over the chunk cap, or its blob already carries vectors), which a `Deferred`
-/// pass leaves unrecorded as before.
+/// The entry a `Deferred` pass records. A document whose vectors are still to come is recorded as
+/// owing them, so it is found by its text at the end of the fast pass and a later `Inline` pass
+/// embeds it. Any other document (embedding is off for it, it has no chunks, it is over the chunk
+/// cap, or its blob already carries vectors) owes none and is recorded as an `Inline` pass would
+/// record it, so a repository that does not embed is still searchable after a fast pass.
 fn deferred_doc_entry(
     rel: &str,
     config: &Config,
@@ -330,10 +330,14 @@ fn deferred_doc_entry(
         && batch.embedding_dim == 0
         && batch.chunk_count > 0
         && !batch.over_chunk_cap;
-    owes_vectors.then_some(crate::store::DocEntry {
-        embedded: false,
-        embed_attempted: false,
-        ..entry
+    Some(if owes_vectors {
+        crate::store::DocEntry {
+            embedded: false,
+            embed_attempted: false,
+            ..entry
+        }
+    } else {
+        entry
     })
 }
 

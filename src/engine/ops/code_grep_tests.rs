@@ -883,7 +883,11 @@ fn a_sweep_always_reads_its_first_step_even_when_out_of_time() {
     let step = |range: std::ops::Range<usize>, _skip_hits: u32| (vec![0; range.len()], SkippedBreakdown::default());
     let counted = count_until_page_full(COUNT_STEP_FILES * 3, &step, 0, 10, &|| false, &|| true);
     assert!(counted.timed_out);
-    assert_eq!(counted.counts.len(), COUNT_STEP_FILES, "one step, so a paging caller advances");
+    assert_eq!(
+        counted.counts.len(),
+        COUNT_STEP_FILES,
+        "one step, so a paging caller advances"
+    );
 }
 
 #[test]

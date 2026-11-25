@@ -14,8 +14,8 @@ use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
 use crate::engine::files::{IndexedFiles, Sweep};
 use crate::engine::filters::{Filters, parse_path};
-use crate::engine::types::LifecycleNotice;
 use crate::engine::grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
+use crate::engine::types::LifecycleNotice;
 use crate::engine::types::grep::{
     CodeGrepParams, GREP_CONTEXT_MAX, GrepHit, GrepHits, GrepTruncation, SkippedBreakdown, WorkspaceGrepParams,
     WorkspaceGrepResponse,

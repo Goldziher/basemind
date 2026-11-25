@@ -68,6 +68,17 @@ fn a_deferred_pass_over_a_repository_that_does_not_embed_records_no_debt() {
     assert_eq!(embed_progress::read(&cache_dir), None);
 }
 
+/// A repository that does not embed is still searchable after a fast pass: its documents are
+/// tracked, though none owes vectors.
+#[test]
+fn a_deferred_pass_over_a_repository_that_does_not_embed_still_tracks_its_documents() {
+    let tmp = guide_workspace();
+    let mut store = Store::open(tmp.path(), VIEW_WORKING).expect("open");
+    scan_in(tmp.path(), &mut store, &config(false), EmbedMode::Deferred);
+
+    assert!(store.lookup_doc("guide.md").is_some(), "the document is tracked");
+}
+
 /// An embedding pass that completes removes the record, and with it the report and the resume.
 #[test]
 fn a_completed_inline_pass_removes_the_record() {
