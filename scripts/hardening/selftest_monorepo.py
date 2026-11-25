@@ -208,6 +208,32 @@ def load_window(readings: list[dict[int, int]], pids: tuple[int, ...] = (1,)) ->
         return watcher.total()
 
 
+def daemon_timeline(setup: dict[int, int], at_begin: dict[int, int], after: dict[int, int]) -> dict[str, Any]:
+    """The watcher's total when the counters read `setup` before `begin_load`, `at_begin` at it, and `after`
+    later; every pid in any of them is a known daemon from the poll that reads it."""
+    current: dict[int, int] = {}
+    known: set[int] = set()
+
+    def counter(pid: int) -> int | None:
+        return current.get(pid)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        watcher = MsgpackWatcher(Path(tmp), daemon_pids=lambda: known, counter=counter)
+        for reading, begin in ((setup, False), (at_begin, True), (after, False)):
+            current.clear()
+            current.update(reading)
+            known.update(reading)
+            if begin:
+                watcher.begin_load()
+            else:
+                watcher.poll_counters()
+        return watcher.total()
+
+
+def written_bounds(total: dict[str, Any]) -> tuple[int | None, int | None]:
+    return total["written_lower"], total["written_upper"]
+
+
 def m9_from_watcher(total: dict[str, Any], polled_mib: int = 0) -> str:
     """The M9 cell for a watcher total, with `polled_mib` of polled rewrites on top."""
     total = {**{k: v for k, v in total.items() if k != "kind"}, "bytes": polled_mib * MIB}
@@ -325,6 +351,28 @@ CASES: list[tuple[str, Callable[[], object], object]] = [
         "a daemon read to the end keeps the upper bound, and 1000 MiB over 900 s passes",
         lambda: m9_from_watcher(load_window([{1: 0}, {1: 1000 * MIB}])),
         "pass",
+    ),
+    (
+        "a daemon first read after the load began counts all its writes, from a zero baseline",
+        lambda: written_bounds(daemon_timeline({}, {}, {1: 16 * MIB})),
+        (16 * MIB, 16 * MIB),
+    ),
+    (
+        "a daemon first read after the load began, beside one baselined at its start, adds to it",
+        lambda: written_bounds(daemon_timeline({1: 100 * MIB}, {1: 100 * MIB}, {1: 150 * MIB, 2: 16 * MIB})),
+        (66 * MIB, 66 * MIB),
+    ),
+    (
+        "a daemon read during setup but unreadable at the load start has unknown load writes, so no bound",
+        lambda: written_bounds(daemon_timeline({1: 4096 * MIB}, {}, {1: 4112 * MIB})),
+        (None, None),
+    ),
+    (
+        "an unbaselined daemon is left out of the lower bound but still voids the upper bound",
+        lambda: written_bounds(
+            daemon_timeline({1: 10 * MIB, 2: 4096 * MIB}, {1: 10 * MIB}, {1: 30 * MIB, 2: 4112 * MIB})
+        ),
+        (20 * MIB, None),
     ),
     ("no write counter fails no rule", lambda: mutated(lambda r: set_all(r, "msgpack_total", written_upper=None)), []),
     (

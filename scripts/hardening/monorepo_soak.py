@@ -140,9 +140,11 @@ class MsgpackWatcher(threading.Thread):
       the total write volume.
     - `written_lower`: what the daemon processes (`daemon_pids`) had written to storage by their last
       successful reading, from the host's per-process counter (`written_bytes`), less the reading at the
-      start of the load. It counts every store the daemon writes.
+      start of the load. A daemon first seen after the load began has a zero baseline. A daemon with no
+      reading at the start of the load has unknown load writes and is left out. It counts every store the
+      daemon writes.
     - `written_upper`: `written_lower` when it is complete, else None. It is complete only if every daemon
-      seen was read successfully at the last poll; a daemon that exited, or that the host cannot read,
+      seen was read successfully at the last poll and had a reading at the start of the load; a daemon that exited, or that the host cannot read,
       leaves writes after its last reading uncounted, so the sum is then only a lower bound.
     """
 
@@ -161,6 +163,7 @@ class MsgpackWatcher(threading.Thread):
         self.seen: dict[str, tuple[int, int, int]] = {}
         self.daemon_writes: dict[int, int] = {}
         self.baseline: dict[int, int] = {}
+        self.unbaselined: set[int] = set()
         self.unread: set[int] = set()
         self.bytes = 0
         self.rewrites = 0
@@ -169,7 +172,8 @@ class MsgpackWatcher(threading.Thread):
     def begin_load(self) -> None:
         """Start the accounting window now: earlier rewrites and counter readings no longer count."""
         self.poll_counters()
-        self.baseline = dict(self.daemon_writes)
+        self.baseline = {pid: w for pid, w in self.daemon_writes.items() if pid not in self.unread}
+        self.unbaselined = set(self.daemon_writes) - self.baseline.keys() | self.unread
         self.bytes = 0
         self.rewrites = 0
         self.started = self.clock()
@@ -209,14 +213,13 @@ class MsgpackWatcher(threading.Thread):
             self.tick()
 
     def total(self) -> dict[str, Any]:
-        lower = (
-            sum(w - self.baseline.get(pid, 0) for pid, w in self.daemon_writes.items()) if self.daemon_writes else None
-        )
+        counted = {pid: w for pid, w in self.daemon_writes.items() if pid not in self.unbaselined}
+        lower = sum(w - self.baseline.get(pid, 0) for pid, w in counted.items()) if counted else None
         return {
             "kind": "msgpack_total",
             "bytes": self.bytes,
             "written_lower": lower,
-            "written_upper": None if self.unread else lower,
+            "written_upper": None if self.unread or self.unbaselined else lower,
             "rewrites": self.rewrites,
             "files": len(self.seen),
             "seconds": round(self.clock() - self.started, 1),
@@ -615,13 +618,13 @@ def main() -> int:
     for t in loops:
         t.join(timeout=args.call_timeout)
     sink.write({"kind": "phase", "name": "load_end"})
-
-    sampler.phase = "retire"
-    rig.retire_scenario()
     watcher.stop_event.set()
     watcher.join(timeout=WATCH_EVERY_S * 4)
     watcher.poll_counters()
     sink.write(watcher.total())
+
+    sampler.phase = "retire"
+    rig.retire_scenario()
     rig.shutdown()
     sampler.stop_event.set()
     sampler.join(timeout=args.sample_every * 2)
