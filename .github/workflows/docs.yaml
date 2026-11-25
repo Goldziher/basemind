@@ -67,7 +67,7 @@ jobs:
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           tags=$(git -c versionsort.suffix=- ls-remote --tags --refs --sort=-v:refname "$REPO_URL" 'v*')
-          latest=$(printf '%s\n' "$tags" | head -n1 | sed 's|.*refs/tags/||')
+          latest=$(printf '%s\n' "$tags" | grep -E 'refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' | head -n1 | sed 's|.*refs/tags/||' || true)
           if [ -z "$latest" ]; then echo "::error::the tag lookup returned no v* tags"; exit 1; fi
           if [ "$latest" = "$TAG" ]; then echo "deploy=true" >> "$GITHUB_OUTPUT"; else echo "::notice::$TAG is not the newest release tag ($latest); skipping the deploy"; fi
       - id: deployment
