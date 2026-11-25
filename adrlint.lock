@@ -96,6 +96,11 @@ number = 32
 status = "accepted"
 blake3 = "ac2ac5737e8169dc7064cdac0447b6c3ab6cc59fa3a8c5b87edac2ac66bbec52"
 
+[adrs."docs/adr/0033-store-evidence-collection-and-recovery-rules.md"]
+number = 33
+status = "accepted"
+blake3 = "2bec8b22247c6b79c321d08c7c902f454fb2f91811a25f85c6219c7adafb09ed"
+
 [adrs."docs/adr/0034-lean-locating-rows.md"]
 number = 34
 status = "accepted"
@@ -191,7 +196,22 @@ number = 52
 status = "accepted"
 blake3 = "a3e6312694be687f119a49deaa6c1916ce1bcdee92b76c68bd924c8c4343624c"
 
+[adrs."docs/adr/0053-text-answers-encoded-per-tool.md"]
+number = 53
+status = "accepted"
+blake3 = "be625ff98b5ab87302f1c7bd2947a253d7f8c1026b1b7128d2ad1701dacea045"
+
 [adrs."docs/adr/0055-read-around-reducing-floor.md"]
 number = 55
 status = "accepted"
 blake3 = "b795239ed5ae14f61f2efa726e15a9f1309543a9133bd1b845e2ae4bc0265246"
+
+[adrs."docs/adr/0057-impact-callers-graded-by-resolution.md"]
+number = 57
+status = "accepted"
+blake3 = "4a6ea2ccb5c516720500d928973bb35532822307ba9f81cf3e80c5e91456f648"
+
+[adrs."docs/adr/0058-impact-buckets-order-and-gate.md"]
+number = 58
+status = "accepted"
+blake3 = "4e038f622ef66fa1f327cfe24e2d1832789a123901d5d08a7a4c99f242f5841b"
