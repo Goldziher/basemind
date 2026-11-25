@@ -432,7 +432,8 @@ embedding pass ends.
 
 **Git history.** Linked worktrees share one git-history index. A worktree whose HEAD descends from
 the indexed head appends; one that diverges leaves the index untouched and reads history by walking
-git directly.
+git directly. A one-shot `basemind scan` leaves a from-scratch build of the index to its background
+worker (`BASEMIND_EMBED_BACKGROUND=false` builds it before the scan returns).
 
 ### Reserved keys
 

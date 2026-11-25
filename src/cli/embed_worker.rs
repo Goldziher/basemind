@@ -11,6 +11,10 @@
 //!   owed documents lie beyond the batches' reach (a dependency's documentation), one whole
 //!   working-tree `Inline` pass, which also settles the progress record.
 //!
+//! Before the embedding, and again after it, the worker builds the git-history index when a scan
+//! handed it a from-scratch build ([`history`]): the minutes-long walk of a deep history that a
+//! one-shot scan no longer runs before it returns.
+//!
 //! With a daemon up, the worker hands the whole pass to it instead: the daemon is the workspace's
 //! writer.
 //!
@@ -33,10 +37,11 @@ use fs2::FileExt;
 use crate::config::Config;
 use crate::scan_retrieval::Retrieval;
 use crate::scanner::{EmbedMode, NullObserver, ScanCancel, ScanSource};
-use crate::store::{LockHolder, Store, VIEW_WORKING, WriterProbe};
+use crate::store::{LockHolder, Store, StoreError, VIEW_WORKING, WriterProbe};
 
 /// `false` stops `basemind scan` from starting the background embedding worker; the owed vectors
-/// then wait for `basemind embed-worker`, a later scan without it, or a daemon.
+/// then wait for `basemind embed-worker`, a later scan without it, or a daemon, and the scan builds
+/// the git-history index itself before it returns.
 pub const EMBED_BACKGROUND_ENV: &str = "BASEMIND_EMBED_BACKGROUND";
 
 /// The advisory lock the one worker of a workspace holds, in the workspace cache dir.
@@ -154,10 +159,16 @@ impl Background {
 /// Hand `pending` to a background worker for `root`, starting one unless one runs or
 /// [`EMBED_BACKGROUND_ENV`] says not to.
 pub fn hand_off(root: &Path, pending: Pending) -> Background {
-    if !pending.any() {
+    start(root, pending.any())
+}
+
+/// Start a background worker for `root` when something is `owed`, unless one runs or
+/// [`EMBED_BACKGROUND_ENV`] says not to.
+pub fn start(root: &Path, owed: bool) -> Background {
+    if !owed {
         return Background::NotNeeded;
     }
-    if background_disabled(std::env::var(EMBED_BACKGROUND_ENV).ok().as_deref()) {
+    if !background_enabled() {
         return Background::Disabled;
     }
     let cache_dir = crate::store::workspace_cache_dir(root);
@@ -171,6 +182,11 @@ pub fn hand_off(root: &Path, pending: Pending) -> Background {
             Background::Unavailable
         }
     }
+}
+
+/// Whether [`EMBED_BACKGROUND_ENV`] lets a scan start the worker.
+pub fn background_enabled() -> bool {
+    !background_disabled(std::env::var(EMBED_BACKGROUND_ENV).ok().as_deref())
 }
 
 /// Whether a raw [`EMBED_BACKGROUND_ENV`] value turns the worker off. The binary refuses a value
@@ -315,6 +331,8 @@ pub struct WorkerReport {
     pub stopped: bool,
     /// Whether the run handed the pass to the daemon.
     pub daemon: bool,
+    /// The commits a git-history build of the run stored, when it built the index.
+    pub history_commits: Option<u32>,
 }
 
 /// `basemind embed-worker`: pay what the scans of `root` left owed. `None` when another worker of
@@ -331,7 +349,24 @@ pub fn run(root: &Path, config: &Config) -> anyhow::Result<Option<WorkerReport>>
     if super::rescan::daemon_is_up() {
         return via_daemon(root).map(Some);
     }
-    run_local(root, config, crate::retrieval_wiring::backend()).map(Some)
+    let asks = Asks::of(root);
+    let before = history::run(root, &asks);
+    if before == history::Phase::Stopped {
+        return Ok(Some(WorkerReport {
+            stopped: true,
+            ..WorkerReport::default()
+        }));
+    }
+    let mut report = run_local(root, config, crate::retrieval_wiring::backend())?;
+    // A scan may have handed a build to this run while it embedded.
+    let after = if report.stopped {
+        history::Phase::NotOwed
+    } else {
+        history::run(root, &asks)
+    };
+    report.stopped |= after == history::Phase::Stopped;
+    report.history_commits = before.commits().or(after.commits());
+    Ok(Some(report))
 }
 
 /// Forward the whole pass to the daemon, the workspace's writer: one working-tree rescan that
@@ -482,19 +517,27 @@ fn owed_documents(store: &Store) -> usize {
 /// Open the working view for the worker. Waits while a writer asks for the lock or a one-shot
 /// command holds it; `None` once a long-lived writer holds it, or after [`CONTENDED_GIVE_UP`].
 fn open_writer(root: &Path, asks: &Asks) -> anyhow::Result<Option<Store>> {
+    take_writer(asks, || {
+        Store::open_with_holder(root, VIEW_WORKING, LockHolder::EmbedWorker)
+    })
+    .context("open the store for the embedding worker")
+}
+
+/// `open` the store or its lock as the worker, as [`open_writer`] waits for it.
+fn take_writer<T>(asks: &Asks, open: impl Fn() -> Result<T, StoreError>) -> Result<Option<T>, StoreError> {
     let started = Instant::now();
     loop {
         asks.wait_while_asked();
-        match Store::open_with_holder(root, VIEW_WORKING, LockHolder::EmbedWorker) {
-            Ok(store) => return Ok(Some(store)),
+        match open() {
+            Ok(held) => return Ok(Some(held)),
             Err(error) if error.is_lock_contention() => {
                 if held_by_long_lived_writer(&asks.workspace) || started.elapsed() >= CONTENDED_GIVE_UP {
-                    tracing::info!(%error, "the store is held by another writer; leaving the embedding to it");
+                    tracing::info!(%error, "the store is held by another writer; leaving the background pass to it");
                     return Ok(None);
                 }
                 std::thread::sleep(CONTENDED_RETRY);
             }
-            Err(error) => return Err(anyhow::Error::new(error).context("open the store for the embedding worker")),
+            Err(error) => return Err(error),
         }
     }
 }
@@ -588,6 +631,9 @@ fn lower_priority() {
 
 #[cfg(not(unix))]
 fn lower_priority() {}
+
+#[path = "embed_worker_history.rs"]
+pub mod history;
 
 #[cfg(test)]
 #[path = "embed_worker_tests.rs"]

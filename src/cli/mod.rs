@@ -14,7 +14,8 @@
 //! - `spelling.rs` — a tool's usage refusal rewritten in the spelling of the command that was typed.
 //! - `help_json.rs` — `--help-json`, a command's arguments as JSON from its clap definition.
 //! - `help.rs` / `help_code.rs` — every command's long help (`--help`).
-//! - `embed_worker.rs` — `basemind embed-worker`, the background embedding pass a one-shot scan hands off to.
+//! - `embed_worker.rs` — `basemind embed-worker`, the background embedding pass a one-shot scan hands off to;
+//!   `embed_worker_history.rs` its git-history phase, the from-scratch build a scan no longer runs inline.
 
 pub mod admin;
 pub mod agent;

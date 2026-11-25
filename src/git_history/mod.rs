@@ -64,6 +64,7 @@ pub mod fts;
 pub mod fuzzy;
 pub mod keys;
 mod maintenance;
+pub mod progress;
 pub mod proto;
 pub mod reach;
 pub mod reader;
@@ -272,6 +273,9 @@ pub enum GitHistoryError {
         .head.as_deref().unwrap_or("the latest indexed tip")
     )]
     NoOrderedView { head: Option<String> },
+    /// A build or append was stopped by its [`builder::BuildControl`] before it finished.
+    #[error("the git-history build was stopped before it finished; the next sync rebuilds it")]
+    Cancelled,
 }
 
 /// Name prefix of a git-history directory set aside by [`discard_dir`] and not yet deleted.

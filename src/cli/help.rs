@@ -25,9 +25,12 @@ When to use: building the index for the first time, or a view of the staging are
 or of one revision (`--rev`).
 
 Returns: one summary line (files scanned, updated, reused, unchanged, failed, skipped, removed),
-then the git-history index build. A working-tree scan does not embed: an `embeddings: pending`
+then the git-history index sync. A working-tree scan does not embed: an `embeddings: pending`
 line counts what a background pass (the daemon, else a detached `embed-worker` process) embeds
-next. With a daemon running, a working-tree scan is forwarded to it; a scan never starts a daemon.
+next. Nor does it build the git-history index from scratch: a `git-history: building in the
+background` line counts the commits that pass indexes (history tools walk git until it is done);
+an append of new commits runs before the scan returns. With a daemon running, a working-tree scan
+is forwarded to it; a scan never starts a daemon.
 A newer minor release rebuilds the index on its first scan.
 
 Example:

@@ -105,6 +105,12 @@ pub(crate) struct StatusResponse {
     /// finds the pass interrupted starts it again. Absent when no document owes vectors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embeddings: Option<crate::embed_progress::EmbeddingsStatus>,
+    /// The from-scratch git-history build a one-shot scan handed to the background worker: `done`
+    /// of `total` commits stored, and `eta_secs`, the seconds the running build has left at its own
+    /// rate. Until it finishes the history tools answer from the live walk. Absent when no build is
+    /// owed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_history_build: Option<crate::git_history::progress::HistoryBuildStatus>,
     pub total_size_bytes: u64,
     pub languages: BTreeMap<String, usize>,
     /// List-only files (`[scan] list_only`: lockfiles, archives, captures, fonts, data) counted per

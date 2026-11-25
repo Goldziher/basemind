@@ -92,6 +92,13 @@ documents already embedded are not embedded again. A one-shot `basemind scan` wo
 returns once the text is indexed, and with no daemon running it starts a detached background worker
 for the vectors, which the next scan resumes if it is killed.
 
+The git-history index follows the same rule. A one-shot scan that finds it unbuilt hands the
+from-scratch build, minutes on a deep history, to that worker, which builds it before embedding;
+`index_status` reports `git_history_build` (`done` of `total` commits, `eta_secs`) meanwhile, and
+the history tools walk git directly until it is done. A build cut off before it finishes is never
+read, and the next one starts again. Appending the commits made since the last sync stays part of
+the scan.
+
 ## Code versus documents
 
 The code map holds code only. Prose, data and configuration files (Markdown, reStructuredText,

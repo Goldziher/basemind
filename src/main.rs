@@ -89,9 +89,10 @@ enum Cmd {
     /// edits, or to rebuild a stale/empty index without starting the server.
     #[command(after_long_help = basemind::cli::help::RESCAN)]
     Rescan(RescanArgs),
-    /// Embed what one-shot scans left owed: documents indexed without vectors and, with
-    /// `[code_search] embed = true`, code chunks. `basemind scan` starts it in the background; run
-    /// it by hand to finish the embedding in the foreground. Exits at once when one already runs.
+    /// Pay what one-shot scans left owed: a from-scratch git-history build, documents indexed
+    /// without vectors and, with `[code_search] embed = true`, code chunks. `basemind scan` starts
+    /// it in the background; run it by hand to finish the work in the foreground. Exits at once
+    /// when one already runs.
     #[command(name = "embed-worker", hide = true)]
     EmbedWorker,
     /// Long-running watcher; keeps the code map current as files change.
@@ -567,7 +568,8 @@ fn bootstrap_grammars(out: &mut impl std::io::Write, verbosity: Verbosity) -> Re
     Ok(())
 }
 
-/// `basemind embed-worker`: pay the vectors the scans of `root` left owed, then exit.
+/// `basemind embed-worker`: pay the git-history build and the vectors the scans of `root` left
+/// owed, then exit.
 fn cmd_embed_worker(root: &std::path::Path, verbosity: Verbosity) -> Result<()> {
     let root = &guard_workspace_root(root)?;
     bootstrap_grammars(&mut std::io::sink(), verbosity)?;
@@ -581,7 +583,8 @@ fn cmd_embed_worker(root: &std::path::Path, verbosity: Verbosity) -> Result<()> 
         whole_pass = report.whole_pass,
         stopped = report.stopped,
         daemon = report.daemon,
-        "background embedding pass finished"
+        history_commits = ?report.history_commits,
+        "background pass finished"
     );
     Ok(())
 }

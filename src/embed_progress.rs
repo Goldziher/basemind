@@ -71,7 +71,12 @@ pub fn progress_path(cache_dir: &Path) -> PathBuf {
 
 /// Read the record in a workspace cache dir. `None` when there is none or it is unreadable.
 pub fn read(cache_dir: &Path) -> Option<EmbedRecord> {
-    let bytes = std::fs::read(progress_path(cache_dir)).ok()?;
+    read_record(&progress_path(cache_dir))
+}
+
+/// Read a record at `path`. `None` when there is none or it is unreadable.
+pub(crate) fn read_record(path: &Path) -> Option<EmbedRecord> {
+    let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -80,24 +85,27 @@ pub fn clear(cache_dir: &Path) {
     let _ = std::fs::remove_file(progress_path(cache_dir));
 }
 
-/// Write `record` via a sibling temp file plus a rename, so a reader never sees a half-written
-/// record. Best-effort: a scan never fails because its progress could not be written.
 fn write(cache_dir: &Path, record: &EmbedRecord) {
+    write_record(&progress_path(cache_dir), record);
+}
+
+/// Write `record` to `path` via a sibling temp file plus a rename, so a reader never sees a
+/// half-written record. Best-effort: a scan never fails because its progress could not be written.
+pub(crate) fn write_record(path: &Path, record: &EmbedRecord) {
     let Ok(bytes) = serde_json::to_vec(record) else {
         return;
     };
-    let path = progress_path(cache_dir);
     let temp = path.with_extension("json.tmp");
-    if std::fs::create_dir_all(cache_dir).is_ok()
+    if path.parent().is_none_or(|dir| std::fs::create_dir_all(dir).is_ok())
         && std::fs::write(&temp, bytes).is_ok()
-        && std::fs::rename(&temp, &path).is_err()
+        && std::fs::rename(&temp, path).is_err()
     {
         let _ = std::fs::remove_file(&temp);
     }
 }
 
-/// A record owned by this process, `done` of `total` documents embedded.
-fn record_of(total: usize, done: usize, started_unix_ms: Option<u64>) -> EmbedRecord {
+/// A record owned by this process, `done` of `total` units done.
+pub(crate) fn record_of(total: usize, done: usize, started_unix_ms: Option<u64>) -> EmbedRecord {
     EmbedRecord {
         total,
         done,
@@ -152,20 +160,22 @@ impl<'a> EmbedReporter<'a> {
 
 /// The pass's progress at `now_unix_ms`, or `None` when no embedding is owed.
 pub fn status(cache_dir: &Path, now_unix_ms: u64) -> Option<EmbeddingsStatus> {
-    let record = read(cache_dir)?;
+    let (done, total, eta_secs) = counts(&read(cache_dir)?, now_unix_ms)?;
+    Some(EmbeddingsStatus { done, total, eta_secs })
+}
+
+/// `done`, `total` and the seconds left at `now_unix_ms` of the pass `record` describes, the
+/// seconds only while its writer runs. `None` when the record counts nothing.
+pub(crate) fn counts(record: &EmbedRecord, now_unix_ms: u64) -> Option<(usize, usize, Option<u64>)> {
     let total = record.total.max(record.done);
     if total == 0 {
         return None;
     }
     let eta_secs = record
         .started_unix_ms
-        .filter(|_| writer_is_running(&record))
+        .filter(|_| writer_is_running(record))
         .and_then(|started| eta_from_rate(now_unix_ms.saturating_sub(started), record.done, total));
-    Some(EmbeddingsStatus {
-        done: record.done,
-        total,
-        eta_secs,
-    })
+    Some((record.done, total, eta_secs))
 }
 
 /// Whether the embedding was interrupted: a record exists and nothing is writing it. The condition
