@@ -24,7 +24,7 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  group: pages-${{ startsWith(github.ref, 'refs/tags/') && 'deploy' || github.ref }}
+  group: pages-${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && 'deploy' || github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 permissions:
@@ -66,7 +66,9 @@ jobs:
           TAG: ${{ github.ref_name }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
-          latest=$(git ls-remote --tags --refs --sort=-v:refname "$REPO_URL" 'v*' | head -n1 | sed 's|.*refs/tags/||')
+          tags=$(git ls-remote --tags --refs --sort=-v:refname "$REPO_URL" 'v*')
+          latest=$(printf '%s\n' "$tags" | head -n1 | sed 's|.*refs/tags/||')
+          if [ -z "$latest" ]; then echo "::error::the tag lookup returned no v* tags"; exit 1; fi
           if [ "$latest" = "$TAG" ]; then echo "deploy=true" >> "$GITHUB_OUTPUT"; else echo "::notice::$TAG is not the newest release tag ($latest); skipping the deploy"; fi
       - id: deployment
         if: steps.newest.outputs.deploy == 'true'
