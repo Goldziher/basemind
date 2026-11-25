@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/changelog_section.py` fails a release whose changelog section is over 60000 characters (`RELEASE_NOTES_CEILING`) and uses a hand-written `docs/release-notes/<version>.md` as the release body when one exists, so the release page stays a summary and the long list stays in CHANGELOG.md (#450)
 - `[resources] hard_footprint_percent` is an opt-in hard memory ceiling: past that percentage of `max_footprint_mb` the running scan cancels itself between chunks, the daemon sheds its idle hosted read stacks, and the index is left consistent and marked partial (#214)
 - `basemind code find --indexed true|false|any` lists indexed files, list-only files or both, as the `find_files` tool's `indexed` argument does
 - `code_grep` answers `skipped_reasons` beside `skipped_files`: how many files were skipped as `unavailable` (gone since the scan, or leading out of the repository), `too_large` (past `scan.max_file_bytes`) or `unreadable` (opening or reading failed) (#477)
@@ -38,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The hosted read stacks of a repository's linked worktrees keep one sha-keyed `commit_files` disk tier, under the main worktree's workspace cache, instead of a copy per worktree; an existing worktree's own `commit_files/` is no longer read and is dropped with its workspace (#282). The in-memory caches are not yet shared.
 - Removed the write-only per-connection `agent_id` from the MCP server state, and the stale `#[allow(dead_code)]` on the tool router, the embeddings keyspace and the workspace scope key; the scope key is now allowed dead only in a build without `code-search` and `memory` (#225)
 - The file map layout (`blob_layout`) stays `1` with the delta log: 0.34.0 reads and rewrites a map this release wrote instead of refusing it as a newer basemind's (so its blob sweep counts the blobs the base names instead of passing the view over and reaping them), and a base it rewrote is read here without the log, which no longer matches it (#468)
+- The file map layout (`blob_layout`) is `2`: an older basemind refuses a map that depends on `index.delta` as a newer one instead of reading the base without its log, and this one rebuilds a layout-1 map over the blobs already stored (#468)
 - The `git_log` `symbol` description says a body comparison ignores comments and whitespace, so a formatter-only rewrite that `git log -L` lists is not reported; `hash_mode` on `symbol_history` is unchanged (#480)
 - Every `limit` argument's description states its maximum, so no limit is capped silently (#261)
 - The JS/TS resolver reads each `tsconfig.json` and `package.json` from disk once per stitch instead of once per importing file; the files are still recorded as probes for every importer (#315). Parsing is not yet shared across importers.
@@ -47,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The blob store shards each namespace after `v34` into 256 buckets by the first two hex digits of the hash, and a file-view build no longer stats every blob; the `v34` namespace stays flat, because 0.34.0 reads it and looks for flat names only, and a blob found in the other layout of a namespace moves into place on first read, no rescan needed (#285)
+- The blob store shards each namespace into 256 buckets by the first two hex digits of the hash, and a file-view build no longer stats every blob; flat blobs migrate on first read, no rescan needed (#285)
 - The fast first scan now tracks documents whose embeddings are still to come, so they are searchable by text as soon as it ends; the background pass embeds them, reports `embeddings {done, total, eta_secs}` in `index_status`, makes `docs_search` carry a notice while vectors are pending, and a restarted background server resumes it in batches that leave the index readable between them (#454; a one-shot command does not).
 
 ### Added
