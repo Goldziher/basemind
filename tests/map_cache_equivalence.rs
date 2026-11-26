@@ -208,26 +208,17 @@ async fn collect_responses(root: &Path) -> Vec<Value> {
     await_steady_state(&service).await;
     let mut out = Vec::new();
     for (tool, args) in tool_matrix() {
-        // A catch-up scan the server starts on a slow machine holds the writer lock; a read answers
-        // "busy" until it yields, so retry that one refusal rather than the whole equivalence.
-        let started = std::time::Instant::now();
-        let result = loop {
-            let result = service
-                .call_tool(call_params(tool, args.clone()))
-                .await
-                .unwrap_or_else(|e| panic!("call {tool} {args}: {e}"));
-            let busy = result.is_error == Some(true) && text_of(&result).contains("holds this workspace's index");
-            if !busy || started.elapsed() > std::time::Duration::from_secs(120) {
-                break result;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        };
+        let result = service
+            .call_tool(call_params(tool, args.clone()))
+            .await
+            .unwrap_or_else(|e| panic!("call {tool} {args}: {e}"));
         assert_ne!(result.is_error, Some(true), "call {tool} {args}: {}", text_of(&result));
         let mut parsed: Value = basemind::wire::decode(&text_of(&result)).unwrap_or(Value::Null);
         scrub(&mut parsed);
         out.push(parsed);
     }
     service.cancel().await.ok();
+    wait_for_writer_lock(root).await;
     out
 }
 
@@ -319,4 +310,28 @@ async fn tool_output_is_identical_bounded_and_unbounded() {
             .any(|v| v.get("total").and_then(Value::as_u64).unwrap_or(0) > 0),
         "the fixture must actually produce hits, or the comparison is vacuous"
     );
+}
+
+/// Block until the server just cancelled has released the workspace's writer lock.
+///
+/// Cancelling the client only closes the duplex; the server's watcher, cache warm and GC tasks drop
+/// their handle on the store later. A second server opened meanwhile gets a read-only store with no
+/// index handle for its whole life, so wait for the lock before the next one opens.
+async fn wait_for_writer_lock(root: &Path) {
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        loop {
+            match basemind::store::Store::open(&root, basemind::store::VIEW_WORKING) {
+                Ok(store) => return drop(store),
+                Err(e) => assert!(
+                    started.elapsed() < std::time::Duration::from_secs(120),
+                    "the first server never released the writer lock: {e}"
+                ),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    })
+    .await
+    .expect("lock wait thread");
 }
