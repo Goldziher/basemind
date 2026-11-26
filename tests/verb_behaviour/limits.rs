@@ -3,9 +3,9 @@
 
 use serde_json::{Value, json};
 
-use super::{call, started};
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 use super::started_with;
+use super::{call, started};
 
 /// The largest `limit` any of these tools honours.
 const LIMIT_MAX: u64 = 1000;

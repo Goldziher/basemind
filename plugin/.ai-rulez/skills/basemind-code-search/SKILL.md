@@ -200,7 +200,7 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
   `budgeted` means the token budget trimmed it. `truncated` with `truncated_reason` marks a cut you
   did not ask for, with `omitted` counting what was left out where it is known; the codes and
   what to do about each are listed under "Truncation reasons" below.
-- A `limit` above its maximum is capped; each argument's description states both. `find_files` sets `limit_clamped`.
+- A `limit` above its maximum is capped (1000 rows; `find_files` 5000) and the answer sets `limit_clamped: true`, so a page shorter than asked is never a silent cap: ask for `limit` at or below the maximum and follow `next_cursor`. `code_outline`, `code_symbols`, `code_grep`, `code_refs` and a `memory_search` listing report it as `find_files` does; the field is absent when the `limit` was kept.
 - **Cursors are bound to their query.** A cursor continues only the call that returned it. Passed
   to another query, or used after a rescan or a HEAD move, the call is an error: repeat it without
   `cursor`. No tool answers a stale cursor with an empty page.
@@ -235,6 +235,7 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 - `path_cap`, `git_diff`: Status list cut (`omitted`): pass a directory `path` ending in `/`.
 - `span_limit`, `git_log`: Follow `next_cursor`, an empty page included, until it is absent.
 - `unindexed_scan`, `git_log`: No history index, newest commits only: wait for it (`index_status`), repeat.
+- `commit_cap`, `git_hotspots`: The window holds more commits than the walk reads: narrow `since`.
 - `shallow_clone`, `git_log`, `git_blame`: An absent commit is inconclusive: `git fetch --unshallow`.
 <!-- /manual:paging -->
 

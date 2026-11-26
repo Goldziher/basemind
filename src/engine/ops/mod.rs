@@ -20,13 +20,19 @@ mod search_limit_tests {
 
     #[test]
     fn a_limit_above_the_maximum_is_applied_as_the_maximum_and_flagged() {
-        assert_eq!(search_limit(Some(SEARCH_LIMIT_MAX + 1), SEARCH_LIMIT_DEFAULT), (1000, true));
+        assert_eq!(
+            search_limit(Some(SEARCH_LIMIT_MAX + 1), SEARCH_LIMIT_DEFAULT),
+            (1000, true)
+        );
         assert_eq!(search_limit(Some(u32::MAX), SEARCH_LIMIT_DEFAULT), (1000, true));
     }
 
     #[test]
     fn a_limit_at_or_below_the_maximum_is_kept_and_not_flagged() {
-        assert_eq!(search_limit(Some(SEARCH_LIMIT_MAX), SEARCH_LIMIT_DEFAULT), (1000, false));
+        assert_eq!(
+            search_limit(Some(SEARCH_LIMIT_MAX), SEARCH_LIMIT_DEFAULT),
+            (1000, false)
+        );
         assert_eq!(search_limit(Some(7), SEARCH_LIMIT_DEFAULT), (7, false));
     }
 
