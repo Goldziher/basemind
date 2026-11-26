@@ -881,6 +881,59 @@ fn no_module_reaches_a_higher_layer() {
     );
 }
 
+/// Files under `src/cli` still naming `src/mcp`, as `"<file> -> mcp"`: the CLI is an adapter of the
+/// engine beside the MCP server and must not import it (issue #160, the crate split of ADR-0023).
+/// `context.rs` builds the one-shot `BasemindServer` whose `*_call` bodies run the verb tools (cursor
+/// binding, telemetry rows and the wire encoding live in `src/mcp`, tied to rmcp); `admin.rs` runs
+/// the `admin telemetry` summary, whose params and body sit in `src/mcp`. Remove an entry when its
+/// last edge is cut.
+const CLI_MCP_EDGES: &[&str] = &["src/cli/admin.rs -> mcp", "src/cli/context.rs -> mcp"];
+
+/// The files under `src/cli` that name a path through `src/mcp`, with re-exports followed.
+fn cli_mcp_edges(root: &Path, modules: &[Module]) -> BTreeSet<String> {
+    let known: BTreeSet<Vec<String>> = modules.iter().map(|m| m.path.clone()).collect();
+    let exports = exports(modules);
+    let mut found = BTreeSet::new();
+    for module in modules.iter().filter(|m| m.path.first().map(String::as_str) == Some("cli")) {
+        let mut collector = Collector {
+            test: module.test,
+            refs: Vec::new(),
+        };
+        for item in &module.items {
+            collector.visit_item(item);
+        }
+        let file = repo_relative(root, &module.file);
+        for raw in collector.refs {
+            let Some(absolute) = absolutize(module, &raw.segments) else {
+                continue;
+            };
+            let through_mcp = modules_passed(&known, &exports, absolute)
+                .iter()
+                .any(|target| target.first().map(String::as_str) == Some("mcp"));
+            if through_mcp {
+                found.insert(format!("{file} -> mcp"));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn the_cli_does_not_import_the_mcp_adapter() {
+    let root = manifest_dir();
+    let (modules, _) = load_modules(&root);
+    let found = cli_mcp_edges(&root, &modules);
+    let known: BTreeSet<String> = CLI_MCP_EDGES.iter().map(|s| (*s).to_string()).collect();
+
+    let new: Vec<&String> = found.difference(&known).collect();
+    let cut: Vec<&String> = known.difference(&found).collect();
+    assert!(
+        new.is_empty() && cut.is_empty(),
+        "src/cli names src/mcp differently from CLI_MCP_EDGES.\nnew (go through src/engine, #160): {new:#?}\n\
+         no longer found (remove from CLI_MCP_EDGES): {cut:#?}",
+    );
+}
+
 /// The analyzer must see each reference shape it claims to handle; a fixture crate proves it. Each
 /// core file below holds one shape, so each expected line proves that shape is seen.
 #[test]
