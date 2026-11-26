@@ -11,7 +11,7 @@ use super::matching::Matching;
 use crate::engine::MapCache;
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
-use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
+use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, search_limit};
 use crate::engine::types::LifecycleNotice;
 use crate::engine::types::refs::{FindImplementationsParams, FindImplementationsResponse, ImplementationHit};
 use crate::path::RelPath;
@@ -40,7 +40,7 @@ pub(crate) fn run_find_implementations(
     cache: &MapCache,
     notice: impl FnOnce() -> Option<LifecycleNotice>,
 ) -> Result<FindImplementationsResponse, EngineError> {
-    let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
+    let (limit, limit_clamped) = search_limit(params.limit, SEARCH_LIMIT_DEFAULT);
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
     let matching = Matching::from_substring(params.substring);
     let page = scan_impls_session(
@@ -80,6 +80,7 @@ pub(crate) fn run_find_implementations(
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(crate::engine::types::SCAN_CAP),
         budgeted,
+        limit_clamped,
         hits,
         next_cursor,
         notice: notice(),

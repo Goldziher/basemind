@@ -11,7 +11,7 @@ use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
 use crate::engine::files::not_indexed_in;
 use crate::engine::import_graph::{Coverage, Direction, ImportGraph, NodeId, Tiers, WalkLimits, import_graph};
-use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
+use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, search_limit};
 use crate::engine::types::refs::{CyclesResponse, GraphImportersResponse, ImportCycle};
 use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
@@ -54,8 +54,9 @@ impl GraphPage {
         Ok(usize::try_from(offset).unwrap_or(usize::MAX))
     }
 
-    fn limit(&self) -> usize {
-        self.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize
+    /// The page size and whether the requested `limit` was lowered to the maximum.
+    fn limit(&self) -> (usize, bool) {
+        search_limit(self.limit, SEARCH_LIMIT_DEFAULT)
     }
 }
 
@@ -94,10 +95,11 @@ pub(crate) fn run_graph_importers(
     let walk = target.map(|node| graph.walk(&[node], Direction::Importers, WalkLimits::new(depth), Tiers::RUNTIME));
     let reached = walk.as_ref().map_or(&[][..], |walk| walk.reached.as_slice());
     let total = reached.len();
+    let (limit, limit_clamped) = page.limit();
     let listed: Vec<(u8, NodeId)> = reached
         .iter()
         .skip(skip)
-        .take(page.limit())
+        .take(limit)
         .map(|reached| (reached.depth, reached.node))
         .collect();
     let budgeted = apply_budget(
@@ -128,6 +130,7 @@ pub(crate) fn run_graph_importers(
     Ok(GraphImportersResponse {
         total: next_cursor.is_some().then_some(total),
         budgeted: budgeted.budgeted,
+        limit_clamped,
         by_depth,
         in_cycle,
         deeper,
@@ -158,10 +161,11 @@ pub(crate) fn run_cycles(
     }
     components.sort_by_key(Vec::len);
     let total = components.len();
+    let (limit, limit_clamped) = page.limit();
     let cycles: Vec<ImportCycle> = components
         .iter()
         .skip(skip)
-        .take(page.limit())
+        .take(limit)
         .map(|members| cycle(&graph, members))
         .collect();
     let budgeted = apply_budget(cycles, page.max_tokens);
@@ -185,6 +189,7 @@ pub(crate) fn run_cycles(
     Ok(CyclesResponse {
         total,
         budgeted: budgeted.budgeted,
+        limit_clamped,
         cycles: budgeted.items,
         notes,
         coverage,

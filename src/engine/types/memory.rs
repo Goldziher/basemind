@@ -159,6 +159,9 @@ pub(crate) struct MemoryListResponse {
     /// `scan_cap` whenever `truncated` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
+    /// True when the requested `limit` exceeded the maximum of 1000 and was lowered to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_clamped: bool,
     pub entries: Vec<MemoryEntry>,
     /// Opaque cursor to pass back on the next call when more results are available.
     /// Stable across rescans.

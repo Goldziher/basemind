@@ -28,6 +28,8 @@ mod graph;
 mod grep;
 #[path = "verb_behaviour/history.rs"]
 mod history;
+#[path = "verb_behaviour/limits.rs"]
+mod limits;
 #[path = "verb_behaviour/outline.rs"]
 mod outline;
 #[path = "verb_behaviour/path_filter.rs"]

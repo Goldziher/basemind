@@ -39,6 +39,9 @@ pub(crate) struct OutlineResponse {
     /// True when the token budget dropped trailing symbols; page them with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// True when the requested `limit` exceeded the maximum of 1000 and was lowered to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_clamped: bool,
     /// The file changed since it was indexed, so this outline was extracted from the file as it is
     /// now; the other tools describe the indexed content until `index_rescan`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -373,6 +376,9 @@ pub(crate) struct SearchResponse {
     /// best-first; page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// True when the requested `limit` exceeded the maximum of 1000 and was lowered to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_clamped: bool,
     /// The matches, best first: `"<path>:<line>: <signature>"`.
     #[schemars(with = "Vec<String>")]
     pub results: Vec<SearchHitView>,
