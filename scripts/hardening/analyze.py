@@ -812,7 +812,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--idle-swing-mib",
         type=float,
         default=256.0,
-        help="MiB the daemon's memory may swing between its highest and lowest idle sample (default 256)",
+        help="MiB the daemon's memory may rise between an earlier and a later idle sample; falls are not judged (default 256)",
     )
     ap.add_argument(
         "--idle-settle", type=float, default=30.0, help="seconds at the start of idle not judged (default 30)"
