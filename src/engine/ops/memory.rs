@@ -5,10 +5,7 @@
 //! there, and never an empty result it would read as "nothing stored".
 
 use crate::engine::error::EngineError;
-use crate::engine::types::memory::{
-    MemoryClearParams, MemoryDeleteParams, MemoryExportParams, MemoryImportParams, MemorySaveParams,
-    MemorySearchToolParams,
-};
+use crate::engine::types::memory::{MemoryClearParams, MemoryDeleteParams, MemorySaveParams, MemorySearchToolParams};
 use crate::engine::workspace::Workspace;
 
 #[cfg(not(feature = "memory"))]
@@ -34,12 +31,18 @@ impl Workspace {
     }
 
     /// `basemind memory export` in a build without the memory store.
-    pub(crate) fn memory_export(&self, _p: MemoryExportParams) -> Result<(), EngineError> {
+    pub(crate) fn memory_export(
+        &self,
+        _p: crate::engine::types::memory::MemoryExportParams,
+    ) -> Result<(), EngineError> {
         Err(EngineError::feature_missing("memory export", "memory"))
     }
 
     /// `basemind memory import` in a build without the memory store.
-    pub(crate) fn memory_import(&self, _p: MemoryImportParams) -> Result<(), EngineError> {
+    pub(crate) fn memory_import(
+        &self,
+        _p: crate::engine::types::memory::MemoryImportParams,
+    ) -> Result<(), EngineError> {
         Err(EngineError::feature_missing("memory import", "memory"))
     }
 }
