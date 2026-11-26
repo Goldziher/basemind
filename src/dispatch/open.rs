@@ -4,9 +4,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use super::history_sync;
 #[cfg(feature = "memory")]
 use super::identity;
-use super::history_sync;
 use crate::engine::workspace::OpenOptions;
 
 /// The engine's open options for a host with the given switches, wired to this process's

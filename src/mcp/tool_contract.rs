@@ -16,8 +16,6 @@ use crate::engine::redaction::Redaction;
 /// `_meta` key that keeps a tool's schema loaded in hosts that defer MCP tools and load only names.
 pub(crate) const ALWAYS_LOAD_META_KEY: &str = "anthropic/alwaysLoad";
 
-pub(super) use crate::dispatch::kind_data;
-
 /// The `structuredContent` of an `isError` result of `kind`.
 pub(super) fn kind_structured(kind: ErrorKind) -> Value {
     json!({ ERROR_KEY: kind.code(), RETRYABLE_KEY: kind.retryable() })

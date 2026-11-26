@@ -16,8 +16,8 @@ use anyhow::{Context, Result};
 
 use crate::config::overrides::DocumentsCliOverrides;
 use crate::config::{self, Config};
-use crate::git::Repo;
 use crate::dispatch::LocalEngine;
+use crate::git::Repo;
 use crate::git_cache::GitCache;
 use crate::store::Store;
 
@@ -85,7 +85,12 @@ pub enum Forward {
 
 /// The backend for one CLI command: the daemon when it is up and `forward` allows it for `view`,
 /// else an in-process server.
-pub async fn build_tools(root: &Path, view: &str, documents: DocumentsCliOverrides, forward: Forward) -> Result<CliContext> {
+pub async fn build_tools(
+    root: &Path,
+    view: &str,
+    documents: DocumentsCliOverrides,
+    forward: Forward,
+) -> Result<CliContext> {
     let forwarded = match forward {
         Forward::Never => false,
         Forward::WorkingView => view == crate::store::VIEW_WORKING,
@@ -133,7 +138,14 @@ pub(crate) fn build_engine(root: &Path, view: &str, documents: DocumentsCliOverr
     let git_cache = Arc::new(GitCache::open(&basemind_dir, CLI_GIT_CACHE_MEM, false).context("open git cache")?);
     // ~keep Next to the daemon only a command that is not forwarded gets here: a view the daemon does
     // ~keep not host, or `admin telemetry` / `admin eval`. It reads the blobs and writes nothing.
-    Ok(LocalEngine::open(store, root.to_path_buf(), cfg, repo, git_cache, daemon))
+    Ok(LocalEngine::open(
+        store,
+        root.to_path_buf(),
+        cfg,
+        repo,
+        git_cache,
+        daemon,
+    ))
 }
 
 /// Load the resolved config, applying the document CLI override layer. Falls back

@@ -27,10 +27,10 @@ use super::agent_tools::{
     AgentSession, AgentThreadsParams, finish_agent_inbox, inbox_refusal, prepare_agent_inbox, run_agent_post,
     run_agent_threads,
 };
-use crate::dispatch::json_result;
 use super::replay::REPLAY_KEY_META;
 use super::strict::Strict;
 use crate::comms::v2::api::{CommsError, ReplayKey};
+use crate::dispatch::json_result;
 
 /// The replay key the relay stamped on this request, when it is one.
 fn replay_key(ctx: &RequestContext<RoleServer>) -> Option<ReplayKey> {

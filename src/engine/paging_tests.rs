@@ -173,19 +173,13 @@ fn a_cursor_continues_its_own_query_and_no_other() {
     page(outline("a.rs", Some(50), Some(cursor.clone()))).expect("same query, another limit");
 
     let error = page(outline("b.rs", Some(1), Some(cursor))).expect_err("foreign");
-    assert!(
-        error.to_string().contains("belongs to a different query"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("belongs to a different query"), "{error}");
 }
 
 #[test]
 fn an_unbound_cursor_is_refused() {
     let error = page(outline("a.rs", None, Some(Cursor("inner".into())))).expect_err("no binding");
-    assert!(
-        error.to_string().contains("belongs to a different query"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("belongs to a different query"), "{error}");
 }
 
 #[test]

@@ -145,8 +145,8 @@ where
 {
     let id = unbind_params(&mut params)?;
     let answer = body(params)?;
-    let value = serde_json::to_value(&answer)
-        .map_err(|error| EngineError::internal(format!("serialize response: {error}")))?;
+    let value =
+        serde_json::to_value(&answer).map_err(|error| EngineError::internal(format!("serialize response: {error}")))?;
     rebind(T::TOOL, value, id)
 }
 

@@ -8,10 +8,10 @@ use anyhow::{Result, anyhow};
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 
-use crate::engine::Workspace;
 use crate::dispatch::LocalEngine;
-use crate::mcp::params::parse_args;
+use crate::engine::Workspace;
 use crate::engine::savings::estimate_from_text;
+use crate::mcp::params::parse_args;
 use crate::mcp::tokens::count_tokens;
 
 use super::baseline::run_baseline;
@@ -33,22 +33,52 @@ async fn call(server: &LocalEngine, mode: EvalMode, args: Value) -> Result<Strin
         EvalMode::GitSearch | EvalMode::GitPath | EvalMode::GitSymbol => {
             server.op(parse_args(args).map_err(bad_args)?, Workspace::git_log).await
         }
-        EvalMode::Blame | EvalMode::BlameSymbol => server.op(parse_args(args).map_err(bad_args)?, Workspace::git_blame).await,
-        EvalMode::Diff | EvalMode::DiffStructural => server.op_unpaged(parse_args(args).map_err(bad_args)?, Workspace::git_diff).await,
+        EvalMode::Blame | EvalMode::BlameSymbol => {
+            server
+                .op(parse_args(args).map_err(bad_args)?, Workspace::git_blame)
+                .await
+        }
+        EvalMode::Diff | EvalMode::DiffStructural => {
+            server
+                .op_unpaged(parse_args(args).map_err(bad_args)?, Workspace::git_diff)
+                .await
+        }
         EvalMode::Docs => server.docs_search(parse_args(args).map_err(bad_args)?).await,
-        EvalMode::Symbols => server.op(parse_args(args).map_err(bad_args)?, Workspace::code_symbols).await,
-        EvalMode::Outline => server.op(parse_args(args).map_err(bad_args)?, Workspace::code_outline).await,
-        EvalMode::Read => server.op_unpaged(parse_args(args).map_err(bad_args)?, Workspace::code_read).await,
+        EvalMode::Symbols => {
+            server
+                .op(parse_args(args).map_err(bad_args)?, Workspace::code_symbols)
+                .await
+        }
+        EvalMode::Outline => {
+            server
+                .op(parse_args(args).map_err(bad_args)?, Workspace::code_outline)
+                .await
+        }
+        EvalMode::Read => {
+            server
+                .op_unpaged(parse_args(args).map_err(bad_args)?, Workspace::code_read)
+                .await
+        }
         EvalMode::References
         | EvalMode::Callers
         | EvalMode::Dependents
         | EvalMode::Implementations
         | EvalMode::Impact
-        | EvalMode::Cycles => server.op(parse_args(args).map_err(bad_args)?, Workspace::code_refs).await,
-        EvalMode::Grep | EvalMode::GrepChanged | EvalMode::ReadAround => {
-            server.op(parse_args(args).map_err(bad_args)?, Workspace::code_grep).await
+        | EvalMode::Cycles => {
+            server
+                .op(parse_args(args).map_err(bad_args)?, Workspace::code_refs)
+                .await
         }
-        EvalMode::Find | EvalMode::FindLarge => server.op(parse_args(args).map_err(bad_args)?, Workspace::find_files).await,
+        EvalMode::Grep | EvalMode::GrepChanged | EvalMode::ReadAround => {
+            server
+                .op(parse_args(args).map_err(bad_args)?, Workspace::code_grep)
+                .await
+        }
+        EvalMode::Find | EvalMode::FindLarge => {
+            server
+                .op(parse_args(args).map_err(bad_args)?, Workspace::find_files)
+                .await
+        }
         EvalMode::Explain => {
             let p = serde_json::from_value(args).map_err(|e| bad_args(e.to_string()))?;
             server.cli_op(p, Workspace::code_explain).await

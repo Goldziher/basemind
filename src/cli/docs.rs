@@ -83,9 +83,7 @@ pub(super) async fn search(tools: &CliContext, args: DocsSearchArgs, opts: &Emit
         per_doc: args.per_doc,
         context: args.context.then_some(true),
     };
-    let result = tools
-        .call("docs_search", p, async |s, p| s.docs_search(p).await)
-        .await;
+    let result = tools.call("docs_search", p, async |s, p| s.docs_search(p).await).await;
     let r = run_tool("docs_search", result)?;
     emit("docs_search", &r, opts, out)
 }

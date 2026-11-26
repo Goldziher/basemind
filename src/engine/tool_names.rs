@@ -14,7 +14,15 @@ pub const AGENT_TOOLS: &[&str] = &[AGENT_POST, AGENT_INBOX, AGENT_THREADS];
 
 /// The mode-dispatched tools the verb tools replaced (ADR-0018). None may be advertised.
 pub const RETIRED_TOOLS: &[&str] = &[
-    "code", "git", "memory", "admin", "graph", "web", "shell", "workspace", "agents",
+    "code",
+    "git",
+    "memory",
+    "admin",
+    "graph",
+    "web",
+    "shell",
+    "workspace",
+    "agents",
 ];
 
 /// The always-loaded verb tools that only read, in verb-tool declaration order. The MCP adapter

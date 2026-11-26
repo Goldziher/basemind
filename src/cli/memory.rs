@@ -137,7 +137,9 @@ pub async fn run(tools: &CliContext, cmd: MemoryCmd, opts: &Emit, out: &mut impl
             (
                 "memory_save",
                 tools
-                    .call("memory_save", p, async |s, p| s.op_unpaged(p, Workspace::memory_save).await)
+                    .call("memory_save", p, async |s, p| {
+                        s.op_unpaged(p, Workspace::memory_save).await
+                    })
                     .await,
             )
         }
@@ -201,7 +203,9 @@ pub async fn run(tools: &CliContext, cmd: MemoryCmd, opts: &Emit, out: &mut impl
             (
                 "memory_delete",
                 tools
-                    .call("memory_delete", p, async |s, p| s.cli_op(p, Workspace::memory_delete).await)
+                    .call("memory_delete", p, async |s, p| {
+                        s.cli_op(p, Workspace::memory_delete).await
+                    })
                     .await,
             )
         }
