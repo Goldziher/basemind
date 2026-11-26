@@ -447,7 +447,7 @@ pub struct ListCell<T> {
     tail: Handle<ListCell<T>>,
 }
 
-const EMPTY_LIST_HANDLE: NonZeroU32 = NonZeroU32::new(u32::MAX).unwrap();
+const EMPTY_LIST_HANDLE: NonZeroU32 = NonZeroU32::new(u32::MAX).expect("u32::MAX is non-zero");
 
 pub type ListArena<T> = Arena<ListCell<T>>;
 
@@ -646,7 +646,7 @@ where
             return;
         }
         self.ensure_reversal_available(arena);
-        self.cells = arena.get(self.cells).reversed.get().unwrap();
+        self.cells = arena.get(self.cells).reversed.get().expect("reversed list cell is set before iteration");
     }
 
     /// Ensures that the reversal of this list is available.  It can be useful to precalculate this

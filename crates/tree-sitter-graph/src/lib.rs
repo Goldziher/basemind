@@ -71,7 +71,7 @@ impl Identifier {
 
     pub fn into_string(mut self) -> String {
         Arc::make_mut(&mut self.0);
-        Arc::try_unwrap(self.0).unwrap()
+        Arc::try_unwrap(self.0).expect("no other reference to the shared value remains")
     }
 }
 

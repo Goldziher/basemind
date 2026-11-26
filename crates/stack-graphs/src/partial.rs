@@ -578,8 +578,8 @@ impl PartialSymbolStack {
 
         let mut head = Deque::empty();
         while lhs.contains_symbols() && rhs.contains_symbols() {
-            let mut lhs_front = lhs.pop_front(partials).unwrap();
-            let rhs_front = rhs.pop_front(partials).unwrap();
+            let mut lhs_front = lhs.pop_front(partials).expect("stack is non-empty at a unification step");
+            let rhs_front = rhs.pop_front(partials).expect("stack is non-empty at a unification step");
             lhs_front.unify(partials, rhs_front, scope_bindings)?;
             head.push_back(&mut partials.partial_symbol_stacks, lhs_front);
         }
@@ -625,13 +625,13 @@ impl PartialSymbolStack {
             _ => {}
         }
         if lhs.contains_symbols() {
-            let rhs_variable = rhs.variable.into_option().unwrap();
+            let rhs_variable = rhs.variable.into_option().expect("stack has a variable when its front is empty");
             symbol_bindings.add(partials, rhs_variable, lhs, scope_bindings)?;
             lhs.prepend(partials, head);
             return Ok(lhs);
         }
         if rhs.contains_symbols() {
-            let lhs_variable = lhs.variable.into_option().unwrap();
+            let lhs_variable = lhs.variable.into_option().expect("stack has a variable when its front is empty");
             symbol_bindings.add(partials, lhs_variable, rhs, scope_bindings)?;
             rhs.prepend(partials, head);
             return Ok(rhs);
@@ -888,8 +888,8 @@ impl PartialScopeStack {
         let original_rhs = rhs;
 
         while lhs.contains_scopes() && rhs.contains_scopes() {
-            let lhs_front = lhs.pop_front(partials).unwrap();
-            let rhs_front = rhs.pop_front(partials).unwrap();
+            let lhs_front = lhs.pop_front(partials).expect("stack is non-empty at a unification step");
+            let rhs_front = rhs.pop_front(partials).expect("stack is non-empty at a unification step");
             if lhs_front != rhs_front {
                 return Err(PathResolutionError::ScopeStackUnsatisfied);
             }
@@ -925,12 +925,12 @@ impl PartialScopeStack {
             _ => {}
         }
         if lhs.contains_scopes() {
-            let rhs_variable = rhs.variable.into_option().unwrap();
+            let rhs_variable = rhs.variable.into_option().expect("stack has a variable when its front is empty");
             bindings.add(partials, rhs_variable, lhs)?;
             return Ok(self);
         }
         if rhs.contains_scopes() {
-            let lhs_variable = lhs.variable.into_option().unwrap();
+            let lhs_variable = lhs.variable.into_option().expect("stack has a variable when its front is empty");
             bindings.add(partials, lhs_variable, rhs)?;
             return Ok(original_rhs);
         }
@@ -1777,31 +1777,31 @@ impl PartialPath {
                     PartialSymbolStack::empty(),
                     &mut scope_bindings,
                 )
-                .unwrap();
+                .expect("binding is consistent with the unified stacks");
         }
         if let Some(scope_variable) = self.scope_stack_precondition.variable() {
             scope_bindings
                 .add(partials, scope_variable, PartialScopeStack::empty())
-                .unwrap();
+                .expect("binding is consistent with the unified stacks");
         }
 
         self.symbol_stack_precondition = self
             .symbol_stack_precondition
             .apply_partial_bindings(partials, &symbol_bindings, &scope_bindings)
-            .unwrap();
+            .expect("binding is consistent with the unified stacks");
         self.scope_stack_precondition = self
             .scope_stack_precondition
             .apply_partial_bindings(partials, &scope_bindings)
-            .unwrap();
+            .expect("binding is consistent with the unified stacks");
 
         self.symbol_stack_postcondition = self
             .symbol_stack_postcondition
             .apply_partial_bindings(partials, &symbol_bindings, &scope_bindings)
-            .unwrap();
+            .expect("binding is consistent with the unified stacks");
         self.scope_stack_postcondition = self
             .scope_stack_postcondition
             .apply_partial_bindings(partials, &scope_bindings)
-            .unwrap();
+            .expect("binding is consistent with the unified stacks");
     }
 
     /// Attempts to append an edge to the end of a partial path.  If the edge is not a valid
@@ -1856,7 +1856,7 @@ impl PartialPath {
         if !self.scope_stack_postcondition.contains_scopes() {
             return Ok(());
         }
-        let top_scope = self.scope_stack_postcondition.pop_front(partials).unwrap();
+        let top_scope = self.scope_stack_postcondition.pop_front(partials).expect("postcondition scope stack is non-empty");
         self.edges.push_back(
             partials,
             PartialPathEdge {
@@ -1891,16 +1891,16 @@ impl PartialPath {
 
         let symbol_bindings = PartialSymbolStackBindings::new();
         let mut scope_bindings = PartialScopeStackBindings::new();
-        scope_bindings.add(partials, scope_variable, scope_stack).unwrap();
+        scope_bindings.add(partials, scope_variable, scope_stack).expect("binding is consistent with the unified stacks");
 
         self.symbol_stack_precondition = self
             .symbol_stack_precondition
             .apply_partial_bindings(partials, &symbol_bindings, &scope_bindings)
-            .unwrap();
+            .expect("binding is consistent with the unified stacks");
         self.scope_stack_precondition = self
             .scope_stack_precondition
             .apply_partial_bindings(partials, &scope_bindings)
-            .unwrap();
+            .expect("binding is consistent with the unified stacks");
 
         self.end_node = node;
 
@@ -2033,7 +2033,7 @@ impl Node {
                 if symbol.symbol != node.symbol {
                     return Err(PathResolutionError::IncorrectPoppedSymbol);
                 }
-                *scope_stack = symbol.scopes.into_option().unwrap();
+                *scope_stack = symbol.scopes.into_option().expect("symbol carries a scope stack");
             }
             Node::PopSymbol(node) => {
                 let symbol = symbol_stack

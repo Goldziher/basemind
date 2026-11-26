@@ -118,7 +118,7 @@ impl ast::File {
         F: FnMut(&ast::Stanza, &QueryMatch<'_, 'tree>) -> Result<(), E>,
     {
         let mut cursor = QueryCursor::new();
-        let query = self.query.as_ref().unwrap();
+        let query = self.query.as_ref().expect("query is parsed before execution");
         let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
         while let Some(mat) = matches.next() {
             let stanza = &self.stanzas[mat.pattern_index];

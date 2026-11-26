@@ -918,7 +918,7 @@ impl<'a> Builder<'a> {
         for source_ref in self.graph.iter_nodes() {
             let source = &self.graph[source_ref];
             let source_node_id = self.node_id_for_graph_node(source_ref);
-            let source_handle = self.stack_graph.node_for_id(source_node_id).unwrap();
+            let source_handle = self.stack_graph.node_for_id(source_node_id).expect("node id was registered before use");
             for (sink_ref, edge) in source.iter_edges() {
                 cancellation_flag.check("loading graph edges")?;
                 let precedence = match edge.attributes.get(PRECEDENCE_ATTR) {
@@ -926,7 +926,7 @@ impl<'a> Builder<'a> {
                     None => 0,
                 };
                 let sink_node_id = self.node_id_for_graph_node(sink_ref);
-                let sink_handle = self.stack_graph.node_for_id(sink_node_id).unwrap();
+                let sink_handle = self.stack_graph.node_for_id(sink_node_id).expect("node id was registered before use");
                 self.stack_graph.add_edge(source_handle, sink_handle, precedence);
                 Self::load_edge_debug_info(self.stack_graph, source_handle, sink_handle, edge)?;
             }
@@ -960,7 +960,7 @@ impl<'a> Builder<'a> {
 
     fn verify_node(&self, node: Handle<Node>) -> Result<(), BuildError> {
         if let Node::PushScopedSymbol(node) = &self.stack_graph[node] {
-            let scope = &self.stack_graph[self.stack_graph.node_for_id(node.scope).unwrap()];
+            let scope = &self.stack_graph[self.stack_graph.node_for_id(node.scope).expect("node id was registered before use")];
             if !scope.is_exported_scope() {
                 return Err(BuildError::SymbolScopeError(
                     format!("{}", node.display(self.stack_graph)),
@@ -1000,7 +1000,7 @@ impl<'a> Builder<'a> {
 
     fn load_drop_scopes(&mut self, node_ref: GraphNodeRef) -> Handle<Node> {
         let id = self.node_id_for_graph_node(node_ref);
-        self.stack_graph.add_drop_scopes_node(id).unwrap()
+        self.stack_graph.add_drop_scopes_node(id).expect("node id is fresh when added")
     }
 
     fn load_pop_scoped_symbol(&mut self, node_ref: GraphNodeRef) -> Result<Handle<Node>, BuildError> {
@@ -1016,7 +1016,7 @@ impl<'a> Builder<'a> {
         let node_handle = self
             .stack_graph
             .add_pop_scoped_symbol_node(id, symbol, is_definition)
-            .unwrap();
+            .expect("node id is fresh when added");
         if is_definition {
             self.load_definiens_info(node_ref, node_handle)?;
         }
@@ -1033,7 +1033,7 @@ impl<'a> Builder<'a> {
         let id = self.node_id_for_graph_node(node_ref);
         let is_definition = self.load_flag(node, IS_DEFINITION_ATTR)?;
         self.verify_attributes(node, POP_SYMBOL_TYPE, &POP_SYMBOL_ATTRS);
-        let node_handle = self.stack_graph.add_pop_symbol_node(id, symbol, is_definition).unwrap();
+        let node_handle = self.stack_graph.add_pop_symbol_node(id, symbol, is_definition).expect("node id is fresh when added");
         if is_definition {
             self.load_definiens_info(node_ref, node_handle)?;
         }
@@ -1057,7 +1057,7 @@ impl<'a> Builder<'a> {
         Ok(self
             .stack_graph
             .add_push_scoped_symbol_node(id, symbol, scope, is_reference)
-            .unwrap())
+            .expect("node id is fresh when added"))
     }
 
     fn load_push_symbol(&mut self, node_ref: GraphNodeRef) -> Result<Handle<Node>, BuildError> {
@@ -1070,7 +1070,7 @@ impl<'a> Builder<'a> {
         let id = self.node_id_for_graph_node(node_ref);
         let is_reference = self.load_flag(node, IS_REFERENCE_ATTR)?;
         self.verify_attributes(node, PUSH_SYMBOL_TYPE, &PUSH_SYMBOL_ATTRS);
-        Ok(self.stack_graph.add_push_symbol_node(id, symbol, is_reference).unwrap())
+        Ok(self.stack_graph.add_push_symbol_node(id, symbol, is_reference).expect("node id is fresh when added"))
     }
 
     fn load_scope(&mut self, node_ref: GraphNodeRef) -> Result<Handle<Node>, BuildError> {
@@ -1078,7 +1078,7 @@ impl<'a> Builder<'a> {
         let id = self.node_id_for_graph_node(node_ref);
         let is_exported = self.load_flag(node, IS_EXPORTED_ATTR)? || self.load_flag(node, IS_ENDPOINT_ATTR)?;
         self.verify_attributes(node, SCOPE_TYPE, &SCOPE_ATTRS);
-        Ok(self.stack_graph.add_scope_node(id, is_exported).unwrap())
+        Ok(self.stack_graph.add_scope_node(id, is_exported).expect("node id is fresh when added"))
     }
 
     fn load_symbol(&self, value: &Value) -> Result<String, BuildError> {

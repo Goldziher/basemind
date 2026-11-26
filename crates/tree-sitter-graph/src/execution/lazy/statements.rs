@@ -154,7 +154,7 @@ impl LazyAddGraphNodeAttribute {
                     "{} on {}",
                     attribute.name, node,
                 )))
-                .with_context(|| (prev_debug_info.unwrap().into(), self.debug_info.clone().into()).into());
+                .with_context(|| (prev_debug_info.expect("previous debug info is set when a context is requested").into(), self.debug_info.clone().into()).into());
             };
         }
         Ok(())
@@ -264,7 +264,7 @@ impl LazyAddEdgeAttribute {
                     "{} on edge ({} -> {})",
                     attribute.name, source, sink,
                 )))
-                .with_context(|| (prev_debug_info.unwrap().into(), self.debug_info.clone().into()).into());
+                .with_context(|| (prev_debug_info.expect("previous debug info is set when a context is requested").into(), self.debug_info.clone().into()).into());
             }
         }
         Ok(())

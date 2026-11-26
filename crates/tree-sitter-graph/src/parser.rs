@@ -234,7 +234,7 @@ impl<'a> Parser<'a> {
                     return;
                 }
             }
-            self.skip().unwrap();
+            self.skip().expect("a character was peeked before skipping it");
         }
     }
 
@@ -243,7 +243,7 @@ impl<'a> Parser<'a> {
             if !f(ch) {
                 return;
             }
-            self.skip().unwrap();
+            self.skip().expect("a character was peeked before skipping it");
         }
     }
 
@@ -284,7 +284,7 @@ impl<'a> Parser<'a> {
             }
             self.consume_whitespace();
         }
-        file.query = Some(Query::new(&file.language, &self.query_source).unwrap());
+        file.query = Some(Query::new(&file.language, &self.query_source).expect("query source was already validated"));
         Ok(())
     }
 
@@ -328,7 +328,7 @@ impl<'a> Parser<'a> {
     fn parse_quantifier(&mut self) -> Result<CaptureQuantifier, ParseError> {
         let mut quantifier = One;
         if let Some(c) = self.try_peek() {
-            self.skip().unwrap();
+            self.skip().expect("a character was peeked before skipping it");
             if c == '?' {
                 quantifier = ZeroOrOne;
             } else if c == '*' {
@@ -420,7 +420,7 @@ impl<'a> Parser<'a> {
                     _ => {}
                 }
             }
-            self.skip().unwrap();
+            self.skip().expect("a character was peeked before skipping it");
         }
     }
 
@@ -740,7 +740,7 @@ impl<'a> Parser<'a> {
         };
         self.consume_whitespace();
         while self.try_peek() == Some('.') {
-            self.skip().unwrap();
+            self.skip().expect("a character was peeked before skipping it");
             self.consume_whitespace();
             let location = self.location;
             let scope = Box::new(expression);
@@ -880,7 +880,7 @@ impl<'a> Parser<'a> {
         let start = self.offset;
         self.consume_while(|ch| ch.is_ascii_digit());
         let end = self.offset;
-        let value = self.source[start..end].parse::<u32>().unwrap();
+        let value = self.source[start..end].parse::<u32>().expect("lexed digits parse as u32");
         Ok(ast::IntegerConstant { value }.into())
     }
 
@@ -908,7 +908,7 @@ impl<'a> Parser<'a> {
         if start == end {
             return Err(ParseError::InvalidRegexCapture(regex_capture_location));
         }
-        let match_index = self.source[start..end].parse::<usize>().unwrap();
+        let match_index = self.source[start..end].parse::<usize>().expect("lexed digits parse as usize");
         Ok(ast::RegexCapture { match_index })
     }
 
@@ -916,7 +916,7 @@ impl<'a> Parser<'a> {
         let mut attributes = vec![self.parse_attribute()?];
         self.consume_whitespace();
         while self.try_peek() == Some(',') {
-            self.skip().unwrap();
+            self.skip().expect("a character was peeked before skipping it");
             self.consume_whitespace();
             attributes.push(self.parse_attribute()?);
             self.consume_whitespace();

@@ -1097,7 +1097,7 @@ impl NodeIDHandles {
     }
 
     fn try_handle_for_id(&self, node_id: NodeID) -> Option<Handle<Node>> {
-        let file_entry = self.files.get(node_id.file().unwrap())?;
+        let file_entry = self.files.get(node_id.file().expect("node belongs to a file"))?;
         let node_index = node_id.local_id as usize;
         if node_index >= file_entry.len() {
             return None;
@@ -1106,7 +1106,7 @@ impl NodeIDHandles {
     }
 
     fn handle_for_id(&mut self, node_id: NodeID) -> Option<Handle<Node>> {
-        let file_entry = &mut self.files[node_id.file().unwrap()];
+        let file_entry = &mut self.files[node_id.file().expect("node belongs to a file")];
         let node_index = node_id.local_id as usize;
         if node_index >= file_entry.len() {
             file_entry.resize(node_index + 1, None);
@@ -1115,7 +1115,7 @@ impl NodeIDHandles {
     }
 
     fn set_handle_for_id(&mut self, node_id: NodeID, handle: Handle<Node>) {
-        let file_entry = &mut self.files[node_id.file().unwrap()];
+        let file_entry = &mut self.files[node_id.file().expect("node belongs to a file")];
         let node_index = node_id.local_id as usize;
         file_entry[node_index] = Some(handle);
     }
@@ -1409,7 +1409,7 @@ impl StackGraph {
                 NodeID::jump_to()
             } else {
                 NodeID::new_in_file(
-                    files[&other_node_id.file.into_option().unwrap()],
+                    files[&other_node_id.file.into_option().expect("node file is registered in the graph")],
                     other_node_id.local_id,
                 )
             }
@@ -1500,7 +1500,7 @@ impl StackGraph {
                     }
                     .into(),
                 };
-                let node = self.add_node(value.id(), value).unwrap();
+                let node = self.add_node(value.id(), value).expect("copied node id is not already present");
                 nodes.insert(other_node, node);
                 if let Some(source_info) = other.source_info(other_node) {
                     *self.source_info_mut(node) = SourceInfo {
