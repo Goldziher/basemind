@@ -76,6 +76,7 @@ agent-client-protocol = "5.5.1"
 
 [workspace.lints.clippy]
 all = "warn"
+unwrap_used = "deny"
 
 [lib]
 name = "basemind"
