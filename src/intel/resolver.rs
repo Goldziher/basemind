@@ -142,19 +142,14 @@ impl SpecifierResolver {
         }
     }
 
-    /// Start resolving the importer `importer_rel`. The JS resolver drops its file-system cache
-    /// here, once per directory of importers, so that every path it consults reaches the probe
-    /// recorder again instead of being served from a cache entry an earlier importer filled; the
-    /// path-arithmetic resolvers have no cache. Call once per importer, in path order, before its
-    /// first [`resolve`](Self::resolve).
-    #[cfg_attr(
-        not(feature = "code-intel-js"),
-        allow(unused_variables, reason = "only the JS resolver keeps a cache")
-    )]
-    pub(crate) fn begin_importer(&self, importer_rel: &str) {
+    /// Start resolving a new importer. The JS resolver drops its file-system cache here so that
+    /// every path it consults for this importer reaches the probe recorder again instead of being
+    /// served from a cache entry an earlier importer filled; the path-arithmetic resolvers have no
+    /// cache. Call once per importer, before its first [`resolve`](Self::resolve).
+    pub(crate) fn begin_importer(&self) {
         match self {
             #[cfg(feature = "code-intel-js")]
-            Self::Js(resolver) => resolver.begin_importer(importer_rel),
+            Self::Js(resolver) => resolver.begin_importer(),
             #[cfg(feature = "code-intel-stack")]
             Self::Python(_) | Self::Java(_) => {}
         }
@@ -280,7 +275,7 @@ pub(crate) mod js {
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex, OnceLock};
 
-    use ahash::{AHashMap, AHashSet};
+    use ahash::AHashMap;
     use oxc_resolver::{
         FileMetadata, FileSystem, FileSystemOs, ResolveError, ResolveOptions, ResolverGeneric, TsconfigDiscovery,
     };
@@ -289,9 +284,6 @@ pub(crate) mod js {
     use super::{ProbeSet, to_repo_relative};
     use crate::intel::model::ImportEdge;
     use crate::path::RelPath;
-
-    /// Most importers that share one oxc cache window; see [`JsResolver::begin_importer`].
-    const WINDOW_IMPORTERS: usize = 64;
 
     /// Paths the file system was asked about, in call order. Shared between the resolver's
     /// [`RecordingFs`] and the [`JsResolver`] that drains it.
@@ -319,10 +311,9 @@ pub(crate) mod js {
     /// not logged: directories carry no state beyond the files in them, and those are logged.
     ///
     /// Reads are memoised for the life of the resolver. [`JsResolver::begin_importer`] empties oxc's
-    /// own cache at the start of each window of importers so their probes reach the log, which would
-    /// otherwise make each window re-read every `package.json` and `tsconfig` `extends` chain from
-    /// disk; the memo serves those bytes again while the path is still logged on every read, so
-    /// probes stay complete.
+    /// own cache for every importer so its probes reach the log, which would otherwise make each
+    /// importer re-read every `package.json` and `tsconfig` `extends` chain from disk; the memo
+    /// serves those bytes again while the path is still logged on every read, so probes stay complete.
     struct RecordingFs {
         inner: FileSystemOs,
         log: ProbeLog,
@@ -427,19 +418,6 @@ pub(crate) mod js {
         canonical_root: OnceLock<Option<PathBuf>>,
         /// The workspace packages, found on first use.
         workspace: OnceLock<Workspace>,
-        window: Mutex<Window>,
-    }
-
-    /// The importers sharing one oxc cache: oxc answers a path it has already seen from its cache
-    /// without asking the file system, so only the first importer to touch a path logs it. Every
-    /// importer of a window is therefore given the whole window's log so far, a superset of what it
-    /// consulted that errs toward re-resolving it.
-    #[derive(Default)]
-    struct Window {
-        /// The directory the window's importers are in.
-        dir: String,
-        importers: usize,
-        seen: AHashSet<PathBuf>,
     }
 
     impl JsResolver {
@@ -475,32 +453,23 @@ pub(crate) mod js {
                 log,
                 canonical_root: OnceLock::new(),
                 workspace: OnceLock::new(),
-                window: Mutex::default(),
             }
         }
 
-        /// Start resolving the importer `importer_rel`. oxc memoises every stat and parsed config, so
-        /// a second importer would hit the cache for the paths the first one consulted and its
-        /// probes would never reach the log. The cache is emptied only when the importer is in a
-        /// different directory from the last one, or after [`WINDOW_IMPORTERS`] importers: the
-        /// importers of a directory share the `tsconfig.json` and `package.json` files above it, which
-        /// are then parsed once for all of them, and each is given the log of the whole window (see
-        /// [`Window`]). Config bytes stay memoised in [`RecordingFs`], so each config file is read from
-        /// disk once per resolver.
-        pub(crate) fn begin_importer(&self, importer_rel: &str) {
-            let dir = importer_rel.rsplit_once('/').map_or("", |(dir, _)| dir);
-            let Ok(mut window) = self.window.lock() else {
-                self.inner.clear_cache();
-                return;
-            };
-            if window.dir != dir || window.importers >= WINDOW_IMPORTERS {
-                self.inner.clear_cache();
-                drop(self.log.drain());
-                window.seen.clear();
-                window.importers = 0;
-                window.dir = dir.to_string();
-            }
-            window.importers += 1;
+        /// Forget everything oxc has cached and everything recorded so far. oxc memoises every stat
+        /// and parsed config, so without this a second importer would hit the cache for the paths
+        /// the first one consulted and its probes would never reach the log. Config bytes stay
+        /// memoised in [`RecordingFs`], so each config file is read from disk once per resolver.
+        ///
+        /// Invariant: an importer's probes are exactly the paths its own resolution consulted, a
+        /// function of that importer and the tree alone. The incremental re-stitch reaches an
+        /// importer only through its own probes, so a probe borrowed from another importer (one
+        /// that shared a cache with it) would outlive that importer's deletion or edit and leave rows
+        /// a full scan does not write: oxc's tsconfig walk starts at the importer itself, so `a.ts`
+        /// probes `a.ts/tsconfig.json`, a path no other importer depends on.
+        pub(crate) fn begin_importer(&self) {
+            self.inner.clear_cache();
+            drop(self.log.drain());
         }
 
         /// Resolve `import`'s specifier for the importing file `importer_rel` to a repo-relative
@@ -550,19 +519,14 @@ pub(crate) mod js {
             to_repo_relative(root, &hit?.full_path())
         }
 
-        /// Add the paths recorded in the current window that lie under the repo to `probes`. Paths
-        /// above the root (the ancestors oxc walks looking for a `package.json`) are not repo state
-        /// and are dropped.
+        /// Move the recorded paths that lie under the repo into `probes`. Paths above the root
+        /// (the ancestors oxc walks looking for a `package.json`) are not repo state and are dropped.
         fn drain_into(&self, root: &Path, probes: &mut ProbeSet) {
             let canonical = self
                 .canonical_root
                 .get_or_init(|| std::fs::canonicalize(root).ok())
                 .as_deref();
-            let Ok(mut window) = self.window.lock() else {
-                return;
-            };
-            window.seen.extend(self.log.drain());
-            for abs in &window.seen {
+            for abs in self.log.drain() {
                 let rel = abs
                     .strip_prefix(root)
                     .ok()
@@ -748,7 +712,7 @@ mod js_tests {
         write(tmp.path(), "util.js", "export const x = 1;\n");
         write(tmp.path(), "app.ts", "");
         let resolver = SpecifierResolver::for_language("typescript").unwrap();
-        resolver.begin_importer("app.ts");
+        resolver.begin_importer();
         let (hit, probes) = resolve(&resolver, tmp.path(), "app.ts", "./util");
         assert_eq!(
             hit.and_then(|r| r.as_str().map(str::to_string)),
@@ -770,7 +734,7 @@ mod js_tests {
         write(tmp.path(), "lib/thing.ts", "export const x = 1;\n");
         write(tmp.path(), "src/app.ts", "");
         let resolver = SpecifierResolver::for_language("typescript").unwrap();
-        resolver.begin_importer("src/app.ts");
+        resolver.begin_importer();
         let (hit, probes) = resolve(&resolver, tmp.path(), "src/app.ts", "@lib/thing");
         assert_eq!(
             hit.and_then(|r| r.as_str().map(str::to_string)),
@@ -792,12 +756,12 @@ mod js_tests {
         write(tmp.path(), "src/b.ts", "");
         let resolver = SpecifierResolver::for_language("typescript").unwrap();
 
-        resolver.begin_importer("src/a.ts");
+        resolver.begin_importer();
         let (first, _) = resolve(&resolver, tmp.path(), "src/a.ts", "@lib/thing");
         assert!(first.is_some());
 
         write(tmp.path(), "tsconfig.json", "{}");
-        resolver.begin_importer("src/b.ts");
+        resolver.begin_importer();
         let (second, probes) = resolve(&resolver, tmp.path(), "src/b.ts", "@lib/thing");
         assert_eq!(
             second.and_then(|r| r.as_str().map(str::to_string)),
@@ -807,45 +771,54 @@ mod js_tests {
         assert!(probes.contains("tsconfig.json"));
     }
 
-    /// oxc memoises every stat, so the second importer of a window would be served from its cache
-    /// and log nothing; it is given the window's log instead, so its probes stay complete.
+    /// oxc memoises every stat. Without `begin_importer` a second importer's probes would silently
+    /// shrink to what the first one left uncached; with it they are complete again.
     #[test]
-    fn a_second_importer_of_the_window_gets_the_whole_windows_probes() {
+    fn begin_importer_makes_a_second_importers_probes_complete() {
         let tmp = TempDir::new().unwrap();
         write(tmp.path(), "util.ts", "export const x = 1;\n");
         write(tmp.path(), "a.ts", "");
         write(tmp.path(), "b.ts", "");
         let resolver = SpecifierResolver::for_language("typescript").unwrap();
 
-        resolver.begin_importer("a.ts");
+        resolver.begin_importer();
         let (_, first) = resolve(&resolver, tmp.path(), "a.ts", "./util");
+        let (_, cached) = resolve(&resolver, tmp.path(), "b.ts", "./util");
         assert!(first.contains("util.ts"));
-
-        resolver.begin_importer("b.ts");
-        let (_, second) = resolve(&resolver, tmp.path(), "b.ts", "./util");
         assert!(
-            second.contains("util.ts"),
-            "served from oxc's cache, so only the window log has it"
+            !cached.contains("util.ts"),
+            "the cache must hide the probe, or this test proves nothing"
         );
+
+        resolver.begin_importer();
+        let (_, second) = resolve(&resolver, tmp.path(), "b.ts", "./util");
+        assert!(second.contains("util.ts"));
     }
 
-    /// A new directory starts a new window: its importers are not charged with the last one's probes.
+    /// An importer's probes are its own: resolving `a.ts` first in the same directory must not
+    /// charge `b.ts` with `a.ts`'s probes (oxc's tsconfig walk starts at the importer, so it probes
+    /// `a.ts/tsconfig.json`). Deleting `a.ts` re-stitches only the importers that probed it, so a
+    /// borrowed probe would survive in `b.ts`'s rows where a full scan writes none.
     #[test]
-    fn a_new_directory_starts_a_new_window() {
+    fn an_importers_probes_do_not_depend_on_the_importers_before_it() {
         let tmp = TempDir::new().unwrap();
-        write(tmp.path(), "one/util.ts", "export const x = 1;\n");
-        write(tmp.path(), "one/a.ts", "");
-        write(tmp.path(), "two/b.ts", "");
-        let resolver = SpecifierResolver::for_language("typescript").unwrap();
+        write(tmp.path(), "util.ts", "export const x = 1;\n");
+        write(tmp.path(), "a.ts", "");
+        write(tmp.path(), "b.ts", "");
 
-        resolver.begin_importer("one/a.ts");
-        let (_, first) = resolve(&resolver, tmp.path(), "one/a.ts", "./util");
-        assert!(first.contains("one/util.ts"));
+        let shared = SpecifierResolver::for_language("typescript").unwrap();
+        shared.begin_importer();
+        let (_, first) = resolve(&shared, tmp.path(), "a.ts", "./util");
+        assert!(first.contains("a.ts/tsconfig.json"));
+        shared.begin_importer();
+        let (_, after_a) = resolve(&shared, tmp.path(), "b.ts", "./util");
 
-        resolver.begin_importer("two/b.ts");
-        let (_, second) = resolve(&resolver, tmp.path(), "two/b.ts", "./util");
-        assert!(second.contains("two/util.ts"));
-        assert!(!second.contains("one/util.ts"));
+        let fresh = SpecifierResolver::for_language("typescript").unwrap();
+        fresh.begin_importer();
+        let (_, alone) = resolve(&fresh, tmp.path(), "b.ts", "./util");
+
+        assert!(!after_a.contains("a.ts/tsconfig.json"));
+        assert_eq!(after_a.hashes(), alone.hashes());
     }
 
     /// A specifier that resolves to nothing is the case probes exist for: the candidates it failed
@@ -855,7 +828,7 @@ mod js_tests {
         let tmp = TempDir::new().unwrap();
         write(tmp.path(), "app.ts", "");
         let resolver = SpecifierResolver::for_language("typescript").unwrap();
-        resolver.begin_importer("app.ts");
+        resolver.begin_importer();
         let (hit, probes) = resolve(&resolver, tmp.path(), "app.ts", "./missing");
         assert_eq!(hit, None);
         assert!(probes.contains("missing.ts"));

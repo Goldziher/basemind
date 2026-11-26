@@ -40,6 +40,15 @@ fn workspace_with_sources() -> tempfile::TempDir {
     git_init(dir.path());
     std::fs::write(dir.path().join("alpha.rs"), "pub fn alpha() -> u32 { 1 }\n").expect("write alpha");
     std::fs::write(dir.path().join("beta.rs"), "pub fn beta() -> u32 { 2 }\n").expect("write beta");
+    // A stamp inside the scanner's racy window is recorded as 0 and restamped by the next scan, which
+    // counts as a change; an old stamp settles on the first pass.
+    for name in ["alpha.rs", "beta.rs"] {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path().join(name))
+            .and_then(|file| file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)))
+            .expect("age source");
+    }
     dir
 }
 

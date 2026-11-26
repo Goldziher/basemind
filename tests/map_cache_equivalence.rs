@@ -52,7 +52,15 @@ fn build_corpus() -> TempDir {
              impl Module{f:03}Drawable for Module{f:03}Widget {{ fn draw(&self) {{}} }}\n\
              pub fn module_{f:03}_caller() {{ module_{f:03}_operation_000_with_a_long_name(1, \"x\"); }}\n"
         ));
-        std::fs::write(root.join(format!("module_{f:03}.rs")), src).unwrap();
+        let file = root.join(format!("module_{f:03}.rs"));
+        std::fs::write(&file, src).unwrap();
+        // A stamp inside the scanner's racy window is restamped by the next scan, and that scan holds
+        // the writer lock a read has to wait out; an old stamp settles on the first pass.
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .and_then(|handle| handle.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)))
+            .unwrap();
     }
     dir
 }

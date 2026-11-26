@@ -29,7 +29,7 @@ fn write(dir: &Path, rel: &str, body: &str) {
 /// Resolve `specifier` from `importer` and return the target path and the probes.
 fn resolve(root: &Path, importer: &str, specifier: &str) -> (Option<String>, ProbeSet) {
     let resolver = SpecifierResolver::for_language("typescript").unwrap();
-    resolver.begin_importer(importer);
+    resolver.begin_importer();
     let mut probes = ProbeSet::default();
     let hit = resolver.resolve(root, importer, &import(specifier), &mut probes);
     (hit.and_then(|rel| rel.as_str().map(str::to_string)), probes)
