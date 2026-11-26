@@ -87,7 +87,7 @@ impl Workspace {
         // tool-subcommand dispatcher never calls `guard_workspace_root`, so the `index_rescan` tool and
         // the boot/watcher scans reach `crate::scanner::scan` here. Guarding at this single funnel
         // covers all of them; it does NOT cover the read-only store open that
-        // `cli::context::build_server` already performed, so a refused root can still have had its
+        // `cli::context::build_engine` already performed, so a refused root can still have had its
         // cache directory created by that point.
         //
         // Used as a pure admission check: the scan keeps running against `self.root`, not the

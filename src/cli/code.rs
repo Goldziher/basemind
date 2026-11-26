@@ -11,7 +11,7 @@ use std::io::Write;
 use anyhow::Result;
 use clap::Subcommand;
 
-use super::context::Tools;
+use super::context::CliContext;
 use crate::engine::Workspace;
 use crate::engine::cursor::Cursor;
 use crate::engine::types::code::{CodeOutlineParams, CodeReadParams, CodeSymbolsParams};
@@ -316,7 +316,7 @@ pub enum CodeCmd {
 }
 
 /// Dispatch a `code` subcommand through the in-process server.
-pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
+pub async fn run(tools: &CliContext, cmd: CodeCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     let mut gate = None;
     let (tool, result) = match cmd {
         CodeCmd::Outline {
@@ -445,7 +445,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         max_tokens,
                         changed,
                     },
-                    async |s, p| s.code_search_call(p).await,
+                    async |s, p| s.code_search(p).await,
                 )
                 .await,
         ),
@@ -638,7 +638,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         chunk_id,
                         byte_start,
                     },
-                    async |s, p| s.code_chunk_call(p).await,
+                    async |s, p| s.cli_op(p, Workspace::code_chunk).await,
                 )
                 .await,
         ),

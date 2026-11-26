@@ -1,7 +1,7 @@
-//! The MCP server's identity: the principal of agent comms v2 (ADR-0021), resolved by the one
+//! The serving process's identity: the principal of agent comms v2 (ADR-0021), resolved by the one
 //! resolver `serve`, the CLI and the hooks share. It owns the session's individual memory notes.
 
-/// This server's principal for the checkout at `root`. A root the resolver refuses (one that is
+/// This process's principal for the checkout at `root`. A root the resolver refuses (one that is
 /// not absolute) falls back to the bare default host name, `agent`, so memory still has an owner.
 pub(crate) fn resolve_agent_id(root: &std::path::Path) -> String {
     match crate::comms::v2::identity::resolve_for_root(root) {

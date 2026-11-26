@@ -7,9 +7,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use basemind::cli::context::build_server;
-use basemind::config::overrides::DocumentsCliOverrides;
-use basemind::store::VIEW_WORKING;
+use basemind::git_cache::GitCache;
+use basemind::mcp::BasemindServer;
+use basemind::store::{Store, VIEW_WORKING};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, ContentBlock};
 use serde_json::Value;
@@ -85,8 +85,15 @@ fn string_list(value: &Value) -> Vec<String> {
 pub fn domains() -> BTreeMap<String, Domain> {
     basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
-    let server =
-        build_server(tmp.path(), VIEW_WORKING, DocumentsCliOverrides::default()).expect("build one-shot server");
+    let store = Store::open_for_query(tmp.path(), VIEW_WORKING).expect("open store");
+    let git_cache = GitCache::open(&store.basemind_dir, 16, false).expect("open git cache");
+    let server = BasemindServer::new_oneshot(
+        store,
+        tmp.path().to_path_buf(),
+        std::sync::Arc::new(basemind::config::default_for_root(tmp.path())),
+        None,
+        std::sync::Arc::new(git_cache),
+    );
     server
         .tool_input_schemas()
         .into_iter()

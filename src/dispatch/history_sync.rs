@@ -26,7 +26,7 @@ impl Drop for Syncing {
 ///
 /// The one-shot CLI never syncs: it exits in milliseconds, and a first build on a deep repo is a
 /// minutes-long walk.
-pub(super) fn request(shared: &Workspace) {
+pub(crate) fn request(shared: &Workspace) {
     if shared.git_history.is_none() {
         return;
     }

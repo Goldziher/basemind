@@ -50,7 +50,7 @@ impl BlobStorePaths {
 }
 
 /// Telemetry sink filename under `.basemind/`. Mirrors
-/// [`crate::mcp::telemetry::TELEMETRY_FILENAME`]; duplicated here to avoid a dependency on
+/// [`crate::engine::telemetry::TELEMETRY_FILENAME`]; duplicated here to avoid a dependency on
 /// the MCP module from the cleanup layer.
 pub(crate) const TELEMETRY_FILENAME: &str = "telemetry.jsonl";
 /// The generation of the telemetry log kept after a rotation (at 8 MiB, `TELEMETRY_ROTATE_BYTES` in

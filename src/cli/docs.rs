@@ -12,7 +12,7 @@ use std::io::Write;
 use anyhow::Result;
 use clap::{Args, Subcommand};
 
-use super::context::Tools;
+use super::context::CliContext;
 use super::render::{Emit, emit};
 use super::run_tool;
 use crate::engine::cursor::Cursor;
@@ -62,14 +62,14 @@ pub struct DocsSearchArgs {
 }
 
 /// Dispatch a `docs` subcommand through the in-process server.
-pub async fn run(tools: &Tools, cmd: DocsCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
+pub async fn run(tools: &CliContext, cmd: DocsCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     match cmd {
         DocsCmd::Search(args) => search(tools, args, opts, out).await,
     }
 }
 
 /// Run `docs_search` with `args` and print its answer.
-pub(super) async fn search(tools: &Tools, args: DocsSearchArgs, opts: &Emit, out: &mut impl Write) -> Result<()> {
+pub(super) async fn search(tools: &CliContext, args: DocsSearchArgs, opts: &Emit, out: &mut impl Write) -> Result<()> {
     let p = DocsSearchParams {
         query: args.query,
         mime_type: args.mime_type,
@@ -84,7 +84,7 @@ pub(super) async fn search(tools: &Tools, args: DocsSearchArgs, opts: &Emit, out
         context: args.context.then_some(true),
     };
     let result = tools
-        .call("docs_search", p, async |s, p| s.docs_search_call(p).await)
+        .call("docs_search", p, async |s, p| s.docs_search(p).await)
         .await;
     let r = run_tool("docs_search", result)?;
     emit("docs_search", &r, opts, out)

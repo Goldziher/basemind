@@ -46,16 +46,7 @@ pub(super) fn is_cancel_aware_read(name: &str) -> bool {
     CANCEL_AWARE_READS.contains(&name)
 }
 
-/// JSON-RPC code for a request the client cancelled (the LSP `RequestCancelled` code).
-pub(super) const REQUEST_CANCELLED_CODE: i32 = -32800;
-
-pub(super) fn request_cancelled() -> McpError {
-    McpError::new(
-        rmcp::model::ErrorCode(REQUEST_CANCELLED_CODE),
-        "request_cancelled",
-        None,
-    )
-}
+pub(super) use crate::dispatch::{REQUEST_CANCELLED_CODE, request_cancelled};
 
 /// JSON-RPC code for a cancel-aware read stopped at its deadline
 /// ([`super::admission::HeavyAdmission::deadline`]).

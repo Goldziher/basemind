@@ -1,13 +1,13 @@
 //! In-process CLI over the same tool bodies the MCP server runs.
 //!
-//! Every MCP tool has a subcommand that builds the tool's `*Params` struct, constructs a one-shot
-//! [`crate::mcp::BasemindServer`] (no background facilities), and calls the `*_call` method the
-//! `#[tool]` shim calls, then renders the returned [`rmcp::model::CallToolResult`]. Parity is by
-//! construction: the CLI runs the same tool code, not a re-implementation. The CLI additionally
+//! Every MCP tool has a subcommand that builds the tool's `*Params` struct, opens a one-shot
+//! [`crate::dispatch::LocalEngine`] (no background facilities), and runs the engine operation the
+//! `#[tool]` shim runs, then renders the returned [`rmcp::model::CallToolResult`]. Parity is by
+//! construction: the CLI runs the same engine operation, not a re-implementation. The CLI additionally
 //! has shorthands and administrative commands with no MCP tool (ADR-0018).
 //!
 //! Layout:
-//! - `context.rs` — one-shot server construction, or the daemon session a call is forwarded over.
+//! - `context.rs` — [`CliContext`](context::CliContext): one-shot engine construction, or the daemon session a call is forwarded over.
 //! - `forward.rs` — the relay session that forwards a call to the daemon when it is up.
 //! - `render.rs` — JSON extraction + generic human renderer.
 //! - `code.rs` / `git.rs` / `memory.rs` / `docs.rs` / `admin.rs` — subcommand groups.
@@ -101,7 +101,7 @@ pub enum ToolCmd {
 /// Relative inputs are taken relative to the repository root (not the shell's cwd). Paths that
 /// escape or fall outside the repository can't match an indexed file, so the raw input is kept and
 /// the downstream tool reports "file not indexed" rather than silently mangling it.
-pub(crate) fn resolve_path(tools: &context::Tools, path: &str) -> crate::path::RelPath {
+pub(crate) fn resolve_path(tools: &context::CliContext, path: &str) -> crate::path::RelPath {
     match crate::path::normalize_query_path(path, tools.root()) {
         Some(rel) => crate::path::RelPath::from(rel),
         None => crate::path::RelPath::from(path),

@@ -9,9 +9,9 @@ use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 
 use crate::engine::Workspace;
-use crate::mcp::BasemindServer;
+use crate::dispatch::LocalEngine;
 use crate::mcp::params::parse_args;
-use crate::mcp::savings::estimate_from_text;
+use crate::engine::savings::estimate_from_text;
 use crate::mcp::tokens::count_tokens;
 
 use super::baseline::run_baseline;
@@ -27,28 +27,28 @@ pub const MAX_PAGES: u32 = 50;
 /// Call the tool behind `mode` with `args`, which are that tool's own arguments. Returns the raw
 /// response text, or a tool/argument error message. `read_around` is one `code_grep` with
 /// `context`, the lines around each hit written as rows.
-async fn call(server: &BasemindServer, mode: EvalMode, args: Value) -> Result<String> {
+async fn call(server: &LocalEngine, mode: EvalMode, args: Value) -> Result<String> {
     let bad_args = |message: String| anyhow!("invalid args for mode `{}`: {message}", mode.as_str());
     let result: CallToolResult = match mode {
         EvalMode::GitSearch | EvalMode::GitPath | EvalMode::GitSymbol => {
-            server.git_log_call(parse_args(args).map_err(bad_args)?).await
+            server.op(parse_args(args).map_err(bad_args)?, Workspace::git_log).await
         }
-        EvalMode::Blame | EvalMode::BlameSymbol => server.git_blame_call(parse_args(args).map_err(bad_args)?).await,
-        EvalMode::Diff | EvalMode::DiffStructural => server.git_diff_call(parse_args(args).map_err(bad_args)?).await,
-        EvalMode::Docs => server.docs_search_call(parse_args(args).map_err(bad_args)?).await,
-        EvalMode::Symbols => server.code_symbols_call(parse_args(args).map_err(bad_args)?).await,
-        EvalMode::Outline => server.code_outline_call(parse_args(args).map_err(bad_args)?).await,
-        EvalMode::Read => server.code_read_call(parse_args(args).map_err(bad_args)?).await,
+        EvalMode::Blame | EvalMode::BlameSymbol => server.op(parse_args(args).map_err(bad_args)?, Workspace::git_blame).await,
+        EvalMode::Diff | EvalMode::DiffStructural => server.op_unpaged(parse_args(args).map_err(bad_args)?, Workspace::git_diff).await,
+        EvalMode::Docs => server.docs_search(parse_args(args).map_err(bad_args)?).await,
+        EvalMode::Symbols => server.op(parse_args(args).map_err(bad_args)?, Workspace::code_symbols).await,
+        EvalMode::Outline => server.op(parse_args(args).map_err(bad_args)?, Workspace::code_outline).await,
+        EvalMode::Read => server.op_unpaged(parse_args(args).map_err(bad_args)?, Workspace::code_read).await,
         EvalMode::References
         | EvalMode::Callers
         | EvalMode::Dependents
         | EvalMode::Implementations
         | EvalMode::Impact
-        | EvalMode::Cycles => server.code_refs_call(parse_args(args).map_err(bad_args)?).await,
+        | EvalMode::Cycles => server.op(parse_args(args).map_err(bad_args)?, Workspace::code_refs).await,
         EvalMode::Grep | EvalMode::GrepChanged | EvalMode::ReadAround => {
-            server.code_grep_call(parse_args(args).map_err(bad_args)?).await
+            server.op(parse_args(args).map_err(bad_args)?, Workspace::code_grep).await
         }
-        EvalMode::Find | EvalMode::FindLarge => server.find_files_call(parse_args(args).map_err(bad_args)?).await,
+        EvalMode::Find | EvalMode::FindLarge => server.op(parse_args(args).map_err(bad_args)?, Workspace::find_files).await,
         EvalMode::Explain => {
             let p = serde_json::from_value(args).map_err(|e| bad_args(e.to_string()))?;
             server.cli_op(p, Workspace::code_explain).await
@@ -105,7 +105,7 @@ fn task_args(task: &Task) -> Value {
 
 /// Call the tool, following `next_cursor` for set-scored tasks (a ranked task reads one page: the
 /// agent wants the top hits, not all of them).
-async fn answer(server: &BasemindServer, task: &Task) -> Result<Answer> {
+async fn answer(server: &LocalEngine, task: &Task) -> Result<Answer> {
     let mut args = task_args(task);
     let follow = task.scoring == Scoring::Set;
     let mut out = Answer::default();
@@ -137,7 +137,7 @@ async fn answer(server: &BasemindServer, task: &Task) -> Result<Answer> {
 }
 
 /// Run `task`, scoring the answer and (when the task has a baseline) running and scoring that too.
-pub async fn run_task(server: &BasemindServer, root: &Path, task: &Task, min_recall: f64) -> TaskResult {
+pub(crate) async fn run_task(server: &LocalEngine, root: &Path, task: &Task, min_recall: f64) -> TaskResult {
     let started = Instant::now();
     let outcome = answer(server, task).await;
     let elapsed_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);

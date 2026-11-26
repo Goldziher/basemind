@@ -11,7 +11,7 @@ use crate::engine::Workspace;
 use crate::engine::types::graph::ImpactParams;
 use crate::path::RelPath;
 
-use super::super::context::Tools;
+use super::super::context::CliContext;
 use super::super::exit::{CliExit, ERROR};
 
 #[derive(Args, Debug)]
@@ -45,7 +45,7 @@ pub struct ImpactArgs {
     pub(super) fail_above: Option<usize>,
 }
 
-pub(super) async fn call(tools: &Tools, args: ImpactArgs) -> Result<CallToolResult, McpError> {
+pub(super) async fn call(tools: &CliContext, args: ImpactArgs) -> Result<CallToolResult, McpError> {
     let mut p = ImpactParams {
         symbol: args.symbol,
         diff: if args.changed {

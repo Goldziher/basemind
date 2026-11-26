@@ -59,6 +59,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("daemon_lock", Core),
     ("data_root", Core),
     ("deps_docs", Core),
+    ("dispatch", Root),
     ("disk_space", Core),
     ("embed_progress", Core),
     ("embeddings", Retrieval),
@@ -883,18 +884,19 @@ fn no_module_reaches_a_higher_layer() {
 
 /// Files under `src/cli` still naming `src/mcp`, as `"<file> -> mcp"`: the CLI is an adapter of the
 /// engine beside the MCP server and must not import it (issue #160, the crate split of ADR-0023).
-/// `context.rs` builds the one-shot `BasemindServer` whose `*_call` bodies run the verb tools (cursor
-/// binding, telemetry rows and the wire encoding live in `src/mcp`, tied to rmcp); `admin.rs` runs
-/// the `admin telemetry` summary, whose params and body sit in `src/mcp`. Remove an entry when its
-/// last edge is cut.
-const CLI_MCP_EDGES: &[&str] = &["src/cli/admin.rs -> mcp", "src/cli/context.rs -> mcp"];
+/// A command runs the engine on `dispatch::LocalEngine`, which the server's `#[tool]` shims share.
+/// Add an entry only for an edge that cannot be cut yet.
+const CLI_MCP_EDGES: &[&str] = &[];
 
 /// The files under `src/cli` that name a path through `src/mcp`, with re-exports followed.
 fn cli_mcp_edges(root: &Path, modules: &[Module]) -> BTreeSet<String> {
     let known: BTreeSet<Vec<String>> = modules.iter().map(|m| m.path.clone()).collect();
     let exports = exports(modules);
     let mut found = BTreeSet::new();
-    for module in modules.iter().filter(|m| m.path.first().map(String::as_str) == Some("cli")) {
+    for module in modules
+        .iter()
+        .filter(|m| m.path.first().map(String::as_str) == Some("cli"))
+    {
         let mut collector = Collector {
             test: module.test,
             refs: Vec::new(),
@@ -1194,7 +1196,7 @@ fn the_engine_api_check_flags_each_shape() {
 /// `(rmcp_files, helper_lines)`: the non-test files under `src/mcp` that name rmcp, `McpError` or
 /// `CallToolResult`, and the lines of the non-test `src/mcp/helpers*.rs` files. Each engine step
 /// moves tool bodies out of the adapter, so neither may rise; lower them here when they fall.
-const ADAPTER_RATCHET: (usize, usize) = (30, 92);
+const ADAPTER_RATCHET: (usize, usize) = (25, 0);
 
 /// A test file under `src/mcp`: every test module there lives in a `*_tests.rs` file.
 fn is_test_file(path: &Path) -> bool {

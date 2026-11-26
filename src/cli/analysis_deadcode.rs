@@ -9,7 +9,7 @@ use rmcp::model::CallToolResult;
 use crate::engine::Workspace;
 use crate::engine::types::deadcode::DeadcodeParams;
 
-use super::super::context::Tools;
+use super::super::context::CliContext;
 use super::super::exit::{CliExit, ERROR};
 use super::super::resolve_path;
 
@@ -38,7 +38,7 @@ pub struct DeadcodeArgs {
     pub(super) fail_on_dead_code: bool,
 }
 
-pub(super) async fn call(tools: &Tools, args: DeadcodeArgs) -> Result<CallToolResult, McpError> {
+pub(super) async fn call(tools: &CliContext, args: DeadcodeArgs) -> Result<CallToolResult, McpError> {
     let p = DeadcodeParams {
         path: args.path.map(|path| resolve_path(tools, &path).to_string()),
         kind: args.kind,

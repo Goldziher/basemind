@@ -1,9 +1,10 @@
-//! The MCP side of an engine operation: run it once on a blocking thread, report its error as MCP
-//! reports errors, bind its cursor to the query and record its telemetry row.
+//! The MCP side of an engine operation: run it once on a blocking thread that holds the call's
+//! admission, and answer it as MCP answers (cursor binding, the telemetry row and the wire encoding
+//! live in [`crate::dispatch`], which the `basemind` commands run too).
 //!
 //! An engine operation ([`Op`]) is synchronous and names no rmcp type (ADR-0039). The `#[tool]` shim
-//! and the matching `basemind` command both reach it through [`call`], so the two adapters answer
-//! from the same body.
+//! and the matching `basemind` command both reach it through [`crate::dispatch`], so the two
+//! adapters answer from the same body.
 
 use std::sync::Arc;
 
@@ -12,40 +13,12 @@ use rmcp::model::CallToolResult;
 use serde::Serialize;
 
 use super::ServerState;
-use super::cursor_bind::{Paged, bound};
-use super::helpers::json_result;
-use super::strict::ToolArgs;
-use super::telemetry::Telemetry;
+use crate::dispatch;
+use crate::engine::paging::{Paged, ToolArgs};
 use crate::engine::{EngineError, Workspace};
 
-/// One engine operation: a verb tool's body over a [`Workspace`].
-pub(crate) type Op<P, R> = fn(&Workspace, P) -> Result<R, EngineError>;
-
+pub(crate) use crate::dispatch::Op;
 pub(crate) use crate::engine::BUSY_DATA;
-
-/// A wrapped store, index, git or I/O error is first worded for the caller (`EngineError::settled`);
-/// then each variant keeps its message, and the code is what the CLI turns into an exit status. An
-/// unavailable index shares its JSON-RPC code with an unavailable operation, so its `data` names its
-/// `ErrorKind`.
-impl From<EngineError> for McpError {
-    fn from(error: EngineError) -> Self {
-        match error.settled() {
-            EngineError::InvalidArgument(message) => McpError::invalid_params(message, None),
-            EngineError::Unavailable(message) => McpError::invalid_request(message, None),
-            EngineError::IndexUnavailable(message) => McpError::invalid_request(
-                message,
-                Some(super::tool_contract::kind_data(
-                    crate::engine::error_kind::ErrorKind::IndexUnavailable,
-                )),
-            ),
-            EngineError::Busy(message) => {
-                McpError::invalid_request(message, Some(serde_json::json!({ BUSY_DATA: true })))
-            }
-            EngineError::Cancelled => super::tasks::request_cancelled(),
-            other => McpError::internal_error(other.to_string(), None),
-        }
-    }
-}
 
 /// Run `body` on a blocking thread: an operation reads the store, the disk and the in-RAM map
 /// synchronously, which must not park a runtime worker. A panic in it resumes on the caller.
@@ -78,41 +51,11 @@ async fn blocking_answer(
         body()
     })
     .await
-    .unwrap_or_else(|join| Err(task_failed(&join)))
+    .unwrap_or_else(|join| Err(dispatch::task_failed(&join)))
 }
 
-/// Numbers the failures [`task_failed`] logs, so a reported message finds its log line.
-static FAILURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
-/// The answer of a tool body that panicked or was stopped by a runtime shutdown. The payload can carry
-/// host paths and library internals, so it goes to the log, under a reference the message names.
-fn task_failed(join: &tokio::task::JoinError) -> McpError {
-    let reference = format!(
-        "{}-{}",
-        std::process::id(),
-        FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    );
-    tracing::error!(reference = %reference, error = %join, "a tool task failed");
-    McpError::internal_error(
-        format!(
-            "basemind failed inside this call; the server log holds the cause as failure {reference} \
-             (`basemind comms doctor` prints the daemon log's path)"
-        ),
-        None,
-    )
-}
-
-/// `op`'s answer as a tool result.
-fn answer<P, R: Serialize>(
-    ws: &Workspace,
-    p: P,
-    op: impl FnOnce(&Workspace, P) -> Result<R, EngineError>,
-) -> Result<CallToolResult, McpError> {
-    json_result(&op(ws, p)?)
-}
-
-/// A verb-tool call: refuse a zero `limit`, unbind the cursor, run `op`, bind the next cursor, and
-/// record the telemetry row under the tool's name. One `spawn_blocking` for the whole call.
+/// A verb-tool call ([`dispatch::paged_call`]) on a blocking thread, with the server's telemetry
+/// writer. One `spawn_blocking` for the whole call.
 pub(super) async fn call<P, R, O>(state: &ServerState, p: P, op: O) -> Result<CallToolResult, McpError>
 where
     P: Paged + Send + 'static,
@@ -121,11 +64,10 @@ where
 {
     let ws = Arc::clone(&state.shared);
     let telemetry = Arc::clone(&state.telemetry);
-    blocking_answer(move || call_blocking(&ws, &telemetry, p, op)).await
+    blocking_answer(move || dispatch::paged_call(&ws, &telemetry, p, op)).await
 }
 
-/// [`call`] for a verb tool that pages nothing: no `limit` to refuse, no cursor to bind; the same
-/// telemetry row.
+/// [`call`] for a verb tool that pages nothing ([`dispatch::unpaged_call`]).
 pub(super) async fn call_unpaged<P, R, O>(state: &ServerState, p: P, op: O) -> Result<CallToolResult, McpError>
 where
     P: ToolArgs + Serialize + Send + 'static,
@@ -134,50 +76,7 @@ where
 {
     let ws = Arc::clone(&state.shared);
     let telemetry = Arc::clone(&state.telemetry);
-    blocking_answer(move || {
-        let started = std::time::Instant::now();
-        let params = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
-        let result = answer(&ws, p, op).map(|result| as_text(P::TOOL, result));
-        record(&ws, &telemetry, P::TOOL, &params, started, &result);
-        result
-    })
-    .await
-}
-
-/// The telemetry row of one call, costed against the workspace's corpus.
-fn record(
-    ws: &Workspace,
-    telemetry: &Telemetry,
-    tool: &'static str,
-    params: &serde_json::Value,
-    started: std::time::Instant,
-    result: &Result<CallToolResult, McpError>,
-) {
-    let corpus = ws.corpus_bytes.load(std::sync::atomic::Ordering::Relaxed);
-    super::helpers_telemetry::record_call_to(telemetry, corpus, tool, params, started, result);
-}
-
-fn call_blocking<P: Paged, R: Serialize>(
-    ws: &Workspace,
-    telemetry: &Telemetry,
-    p: P,
-    op: impl FnOnce(&Workspace, P) -> Result<R, EngineError>,
-) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
-    let params = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
-    let result = bound(p, |p| answer(ws, p, op)).map(|result| as_text(P::TOOL, result));
-    record(ws, telemetry, P::TOOL, &params, started, &result);
-    result
-}
-
-/// `result` with its text block written in `tool`'s encoding ([`crate::wire::encode`]); the
-/// structured content stays JSON. After cursor binding, so the text carries the bound cursor, and
-/// before the telemetry row, so the row costs the text sent.
-fn as_text(tool: &str, mut result: CallToolResult) -> CallToolResult {
-    if let Some(value) = &result.structured_content {
-        result.content = vec![rmcp::model::ContentBlock::text(crate::wire::encode(tool, value))];
-    }
-    result
+    blocking_answer(move || dispatch::unpaged_call(&ws, &telemetry, p, op)).await
 }
 
 /// `op`'s answer with no cursor binding and no telemetry row, its text compact JSON: a CLI-only
@@ -188,17 +87,18 @@ where
     R: Serialize + 'static,
 {
     let ws = Arc::clone(ws);
-    blocking_answer(move || answer(&ws, p, op)).await
+    blocking_answer(move || dispatch::plain_call(&ws, p, op)).await
 }
 
 /// [`run`] for a resource read: it answers as the tool it mirrors, its text in that tool's encoding
 /// ([`crate::wire::encode`]), and is not a tool call.
 pub(super) async fn mirror<P, R>(ws: &Arc<Workspace>, p: P, op: Op<P, R>) -> Result<CallToolResult, McpError>
 where
-    P: ToolArgs + Send,
+    P: ToolArgs + Send + 'static,
     R: Serialize + 'static,
 {
-    run(ws, p, op).await.map(|result| as_text(P::TOOL, result))
+    let ws = Arc::clone(ws);
+    blocking_answer(move || dispatch::mirror_call(&ws, p, op)).await
 }
 
 #[cfg(test)]

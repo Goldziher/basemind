@@ -91,7 +91,7 @@ default = []
 intelligence = ["dep:xberg", "dep:lancedb", "dep:futures", "xberg/embeddings"]
 
 # Just the real o200k tokenizer (`xberg::chunking::count_tokens`), used by `basemind admin tokens`
-# and `src/mcp/savings.rs`. `xberg/chunking-tokenizers` is a pure-Rust `tokenizers` crate underneath
+# and `src/engine/savings.rs`. `xberg/chunking-tokenizers` is a pure-Rust `tokenizers` crate underneath
 # (no LanceDB/Arrow/OCR/ONNX), so this is deliberately its own feature rather than riding on
 # `intelligence` — it stays cheap enough to build without also pulling in the vector-store deps.
 tokenizer = ["dep:xberg", "xberg/chunking-tokenizers"]

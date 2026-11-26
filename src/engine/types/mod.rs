@@ -15,6 +15,7 @@ pub(crate) mod migration;
 pub(crate) mod overview;
 pub(crate) mod refs;
 pub(crate) mod search;
+pub(crate) mod telemetry;
 
 use serde::Serialize;
 

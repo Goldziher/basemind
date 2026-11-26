@@ -17,6 +17,7 @@ pub mod config;
 pub mod daemon_lock;
 pub mod data_root;
 pub mod deps_docs;
+pub(crate) mod dispatch;
 pub mod disk_space;
 pub mod embed_progress;
 #[cfg(feature = "intelligence")]

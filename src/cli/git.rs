@@ -10,7 +10,7 @@ use std::io::Write;
 use anyhow::Result;
 use clap::Subcommand;
 
-use super::context::Tools;
+use super::context::CliContext;
 use crate::engine::Workspace;
 use crate::engine::cursor::Cursor;
 use crate::engine::types::git::{
@@ -272,7 +272,7 @@ fn log() -> GitLogParams {
 }
 
 /// Dispatch a `git` subcommand through the in-process server.
-pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
+pub async fn run(tools: &CliContext, cmd: GitCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     let (tool, result) = match cmd {
         GitCmd::Log {
             path,
