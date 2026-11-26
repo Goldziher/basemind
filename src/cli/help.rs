@@ -233,6 +233,34 @@ Example:
 
 Next: `basemind memory list` to review what remains.";
 
+/// `basemind memory export`.
+pub const MEMORY_EXPORT: &str = "\
+When to use: you move this repository's notes to another clone or a moved checkout, or keep a copy
+of them (ADR-0056).
+
+Returns: a JSON-lines file, a header line then one note per line ordered by key, so the same notes
+export to the same bytes. It goes to stdout, or to `--output`. `--prefix` and `--tag` narrow it,
+`--individual` exports the per-agent tier. A store whose notes pass 8 MiB is exported in parts.
+
+Example:
+  basemind memory export --output notes.jsonl
+
+Next: `basemind memory import notes.jsonl` in the other checkout.";
+
+/// `basemind memory import`.
+pub const MEMORY_IMPORT: &str = "\
+When to use: you bring the notes of another clone, or an earlier export, into this repository.
+
+Returns: how many notes were added, replaced, kept and unchanged. A key both sides hold keeps the
+note with the later `updated_at`, the existing one on a tie; `--overwrite` takes the file's note,
+`--skip` keeps the existing one. The file is checked whole first and a bad one writes nothing. Every
+note it writes records the import as its provenance, and its vector is rebuilt by the next search.
+
+Example:
+  basemind memory import notes.jsonl --skip
+
+Next: `basemind memory list` to review the merged notes.";
+
 /// `basemind docs search`.
 pub const DOCS_SEARCH: &str = "\
 When to use: you are looking for a topic in prose, data or config files: Markdown, PDF, Office,

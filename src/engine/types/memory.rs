@@ -251,6 +251,80 @@ pub(crate) struct MemoryClearResponse {
     pub vector_stores_failed: usize,
 }
 
+/// The most bytes of notes an export carries and an import file may hold. The notes cross the
+/// daemon's 16 MiB frame in one request, so a larger store is exported in parts with `--prefix` or
+/// `--tag`.
+pub const TRANSFER_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// `basemind memory export`: the notes of one tier of this repository's current scope.
+#[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryExportParams {
+    /// Only notes whose key starts with this.
+    #[serde(default)]
+    pub prefix: Option<String>,
+    /// Only notes carrying any of these tags.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Memory tier: `group` (shared, default) or `individual` (per-agent).
+    #[serde(default)]
+    pub visibility: Visibility,
+}
+
+#[cfg(feature = "memory")]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(crate) struct MemoryExportResponse {
+    /// The export file's text: JSON lines, a header line then one note per line, ordered by key.
+    pub content: String,
+    /// Notes in `content`.
+    pub notes: usize,
+}
+
+/// What `basemind memory import` does with a key the repository already has.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ImportPolicy {
+    /// Keep the note with the later `updated_at`; on a tie the existing note stays.
+    #[default]
+    Newer,
+    /// Replace the existing note with the imported one.
+    Overwrite,
+    /// Keep the existing note.
+    Skip,
+}
+
+/// `basemind memory import`: merge the notes of an export file into one tier of this repository.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryImportParams {
+    /// The export file's text.
+    pub content: String,
+    /// What to do with a key both sides hold. Default `newer`.
+    #[serde(default)]
+    pub policy: ImportPolicy,
+    /// Where the file came from, recorded as the provenance of every note it adds or replaces.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Memory tier the notes are imported into: `group` (shared, default) or `individual`.
+    #[serde(default)]
+    pub visibility: Visibility,
+}
+
+#[cfg(feature = "memory")]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub(crate) struct MemoryImportResponse {
+    /// Notes in the file.
+    pub total: usize,
+    /// Notes the repository did not have.
+    pub added: usize,
+    /// Notes replaced by the file's version.
+    pub replaced: usize,
+    /// Notes left as they were because the existing one is newer, or `skip` was asked.
+    pub kept: usize,
+    /// Notes identical to the existing one.
+    pub unchanged: usize,
+}
+
 /// Verification verdict of a memory's code references against the live index, set by the
 /// W10 audit engine. `#[serde(default)]` on the record field means pre-W10 blobs (written
 /// before this existed) decode as `Unverified` — no schema bump required.

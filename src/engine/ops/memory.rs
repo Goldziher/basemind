@@ -1,12 +1,14 @@
-//! `memory_save`, `memory_search`, and `basemind memory delete` and `basemind memory clear` (no MCP
-//! tool).
+//! `memory_save`, `memory_search`, and `basemind memory delete|clear|export|import` (no MCP tool).
 //!
 //! The tools are advertised in every build and gate here: an agent looking for "remember this" is
 //! better served a tool that answers "rebuild with `--features memory`" than a tool that is not
 //! there, and never an empty result it would read as "nothing stored".
 
 use crate::engine::error::EngineError;
-use crate::engine::types::memory::{MemoryClearParams, MemoryDeleteParams, MemorySaveParams, MemorySearchToolParams};
+use crate::engine::types::memory::{
+    MemoryClearParams, MemoryDeleteParams, MemoryExportParams, MemoryImportParams, MemorySaveParams,
+    MemorySearchToolParams,
+};
 use crate::engine::workspace::Workspace;
 
 #[cfg(not(feature = "memory"))]
@@ -29,6 +31,16 @@ impl Workspace {
     /// `basemind memory clear` in a build without the memory store.
     pub(crate) fn memory_clear(&self, _p: MemoryClearParams) -> Result<(), EngineError> {
         Err(EngineError::feature_missing("memory clear", "memory"))
+    }
+
+    /// `basemind memory export` in a build without the memory store.
+    pub(crate) fn memory_export(&self, _p: MemoryExportParams) -> Result<(), EngineError> {
+        Err(EngineError::feature_missing("memory export", "memory"))
+    }
+
+    /// `basemind memory import` in a build without the memory store.
+    pub(crate) fn memory_import(&self, _p: MemoryImportParams) -> Result<(), EngineError> {
+        Err(EngineError::feature_missing("memory import", "memory"))
     }
 }
 

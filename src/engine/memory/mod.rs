@@ -1,4 +1,5 @@
-//! The memory notes of a repo group: `memory_save`, `memory_search` and `basemind memory delete`.
+//! The memory notes of a repo group: `memory_save`, `memory_search`, `basemind memory delete`, and
+//! `basemind memory export|import` ([`transfer`]).
 //!
 //! The Fjall `memory_by_key` record is the truth for a note ([`ops`]); its vector row, which
 //! `memory_search` by meaning reads, is derived from it ([`vectors`]). A search no model can embed
@@ -8,6 +9,7 @@ pub(crate) mod lexical;
 pub(crate) mod ops;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub(crate) mod transfer;
 pub(crate) mod vectors;
 
 use std::path::Path;

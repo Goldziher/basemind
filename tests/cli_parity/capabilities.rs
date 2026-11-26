@@ -217,6 +217,14 @@ pub fn table() -> Vec<Row> {
             "memory clear",
             "removing every note of a repository is kept off the agent surface (ADR-0018)",
         ),
+        cli_only(
+            "memory export",
+            "moving notes between clones is a person's act, kept off the agent surface (ADR-0018, ADR-0056)",
+        ),
+        cli_only(
+            "memory import",
+            "writing notes from a file is kept off the agent surface (ADR-0018, ADR-0056)",
+        ),
         // ---- git ----
         tool("git_log", "git log"),
         tool("git_blame", "git blame"),
