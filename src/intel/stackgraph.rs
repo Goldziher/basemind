@@ -59,10 +59,17 @@ pub fn has_tsg_ruleset(lang: LangId) -> bool {
 /// We strip both; `except*` handling folds into the existing `except_clause` rules already present.
 fn tsg_source(lang: LangId) -> Option<String> {
     match lang {
-        "python" => Some(adapt_python_tsg(PYTHON_TSG)),
-        "java" => Some(JAVA_TSG.to_string()),
+        "python" => Some(adapt_python_tsg(&normalize_newlines(PYTHON_TSG))),
+        "java" => Some(normalize_newlines(JAVA_TSG)),
         _ => None,
     }
+}
+
+/// Rewrite CRLF line endings to LF. A Windows checkout with `core.autocrlf` turns the vendored
+/// `.tsg` files into CRLF, which would defeat the newline-anchored patterns in
+/// [`adapt_python_tsg`] and leave the grammar-drift references in place.
+fn normalize_newlines(src: &str) -> String {
+    src.replace("\r\n", "\n")
 }
 
 /// Remove the two `except_group_clause` references that don't exist in basemind's Python grammar.
@@ -551,6 +558,15 @@ mod tests {
     fn resolved(lang: LangId, src: &str) -> FileResolvedRefs {
         resolve_stackgraph(lang, src.as_bytes())
             .unwrap_or_else(|| panic!("{lang} stack-graph resolution returned None for {src:?}"))
+    }
+
+    #[test]
+    fn crlf_tsg_source_is_adapted_like_lf() {
+        let lf = "a\n  (except_group_clause)\nb\n(except_group_clause) {}\nc\n";
+        let crlf = lf.replace('\n', "\r\n");
+        assert_eq!(normalize_newlines(&crlf), lf);
+        assert_eq!(adapt_python_tsg(&normalize_newlines(&crlf)), "a\nb\nc\n");
+        assert_eq!(normalize_newlines("x\ny\n"), "x\ny\n");
     }
 
     #[test]
