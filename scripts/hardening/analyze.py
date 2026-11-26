@@ -376,26 +376,43 @@ def floor_rule(v: Verdict, label: str, points: list[tuple[float, float]], args: 
     v.rules.append(Rule(label, waived, detail + note, value, f"{args.floor_tol} MiB/min{suffix}", waived))
 
 
+def max_rise(values: list[float]) -> tuple[float, float, float]:
+    """Return the largest increase from an earlier sample to a later one, as (rise, low, high).
+
+    A series that only falls has a rise of 0; a sawtooth has a rise of its tooth height.
+    """
+    low = values[0]
+    best = (0.0, values[0], values[0])
+    for value in values[1:]:
+        if value - low > best[0]:
+            best = (value - low, low, value)
+        low = min(low, value)
+    return best
+
+
 def idle_memory_rule(v: Verdict, pid: int, idle: list[dict[str, Any]], args: argparse.Namespace) -> None:
-    """Fail when a daemon's memory swings by more than `--idle-swing-mib` while nothing is asked of it.
+    """Fail when a daemon's memory rises by more than `--idle-swing-mib` while nothing is asked of it.
 
     An idle daemon must settle, not breathe: a transient that the allocator keeps after a rescan or
     a read-stack rebuild shows up as memory that jumps by GBs within a minute with no call in
-    flight. The band is the spread between the highest and lowest sample after `--idle-settle`.
+    flight. The rule measures the largest rise from any earlier sample to a later one after
+    `--idle-settle`. A fall is the allocator returning load's freed pages and is not judged, so a
+    single drop after load passes while a sawtooth fails on its upstroke.
     """
     key = "footprint" if idle and idle[0].get("footprint") is not None else "rss"
-    values = [r[key] for r in idle if r.get(key) is not None]
+    values = [r[key] for r in sorted(idle, key=lambda r: r["t"]) if r.get(key) is not None]
     label = f"R6c daemon {pid} idle memory ({key})"
-    if len(values) < 2:  # noqa: PLR2004 - a spread needs two samples
+    if len(values) < 2:  # noqa: PLR2004 - a rise needs two samples
         v.add(label, False, f"{len(values)} idle samples (need >= 2)")
         return
-    swing = (max(values) - min(values)) / MIB
+    rise, low, high = max_rise(values)
     v.add(
         label,
-        swing <= args.idle_swing_mib,
-        f"swing {swing:.1f} MiB between {min(values) / MIB:.0f} and {max(values) / MIB:.0f} MiB over "
-        f"{len(values)} idle samples (band {args.idle_swing_mib} MiB)",
-        f"{swing:.1f} MiB",
+        rise / MIB <= args.idle_swing_mib,
+        f"rise {rise / MIB:.1f} MiB from {low / MIB:.0f} to {high / MIB:.0f} MiB over "
+        f"{len(values)} idle samples (band {args.idle_swing_mib} MiB; start {values[0] / MIB:.0f}, "
+        f"end {values[-1] / MIB:.0f} MiB)",
+        f"{rise / MIB:.1f} MiB",
         f"{args.idle_swing_mib} MiB",
     )
 
