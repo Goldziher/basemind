@@ -540,10 +540,11 @@ fn the_per_view_store_of_an_earlier_build_is_replaced_by_the_group_store() {
 /// Set a directory's mtime. Windows refuses to open a directory without backup semantics.
 fn set_dir_modified(dir: &std::path::Path, when: std::time::SystemTime) {
     let mut options = std::fs::File::options();
-    options.write(true);
+    options.read(true);
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
+        options.write(true);
         const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
         options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
     }
