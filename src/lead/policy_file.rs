@@ -258,7 +258,7 @@ fn build(launch: LaunchTable, context: &Context<'_>) -> Result<LeadPolicy, Strin
 /// agent can read and answer the thread its launcher opened (ADR-0044). Every other tool, of the
 /// server or the harness, still asks and is denied.
 fn comms_tools() -> Vec<String> {
-    crate::mcp::agent_tools::AGENT_TOOLS
+    crate::engine::tool_names::AGENT_TOOLS
         .iter()
         .map(|tool| (*tool).to_owned())
         .collect()

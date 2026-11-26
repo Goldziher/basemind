@@ -48,6 +48,7 @@ pub(crate) mod stale;
 pub(crate) mod term_index;
 pub(crate) mod timing;
 pub(crate) mod tokens;
+pub(crate) mod tool_names;
 pub(crate) mod types;
 pub(crate) mod workspace;
 

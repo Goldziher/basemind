@@ -116,6 +116,11 @@ mod tests {
     }
 
     #[test]
+    fn the_read_only_tools_match_the_table_the_cli_reads() {
+        assert_eq!(read_only_verb_tools(), crate::engine::tool_names::READ_ONLY_VERB_TOOLS);
+    }
+
+    #[test]
     fn the_read_only_tools_leave_out_every_tool_that_writes() {
         let read_only = read_only_verb_tools();
         for writer in ["memory_save", "index_rescan"] {
