@@ -265,6 +265,10 @@ where
 /// in, and one that never evicted a single entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tool_output_is_identical_bounded_and_unbounded() {
+    // The serving process hands owed embeddings to a detached worker that holds the store lock, which
+    // refuses the reads this test makes; embedding is not under test, so keep it in-process.
+    // SAFETY: the only test in this binary, and nothing else reads the environment concurrently.
+    unsafe { std::env::set_var("BASEMIND_EMBED_BACKGROUND", "false") };
     let dir = build_corpus();
     let root = dir.path();
     run_scan(root);
