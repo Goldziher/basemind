@@ -18,7 +18,9 @@ fn generate_schema_text() -> String {
 #[test]
 fn schema_snapshot_matches_derived() {
     let derived = generate_schema_text();
-    let committed = std::fs::read_to_string(SCHEMA_PATH).expect("read committed schema");
+    let committed = std::fs::read_to_string(SCHEMA_PATH)
+        .expect("read committed schema")
+        .replace("\r\n", "\n");
     if derived != committed {
         let derived_lines: Vec<&str> = derived.lines().collect();
         let committed_lines: Vec<&str> = committed.lines().collect();

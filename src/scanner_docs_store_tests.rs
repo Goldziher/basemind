@@ -537,6 +537,19 @@ fn the_per_view_store_of_an_earlier_build_is_replaced_by_the_group_store() {
     assert!(!legacy.exists(), "a view without documents removes it too");
 }
 
+/// Set a directory's mtime. Windows refuses to open a directory without backup semantics.
+fn set_dir_modified(dir: &std::path::Path, when: std::time::SystemTime) {
+    let mut options = std::fs::File::options();
+    options.write(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    options.open(dir).unwrap().set_modified(when).unwrap();
+}
+
 /// A scan's open stamps its own store and removes a sibling store of another model no scan has
 /// opened for the idle window, judged by the stamp or, before it, the directory's mtime.
 #[test]
@@ -558,7 +571,7 @@ fn an_open_removes_retrieval_stores_of_models_no_scan_uses() {
         .set_modified(old)
         .unwrap();
     let unstamped_old = mk("large-1024-cccccccc");
-    std::fs::File::open(&unstamped_old).unwrap().set_modified(old).unwrap();
+    set_dir_modified(&unstamped_old, old);
     let recent = mk("other-768-dddddddd");
     std::fs::File::create(recent.join(LAST_USED_FILE)).unwrap();
 

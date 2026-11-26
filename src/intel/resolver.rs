@@ -224,17 +224,71 @@ impl SpecifierResolver {
 /// Convert an absolute path under `root` to a repo-relative [`RelPath`] (forward-slashed to match
 /// the scanner's key convention). Returns `None` for paths outside `root` or non-UTF-8 paths.
 /// Shared by the resolver variants.
+///
+/// A Windows root can arrive in verbatim form (`\\?\D:\repo`, what `canonicalize` returns) while the
+/// resolver hands back the plain form (`D:\repo\a.ts`), so the two are compared as normalised strings.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 fn to_repo_relative(root: &Path, target_abs: &Path) -> Option<RelPath> {
-    let rel = match target_abs.strip_prefix(root) {
-        Ok(rel) => rel.to_path_buf(),
-        Err(_) => {
-            let canonical_root = std::fs::canonicalize(root).ok()?;
-            target_abs.strip_prefix(&canonical_root).ok()?.to_path_buf()
-        }
+    let target = target_abs.to_str()?;
+    if let Some(rel) = relative_to_root(root.to_str()?, target) {
+        return Some(RelPath::from(rel.as_str()));
+    }
+    let canonical_root = std::fs::canonicalize(root).ok()?;
+    relative_to_root(canonical_root.to_str()?, target).map(|rel| RelPath::from(rel.as_str()))
+}
+
+/// `target` relative to `root`, forward-slashed, ignoring a Windows verbatim prefix and the
+/// separator style of either side. `None` when `target` is not strictly inside `root`.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack", test))]
+fn relative_to_root(root: &str, target: &str) -> Option<String> {
+    let root = normalize_separators(root);
+    let target = normalize_separators(target);
+    let rel = target.strip_prefix(root.trim_end_matches('/'))?.strip_prefix('/')?;
+    (!rel.is_empty()).then(|| rel.to_owned())
+}
+
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack", test))]
+fn normalize_separators(path: &str) -> String {
+    let plain = match path.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => format!(r"\\{unc}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_owned(),
     };
-    let normalized = rel.to_str()?.replace('\\', "/");
-    Some(RelPath::from(normalized.as_str()))
+    plain.replace('\\', "/")
+}
+
+#[cfg(test)]
+mod relative_to_root_tests {
+    use super::relative_to_root;
+
+    #[test]
+    fn a_verbatim_root_matches_a_plain_target() {
+        assert_eq!(
+            relative_to_root(r"\\?\D:\a\repo", r"D:\a\repo\src\a.ts").as_deref(),
+            Some("src/a.ts")
+        );
+    }
+
+    #[test]
+    fn a_plain_root_matches_a_verbatim_target() {
+        assert_eq!(
+            relative_to_root(r"D:\a\repo", r"\\?\D:\a\repo\a.ts").as_deref(),
+            Some("a.ts")
+        );
+    }
+
+    #[test]
+    fn posix_paths_pass_through() {
+        assert_eq!(
+            relative_to_root("/r/repo/", "/r/repo/x/y.ts").as_deref(),
+            Some("x/y.ts")
+        );
+    }
+
+    #[test]
+    fn a_sibling_sharing_a_prefix_or_the_root_itself_is_outside() {
+        assert_eq!(relative_to_root("/r/repo", "/r/repo2/a.ts"), None);
+        assert_eq!(relative_to_root("/r/repo", "/r/repo"), None);
+    }
 }
 
 /// Record `candidate` as consulted and return its repo-relative path when it is a regular file.
@@ -527,13 +581,13 @@ pub(crate) mod js {
                 .get_or_init(|| std::fs::canonicalize(root).ok())
                 .as_deref();
             for abs in self.log.drain() {
-                let rel = abs
-                    .strip_prefix(root)
-                    .ok()
-                    .or_else(|| canonical.and_then(|c| abs.strip_prefix(c).ok()))
-                    .and_then(Path::to_str);
+                let Some(abs) = abs.to_str() else { continue };
+                let rel = root
+                    .to_str()
+                    .and_then(|r| relative_to_root(r, abs))
+                    .or_else(|| canonical.and_then(Path::to_str).and_then(|c| relative_to_root(c, abs)));
                 if let Some(rel) = rel {
-                    probes.insert_rel(&RelPath::from(rel.replace('\\', "/").as_str()));
+                    probes.insert_rel(&RelPath::from(rel.as_str()));
                 }
             }
         }
