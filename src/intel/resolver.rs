@@ -582,10 +582,11 @@ pub(crate) mod js {
                 .as_deref();
             for abs in self.log.drain() {
                 let Some(abs) = abs.to_str() else { continue };
-                let rel = root
-                    .to_str()
-                    .and_then(|r| relative_to_root(r, abs))
-                    .or_else(|| canonical.and_then(Path::to_str).and_then(|c| relative_to_root(c, abs)));
+                let rel = root.to_str().and_then(|r| super::relative_to_root(r, abs)).or_else(|| {
+                    canonical
+                        .and_then(Path::to_str)
+                        .and_then(|c| super::relative_to_root(c, abs))
+                });
                 if let Some(rel) = rel {
                     probes.insert_rel(&RelPath::from(rel.as_str()));
                 }
