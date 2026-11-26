@@ -53,7 +53,7 @@ pub(crate) mod workspace;
 
 pub use crate::config::engine::EngineConfig;
 pub use crate::data_root::DataRoot;
-pub use error::EngineError;
+pub use error::{BUSY_DATA, EngineError};
 pub use handle::Engine;
 pub(crate) use map_cache::MapCache;
 pub(crate) use workspace::{Lifecycle, Workspace};

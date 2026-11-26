@@ -21,8 +21,7 @@ use crate::engine::{EngineError, Workspace};
 /// One engine operation: a verb tool's body over a [`Workspace`].
 pub(crate) type Op<P, R> = fn(&Workspace, P) -> Result<R, EngineError>;
 
-/// Key of the `data` field that marks a tool error as contention for the workspace writer lock.
-pub(crate) const BUSY_DATA: &str = "busy";
+pub(crate) use crate::engine::BUSY_DATA;
 
 /// A wrapped store, index, git or I/O error is first worded for the caller (`EngineError::settled`);
 /// then each variant keeps its message, and the code is what the CLI turns into an exit status. An

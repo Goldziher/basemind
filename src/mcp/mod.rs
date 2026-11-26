@@ -25,12 +25,6 @@ mod cursor_bind;
 mod daemon_forward;
 mod helpers;
 pub(crate) use adapter::BUSY_DATA;
-
-/// The overload refusal a CLI session answers with ([`admission::ServerBusy::into_cli_error`]).
-#[cfg(all(test, feature = "comms", any(unix, windows)))]
-pub(crate) fn busy_for_cli() -> rmcp::ErrorData {
-    admission::ServerBusy.into_cli_error()
-}
 #[cfg(all(test, feature = "comms", feature = "code-intel-js", any(unix, windows)))]
 mod code_refs_hosted_tests;
 #[cfg(test)]

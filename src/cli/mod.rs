@@ -129,7 +129,7 @@ pub fn run_tool(tool: &str, result: Result<CallToolResult, McpError>) -> Result<
         }
         if e.data
             .as_ref()
-            .and_then(|data| data.get(crate::mcp::BUSY_DATA))
+            .and_then(|data| data.get(crate::engine::BUSY_DATA))
             .and_then(serde_json::Value::as_bool)
             == Some(true)
         {
