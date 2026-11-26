@@ -203,6 +203,12 @@ impl<K: std::hash::Hash + Eq, V> Charged<K, V> {
         self.lru.clear();
         self.charged = 0;
     }
+
+    /// Raise the entry cap to `entries` when that is larger, so a category shared by several
+    /// workspaces holds the most any of them asks for, never their sum.
+    fn widen_entries(&mut self, entries: usize) {
+        self.entries = self.entries.max(entries);
+    }
 }
 
 /// The guard of one category's lock. A panic while the lock was held may have left the byte charge
@@ -218,10 +224,74 @@ fn category<K: std::hash::Hash + Eq, V>(mutex: &Mutex<Charged<K, V>>) -> MutexGu
     })
 }
 
+type Category<K, V> = Arc<Mutex<Charged<K, V>>>;
+
+/// The three RAM categories. Every value is a pure function of its key within one repository (a
+/// commit sha, or a head sha plus path), so the worktrees of a repository can read each other's
+/// entries; see [`SharedRam`].
+struct RamTiers {
+    commit_files: Category<String, Arc<Vec<CommitFileChange>>>,
+    log: Category<LogKey, Arc<Vec<CommitInfo>>>,
+    blame: Category<BlameKey, Arc<BlameResult>>,
+}
+
+impl RamTiers {
+    fn new(mem_capacity: usize, budget_bytes: u64) -> Self {
+        Self {
+            commit_files: Arc::new(Mutex::new(Charged::new(
+                mem_capacity,
+                budget_bytes,
+                |files: &Arc<Vec<CommitFileChange>>| commit_files_heap_bytes(files),
+            ))),
+            log: Arc::new(Mutex::new(Charged::new(
+                mem_capacity,
+                budget_bytes,
+                |commits: &Arc<Vec<CommitInfo>>| commits_heap_bytes(commits),
+            ))),
+            blame: Arc::new(Mutex::new(Charged::new(
+                mem_capacity,
+                budget_bytes,
+                |result: &Arc<BlameResult>| blame_heap_bytes(result),
+            ))),
+        }
+    }
+
+    fn widen_entries(&self, mem_capacity: usize) {
+        category(&self.commit_files).widen_entries(mem_capacity);
+        category(&self.log).widen_entries(mem_capacity);
+        category(&self.blame).widen_entries(mem_capacity);
+    }
+}
+
+/// The live shared RAM tiers of this process, by the repository's shared directory. Weak, so the
+/// last cache of a repository to close frees them whole. Each repository's tiers are held to
+/// [`CATEGORY_MEM_BUDGET_BYTES`] per category however many worktrees read them, so the daemon's
+/// git RAM grows with repositories, not worktrees.
+static SHARED_RAM: Mutex<Vec<(PathBuf, std::sync::Weak<RamTiers>)>> = Mutex::new(Vec::new());
+
+/// The live shared tiers for `shared_dir`, widened to `mem_capacity` entries, or new ones.
+fn shared_ram(shared_dir: &Path, mem_capacity: usize) -> Arc<RamTiers> {
+    let mut open = SHARED_RAM.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    open.retain(|(_, tiers)| tiers.strong_count() > 0);
+    if let Some(tiers) = open
+        .iter()
+        .find(|(dir, _)| dir == shared_dir)
+        .and_then(|(_, tiers)| tiers.upgrade())
+    {
+        tiers.widen_entries(mem_capacity);
+        return tiers;
+    }
+    let tiers = Arc::new(RamTiers::new(mem_capacity, CATEGORY_MEM_BUDGET_BYTES));
+    open.push((shared_dir.to_path_buf(), Arc::downgrade(&tiers)));
+    tiers
+}
+
 pub struct GitCache {
-    commit_files: Mutex<Charged<String, Arc<Vec<CommitFileChange>>>>,
-    log: Mutex<Charged<LogKey, Arc<Vec<CommitInfo>>>>,
-    blame: Mutex<Charged<BlameKey, Arc<BlameResult>>>,
+    commit_files: Category<String, Arc<Vec<CommitFileChange>>>,
+    log: Category<LogKey, Arc<Vec<CommitInfo>>>,
+    blame: Category<BlameKey, Arc<BlameResult>>,
+    /// Keeps the shared RAM tiers alive while this cache reads them; `None` for a private cache.
+    _ram: Option<Arc<RamTiers>>,
     disk: Option<Arc<DiskTier>>,
     /// The tier holding `commit_files/`. Those payloads are keyed by commit sha and so identical in
     /// every worktree of a repository: this is the tier of the repository's shared directory, which
@@ -252,7 +322,9 @@ impl GitCache {
         let max_bytes = log_cache_max_bytes();
         let disk = open_disk_once(&basemind_dir.join(GIT_CACHE_DIR), max_bytes)?;
         let commit_files_disk = open_disk_once(&shared_dir.join(GIT_CACHE_DIR), max_bytes)?;
-        let mut cache = Self::with_budget(Some(disk), mem_capacity, CATEGORY_MEM_BUDGET_BYTES);
+        let ram = shared_ram(shared_dir, mem_capacity);
+        let mut cache = Self::with_ram(Some(disk), &ram);
+        cache._ram = Some(ram);
         cache.commit_files_disk = Some(commit_files_disk);
         Ok(cache)
     }
@@ -261,20 +333,16 @@ impl GitCache {
     /// budget instead of synthesising 32 MiB of git history; production always passes
     /// [`CATEGORY_MEM_BUDGET_BYTES`].
     fn with_budget(disk: Option<Arc<DiskTier>>, mem_capacity: usize, budget_bytes: u64) -> Self {
+        Self::with_ram(disk, &RamTiers::new(mem_capacity, budget_bytes))
+    }
+
+    /// A cache reading and writing `ram`'s categories; the caller keeps `ram` alive through `_ram`.
+    fn with_ram(disk: Option<Arc<DiskTier>>, ram: &RamTiers) -> Self {
         Self {
-            commit_files: Mutex::new(Charged::new(
-                mem_capacity,
-                budget_bytes,
-                |files: &Arc<Vec<CommitFileChange>>| commit_files_heap_bytes(files),
-            )),
-            log: Mutex::new(Charged::new(
-                mem_capacity,
-                budget_bytes,
-                |commits: &Arc<Vec<CommitInfo>>| commits_heap_bytes(commits),
-            )),
-            blame: Mutex::new(Charged::new(mem_capacity, budget_bytes, |result: &Arc<BlameResult>| {
-                blame_heap_bytes(result)
-            })),
+            commit_files: Arc::clone(&ram.commit_files),
+            log: Arc::clone(&ram.log),
+            blame: Arc::clone(&ram.blame),
+            _ram: None,
             commit_files_disk: disk.clone(),
             disk,
         }
@@ -735,9 +803,9 @@ mod tests {
         let cache = GitCache::with_budget(None, 64, 1024 * 1024);
         for i in 0..8 {
             let value = commits(&format!("sha{i}"), 1024);
-            cache.log.lock().unwrap().admit(log_key(&format!("head{i}")), value);
+            category(&cache.log).admit(log_key(&format!("head{i}")), value);
         }
-        let mut guard = cache.log.lock().unwrap();
+        let mut guard = category(&cache.log);
         assert_eq!(guard.lru.len(), 8);
         assert!(guard.charged < 1024 * 1024, "charged={}", guard.charged);
         for i in 0..8 {
@@ -754,13 +822,13 @@ mod tests {
     fn byte_budget_evicts_least_recently_used() {
         let cache = GitCache::with_budget(None, 64, 50_000);
         let (a, b, c) = (log_key("aaa"), log_key("bbb"), log_key("ccc"));
-        cache.log.lock().unwrap().admit(a.clone(), commits("aaa", 20_000));
-        cache.log.lock().unwrap().admit(b.clone(), commits("bbb", 20_000));
+        category(&cache.log).admit(a.clone(), commits("aaa", 20_000));
+        category(&cache.log).admit(b.clone(), commits("bbb", 20_000));
         // Reading `a` back makes `b` the oldest, so the next insert must take `b` and not `a`.
-        assert!(cache.log.lock().unwrap().lru.get(&a).is_some());
-        cache.log.lock().unwrap().admit(c.clone(), commits("ccc", 20_000));
+        assert!(category(&cache.log).lru.get(&a).is_some());
+        category(&cache.log).admit(c.clone(), commits("ccc", 20_000));
 
-        let mut guard = cache.log.lock().unwrap();
+        let mut guard = category(&cache.log);
         assert!(guard.charged <= 50_000, "charged={}", guard.charged);
         assert!(guard.lru.get(&a).is_some(), "the recently-read entry survives");
         assert!(guard.lru.get(&c).is_some(), "the newest entry survives");
@@ -776,13 +844,9 @@ mod tests {
     fn oversized_entry_is_admitted_then_displaced() {
         let cache = GitCache::with_budget(None, 64, 8192);
         let huge = log_key("huge");
-        cache
-            .log
-            .lock()
-            .unwrap()
-            .admit(huge.clone(), commits("huge", 1_000_000));
+        category(&cache.log).admit(huge.clone(), commits("huge", 1_000_000));
         {
-            let mut guard = cache.log.lock().unwrap();
+            let mut guard = category(&cache.log);
             assert!(
                 guard.lru.get(&huge).is_some(),
                 "a value over budget is still returnable"
@@ -790,9 +854,9 @@ mod tests {
             assert_eq!(guard.lru.len(), 1);
         }
         let small = log_key("small");
-        cache.log.lock().unwrap().admit(small.clone(), commits("small", 16));
+        category(&cache.log).admit(small.clone(), commits("small", 16));
 
-        let mut guard = cache.log.lock().unwrap();
+        let mut guard = category(&cache.log);
         assert!(guard.lru.get(&small).is_some());
         assert!(
             guard.lru.get(&huge).is_none(),
@@ -809,9 +873,9 @@ mod tests {
         let cache = GitCache::with_budget(None, 2, 1024 * 1024);
         for i in 0..8 {
             let value = commits(&format!("sha{i}"), 4096);
-            cache.log.lock().unwrap().admit(log_key(&format!("head{i}")), value);
+            category(&cache.log).admit(log_key(&format!("head{i}")), value);
         }
-        let guard = cache.log.lock().unwrap();
+        let guard = category(&cache.log);
         assert_eq!(guard.lru.len(), 2, "the entry cap still binds");
         assert!(
             guard.charged < 3 * 4096,
@@ -980,5 +1044,84 @@ mod tests {
         let dir = shared.path().join(GIT_CACHE_DIR).join(Subdir::CommitFiles.name());
         assert!(dir.is_dir());
         assert_eq!(count_files(&dir), 0);
+    }
+
+    /// Two caches opened over one shared directory read each other's RAM entries, and the entries
+    /// are charged once.
+    #[test]
+    fn worktrees_of_one_repository_share_ram_entries() {
+        let shared = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let one = GitCache::open_shared(first.path(), shared.path(), 8, true).unwrap();
+        let two = GitCache::open_shared(second.path(), shared.path(), 8, true).unwrap();
+        let key = log_key("head");
+
+        category(&one.log).admit(key.clone(), commits("aaa", 4096));
+
+        let seen = category(&two.log).lru.get(&key).cloned().expect("the sibling sees the entry");
+        assert_eq!(seen[0].sha, "aaa");
+        assert_eq!(category(&two.log).charged, category(&one.log).charged);
+        assert_eq!(category(&one.log).lru.len(), 1);
+    }
+
+    /// Different repositories never see each other's entries.
+    #[test]
+    fn distinct_repositories_do_not_share_ram_entries() {
+        let (shared_a, shared_b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (own_a, own_b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = GitCache::open_shared(own_a.path(), shared_a.path(), 8, true).unwrap();
+        let b = GitCache::open_shared(own_b.path(), shared_b.path(), 8, true).unwrap();
+        let key = log_key("head");
+
+        category(&a.log).admit(key.clone(), commits("aaa", 16));
+
+        assert!(category(&b.log).lru.get(&key).is_none());
+    }
+
+    /// A shared category holds the largest entry cap any opener asks for, not their sum, and the
+    /// byte budget is the single per-repository ceiling.
+    #[test]
+    fn shared_ram_is_widened_not_summed() {
+        let shared = tempfile::tempdir().unwrap();
+        let (own_a, own_b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a = GitCache::open_shared(own_a.path(), shared.path(), 2, true).unwrap();
+        let _b = GitCache::open_shared(own_b.path(), shared.path(), 4, true).unwrap();
+
+        for i in 0..8 {
+            category(&a.log).admit(log_key(&format!("head{i}")), commits("s", 16));
+        }
+
+        let guard = category(&a.log);
+        assert_eq!(guard.lru.len(), 4);
+        assert_eq!(guard.budget_bytes, CATEGORY_MEM_BUDGET_BYTES);
+    }
+
+    /// The shared tiers die with their last cache; a later open starts empty.
+    #[test]
+    fn shared_ram_is_freed_with_its_last_cache() {
+        let shared = tempfile::tempdir().unwrap();
+        let own = tempfile::tempdir().unwrap();
+        let key = log_key("head");
+        {
+            let cache = GitCache::open_shared(own.path(), shared.path(), 8, true).unwrap();
+            category(&cache.log).admit(key.clone(), commits("aaa", 16));
+        }
+        let cache = GitCache::open_shared(own.path(), shared.path(), 8, true).unwrap();
+        assert!(category(&cache.log).lru.get(&key).is_none());
+    }
+
+    /// A private cache (no shared directory) is unaffected by shared ones.
+    #[test]
+    fn a_private_cache_does_not_join_shared_ram() {
+        let shared = tempfile::tempdir().unwrap();
+        let own = tempfile::tempdir().unwrap();
+        let sharing = GitCache::open_shared(own.path(), shared.path(), 8, true).unwrap();
+        let private = GitCache::with_budget(None, 8, CATEGORY_MEM_BUDGET_BYTES);
+        let key = log_key("head");
+
+        category(&sharing.log).admit(key.clone(), commits("aaa", 16));
+
+        assert!(category(&private.log).lru.get(&key).is_none());
     }
 }
