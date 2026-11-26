@@ -208,10 +208,20 @@ async fn collect_responses(root: &Path) -> Vec<Value> {
     await_steady_state(&service).await;
     let mut out = Vec::new();
     for (tool, args) in tool_matrix() {
-        let result = service
-            .call_tool(call_params(tool, args.clone()))
-            .await
-            .unwrap_or_else(|e| panic!("call {tool} {args}: {e}"));
+        // A catch-up scan the server starts on a slow machine holds the writer lock; a read answers
+        // "busy" until it yields, so retry that one refusal rather than the whole equivalence.
+        let started = std::time::Instant::now();
+        let result = loop {
+            let result = service
+                .call_tool(call_params(tool, args.clone()))
+                .await
+                .unwrap_or_else(|e| panic!("call {tool} {args}: {e}"));
+            let busy = result.is_error == Some(true) && text_of(&result).contains("holds this workspace's index");
+            if !busy || started.elapsed() > std::time::Duration::from_secs(120) {
+                break result;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        };
         assert_ne!(result.is_error, Some(true), "call {tool} {args}: {}", text_of(&result));
         let mut parsed: Value = basemind::wire::decode(&text_of(&result)).unwrap_or(Value::Null);
         scrub(&mut parsed);
