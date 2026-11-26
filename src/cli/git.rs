@@ -12,8 +12,10 @@ use clap::Subcommand;
 
 use super::context::Tools;
 use crate::engine::Workspace;
-use crate::mcp::cursor::Cursor;
-use crate::mcp::params::*;
+use crate::engine::cursor::Cursor;
+use crate::engine::types::git::{
+    FindCommitsByPathParams, GitBlameParams, GitDiffParams, GitLogParams, HotFilesParams, HotspotsParams,
+};
 
 use super::render::{Emit, emit};
 use super::{resolve_path, run_tool};

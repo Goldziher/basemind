@@ -16,7 +16,8 @@ use clap::Subcommand;
 use crate::mcp::BasemindServer;
 
 use super::context::Tools;
-use crate::mcp::params::*;
+use crate::engine::types::index::IndexStatusParams;
+use crate::mcp::params::TelemetrySummaryParams;
 use crate::store_gc::{self, CacheComponent};
 
 use super::choices::TelemetryWindow;
@@ -58,11 +59,11 @@ pub enum AdminCmd {
 }
 
 /// Count tokens in stdin and print just the integer, so a shell script can pipe straight into it.
-/// Bypasses the tool dispatch entirely: it is a CLI-only convenience over [`crate::mcp::tokens::count_tokens`], not an agent-facing operation.
+/// Bypasses the tool dispatch entirely: it is a CLI-only convenience over [`crate::engine::tokens::count_tokens`], not an agent-facing operation.
 #[cfg(feature = "tokenizer")]
 fn run_tokens(out: &mut impl Write) -> Result<()> {
     let text = read_stdin()?;
-    let count = crate::mcp::tokens::count_tokens(&text);
+    let count = crate::engine::tokens::count_tokens(&text);
     writeln!(out, "{count}").context("write token count")?;
     Ok(())
 }

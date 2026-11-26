@@ -15,8 +15,8 @@ use clap::{Args, Subcommand};
 use super::context::Tools;
 use super::render::{Emit, emit};
 use super::run_tool;
-use crate::mcp::cursor::Cursor;
-use crate::mcp::params::DocsSearchParams;
+use crate::engine::cursor::Cursor;
+use crate::engine::types::search::DocsSearchParams;
 
 #[derive(Subcommand, Debug)]
 pub enum DocsCmd {

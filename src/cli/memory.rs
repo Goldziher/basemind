@@ -15,8 +15,10 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use super::context::Tools;
-use crate::mcp::cursor::Cursor;
-use crate::mcp::params::*;
+use crate::engine::cursor::Cursor;
+use crate::engine::types::memory::{
+    MemoryClearParams, MemoryDeleteParams, MemorySaveParams, MemorySearchToolParams, Visibility,
+};
 
 use super::render::{Emit, emit};
 use super::run_tool;

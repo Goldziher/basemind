@@ -13,8 +13,12 @@ use clap::Subcommand;
 
 use super::context::Tools;
 use crate::engine::Workspace;
-use crate::mcp::cursor::Cursor;
-use crate::mcp::params::*;
+use crate::engine::cursor::Cursor;
+use crate::engine::types::code::{CodeOutlineParams, CodeReadParams, CodeSymbolsParams};
+use crate::engine::types::files::FindFilesToolParams;
+use crate::engine::types::grep::CodeGrepParams;
+use crate::engine::types::refs::CodeRefsParams;
+use crate::engine::types::search::{CodeSearchParams, GetChunkParams};
 
 use super::analysis::{self, AnalysisCmd};
 use super::choices::{IndexedChoice, RefsMatch, RefsRelation, SearchLane};
