@@ -121,12 +121,23 @@ fn auto_embed_threads(cores: usize) -> usize {
 /// embedding reloads the model. Returns how many engines were dropped. The freed weights and arena
 /// are handed back to the OS at once, so an idle process does not keep the engine's high-water mark.
 pub fn release_engines() -> usize {
+    let dropped = clear_engines();
+    release_memory_if(dropped);
+    dropped
+}
+
+/// Drop every resident engine without returning memory to the OS, so a caller holding a lock can
+/// release it before the slow allocator collect ([`release_memory_if`]). Returns how many were dropped.
+fn clear_engines() -> usize {
     ENGINE_RELEASES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    let dropped = xberg::clear_engine_caches();
+    xberg::clear_engine_caches()
+}
+
+/// Hand the freed engine memory back to the OS when `dropped` engines were cleared.
+fn release_memory_if(dropped: usize) {
     if dropped > 0 {
         crate::allocator::release_unused_memory();
     }
-    dropped
 }
 
 static ENGINE_RELEASES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -153,12 +164,16 @@ pub fn begin_embed_pass() -> EmbedPass {
 impl Drop for EmbedPass {
     fn drop(&mut self) {
         let mut state = residency::state();
-        if state.end_pass() {
-            let dropped = release_engines();
+        let dropped = state.end_pass().then(|| {
+            let dropped = clear_engines();
             state.released();
+            dropped
+        });
+        drop(state);
+        if let Some(dropped) = dropped {
+            release_memory_if(dropped);
             tracing::info!(dropped, "embedding pass finished; released the engine it loaded");
         }
-        drop(state);
         residency::notify();
     }
 }

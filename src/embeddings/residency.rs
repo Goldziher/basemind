@@ -147,10 +147,12 @@ fn spawn_idle_releaser() {
                 st = match st.idle_deadline(IDLE_RELEASE_AFTER) {
                     None => CHANGED.wait(st).unwrap_or_else(PoisonError::into_inner),
                     Some(_) if st.idle_release_due(Instant::now(), IDLE_RELEASE_AFTER) => {
-                        let dropped = super::release_engines();
+                        let dropped = super::clear_engines();
                         st.released();
+                        drop(st);
+                        super::release_memory_if(dropped);
                         tracing::info!(dropped, "embedding engine idle; released resident embedding engines");
-                        st
+                        state()
                     }
                     Some(deadline) => {
                         let wait = deadline.saturating_duration_since(Instant::now());
