@@ -52,13 +52,14 @@ tool: `symbols` to `code_symbols`, `outline` to `code_outline`, `read` to `code_
 | `gen_outline.py` | `outline` | `path:line` of every module- and class-level def, class and assignment (never function locals) |
 | `gen_references.py` | `references`, `callers` | `path:line` of every `ast.Call` whose callee identifier is the name, cross-checked with `git grep -n -w` |
 | `gen_dependents.py` | `dependents` | files whose import statement text contains the module string |
+| `gen_structural.py` | `symbols`, `references`, `dependents` | TypeScript, Go and Java gold from `_langs.py`, a scanner over the text with comments and strings blanked (no parser is pinned): definitions outside function bodies, call sites at the line the expression starts, and import statements (TypeScript `import_statement`, Go `import_declaration`; Java has no `imports` section in basemind, so no `dependents`). A name with any ambiguous occurrence is not a candidate |
 | `gen_rust.py` | `symbols`, `outline`, `references`, `callers`, `implementations`, `dependents`, `read` | Rust gold from `rust_gold` (syn, not tree-sitter); see its docstring and `_rust.py` |
 | `gen_git.py` | `git_path`, `git_symbol`, `blame`, `blame_symbol`, `diff`, `diff_structural` | git's own output on the pinned commit; symbol bodies and names from `rust_gold` |
 | `gen_grep.py` | `grep` | `git grep -n -F` (literal) or `-E` (regex, `regex: true`) lines with the same path/language filters; Rust tasks also carry the enclosing definition per line (`annotations`) |
 | `gen_find.py` | `find` | the source path of a basename / typo / consonant-skeleton query (ranked) |
 | `gen_git_search.py` | `git_search` | shas of all commits whose message tokens contain the query's rare subject tokens (ranked) |
 | `gen_docs.py` | `docs` | the markdown file holding a sentence that names backticked code (ranked) |
-| `gen_graph.py` | `impact`, `cycles` | file-level runtime import edges from `use` resolved through each package's `Cargo.toml` (Rust, `rust_gold`; `mod` declarations are not edges, ADR-0047 decision 4) or `import` (Python, `ast`), see `_edges.py`: importers within a depth, files of each import cycle |
+| `gen_graph.py` | `impact`, `cycles` | file-level runtime import edges from `use` resolved through each package's `Cargo.toml` (Rust, `rust_gold`; `mod` declarations are not edges, ADR-0047 decision 4) `import` (Python, `ast`) or relative `import` / `export ... from` through barrels and `index` files (TypeScript, from the source text), see `_edges.py`: importers within a depth, files of each import cycle |
 | `gen_changed.py` | `grep_changed` | the lines of the files changed since `HEAD~k` that hold a literal |
 | `gen_large.py` | `find_large` | files with at least N lines, counted as the scanner counts them (a final unterminated line counts) |
 | `gen_read_around.py` | `read_around` | every line within 5 of a literal's hits, merged into ranges; the baseline is what `rg -n -C5` prints |
@@ -184,7 +185,15 @@ analysis kinds' gold, edge resolution and baselines on a fixture with a known mo
 ## Limitations
 
 - The AST generators (`gen_symbols.py`, `gen_outline.py`, `gen_references.py`, `gen_dependents.py`) emit Python gold only;
-  `gen_rust.py` and `gen_git.py` cover Rust. The harness and the other generators are language-agnostic.
+  `gen_rust.py` and `gen_git.py` (`git_symbol`, `blame_symbol`, `diff_structural`) cover Rust, and `gen_graph.py` covers
+  Rust, Python and TypeScript. `gen_structural.py` gives TypeScript, Go and Java `symbols`, `references` and (not Java)
+  `dependents` from the source text, not a parser: it undercounts what it cannot read exactly (Go grouped `const` and
+  `var` specs, TypeScript interface members and object-literal methods, Java record components), which lowers a
+  tool's precision on those names and never its recall, and it has no `outline`, `callers` or `implementations` gold
+  for them. The first run after a pin moves should be compared with basemind's own listing for a few names
+  (`basemind code symbols NAME`) to confirm the line each node starts on.
+- The TypeScript edges read relative specifiers only: a path alias (`tsconfig` `paths`), a workspace package imported by
+  name and a `package.json` `exports` map are not edges.
 - `outline`/`symbols` gold encodes basemind's Python symbol rules: module- and class-scope definitions and assignments only. Names bound inside a function or lambda (locals, nested defs) are not indexed, so the generators never descend into function bodies.
 - `find` covers every path basemind indexes (code map plus document tier). Pass `--indexed FILE` to `gen_find.py` (one indexed path per line) so tasks are never drawn from files the scan config leaves out; use `--ext md,rst,...` for a documents-only batch.
 - `docs` and semantic lookups need the `documents` build; without it those tasks error.
@@ -237,24 +246,35 @@ BASEMIND_DATA_HOME="$(mktemp -d)" BASEMIND_COMMS_DIR="$(mktemp -d)" \
   benchmarks/eval/run_gate.sh target/release/basemind "$corpus" /tmp/gate-results
 ```
 
-- `corpus.tsv` is the corpus: each repository's URL, pinned commit, the sha256 of its `git ls-tree -r` listing and its
-  file count. basemind is pinned at v0.33.0 and `tokio` at tokio-1.54.1 (the harden harness clones `tokio` at whatever
-  its default branch holds, so the pin lives here). Nothing is vendored; `fetch_corpus.sh` refuses a directory inside the
+- `corpus.tsv` is the corpus: each repository's URL, pinned commit, the sha256 of its `git ls-tree -r` listing, its
+  file count and its languages. basemind is pinned at v0.33.0 and `tokio` at tokio-1.54.1 (the harden harness clones
+  `tokio` at whatever its default branch holds, so the pin lives here). The other languages have one repository each,
+  all permissively licensed: `click` 8.3.0 (Python), `got` v14.6.6 (TypeScript, with barrels), `cobra` v1.9.1 (Go),
+  `gson` gson-parent-2.15.0 (Java), and `restate-examples` v1.8.0, a polyglot monorepo with eight `go.mod`, 29
+  `package.json` and five `pyproject.toml` roots (TypeScript, Python, Go and Java). Nothing is vendored; `fetch_corpus.sh` refuses a directory inside the
   repository and runs no hooks. The clones are data: nothing in them is executed.
 - `tasks/<corpus>.jsonl` are the task files (`gen_tasks.sh`, `--seed 1`, 25 per kind or variant), regenerated only when
-  a pin moves. Gold never comes from basemind: Rust structure from `rust_gold` (syn), git, grep and find gold from git's
-  own output on the pinned commit.
+  a pin moves. Gold never comes from basemind: Rust structure from `rust_gold` (syn), Python structure from `ast`,
+  import edges for Rust, Python and TypeScript from `_edges.py`, git, grep and find gold from git's own output on the
+  pinned commit. Each language gets the kinds its gold covers: Rust all of them; Python `symbols`, `outline`,
+  `references`, `callers`, `dependents`, `impact` and `cycles`; TypeScript `symbols`, `references`, `dependents`, `impact` and `cycles`; Go `symbols`, `references` and
+  `dependents`; Java `symbols` and `references` (`gate.py` expects exactly these per language, `REQUIRED_KINDS`). Every language
+  gets `grep`, `grep_changed`, `read_around`, `find_large`, `git_path`, `blame` and `diff`; `find` and `git_search` are
+  generated once per repository. A corpus with several languages suffixes each task id with `-<ext>`.
 - `run_gate.sh` refuses to start unless `BASEMIND_DATA_HOME` and `BASEMIND_COMMS_DIR` are set to existing, empty
   directories outside the default cache, refuses a binary without the `tokenizer` feature or whose `admin tokens` does not count 4 for `Hello, world!` (the
   o200k count; the offline word estimate gives 2, and `admin eval` labels such counts `word-estimate`, which gives
   no verdict), refuses to run `read_around`
   tasks without `rg` on PATH (its version goes into `run.tsv`), refuses a binary whose `code cycles --json`
-  `coverage` has no Rust resolver row (no `code-intel`) for a task file with `impact` / `cycles` tasks, scans each repository,
+  `coverage` has no resolver row (no `code-intel`) for a Rust, Python or TypeScript language the corpus lists, for a task file with `impact` / `cycles` tasks, scans each repository,
   runs `basemind admin eval --tasks ... --min-recall 0.8`, and stops any daemon it could have started on exit.
   It runs everything with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null` and `LC_ALL=C`, and `admin eval`
   sets the same three on each baseline command, so a host `core.autocrlf` or `color.ui` changes neither the checkout
   nor what a baseline prints.
-- `gate.py RESULTS_DIR` turns the per-corpus reports into `gate.md` / `gate.json`.
+- `gate.py RESULTS_DIR` turns the per-corpus reports into `gate.md` / `gate.json`. `gate.md` ends with a table of mean
+  recall per language and kind (from the languages column of `corpus.tsv` and the task-id suffix), so a drop in Python
+  import resolution (`impact`, `cycles` on `click`) or in TypeScript barrel resolution (the same kinds on `got`) shows
+  as its own row, and the failing kind fails its tool in the verdict above it.
 - The binary: each report's `build` holds the Cargo version, `build_id` (a hash of the executable) and the features
   compiled in, and `run.tsv` adds `source_commit`, the commit of the checkout `run_gate.sh` runs from (`-dirty` with
   uncommitted tracked changes). Run it from the checkout the binary was built from: the version string is not bumped

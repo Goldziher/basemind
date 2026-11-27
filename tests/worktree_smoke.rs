@@ -71,9 +71,20 @@ fn linked_worktrees_share_the_global_blob_cache() {
         )
         .unwrap();
     }
+    // A blob sits flat in its namespace or in a bucket directory, by the namespace's layout.
     let after_main = fs::read_dir(&global_blobs)
         .expect("global blobs dir exists")
         .filter_map(Result::ok)
+        .flat_map(|entry| {
+            if entry.path().is_dir() {
+                fs::read_dir(entry.path())
+                    .expect("read blob bucket")
+                    .filter_map(Result::ok)
+                    .collect::<Vec<_>>()
+            } else {
+                vec![entry]
+            }
+        })
         .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".fm.msgpack")))
         .count();
     assert!(

@@ -17,28 +17,45 @@ const BIN: &str = env!("CARGO_BIN_EXE_basemind");
 /// A host whose hook rewrites the agent tools' input, so `agent hook name` names the session.
 const HOST: &str = "claude";
 
+/// How many times a CLI call is retried when a loaded Windows runner leaves every pipe instance
+/// of the daemon busy past the client's own connect wait (`ERROR_PIPE_BUSY`, os error 231).
+const BUSY_RETRIES: usize = 3;
+
+/// Whether `stderr` reports the daemon pipe as busy rather than a real failure.
+fn is_pipe_busy(stderr: &str) -> bool {
+    stderr.contains("os error 231")
+}
+
 /// Run `basemind agent <args>` from `cwd` as the hooks do, returning its JSON output.
 fn agent_cli(cwd: &Path, args: &[&str], stdin: Option<&str>) -> Value {
     use std::io::Write;
-    let mut child = Command::new(BIN)
-        .arg("--json")
-        .arg("agent")
-        .args(args)
-        .current_dir(cwd)
-        .env("BASEMIND_HOST", HOST)
-        .env_remove("BASEMIND_AGENT_ID")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn basemind agent");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(stdin.unwrap_or_default().as_bytes())
-        .expect("write stdin");
-    let out = child.wait_with_output().expect("basemind agent");
+    let mut attempt = 0;
+    let out = loop {
+        let mut child = Command::new(BIN)
+            .arg("--json")
+            .arg("agent")
+            .args(args)
+            .current_dir(cwd)
+            .env("BASEMIND_HOST", HOST)
+            .env_remove("BASEMIND_AGENT_ID")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn basemind agent");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(stdin.unwrap_or_default().as_bytes())
+            .expect("write stdin");
+        let out = child.wait_with_output().expect("basemind agent");
+        let busy = !out.status.success() && is_pipe_busy(&String::from_utf8_lossy(&out.stderr));
+        if !busy || attempt >= BUSY_RETRIES {
+            break out;
+        }
+        attempt += 1;
+    };
     assert!(
         out.status.success(),
         "basemind agent {args:?} failed: {}",
@@ -46,6 +63,14 @@ fn agent_cli(cwd: &Path, args: &[&str], stdin: Option<&str>) -> Value {
     );
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     serde_json::from_str(&text).unwrap_or(Value::String(text))
+}
+
+#[test]
+fn a_busy_pipe_is_told_apart_from_a_real_failure() {
+    assert!(is_pipe_busy(
+        "Error: comms transport error: All pipe instances are busy. (os error 231)"
+    ));
+    assert!(!is_pipe_busy("Error: no such thread"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

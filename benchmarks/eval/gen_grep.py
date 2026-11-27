@@ -29,6 +29,7 @@ LANGUAGES = {
     "js": "javascript",
     "rs": "rust",
     "go": "go",
+    "java": "java",
 }
 WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]{5,}")
 # (pattern template, regex?) per language; tasks cycle through them.
@@ -41,6 +42,9 @@ TEMPLATES = {
         ("{w}[(<:]", True),
         ("\\.{w}\\(", True),
     ],
+    "typescript": [("{w}", False), ("(function|class|interface|type|const) {w}", True), ("{w}\\(", True)],
+    "go": [("{w}", False), ("func (\\([^)]*\\) )?{w}", True), ("type {w}", True), ("{w}\\(", True)],
+    "java": [("{w}", False), ("(class|interface|enum) {w}", True), ("{w}\\(", True), ("\\.{w}\\(", True)],
 }
 
 

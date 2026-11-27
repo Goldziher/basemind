@@ -194,7 +194,7 @@ fn history(ws: &Workspace, briefing: &mut Briefing, path: &str, name: &str, line
 
 /// The pinned `code_refs` callers page of the definition `name` at `path:line`, keeping only rows of
 /// `resolution` when given.
-pub(super) fn callers_page(
+pub(in crate::engine::ops) fn callers_page(
     ws: &Workspace,
     path: &RelPath,
     name: &str,
@@ -334,7 +334,7 @@ fn indirect_callers(
 }
 
 /// The innermost callable definition of `path` holding 1-based `line`: its name and first line.
-fn holding_callable(ws: &Workspace, path: &RelPath, line: u32) -> Option<(String, u32)> {
+pub(in crate::engine::ops) fn holding_callable(ws: &Workspace, path: &RelPath, line: u32) -> Option<(String, u32)> {
     let loaded = load(ws, path).ok()?;
     loaded
         .l1
@@ -347,4 +347,69 @@ fn holding_callable(ws: &Workspace, path: &RelPath, line: u32) -> Option<(String
         })
         .min_by_key(|symbol| symbol.end_byte.saturating_sub(symbol.start_byte))
         .map(|symbol| (symbol.name.clone(), symbol.start_row + 1))
+}
+
+/// One call a definition's body makes, as `callees_of` lists it.
+pub(in crate::engine::ops) struct Callee {
+    pub(in crate::engine::ops) name: String,
+    /// The file defining the callee, when the resolution facts bind the call.
+    pub(in crate::engine::ops) definition: Option<RelPath>,
+}
+
+/// The distinct calls the definition holding 1-based `line` of `path` makes, each bound to its
+/// definition by the resolution facts when it has one. A call to the definition itself is left out:
+/// by binding when the facts bind it, by name when they do not. The reason, when the language has no
+/// call extraction, the file is not indexed, the index is held by another process, or the file
+/// changed since the scan and no longer holds `name` at `line`. A file that changed since the scan
+/// gets no bindings.
+pub(in crate::engine::ops) fn callees_of(
+    ws: &Workspace,
+    path: &RelPath,
+    name: &str,
+    line: u32,
+) -> Result<Vec<Callee>, String> {
+    let moved = || format!("`{path}` changed since the scan and no longer holds `{name}` at line {line}: rescan");
+    let chosen = match super::pick::symbol_named_at(ws, path.clone(), name, line) {
+        Ok(chosen) => chosen,
+        Err(_) if load(ws, path).is_ok_and(|loaded| loaded.stale) => return Err(moved()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let (loaded, symbol) = (&chosen.loaded, &chosen.loaded.l1.symbols[chosen.index]);
+    if loaded.stale && (symbol.name != name || symbol.start_row + 1 != line) {
+        return Err(moved());
+    }
+    let l2 = calls_and_docs(ws, path, loaded).ok_or_else(|| format!("no call extraction for {}", loaded.language))?;
+    let view = ws
+        .store_read()
+        .read_index_view()
+        .ok_or_else(|| "the index is held by another basemind process: retry".to_string())?;
+    let bindings = crate::intel::resolve::supports(&loaded.language) && !loaded.stale;
+    let mut seen = AHashSet::new();
+    let mut callees = Vec::new();
+    for site in l2
+        .calls
+        .iter()
+        .filter(|site| symbol.start_byte <= site.start_byte && site.start_byte < symbol.end_byte)
+        .filter(|site| !is_macro(&loaded.bytes, site.start_byte, &site.callee))
+    {
+        let bound = bindings
+            .then(|| view.definition_of(path, site.start_byte))
+            .flatten()
+            .filter(|_| crate::engine::refs::intel::identifier_at(&loaded.bytes, site.start_byte) == site.callee);
+        if site.callee == symbol.name
+            && bound
+                .as_ref()
+                .is_none_or(|(file, at)| file == path && (symbol.start_byte..symbol.end_byte).contains(at))
+        {
+            continue;
+        }
+        let definition = bound.map(|(definition, _)| definition);
+        if seen.insert((site.callee.clone(), definition.clone())) {
+            callees.push(Callee {
+                name: site.callee.clone(),
+                definition,
+            });
+        }
+    }
+    Ok(callees)
 }

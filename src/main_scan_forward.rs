@@ -192,8 +192,10 @@ pub(super) fn forward_scan(
                 "scan is forwarded to the daemon, which reads its own environment and basemind.toml, not these"
             );
         }
+        // Without embedding, as a direct scan: the vectors are the background pass's, handed to
+        // the daemon below.
         let report = tokio::select! {
-            report = client.rescan_as(root.to_path_buf(), None, true, true, true) => report,
+            report = client.rescan_as(root.to_path_buf(), None, true, false, true) => report,
             () = until_cancelled(cancel) => {
                 return Err(basemind::cli::exit::CliExit::interrupted(
                     "scan interrupted: the daemon finishes the scan it was given in the background",
@@ -202,7 +204,7 @@ pub(super) fn forward_scan(
         }
         .map_err(|error| forwarded_failure(pid, error))?;
         let mut out = output.human();
-        output.forwarded(&mut out, "scan", root, &report)?;
+        output.forwarded(&mut out, "scan", root, &report, Some(daemon_hand_off(root, args)))?;
         if !args.no_git_history && basemind::git_history::index_enabled() && basemind::git::Repo::discover(root).is_ok()
         {
             match client.git_history(root.to_path_buf(), GitHistoryOp::Sync).await {
@@ -215,6 +217,27 @@ pub(super) fn forward_scan(
         }
         Ok(true)
     })
+}
+
+/// Hand what the daemon's scan of `root` left owed to the background worker, which forwards the
+/// embedding pass to the daemon. The daemon writes the store, so the embed policy is read from the
+/// file map without opening the index.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn daemon_hand_off(root: &std::path::Path, args: &ScanArgs) -> super::main_scan::EmbeddingsHandOff {
+    let config = load_or_default_with(root, Some(args.documents.clone()))
+        .unwrap_or_else(|_| basemind::config::default_for_root(root));
+    let pending = match Store::open_read_only_no_index(root, basemind::store::VIEW_WORKING) {
+        Ok(store) => basemind::cli::embed_worker::Pending::of(root, &store, &config),
+        Err(error) => {
+            tracing::debug!(%error, "scan: the file map is unreadable; the embed policy is taken as unchanged");
+            basemind::cli::embed_worker::Pending {
+                documents: basemind::embed_progress::read(&basemind::store::workspace_cache_dir(root))
+                    .map_or(0, |record| record.total.saturating_sub(record.done)),
+                ..basemind::cli::embed_worker::Pending::default()
+            }
+        }
+    };
+    (pending, basemind::cli::embed_worker::hand_off(root, pending))
 }
 
 /// Resolve once `cancel` trips (Ctrl-C).

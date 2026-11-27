@@ -138,6 +138,9 @@ fn process_doc(
     let Some(mime_type) = should_extract_document_as(&abs, &config.documents, dep.and_then(|file| file.mime)) else {
         return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
     };
+    if let Some(size) = structured_data_over_chunk_cap(&abs, follow_symlinks, &mime_type, &config.documents) {
+        return FileResult::bare(rel.to_string(), FileStatus::SkippedTooLarge { size });
+    }
     let embed_requested = doc_embed_requested(rel, &config.documents, embed, filters);
     let unchanged = |existing: &crate::store::DocEntry, hash_hex: &str| {
         (doc_entry_settled(
@@ -260,9 +263,12 @@ fn process_doc(
                 embed_attempted: batch.embed_attempted,
                 config_digest: filters.doc_digest.clone(),
             };
+            if matches!(embed, EmbedMode::Inline) && batch.embedding_dim > 0 {
+                filters.docs_embedded.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             let doc_upsert = match embed {
                 EmbedMode::Inline => Some(doc_entry),
-                EmbedMode::Deferred => None,
+                EmbedMode::Deferred => deferred_doc_entry(rel, config, filters, &batch, doc_entry),
             };
             FileResult {
                 path: rel.to_string(),
@@ -307,6 +313,63 @@ fn process_doc(
     }
 }
 
+/// The entry a `Deferred` pass records. A document whose vectors are still to come is recorded as
+/// owing them, so it is found by its text at the end of the fast pass and a later `Inline` pass
+/// embeds it. Any other document (embedding is off for it, it has no chunks, it is over the chunk
+/// cap, or its blob already carries vectors) owes none and is recorded as an `Inline` pass would
+/// record it, so a repository that does not embed is still searchable after a fast pass.
+fn deferred_doc_entry(
+    rel: &str,
+    config: &Config,
+    filters: &Filters,
+    batch: &PendingDocBatch,
+    entry: crate::store::DocEntry,
+) -> Option<crate::store::DocEntry> {
+    let owes_vectors = config.documents.embed
+        && filters.doc_embed_allowed(rel)
+        && batch.embedding_dim == 0
+        && batch.chunk_count > 0
+        && !batch.over_chunk_cap;
+    Some(if owes_vectors {
+        crate::store::DocEntry {
+            embedded: false,
+            embed_attempted: false,
+            ..entry
+        }
+    } else {
+        entry
+    })
+}
+
+/// The size of a structured-data document (JSON, YAML, XML, CSV and the like) that is certain to
+/// pass `[documents] max_chunks_per_document`, read from its stat alone; `None` for every other
+/// document. Such a file is machine-written bulk (a recorded API response, a generated fixture): it
+/// would be read, chunked into thousands of pieces and keyword-indexed only to be left without
+/// vectors, so the scan skips it before any of that. The linear chunker that cuts structured data
+/// takes at most `max_characters` characters per chunk, so a file of `len` ASCII bytes (all
+/// machine-written data in practice) yields at least `len / max_characters` chunks.
+fn structured_data_over_chunk_cap(abs: &Path, follow_symlinks: bool, mime: &str, cfg: &DocumentsConfig) -> Option<u64> {
+    if !crate::extract::doc_guard::is_structured_data(mime) {
+        return None;
+    }
+    let size = doc_stat(abs, follow_symlinks)
+        .ok()
+        .filter(std::fs::Metadata::is_file)?
+        .len();
+    let least_chunks = size / u64::try_from(cfg.max_characters.max(1)).unwrap_or(u64::MAX);
+    let cap = u64::try_from(cfg.max_chunks_per_document).unwrap_or(u64::MAX);
+    (least_chunks > cap).then(|| {
+        tracing::info!(
+            path = %abs.display(),
+            size,
+            least_chunks,
+            cap,
+            "skipping structured data: it would pass max_chunks_per_document, so it is not chunked or indexed"
+        );
+        size
+    })
+}
+
 /// The document's metadata as the read would see it: the link itself when links are not followed,
 /// so a symlinked document never matches the shortcut (the read refuses it).
 fn doc_stat(abs: &Path, follow_symlinks: bool) -> std::io::Result<std::fs::Metadata> {
@@ -329,6 +392,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn structured_data_certain_to_pass_the_chunk_cap_is_skipped_before_chunking() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = DocumentsConfig {
+            max_characters: 100,
+            max_chunks_per_document: 3,
+            ..DocumentsConfig::default()
+        };
+        let write = |name: &str, len: usize| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, "a".repeat(len)).expect("write");
+            path
+        };
+        let over = write("get_devices_valid.yaml", 401);
+        let at_cap = write("small.yaml", 399);
+        let prose = write("guide.md", 4_000);
+        assert_eq!(
+            structured_data_over_chunk_cap(&over, false, "application/yaml", &cfg),
+            Some(401)
+        );
+        assert_eq!(
+            structured_data_over_chunk_cap(&over, false, "application/json", &cfg),
+            Some(401)
+        );
+        assert_eq!(
+            structured_data_over_chunk_cap(&at_cap, false, "application/yaml", &cfg),
+            None
+        );
+        assert_eq!(
+            structured_data_over_chunk_cap(&prose, false, "text/markdown", &cfg),
+            None,
+            "prose over the cap is still indexed by keyword"
+        );
+        assert_eq!(
+            structured_data_over_chunk_cap(&dir.path().join("missing.json"), false, "application/json", &cfg),
+            None
+        );
+    }
+
+    #[test]
     fn unsupported_format_error_is_a_skip_not_a_failure() {
         assert!(is_unsupported_format_error(
             "document extract: Unsupported format: application/x-wais-source"
@@ -346,6 +448,10 @@ mod tests {
 #[cfg(test)]
 #[path = "scanner_flush_tests.rs"]
 mod flush_tests;
+
+#[cfg(test)]
+#[path = "scanner_docs_deferral_tests.rs"]
+mod deferral_tests;
 
 #[cfg(all(test, unix))]
 #[path = "scanner_docs_lane_failure_tests.rs"]

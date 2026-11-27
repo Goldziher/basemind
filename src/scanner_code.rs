@@ -353,13 +353,12 @@ pub(crate) fn delete_stale_code_chunks(
     store: &mut Store,
     config: &Config,
     vectors: &dyn VectorStore,
-    scope: &str,
     stale: &[String],
 ) {
     if !should_chunk(config) {
         return;
     }
-    vectors.delete_code_rows(store, config, scope, stale);
+    vectors.delete_code_rows(store, config, stale);
 }
 
 /// Drop the derived rows of every indexed source file that is no longer eligible under the current
@@ -370,7 +369,7 @@ pub(crate) fn delete_stale_code_chunks(
 ///
 /// Returns whether the purge fully applied; the caller records the policy only then, so a failed
 /// purge is retried by the next scan instead of being marked done.
-pub(crate) fn purge_unembedded_code(store: &mut Store, config: &Config, filters: &Filters, scope: &str) -> bool {
+pub(crate) fn purge_unembedded_code(store: &mut Store, config: &Config, filters: &Filters) -> bool {
     let cfg = &config.code_search;
     let paths: Vec<String> = store
         .index
@@ -382,7 +381,7 @@ pub(crate) fn purge_unembedded_code(store: &mut Store, config: &Config, filters:
     if paths.is_empty() {
         return true;
     }
-    let rows = filters.retrieval.vectors.delete_code_rows(store, config, scope, &paths);
+    let rows = filters.retrieval.vectors.delete_code_rows(store, config, &paths);
     let postings = cfg.enabled || drop_keyword_postings(store, &paths);
     rows && postings
 }
@@ -603,7 +602,7 @@ mod tests {
         let mut config = crate::config::default_for_root(std::path::Path::new("."));
         config.code_search.enabled = false;
         let filters = Filters::build(&config, Vec::new(), crate::scan_retrieval::Retrieval::inert()).unwrap();
-        purge_unembedded_code(&mut store, &config, &filters, "repo:s");
+        purge_unembedded_code(&mut store, &config, &filters);
         let db = store.index_db.as_ref().unwrap();
         assert_eq!(
             db.view().bm25_stats().map(|(n, _)| n).unwrap_or(0),

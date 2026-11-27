@@ -66,6 +66,36 @@ pub enum BatchKind {
 /// [`PendingPaths`] instead of blocking or dropping.
 const DEBOUNCE_QUEUE_CAPACITY: usize = 64;
 
+/// How often the Linux watcher re-checks the directories the inotify watch limit left unwatched,
+/// while there are any. No event ever names an edit under one of them, so the check stat-diffs their
+/// subtrees: it forwards them as directories that may have changed, and the scan re-extracts only
+/// the files whose stat differs from the index. It also retries arming them, in case watches were
+/// freed since.
+#[cfg(target_os = "linux")]
+const UNWATCHED_RESCAN_INTERVAL: Duration = Duration::from_secs(30);
+
+/// What the consumer loop woke for.
+enum Wake {
+    Message(WatchMsg),
+    /// The poll interval passed with nothing queued.
+    Idle,
+    /// Every sender is gone.
+    Closed,
+}
+
+/// Wait for the next queued message: without a `poll` interval until one arrives, otherwise for at
+/// most that long.
+fn wait_for_message(rx: &std::sync::mpsc::Receiver<WatchMsg>, poll: Option<Duration>) -> Wake {
+    let Some(interval) = poll else {
+        return rx.recv().map_or(Wake::Closed, Wake::Message);
+    };
+    match rx.recv_timeout(interval) {
+        Ok(message) => Wake::Message(message),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Wake::Idle,
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Wake::Closed,
+    }
+}
+
 /// Overflow sink shared by the debouncer callback and the consumer loop.
 ///
 /// A full queue must neither block the callback — it runs on the debouncer's emit thread, so
@@ -455,15 +485,26 @@ fn watch_with<W: notify::Watcher>(
         // one at a time is what lets a backlog outlive the burst that produced it, so they are merged
         // into a single union of paths instead.
         let mut queued: Vec<Vec<DebouncedEvent>> = Vec::new();
-        // Blocks: an idle watcher wakes only for a batch or the shutdown, never on a timer.
-        let Ok(first) = rx.recv() else {
-            info!("watch channel closed; exiting watcher");
-            return Ok(());
+        // Blocks: an idle watcher wakes only for a batch or the shutdown, except while directories
+        // are unwatched, when it also wakes to stat-diff them.
+        #[cfg(target_os = "linux")]
+        let poll = dir_watches.has_unwatched().then_some(UNWATCHED_RESCAN_INTERVAL);
+        #[cfg(not(target_os = "linux"))]
+        let poll = None;
+        let first = match wait_for_message(&rx, poll) {
+            Wake::Message(message) => Some(message),
+            Wake::Idle => None,
+            Wake::Closed => {
+                info!("watch channel closed; exiting watcher");
+                return Ok(());
+            }
         };
         // Bounded by the queue's own capacity so a sustained event stream cannot keep the drain
         // spinning while a shutdown waits behind it.
         let rest = (1..DEBOUNCE_QUEUE_CAPACITY).map_while(|_| rx.try_recv().ok());
-        for message in std::iter::once(first).chain(rest) {
+        #[cfg(target_os = "linux")]
+        let polled = first.is_none();
+        for message in first.into_iter().chain(rest) {
             match message {
                 WatchMsg::Batch(Ok(events)) => queued.push(events),
                 WatchMsg::Batch(Err(errors)) => {
@@ -501,6 +542,13 @@ fn watch_with<W: notify::Watcher>(
         let coalesced = pending.take();
         dir_events.extend(coalesced.iter().cloned());
         candidates.extend(coalesced);
+        #[cfg(target_os = "linux")]
+        if polled {
+            for dir in dir_watches.unwatched_roots() {
+                dir_events.insert(dir.clone());
+                candidates.push(dir);
+            }
+        }
         let rescanned = (rescan.whole || !rescan.dirs.is_empty()).then(|| rescan.subtrees(root));
         if candidates.is_empty() && rescanned.is_none() {
             continue;
@@ -571,6 +619,14 @@ fn watch_with<W: notify::Watcher>(
         let n = touched.len();
         on_change(touched, BatchKind::Incremental { paths: n });
     }
+}
+
+/// How many directories the Linux watcher arms under `root` with `config`: one inotify watch each.
+/// Compared with the watch limit, it says whether the workspace fits before any watch is refused.
+#[cfg(target_os = "linux")]
+pub fn watch_demand(root: &Path, config: &Config) -> Result<usize, ScanError> {
+    let filter = crate::scanner_filter::IndexFilter::new(root, config, crate::retrieval_wiring::backend())?;
+    Ok(filter.subtree_dirs(root).len())
 }
 
 /// Run the standalone watcher loop. Blocks until the shutdown receiver fires or
@@ -741,6 +797,23 @@ struct DirWatches {
 
 #[cfg(any(target_os = "linux", test))]
 impl DirWatches {
+    /// Whether the watch limit left any directory unwatched.
+    fn has_unwatched(&self) -> bool {
+        !self.refused.is_empty()
+    }
+
+    /// The topmost unwatched directories: rescanning one covers every unwatched directory beneath it.
+    fn unwatched_roots(&self) -> Vec<PathBuf> {
+        let mut roots: Vec<PathBuf> = Vec::new();
+        // Sorted, so a directory's descendants follow it directly.
+        for dir in &self.refused {
+            if !roots.last().is_some_and(|top| dir.starts_with(top)) {
+                roots.push(dir.clone());
+            }
+        }
+        roots
+    }
+
     /// Bring the watch set in line with the batch's `paths`: release first, then arm, so a
     /// directory renamed within the tree drops the watch that still reports under its old name
     /// before its new name is armed.

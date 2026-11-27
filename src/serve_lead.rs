@@ -88,8 +88,13 @@ pub(crate) fn seal_if_lead() {
 
 /// The mode for the lead whose workspace is `root` and comms identity `principal`: the host, or the
 /// reason it could not start, which is also written to stderr.
-pub(crate) fn mode(root: &std::path::Path, principal: basemind::comms::v2::Principal, host: Option<String>) -> Mode {
-    let started = basemind::lead::Setup::from_user()
+pub(crate) fn mode(
+    root: &std::path::Path,
+    principal: basemind::comms::v2::Principal,
+    host: Option<String>,
+    agents_policy: Option<&std::path::Path>,
+) -> Mode {
+    let started = basemind::lead::Setup::from_user(agents_policy)
         .and_then(|setup| basemind::lead::LeadHost::start(root, principal, host, setup));
     match started {
         Ok(lead) => {

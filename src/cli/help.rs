@@ -25,8 +25,13 @@ When to use: building the index for the first time, or a view of the staging are
 or of one revision (`--rev`).
 
 Returns: one summary line (files scanned, updated, reused, unchanged, failed, skipped, removed),
-then the git-history index build. With a daemon running, a working-tree scan is forwarded to it;
-a scan never starts a daemon. A newer minor release rebuilds the index on its first scan.
+then the git-history index sync. A working-tree scan does not embed: an `embeddings: pending`
+line counts what a background pass (the daemon, else a detached `embed-worker` process) embeds
+next. Nor does it build the git-history index from scratch: a `git-history: building in the
+background` line counts the commits that pass indexes (history tools walk git until it is done);
+an append of new commits runs before the scan returns. With a daemon running, a working-tree scan
+is forwarded to it; a scan never starts a daemon.
+A newer minor release rebuilds the index on its first scan.
 
 Example:
   basemind scan
@@ -234,8 +239,10 @@ When to use: you are looking for a topic in prose, data or config files: Markdow
 HTML, email, JSON, YAML, TOML. The code tools do not cover them.
 
 Returns: ranked passages, each cited with its path and its pages, section or lines. `--format`,
-`--path` (a glob), `--mime-type`, `--keywords` and `--entity` filter before ranking. Needs a build
-with the `documents` feature and a scan.
+`--path` (a glob), `--mime-type`, `--keywords` and `--entity` filter before ranking. Chunks of one
+document that touch are one hit; `--per-doc` (default 2, 0 for no cap) puts other documents ahead of
+a document's later hits; `--context` adds the chunk before and after each hit. Needs a build with
+the `documents` feature and a scan.
 
 Example:
   basemind docs search \"how releases are versioned\" --format markdown

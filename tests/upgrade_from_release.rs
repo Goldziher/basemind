@@ -1,10 +1,11 @@
 //! Upgrade path: an index built by an OLDER released binary, opened by this build against the SAME
 //! data home.
 //!
-//! The old binaries come from `BASEMIND_UPGRADE_FROM_BIN` (a path list: `:` separated on Unix, `;` on
-//! Windows) or from the plugin launcher's per-version cache
+//! The old binaries come from `BASEMIND_UPGRADE_FROM_BIN` (a path list, `:` separated) or from the plugin launcher's per-version cache
 //! (`$XDG_CACHE_HOME|~/.cache/basemind/bin/<version>/basemind`, written by launchers up to 0.33;
-//! later launchers install under `versions/`, which holds no release this test drives). CI downloads
+//! later launchers install under `versions/`, which holds no release this test drives). It is Unix-only:
+//! `scripts/fetch-release-binaries.sh` fetches no Windows archive, so a Windows leg could never supply a
+//! binary. CI downloads
 //! checksum-verified release binaries into the variable (`scripts/fetch-release-binaries.sh`). With
 //! no binary the test
 //! checks nothing: locally it says so in a `SKIP:` line on stderr that the harness does not capture;
@@ -34,7 +35,7 @@
 //! that bumps the tree to the next minor first) requires every release upgraded from to be of an
 //! older minor.
 
-#![cfg(feature = "documents")]
+#![cfg(all(feature = "documents", unix))]
 
 use std::fs;
 use std::io::Write;
@@ -76,6 +77,18 @@ const FIRST_COMMS_V2_MINOR: u32 = 34;
 /// Set by the CI job that bumps the tree to the next minor before building: every release upgraded
 /// from must then be of an older minor, so the wipe-and-rebuild of a minor bump is what ran.
 const CROSS_MINOR_ENV: &str = "BASEMIND_UPGRADE_REQUIRE_CROSS_MINOR";
+
+/// First release minor that checks the schema of the stores it opens and refuses a newer one
+/// ("written by a newer basemind") instead of wiping it, as a release before it does.
+const FIRST_REFUSING_MINOR: u32 = 34;
+
+/// First release minor with a group index; earlier ones keep an index per workspace.
+#[cfg(feature = "comms")]
+const FIRST_GROUP_INDEX_MINOR: u32 = 34;
+
+/// Last release minor that keeps its group index directly in the group directory
+/// (`cache/groups/<group>/index.fjall`); later ones keep it in `v<minor>/` there.
+const LAST_UNNAMESPACED_GROUP_MINOR: u32 = 34;
 
 /// Oldest release minor whose CLI shape this test drives (`--root`, `--json`, `code files`).
 const OLDEST_MINOR: u32 = 27;
@@ -162,6 +175,20 @@ fn old_binaries() -> Vec<PathBuf> {
     found
 }
 
+/// The path of `hit` when it is a symbol named exactly `name`. Releases up to 0.33 list
+/// `{"path", "name", ...}` objects; 0.34 lists `"<path>:<line>: <signature>"` rows.
+fn symbol_hit(hit: &Value, name: &str) -> Option<String> {
+    if let Some(row) = hit.as_str() {
+        let (path, rest) = row.split_once(':')?;
+        let (_, signature) = rest.split_once(": ")?;
+        let named = signature
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .any(|word| word == name);
+        return named.then(|| path.to_string());
+    }
+    (hit["name"] == name).then(|| hit["path"].as_str().unwrap_or_default().to_string())
+}
+
 struct Env {
     repo: PathBuf,
     data: PathBuf,
@@ -244,14 +271,14 @@ impl Env {
     }
 
     /// The `(path, name)` of each hit an old release's `code symbols <name>` reports under exactly
-    /// that name. Releases up to 0.33 list `{"path", "name", ...}` objects.
+    /// that name, in either result shape (see [`symbol_hit`]).
     fn old_symbol_hits(&self, old: &Path, name: &str) -> Vec<(String, String)> {
         self.json(old, &["code", "symbols", name])["results"]
             .as_array()
             .map(|hits| {
                 hits.iter()
-                    .filter(|hit| hit["name"] == name)
-                    .map(|hit| (hit["path"].as_str().unwrap_or_default().to_string(), name.to_string()))
+                    .filter_map(|hit| symbol_hit(hit, name))
+                    .map(|path| (path, name.to_string()))
                     .collect()
             })
             .unwrap_or_default()
@@ -285,6 +312,21 @@ impl Env {
             entries
                 .flatten()
                 .any(|entry| entry.file_name().to_string_lossy().ends_with(".msgpack"))
+        })
+    }
+
+    /// Whether a group directory holds the group index a release of `minor` reads: directly in it
+    /// up to [`LAST_UNNAMESPACED_GROUP_MINOR`], in `v<minor>/` after it.
+    fn holds_group_index_of(&self, minor: u32) -> bool {
+        fs::read_dir(self.data.join("cache").join("groups")).is_ok_and(|groups| {
+            groups.flatten().any(|group| {
+                let dir = if minor <= LAST_UNNAMESPACED_GROUP_MINOR {
+                    group.path()
+                } else {
+                    group.path().join(format!("v{minor}"))
+                };
+                dir.join("index.fjall").is_dir()
+            })
         })
     }
 
@@ -430,12 +472,7 @@ fn assert_old_stores_survive(env: &Env, new: &Path, old: &Path) {
     let log = env.json(new, &["git", "log"]);
     let summaries: Vec<&str> = log["commits"]
         .as_array()
-        .map(|commits| {
-            commits
-                .iter()
-                .filter_map(|row| row.as_str()?.split_once(' ').map(|(_, summary)| summary))
-                .collect()
-        })
+        .map(|commits| commits.iter().filter_map(|row| row["subject"].as_str()).collect())
         .unwrap_or_default();
     assert!(
         summaries.iter().any(|s| s.contains("second upgrade fixture commit"))
@@ -577,6 +614,26 @@ fn upgrade_from(old: &Path) -> (bool, u32) {
     // --- downgrade fails safe: the old release reads the upgraded data back to its own shape -----
     for bin in [old, new] {
         let _ = env.run(bin, &["comms", "stop"], &[]);
+    }
+    if minor >= FIRST_REFUSING_MINOR && minor < current_minor() {
+        // A release that refuses a newer store is cut off from the file map the upgrade rewrote,
+        // and says so; it never wipes it. Its own group index is not what refuses it.
+        let refused = env.run(old, &["scan"], &[]);
+        let stderr = String::from_utf8_lossy(&refused.stderr).into_owned();
+        assert!(
+            !refused.status.success() && stderr.contains("written by a newer basemind"),
+            "{}: a scan by the older release must be refused by the newer file map:\n{stderr}",
+            old.display()
+        );
+        assert!(
+            env.holds_group_index_of(minor),
+            "{}: the upgrade left the older release's group index where it reads it",
+            old.display()
+        );
+        env.scan_after_stopping_daemons(old, new);
+        let again = env.scan_after_stopping_daemons(old, new);
+        assert!(again.contains("updated 0"), "re-upgrade converges:\n{again}");
+        return (maps_prose, minor);
     }
     env.ok(old, &["scan"], &[]);
     let mut downgraded = env.code_paths(old);
@@ -750,6 +807,11 @@ fn upgrading_while_the_old_release_s_daemon_still_runs() {
     assert!(
         env.holds_blobs_of(minor),
         "{}: the GC reaped the blobs of a running release",
+        old.display()
+    );
+    assert!(
+        minor < FIRST_GROUP_INDEX_MINOR || env.holds_group_index_of(minor),
+        "{}: the new build's scan and GC took the group index of a running release",
         old.display()
     );
     assert_eq!(

@@ -213,6 +213,66 @@ fn impact_walks_from_a_file_a_symbol_and_the_uncommitted_change() {
 }
 
 #[test]
+fn impact_buckets_orders_and_gates_on_the_impacted_file_count() {
+    let dir = crate_with_a_cycle();
+    let root = dir.path();
+    let impact = json(root, &["code", "impact", "src/c.rs"]);
+    assert_eq!(impact["impacted_files"], 1, "{impact}");
+    assert_eq!(impact["buckets"]["prod"], 1, "{impact}");
+    assert_eq!(impact["buckets"]["test"], 0, "{impact}");
+    assert_eq!(impact["order"][0]["path"], "src/c.rs", "{impact}");
+    assert_eq!(impact["order"][1]["path"], "src/d.rs", "{impact}");
+    assert_eq!(impact["order"][1]["bucket"], "prod", "{impact}");
+
+    let within = basemind(root, &["code", "impact", "src/c.rs", "--fail-above", "1"]);
+    assert_eq!(
+        within.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&within.stderr)
+    );
+    let above = basemind(root, &["code", "impact", "src/c.rs", "--fail-above", "0"]);
+    assert_eq!(
+        above.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&above.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&above.stderr).contains("1 impacted file(s) exceed --fail-above 0"),
+        "{}",
+        String::from_utf8_lossy(&above.stderr)
+    );
+}
+
+#[cfg(feature = "code-intel-js")]
+#[test]
+fn impact_grades_the_callers_and_lists_the_calls_of_a_typescript_symbol() {
+    let dir = typescript_repo("export function bee() {\n  return 1;\n}\n");
+    let impact = json(dir.path(), &["code", "impact", "--symbol", "ay"]);
+    assert_eq!(impact["callers"].as_array().map(Vec::len), Some(1), "{impact}");
+    let caller = &impact["callers"][0];
+    assert_eq!(
+        (&caller["path"], &caller["line"], &caller["depth"], &caller["calls"]),
+        (
+            &Value::from("c.ts"),
+            &Value::from(2),
+            &Value::from(1),
+            &Value::from("ay")
+        ),
+        "{impact}"
+    );
+    assert_eq!(
+        (&caller["resolution"], &caller["proven"]),
+        (&Value::from("imported"), &Value::from(true))
+    );
+    assert_eq!(impact["calls"][0]["name"], "bee", "{impact}");
+    assert_eq!(impact["calls"][0]["path"], "b.ts", "{impact}");
+    assert_eq!(impact["calls"][0]["resolution"], "imported", "{impact}");
+    assert_eq!(impact["dependencies"][0]["path"], "b.ts", "{impact}");
+}
+
+#[test]
 fn a_malformed_request_exits_with_a_usage_error() {
     let dir = crate_with_a_cycle();
     let root = dir.path();

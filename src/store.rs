@@ -10,15 +10,23 @@ use crate::index::{IndexDb, IndexError};
 use crate::lance::LanceStore;
 use crate::path::RelPath;
 use crate::store_hash_refs::HashRefs;
+use crate::store_key_order::KeyOrder;
 #[path = "store_durability.rs"]
 mod durability;
 #[path = "store_file_map.rs"]
 mod file_map;
+#[path = "store_file_map_log.rs"]
+mod file_map_log;
 pub use durability::RESCAN_OWED;
 pub(crate) use durability::open_index_for_writer;
+#[cfg(test)]
+pub(crate) use file_map_log::LOG_FILE as FILE_MAP_LOG;
+pub(crate) use file_map_log::ViewStamp;
 #[path = "store_group.rs"]
 mod group;
 use file_map::migrate_legacy_index_into_views;
+#[cfg(test)]
+pub(crate) use file_map::read_index_calls;
 pub(crate) use file_map::{
     ViewOnOpen, check_schema, read_index, sets_aside, view_on_open, wipe_view, written_by_newer,
 };
@@ -89,6 +97,11 @@ pub enum StoreError {
     /// writer open sets it aside and rebuilds; nothing deletes it.
     #[error("file map {path} is unreadable; `basemind scan` sets it aside and rebuilds the view")]
     UnreadableFileMap { path: PathBuf },
+    /// The file map's base was replaced while it was read, on every attempt: a compaction may have
+    /// removed the delta log the read applied, so the map read could miss durable updates. Nothing
+    /// is damaged; the read is retried later.
+    #[error("file map {path} was replaced while it was read, on each of {attempts} attempts; retry")]
+    FileMapUnsettled { path: PathBuf, attempts: u32 },
     #[error("inverted index error: {0}")]
     Index(#[from] IndexError),
     #[error(
@@ -149,6 +162,13 @@ pub struct Index {
     /// (additive, no schema bump).
     #[serde(default)]
     pub doc_tombstones: AHashMap<RelPath, crate::store_doc_tombstone::DocTombstone>,
+    /// Relative path -> [`crate::config::list_only::ListedEntry`] for list-only files (`[scan]
+    /// list_only`): known to exist, contents never read. Kept apart from `files` so no code consumer
+    /// sees them; `find_files` and `index_status` read this map. Replaced whole by each full
+    /// working-tree scan. `#[serde(default)]` keeps older `index.msgpack` files readable (additive,
+    /// no schema bump).
+    #[serde(default)]
+    pub listed: AHashMap<RelPath, crate::config::list_only::ListedEntry>,
     /// The scan generation [`Store::flush`] sealed into the Fjall index before writing this file map
     /// (see `crate::index::durability`). An index stamped below it lost writes this map vouches
     /// for and is rebuilt before it is sealed again. `0` (also what a file map from before the field
@@ -186,6 +206,7 @@ impl Index {
             doc_files: AHashMap::new(),
             embed_policy: String::new(),
             doc_tombstones: AHashMap::new(),
+            listed: AHashMap::new(),
             generation: 0,
             rebuild_pending: false,
             rebuild_pins: Vec::new(),
@@ -274,7 +295,9 @@ pub struct DocEntry {
 pub struct Store {
     pub root: PathBuf,
     pub basemind_dir: PathBuf,
-    /// Directory holding the content-addressed blob cache (`<hash>.{fm,doc,rref,chunk}.msgpack`).
+    /// Directory holding the content-addressed blob cache (`<hash>.{fm,doc,rref,chunk}.msgpack`, flat
+    /// or in the bucket named for the first two digits of its hash, by the namespace's layout:
+    /// `store_blob_layout`).
     /// The GLOBAL blob store at `<data home>/cache/blobs/`, shared by every workspace on the
     /// machine, so byte-identical files across repositories/worktrees are extracted + embedded
     /// exactly once. Per-workspace state (views, LanceDB, lock) lives under [`Store::basemind_dir`].
@@ -295,6 +318,13 @@ pub struct Store {
     /// so "does any file still hold this content" is a lookup, not a pass over the manifest. Mutate
     /// `index.files` through those two methods only.
     hash_refs: HashRefs,
+    /// The keys of `index.files`, `doc_files` and `doc_tombstones` in sorted order, kept in step by
+    /// the mutators below so the entries under a directory are a range lookup. Mutate those maps
+    /// through the store's methods only.
+    pub(crate) key_order: KeyOrder,
+    /// What `index` changed since its last flush, so a flush appends the changed entries instead of
+    /// rewriting the whole file map (see [`file_map_log`]).
+    file_map: file_map_log::FileMapState,
     /// This view's handle on the group index (`cache/groups/<group>/index.fjall/`, ADR-0028). Every
     /// read and write goes through `IndexDb`, which is cheap to clone (internally Arc'd).
     /// `None` for a read-only open in a process that holds no handle on the group (ADR-0036):
@@ -424,6 +454,7 @@ impl Store {
             view_dir,
             view: view.to_string(),
             hash_refs: HashRefs::of(&index.files),
+            key_order: KeyOrder::of(&index),
             index,
             index_db: Some(index_db),
             #[cfg(feature = "intelligence")]
@@ -435,6 +466,7 @@ impl Store {
             legacy_index_adopted,
             pending_vectors,
             dropped_doc_keys: Vec::new(),
+            file_map: file_map_log::FileMapState::new(),
             index_source: None,
             _lock: Some(lock),
         };
@@ -531,6 +563,9 @@ impl Store {
         // A stale layout leaves an index of the current schema over a map that is gone: the scan
         // that takes the lock replaces both ([`Store::open_index_owed_to_scan`]). ~keep
         let mut index_rebuild_needed = stale_layout;
+        if matches!(index_access, Some(group::ReadAccess::BriefLock)) {
+            wait_for_embed_worker(&basemind_dir);
+        }
         let index_db = if let Some(access) = index_access.filter(|_| schema_ok && !writer_lock_is_held(&basemind_dir)) {
             let (db, rebuild) = group::open_index_read_only(root, view, &index, access)?;
             index_rebuild_needed |= rebuild;
@@ -554,6 +589,7 @@ impl Store {
             view_dir,
             view: view.to_string(),
             hash_refs: HashRefs::of(&index.files),
+            key_order: KeyOrder::of(&index),
             index,
             index_db,
             #[cfg(feature = "intelligence")]
@@ -565,6 +601,7 @@ impl Store {
             legacy_index_adopted: false,
             pending_vectors,
             dropped_doc_keys: Vec::new(),
+            file_map: file_map_log::FileMapState::new(),
             index_source: None,
             _lock: None,
         };
@@ -572,12 +609,16 @@ impl Store {
         Ok(store)
     }
 
-    /// Lazy-open the LanceDB store at `.basemind/lance/`. Subsequent calls return
-    /// the cached handle; the first call pays the connection + table-init cost.
+    /// Lazy-open the repository group's code-chunk vector store for `embedding_model` at `dim`
+    /// ([`crate::lance::code_store_dir`]). Subsequent calls return the cached handle; the first call
+    /// pays the connection + table-init cost. The store is shared by every worktree of the group, and
+    /// the open removes the per-workspace `lance/` directory an earlier build kept it in: its rows
+    /// were keyed by path, and the next scan writes this view's from the cached chunk blobs without
+    /// embedding again.
     ///
-    /// A mismatch between the stored `(dim, embedding_model)` and the values
-    /// passed here wipes the whole `.basemind/lance/` directory and rebuilds —
-    /// the standard schema-bump migration story for the vector store.
+    /// A mismatch between the stored `(dim, embedding_model)` and the values passed here wipes the
+    /// whole store directory and rebuilds it, the standard schema-bump migration story for the vector
+    /// store.
     ///
     /// An open that fails is not tried again until [`Self::retry_vector_store`]: the error is
     /// remembered and returned at once.
@@ -587,10 +628,16 @@ impl Store {
             if let Some(reason) = &self.lance_unavailable {
                 return Err(anyhow::anyhow!("{reason} (in an earlier open of this scan pass)"));
             }
-            let dir = self.basemind_dir.join(LANCE_DIR);
+            let dir = crate::lance::code_store_dir(&self.root, embedding_model, dim);
             let store = LanceStore::open(&dir, dim, embedding_model)
                 .inspect_err(|error| self.lance_unavailable = Some(format!("{error:#}")))?;
             self.lance = Some(store);
+            let legacy = self.basemind_dir.join(LANCE_DIR);
+            if legacy.is_dir()
+                && let Err(error) = std::fs::remove_dir_all(&legacy)
+            {
+                tracing::debug!(%error, dir = %legacy.display(), "removing the workspace's old vector store failed");
+            }
         }
         // SAFETY of unwrap: we just populated it on the line above when None.
         Ok(self.lance.as_ref().expect("lance store just populated"))
@@ -604,25 +651,31 @@ impl Store {
         }
     }
 
-    /// Whether the LanceDB vector-store directory already exists on disk. Lets callers avoid
-    /// lazily *creating* the store (via [`Self::lance_or_open`]) just to issue a delete that would
+    /// Whether the group's code-chunk vector stores directory already exists on disk. Lets callers
+    /// avoid lazily *creating* a store (via [`Self::lance_or_open`]) just to issue a delete that would
     /// target a table that was never built (e.g. a stale-file purge on a repo that never enabled
     /// code-search embeddings).
     #[cfg(feature = "intelligence")]
-    pub fn lance_dir_exists(&self) -> bool {
-        self.basemind_dir.join(LANCE_DIR).exists()
+    pub fn code_stores_exist(&self) -> bool {
+        crate::lance::code_stores_dir(&self.root).exists()
     }
 
     pub fn upsert(&mut self, rel: impl Into<RelPath>, entry: FileEntry) {
         self.hash_refs.acquire(&entry.hash_hex);
-        if let Some(prior) = self.index.files.insert(rel.into(), entry) {
+        let rel = rel.into();
+        self.key_order.insert(&rel);
+        let prior = self.index.files.insert(rel.clone(), entry);
+        self.file_map.file_changed(rel, prior.is_none());
+        if let Some(prior) = prior {
             self.hash_refs.release(&prior.hash_hex);
         }
     }
 
     pub fn remove(&mut self, rel: impl AsRef<[u8]>) {
-        if let Some(prior) = self.index.files.remove(bstr::BStr::new(rel.as_ref())) {
+        if let Some((rel, prior)) = self.index.files.remove_entry(bstr::BStr::new(rel.as_ref())) {
             self.hash_refs.release(&prior.hash_hex);
+            self.key_order.forget(&rel, &self.index);
+            self.file_map.file_dropped(rel);
         }
     }
 
@@ -633,12 +686,18 @@ impl Store {
     pub(crate) fn extract_again(&mut self, rel: &str) {
         if let Some(entry) = self.index.files.get_mut(bstr::BStr::new(rel.as_bytes())) {
             entry.extract_epoch = 0;
+            self.file_map.file_edited(RelPath::from(rel));
         }
     }
 
     /// True when some indexed file holds the content `hash_hex`.
     pub fn hash_is_held(&self, hash_hex: &str) -> bool {
         self.hash_refs.is_held(hash_hex)
+    }
+
+    /// The sorted keys of every indexed file, document and tombstone.
+    pub(crate) fn key_order(&self) -> &KeyOrder {
+        &self.key_order
     }
 
     /// Look a file up by its repository-relative path. Accepts any byte source —
@@ -658,14 +717,18 @@ impl Store {
             .get(&rel)
             .filter(|old| old.hash_hex != entry.hash_hex || old.config_digest != entry.config_digest)
             .map(|old| doc_key(&old.hash_hex, &old.config_digest));
-        self.index.doc_files.insert(rel, entry);
+        self.key_order.insert(&rel);
+        let prior = self.index.doc_files.insert(rel.clone(), entry);
+        self.file_map.doc_changed(rel, prior.is_none());
         self.dropped_doc_keys.extend(replaced);
     }
 
     /// Drop the document-tier index entry for `rel`.
     pub fn remove_doc(&mut self, rel: impl AsRef<[u8]>) {
-        if let Some(old) = self.index.doc_files.remove(bstr::BStr::new(rel.as_ref())) {
+        if let Some((rel, old)) = self.index.doc_files.remove_entry(bstr::BStr::new(rel.as_ref())) {
             self.dropped_doc_keys.push(doc_key(&old.hash_hex, &old.config_digest));
+            self.key_order.forget(&rel, &self.index);
+            self.file_map.doc_dropped(rel);
         }
     }
 
@@ -682,16 +745,28 @@ impl Store {
     /// with no index handle writes no rows, so its file map keeps the generation it carries. The
     /// paths owed vector rows are written first: the map must not claim a file whose debt is lost.
     pub fn flush(&mut self) -> Result<(), StoreError> {
-        self.flush_sealing(false)
+        self.flush_sealing(false, false)
+    }
+
+    /// [`Self::flush`] for an incremental pass: when only entries this store changed differ from
+    /// what it last wrote, appends them to the file map's delta log instead of rewriting the file
+    /// map (see [`file_map_log`]).
+    pub(crate) fn flush_delta(&mut self) -> Result<(), StoreError> {
+        self.flush_sealing(false, true)
     }
 
     /// [`Self::flush`] for the flush that ends a pass which wrote rows and was not cancelled: its
     /// seal records the pass ended ([`IndexDb::seal_scan_ending_rows_pass`]).
     pub(crate) fn flush_ending_rows_pass(&mut self) -> Result<(), StoreError> {
-        self.flush_sealing(true)
+        self.flush_sealing(true, false)
     }
 
-    fn flush_sealing(&mut self, ends_rows_pass: bool) -> Result<(), StoreError> {
+    /// [`Self::flush_ending_rows_pass`] writing only the changed entries, as [`Self::flush_delta`].
+    pub(crate) fn flush_ending_rows_pass_delta(&mut self) -> Result<(), StoreError> {
+        self.flush_sealing(true, true)
+    }
+
+    fn flush_sealing(&mut self, ends_rows_pass: bool, delta: bool) -> Result<(), StoreError> {
         self.pending_vectors.persist(&self.view_dir)?;
         if let Some(db) = self.index_db.as_ref() {
             self.index.generation = if ends_rows_pass {
@@ -700,9 +775,14 @@ impl Store {
                 db.seal_scan(self.index.generation)?
             };
         }
-        file_map::write_file_map(&self.view_dir, &self.index)?;
+        self.file_map.write(&self.view_dir, &self.index, delta)?;
         self.publish_live_keys();
         Ok(())
+    }
+
+    /// Bytes this store's flushes wrote to the file map so far (the base file and its delta log).
+    pub fn file_map_bytes_written(&self) -> u64 {
+        self.file_map.bytes_written()
     }
 
     /// Refresh the cheap `status.json` sidecar for a shell statusline (see [`StatusSidecar`]).
@@ -792,3 +872,30 @@ const INDEX_OPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "store_key_set_tests.rs"]
+mod key_set_tests;
+
+#[cfg(test)]
+#[path = "store_vector_tests.rs"]
+mod vector_tests;
+
+/// A one-shot query finding the background embedding worker on the workspace lock asks it to give
+/// the lock up and waits for it ([`store_lock::embed_yield`]), so the query reads the index rather
+/// than only the blobs. Any other holder is left alone.
+fn wait_for_embed_worker(basemind_dir: &Path) {
+    let held_by_worker = matches!(
+        probe_writer_lock(basemind_dir),
+        WriterProbe::Held { holder: Some(meta) } if crate::store_lock::embed_yield::held_by_worker(&meta.command)
+    );
+    if held_by_worker {
+        let _ = crate::store_lock::embed_yield::wait_for_worker(basemind_dir, || {
+            if writer_lock_is_held(basemind_dir) {
+                Err(())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}

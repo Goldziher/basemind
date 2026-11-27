@@ -1301,7 +1301,7 @@ fn deferred_embed_mode_indexes_symbols_and_keyword_lane_but_writes_no_vectors() 
     assert!(!keyword.is_empty(), "deferred scan must populate the BM25 keyword lane");
 
     assert!(
-        !store.lance_dir_exists(),
+        !store.code_stores_exist(),
         "deferred scan must not write LanceDB vector rows"
     );
 }

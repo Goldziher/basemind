@@ -99,8 +99,30 @@ pub(crate) struct StatusResponse {
     /// full scan runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scan_progress: Option<crate::scan_evidence::ScanProgress>,
+    /// The background embedding of documents: `done` of `total` documents owed their vectors by
+    /// the scan have them, and `eta_secs`, the seconds the running pass has left at its own rate.
+    /// Until it finishes `docs_search` answers from its keyword lane and says so; a process that
+    /// finds the pass interrupted starts it again. Absent when no document owes vectors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embeddings: Option<crate::embed_progress::EmbeddingsStatus>,
+    /// The from-scratch git-history build a one-shot scan handed to the background worker: `done`
+    /// of `total` commits stored, and `eta_secs`, the seconds the running build has left at its own
+    /// rate. Until it finishes the history tools answer from the live walk. Absent when no build is
+    /// owed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_history_build: Option<crate::git_history::progress::HistoryBuildStatus>,
     pub total_size_bytes: u64,
     pub languages: BTreeMap<String, usize>,
+    /// List-only files (`[scan] list_only`: lockfiles, archives, captures, fonts, data) counted per
+    /// kind (`lockfile`, `archive`, `binary`, `data`). Known to exist, never read, and not in
+    /// `file_count`. Absent when there are none, or while a writer holds the store.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub listed: BTreeMap<String, usize>,
+    /// Indexed files per path role (`test`, `infra`, `generated`, `vendored`, `example`; see
+    /// `[scan.roles]`), counted within `file_count`: a file with two roles counts under both. Only
+    /// roles that mark a file appear. Absent when none does, or while a writer holds the store.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub roles: BTreeMap<String, usize>,
     /// Code files too long to read whole. Absent while a writer holds the store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub large_files: Option<LargeFiles>,

@@ -373,6 +373,26 @@ impl Repo {
             .collect()
     }
 
+    /// All commit shas reachable from `head` (a rev-spec, usually a sha captured earlier),
+    /// **newest-first**: [`Repo::all_commit_shas`] for a head that does not move under the caller
+    /// while it walks. An error when `head` does not resolve to a commit.
+    pub fn all_commit_shas_from(&self, head: &str) -> Result<Vec<String>, GitError> {
+        let local = self.local();
+        Self::newest_first(&local, head)?
+            .map(|step| walk_step(step).map(|info| info.id.to_string()))
+            .collect()
+    }
+
+    /// How many commits HEAD reaches, counted by a walk that sorts nothing and reads no tree: what a
+    /// full git-history rebuild stores, without its cost. `0` when HEAD is unborn.
+    pub fn reachable_commit_count(&self) -> Result<usize, GitError> {
+        let local = self.local();
+        let Ok(head) = local.head_id() else {
+            return Ok(0);
+        };
+        walk_step(local.rev_walk([head.detach()]).all())?.try_fold(0, |count, step| walk_step(step).map(|_| count + 1))
+    }
+
     /// The commits at `skip..skip + take` of [`Repo::log_paths`]' list for `head`, with their
     /// changed files when `include_files`. The `skip` commits before them are walked without listing
     /// files, so a page deep in the history costs one walk to it and a file listing per commit on the
@@ -497,12 +517,32 @@ impl Repo {
             Ok(h) => h.detach(),
             Err(_) => return Ok(Vec::new()),
         };
+        Self::shas_hiding(&local, head, hidden)
+    }
+
+    /// Commit shas reachable from `head` (a rev-spec, usually a sha captured earlier) but **not**
+    /// from `hidden`, newest-first: [`Repo::new_commit_shas`] for a head that does not move under
+    /// the caller while it walks. An error when `head` does not resolve to a commit.
+    pub fn new_commit_shas_from(&self, head: &str, hidden: &str) -> Result<Vec<String>, GitError> {
+        let local = self.local();
+        let Some(head_id) = Self::resolve_oid(&local, head) else {
+            return Err(GitError::RevParse {
+                rev: head.to_string(),
+                msg: "does not resolve to a commit".to_string(),
+            });
+        };
+        Self::shas_hiding(&local, head_id, hidden)
+    }
+
+    /// The walk from `head`, newest first, without the commits `hidden` reaches (none hidden when
+    /// `hidden` does not resolve).
+    fn shas_hiding(local: &gix::Repository, head: gix::ObjectId, hidden: &str) -> Result<Vec<String>, GitError> {
         let mut walk = local
             .rev_walk([head])
             .sorting(gix::revision::walk::Sorting::ByCommitTime(
                 gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
             ));
-        if let Some(hidden_id) = Self::resolve_oid(&local, hidden) {
+        if let Some(hidden_id) = Self::resolve_oid(local, hidden) {
             walk = walk.with_hidden([hidden_id]);
         }
         let walk = walk.all().map_err(|e| GitError::Read {
@@ -548,6 +588,15 @@ impl Repo {
             .ok()
             .flatten()
             .is_some_and(|base| base.detach() == and)
+    }
+
+    /// The parents of the commit `sha` names, in order, as 40-char hex; `None` when `sha` does not
+    /// resolve to a commit.
+    pub fn parent_shas(&self, sha: &str) -> Option<Vec<String>> {
+        let local = self.local();
+        let id = Self::resolve_oid(&local, sha)?;
+        let commit = local.find_commit(id).ok()?;
+        Some(commit.parent_ids().map(|parent| parent.to_string()).collect())
     }
 
     /// True when the object named by `sha` exists in the repository.

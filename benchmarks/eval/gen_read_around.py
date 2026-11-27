@@ -31,7 +31,7 @@ from pathlib import Path
 
 import _common as c
 
-LANGUAGES = {"py": "python", "ts": "typescript", "js": "javascript", "rs": "rust", "go": "go"}
+LANGUAGES = {"py": "python", "ts": "typescript", "js": "javascript", "rs": "rust", "go": "go", "java": "java"}
 WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]{5,}")
 CONTEXT = 5
 

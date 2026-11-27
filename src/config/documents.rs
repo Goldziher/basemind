@@ -1,12 +1,173 @@
 //! Document-tier sub-configs. Split from `v1.rs` to keep both files under the
 //! 1000-line cap once iters 3–7 fill in every xberg capability.
 
-use std::fmt;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::DeprecatedSection;
+use super::secrets::ApiKey;
+
+/// Globs naming test, fixture, mock, story, snapshot, golden and end-to-end paths. The single source
+/// for every default that must not drift: `[scan] test_globs` names the test paths (they stay in the
+/// code map for symbols, outlines, refs and grep, marked as test, and the path roles' `test` role
+/// reads that list), the document tier's default `exclude` drops them from RAG (document indexing
+/// and embedding), and `[code_search] embed_exclude` keeps their code out of the vector store.
+/// [`TEST_DATA_GLOBS`] narrows them to the data the scan only lists.
+///
+/// Patterns are anchored on a directory, a directory-name prefix or suffix (`test_*/`,
+/// `*_test_data/`), or a file-name suffix. `**/test_*.*` can also hit a production module such as
+/// `test_runner.py`; that is accepted because a user can re-include with `!pattern` in
+/// `[documents] exclude` or set `[scan] test_globs`.
+pub const TEST_PATH_GLOBS: &[&str] = &[
+    "**/tests/**",
+    "**/test/**",
+    "**/__tests__/**",
+    "**/e2e/**",
+    "**/mocks/**",
+    "**/fixtures/**",
+    "**/__snapshots__/**",
+    "**/test_data/**",
+    "**/testdata/**",
+    "**/*_test.*",
+    "**/test_*.*",
+    "**/*.spec.*",
+    "**/*.test.*",
+    "**/conftest.py",
+    "**/*.bats",
+    "**/*.snap",
+    "**/*.stories.*",
+    "**/*.mock.*",
+    "**/*.mocks.*",
+    "**/__mocks__/**",
+    "**/mock/**",
+    "**/testing/**",
+    "**/playwright/**",
+    "**/cypress/**",
+    "**/stories/**",
+    "**/*Test.java",
+    "**/*Tests.java",
+    "**/*Test.kt",
+    "**/*_spec.rb",
+    "**/*_tests.rs",
+    "**/test_utils/**",
+    "**/testutils/**",
+    "**/tests.py",
+    "**/*.e2e.*",
+    "**/*.cy.*",
+    "**/test_*/**",
+    "**/*_test/**",
+    "**/*_tests/**",
+    "**/test-data/**",
+    "**/*_test_data/**",
+    "**/*-test-data/**",
+    "**/*_testdata/**",
+    "**/fixture/**",
+    "**/__fixtures__/**",
+    "**/*_fixtures/**",
+    "**/*_mocks/**",
+    "**/*_snapshots/**",
+    "**/golden/**",
+    "**/goldens/**",
+    "**/*_fixture.*",
+    "**/*_fixtures.*",
+    "**/*_mock.*",
+    "**/*_mocks.*",
+    "**/*.golden",
+];
+
+/// Test data: fixtures, recorded responses, snapshots and golden files. The scan lists these
+/// (`[scan] list_only`) and never opens them, so they are not code-mapped, extracted, chunked,
+/// keyword-indexed or embedded; `find_files` still finds them. A data directory is listed whole,
+/// and under the test, fixture and mock directories of [`TEST_PATH_GLOBS`] only the data formats
+/// are: test code there stays in the code map, marked as test. A `!pattern` in `[scan] list_only`
+/// re-includes a path.
+pub const TEST_DATA_GLOBS: &[&str] = &[
+    "**/test_data/**",
+    "**/testdata/**",
+    "**/test-data/**",
+    "**/*_test_data/**",
+    "**/*-test-data/**",
+    "**/*_testdata/**",
+    "**/__snapshots__/**",
+    "**/*_snapshots/**",
+    "**/golden/**",
+    "**/goldens/**",
+    "**/*.snap",
+    "**/*.golden",
+    "**/tests/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/test/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/__tests__/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/test_*/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/*_test/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/*_tests/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/e2e/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/fixtures/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/fixture/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/__fixtures__/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/*_fixtures/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/mocks/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/mock/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/__mocks__/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+    "**/*_mocks/**/*.{json,jsonc,json5,jsonl,ndjson,yaml,yml,csv,tsv,xml,txt}",
+];
+
+/// Agent instruction and configuration files: they describe how agents should work, not the
+/// project, so they stay out of document search.
+pub const AGENT_CONFIG_GLOBS: &[&str] = &[
+    "**/CLAUDE.md",
+    "**/CLAUDE.local.md",
+    "**/AGENTS.md",
+    "**/AGENTS.local.md",
+    "**/GEMINI.md",
+    "**/.claude/**",
+    "**/.agents/**",
+    "**/.cursor/**",
+    "**/.windsurf/**",
+    "**/.opencode/**",
+    "**/.ai-rulez/**",
+    ".github/copilot-instructions.md",
+];
+
+/// Vendored, generated and build output plus minified and map files.
+pub const VENDORED_BUILD_GLOBS: &[&str] = &[
+    "**/node_modules/**",
+    "**/vendor/**",
+    "**/third_party/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/target/**",
+    "**/generated/**",
+    "**/__generated__/**",
+    "**/*.min.*",
+    "**/*.map",
+];
+
+/// Lockfiles and vector images: bulk with no prose.
+pub const LOCKFILE_GLOBS: &[&str] = &[
+    "*.svg",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock",
+    "Cargo.lock",
+    "poetry.lock",
+    "*.lock",
+];
+
+/// The default `[documents] exclude` list: lockfiles, tests, agent config and vendored or build
+/// output. `basemind init` writes it into the generated `[documents]` block so it is visible and
+/// editable; a user entry `!pattern` re-includes a path the list drops.
+pub fn default_document_exclude() -> Vec<String> {
+    [
+        LOCKFILE_GLOBS,
+        TEST_PATH_GLOBS,
+        AGENT_CONFIG_GLOBS,
+        VENDORED_BUILD_GLOBS,
+    ]
+    .into_iter()
+    .flatten()
+    .map(|glob| (*glob).to_string())
+    .collect()
+}
 
 /// Top-level `[documents]` table. Each sub-config has `#[serde(default)]` so
 /// adding a new tier never breaks older TOML files.
@@ -28,11 +189,17 @@ pub struct DocumentsConfig {
     #[schemars(inner(length(min = 1)))]
     pub include: Vec<String>,
     /// Deny-list of globs applied to document indexing itself (not just embedding): matching files
-    /// are not extracted, chunked or searchable as documents. Same syntax as `include`. The default
-    /// drops low-value bulk: `*.svg`, lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`,
-    /// `Cargo.lock`, `poetry.lock`, `*.lock`) and test-data directories (`test_data`, `testdata`,
-    /// `fixtures`, `__snapshots__`). Setting the key replaces the default list; `exclude = []`
-    /// indexes all of them, and a custom list must repeat any default entry it still wants.
+    /// are not extracted, chunked or searchable as documents. Same syntax as `include`, and the
+    /// list is ordered like a `.gitignore`: a later `!pattern` entry re-includes what an earlier
+    /// entry dropped (`["**/tests/**", "!tests/docs/**"]`). The default drops low-value bulk:
+    /// `*.svg`, lockfiles, test, fixture, mock, snapshot and e2e paths, agent instruction files and
+    /// directories (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.cursor/`, ...), and vendored or build
+    /// output (`node_modules`, `vendor`, `dist`, `build`, `*.min.*`, `*.map`). Setting the key
+    /// replaces the default list; `exclude = []` indexes all of them, and a custom list must repeat
+    /// any default entry it still wants (or append `!` entries after `basemind init` wrote the
+    /// default list out). `include`, `embed_include` and `embed_exclude` accept the same `!` form.
+    /// Per-extension rules need no extra syntax: `exclude = ["**/*.html", "!docs/**/*.html"]` drops
+    /// HTML everywhere except under `docs/`.
     #[serde(default = "DocumentsConfig::default_exclude")]
     #[schemars(inner(length(min = 1)))]
     pub exclude: Vec<String>,
@@ -201,21 +368,7 @@ impl DocumentsConfig {
         true
     }
     fn default_exclude() -> Vec<String> {
-        [
-            "*.svg",
-            "pnpm-lock.yaml",
-            "package-lock.json",
-            "yarn.lock",
-            "Cargo.lock",
-            "poetry.lock",
-            "*.lock",
-            "**/test_data/**",
-            "**/testdata/**",
-            "**/fixtures/**",
-            "**/__snapshots__/**",
-        ]
-        .map(String::from)
-        .to_vec()
+        default_document_exclude()
     }
     fn default_embed_exclude() -> Vec<String> {
         [
@@ -598,6 +751,12 @@ pub enum SummarizationStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OcrConfig {
+    /// Run OCR on raster images. Off by default: screenshots and diagrams add embedding time and
+    /// rarely answer a question. Takes effect only in a binary built with the `documents-ocr`
+    /// feature. It does not gate scanned PDFs: a build with the OCR tier compiled in always
+    /// OCRs them.
+    #[serde(default)]
+    pub enabled: bool,
     /// Reserved: parsed but currently has no effect (a load-time warning is logged when set to a
     /// non-default value); OCR runs with xberg's defaults.
     #[serde(default)]
@@ -617,6 +776,7 @@ impl OcrConfig {
 impl Default for OcrConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             backend: OcrBackend::default(),
             languages: Self::default_languages(),
         }
@@ -671,108 +831,6 @@ pub struct LlmConfig {
     pub max_tokens: Option<u64>,
 }
 
-/// Tri-state API key wrapper. Serde-deserialised as `null` (`Unset`), a plain
-/// string (`Literal`), or a `{ env = "NAME" }` table (`Env`).
-///
-/// `Serialize` is implemented manually — the `Literal` variant NEVER emits its
-/// cleartext secret. It serialises to the marker string `"<redacted>"` so any
-/// downstream pipeline that round-trips this enum through JSON / TOML (e.g.
-/// the config validator at `src/config/mod.rs`) cannot leak credentials into
-/// logs, snapshot tests, or error messages. Deserialisation is unchanged:
-/// loading a TOML config with a literal `api_key = "sk-..."` still produces
-/// `ApiKey::Literal(...)`. The redaction is one-way by design.
-#[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
-#[serde(untagged)]
-pub enum ApiKey {
-    /// Literal value baked into config. Strongly discouraged for production —
-    /// `Env` keeps secrets out of source control.
-    Literal(String),
-    /// `{ env = "OPENAI_API_KEY" }` — resolved at load time via `std::env::var`.
-    Env { env: String },
-    /// Missing / `null` — every LLM-backed feature treats this as "disabled".
-    #[default]
-    Unset,
-}
-
-impl PartialEq for ApiKey {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Literal(a), Self::Literal(b)) => a == b,
-            (Self::Env { env: a }, Self::Env { env: b }) => a == b,
-            (Self::Unset, Self::Unset) => true,
-            _ => false,
-        }
-    }
-}
-
-impl serde::Serialize for ApiKey {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Literal(_) => serializer.serialize_str("<redacted>"),
-            Self::Env { env } => {
-                use serde::ser::SerializeStruct;
-                let mut s = serializer.serialize_struct("EnvRef", 1)?;
-                s.serialize_field("env", env)?;
-                s.end()
-            }
-            Self::Unset => serializer.serialize_none(),
-        }
-    }
-}
-
-impl ApiKey {
-    /// Resolve the credential. `Literal` returns its inner value as-is; `Env`
-    /// performs an `env::var` lookup and returns `None` if the variable is
-    /// missing or empty; `Unset` always returns `None`.
-    pub fn resolve(&self) -> Option<SecretString> {
-        self.resolve_with(|name| std::env::var(name).ok())
-    }
-
-    /// [`Self::resolve`] with `lookup` reading the `Env` variable in place of the process
-    /// environment.
-    fn resolve_with(&self, lookup: impl FnOnce(&str) -> Option<String>) -> Option<SecretString> {
-        match self {
-            Self::Literal(s) if !s.is_empty() => Some(SecretString(s.clone())),
-            Self::Literal(_) => None,
-            Self::Env { env } => lookup(env).filter(|v| !v.is_empty()).map(SecretString),
-            Self::Unset => None,
-        }
-    }
-}
-
-/// Newtype wrapping a resolved secret. `Debug` and `Display` always render
-/// `"<redacted>"` so spans / panics never leak the value. Use `expose()` when
-/// you genuinely need the raw bytes at an API boundary.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SecretString(String);
-
-impl SecretString {
-    /// Wrap a raw string as a secret. The caller is responsible for ensuring
-    /// the bytes are not already on disk in plaintext.
-    pub fn new(value: String) -> Self {
-        Self(value)
-    }
-
-    /// Borrow the underlying secret. Use only at the boundary that consumes the
-    /// credential (e.g. building an HTTP authorization header).
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for SecretString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("\"<redacted>\"")
-    }
-}
-
-impl fmt::Display for SecretString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -801,101 +859,8 @@ mod tests {
         let opted_in: DocumentsConfig = toml::from_str("embed_exclude = []\n").expect("parse");
         assert!(opted_in.embed_exclude.is_empty(), "an empty list replaces the default");
     }
-
-    #[test]
-    fn secret_string_redacts_in_debug() {
-        let s = SecretString::new("hunter2".to_string());
-        assert_eq!(format!("{s:?}"), "\"<redacted>\"");
-        assert_eq!(format!("{s}"), "<redacted>");
-        assert_eq!(s.expose(), "hunter2");
-    }
-
-    #[test]
-    fn api_key_unset_resolves_to_none() {
-        assert!(ApiKey::Unset.resolve().is_none());
-    }
-
-    #[test]
-    fn api_key_literal_resolves_to_value() {
-        let k = ApiKey::Literal("sk-test".to_string());
-        let resolved = k.resolve().expect("literal resolves");
-        assert_eq!(resolved.expose(), "sk-test");
-    }
-
-    #[test]
-    fn api_key_literal_empty_resolves_to_none() {
-        assert!(ApiKey::Literal(String::new()).resolve().is_none());
-    }
-
-    #[test]
-    fn api_key_env_reads_the_named_variable() {
-        let k = ApiKey::Env {
-            env: "BASEMIND_TEST_API_KEY".to_string(),
-        };
-        let resolved = k
-            .resolve_with(|name| (name == "BASEMIND_TEST_API_KEY").then(|| "value-123".to_string()))
-            .expect("env resolves");
-        assert_eq!(resolved.expose(), "value-123");
-    }
-
-    #[test]
-    fn api_key_env_missing_or_empty_resolves_to_none() {
-        let k = ApiKey::Env {
-            env: "BASEMIND_TEST_API_KEY".to_string(),
-        };
-        assert!(k.resolve_with(|_| None).is_none());
-        assert!(k.resolve_with(|_| Some(String::new())).is_none());
-    }
-
-    #[test]
-    fn api_key_resolve_reads_the_process_environment() {
-        let k = ApiKey::Env {
-            env: "PATH".to_string(),
-        };
-        let expected = std::env::var("PATH").ok().filter(|value| !value.is_empty());
-        assert_eq!(k.resolve().map(|secret| secret.expose().to_string()), expected);
-    }
-
-    #[test]
-    fn api_key_deserialises_literal_string() {
-        let k: ApiKey = serde_json::from_str("\"sk-test\"").expect("parse");
-        match k {
-            ApiKey::Literal(s) => assert_eq!(s, "sk-test"),
-            other => panic!("expected Literal, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn api_key_deserialises_env_table() {
-        let k: ApiKey = serde_json::from_str(r#"{"env":"OPENAI_API_KEY"}"#).expect("parse");
-        match k {
-            ApiKey::Env { env } => assert_eq!(env, "OPENAI_API_KEY"),
-            other => panic!("expected Env, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn api_key_literal_never_serializes_cleartext() {
-        let key = ApiKey::Literal("sk-supersecret".to_string());
-        let json = serde_json::to_string(&key).expect("serialize");
-        assert!(!json.contains("sk-supersecret"), "raw secret leaked: {json}");
-        assert!(json.contains("<redacted>"), "redaction marker missing: {json}");
-    }
-
-    #[test]
-    fn api_key_env_serializes_env_name_only() {
-        let key = ApiKey::Env {
-            env: "OPENAI_API_KEY".to_string(),
-        };
-        let json = serde_json::to_string(&key).expect("serialize");
-        assert!(json.contains("OPENAI_API_KEY"), "env name missing: {json}");
-        assert!(json.contains("\"env\""), "env field missing: {json}");
-    }
-
-    #[test]
-    fn api_key_unset_serializes_to_null() {
-        let key = ApiKey::Unset;
-        let json = serde_json::to_string(&key).expect("serialize");
-        assert_eq!(json, "null");
-    }
 }
+
+#[cfg(test)]
+#[path = "test_paths_tests.rs"]
+mod test_paths_tests;

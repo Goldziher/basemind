@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any
 
+import wire_decode  # sibling module; every entry script puts this directory on sys.path first
+
 SESSION_ENV = "BASEMIND_HARDENING_SESSION"
 IS_MAC = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
@@ -666,6 +668,31 @@ def sample_pid(pid: int) -> ProcSample | None:
     return None
 
 
+def written_bytes(pid: int) -> int | None:
+    """Bytes the process has had written to storage since it started, or None when the host keeps no
+    such counter (Windows) or the process is gone or not readable.
+
+    Linux reads `write_bytes` of `/proc/<pid>/io` (bytes sent to the block layer); macOS reads
+    `ri_diskio_byteswritten` of the process's rusage. Both count every file the process writes, not
+    one store, and neither sees writes a child process made.
+    """
+    if IS_MAC:
+        ru = _RusageV2()
+        if _libproc.proc_pid_rusage(pid, 2, ctypes.byref(ru)) != 0:
+            return None
+        return int(ru.diskio_byteswritten)
+    if IS_LINUX:
+        try:
+            text = Path(f"/proc/{pid}/io").read_text()
+        except OSError:
+            return None
+        for line in text.splitlines():
+            key, _, value = line.partition(":")
+            if key == "write_bytes" and value.strip().isdigit():
+                return int(value)
+    return None
+
+
 @dataclass
 class DirUsage:
     """Sizes under one directory tree, apparent bytes unless named otherwise."""
@@ -886,8 +913,8 @@ class ToolResult:
         body = result.get("structuredContent")
         if body is None:
             try:
-                body = json.loads(text)
-            except (json.JSONDecodeError, ValueError):
+                body = wire_decode.decode(text)
+            except wire_decode.WireError:
                 body = None
         return cls(bool(result.get("isError")), text, body, secs)
 

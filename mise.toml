@@ -16,10 +16,21 @@ pnpm = "12.21.0"
 "github:nextest-rs/nextest" = { version = "0.9.152", version_prefix = "cargo-nextest-" }
 "github:EmbarkStudios/cargo-about" = "0.9.3"
 ripgrep = "15.2.0"
+sccache = "0.19.0"
 
 [tasks.setup]
 description = "Install all dependencies and initialize project. Idempotent."
-run = ["mise install", "cargo fetch", { task = "governance:hooks:install" }, "echo 'Setup complete'"]
+run = [
+  "mise install",
+  { task = "setup:sccache" },
+  "cargo fetch",
+  { task = "governance:hooks:install" },
+  "echo 'Setup complete'",
+]
+
+[tasks."setup:sccache"]
+description = "Cache Rust compilation across worktrees with sccache: install it when missing, point cargo at it. Idempotent."
+run = "scripts/setup-sccache.sh"
 
 [tasks.build]
 description = "Build the basemind binary"
@@ -40,6 +51,7 @@ run = [
   'cargo clippy --all-targets --features "comms memory" -- -D warnings',
   'cargo clippy --all-targets --features "comms documents memory" -- -D warnings',
   'cargo clippy --all-targets --features "documents documents-ocr documents-ner" -- -D warnings',
+  'cargo clippy --all-targets --features code-intel-python -- -D warnings',
 ]
 
 [tasks."check:msrv"]

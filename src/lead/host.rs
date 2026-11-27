@@ -51,14 +51,10 @@ pub struct Setup {
 }
 
 impl Setup {
-    /// The production setup: the user-level policy file and `<data dir>/agents/`.
-    pub fn from_user() -> Result<Self, LeadOff> {
-        let policy_path = crate::config::agents_policy::policy_path().ok_or_else(|| {
-            LeadOff(
-                "agent launching is off: no home directory to find agents.toml in".to_owned(),
-                "agent launching is off: there is no home directory to find the operator's agents.toml in",
-            )
-        })?;
+    /// The production setup: the policy file (the user-level `agents.toml`, or `policy_override`
+    /// when the operator names one with `serve --agents-policy`) and `<data dir>/agents/`.
+    pub fn from_user(policy_override: Option<&Path>) -> Result<Self, LeadOff> {
+        let policy_path = policy_location(policy_override)?;
         let agents = crate::data_root::DataRoot::current().path().join("agents");
         Ok(Self {
             policy_path,
@@ -67,6 +63,34 @@ impl Setup {
             registry: Registry::with_defaults(),
         })
     }
+}
+
+/// The operator's policy file: `policy_override` (an absolute path the operator passed on the
+/// command line, which the file checks of [`policy_file`] then apply to as to any other), else the
+/// user-level `agents.toml`.
+fn policy_location(policy_override: Option<&Path>) -> Result<PathBuf, LeadOff> {
+    if let Some(path) = policy_override {
+        if !path.is_absolute() {
+            return Err(LeadOff(
+                format!(
+                    "agent launching is off: --agents-policy {} is not an absolute path",
+                    path.display()
+                ),
+                "agent launching is off: the --agents-policy path is not absolute",
+            ));
+        }
+        tracing::warn!(
+            "agent launching reads its operator policy from {} (--agents-policy), not the user-level agents.toml",
+            path.display()
+        );
+        return Ok(path.to_path_buf());
+    }
+    crate::config::agents_policy::policy_path().ok_or_else(|| {
+        LeadOff(
+            "agent launching is off: no home directory to find agents.toml in".to_owned(),
+            "agent launching is off: there is no home directory to find the operator's agents.toml in",
+        )
+    })
 }
 
 /// The supervisor of one lead `serve`, and what it answers the lead's two tools with.

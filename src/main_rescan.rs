@@ -18,7 +18,7 @@ pub(super) fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, output: Scan
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if basemind::cli::rescan::daemon_is_up() {
         let report = basemind::cli::rescan::rescan_via_daemon(root, (!full).then_some(abs), full)?;
-        return output.forwarded(&mut out, "rescan", root, &report);
+        return output.forwarded(&mut out, "rescan", root, &report, None);
     }
     let cancel = basemind::cli::interrupt::install();
     bootstrap_grammars(&mut out, verbosity)?;
@@ -42,6 +42,7 @@ pub(super) fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, output: Scan
             &mut store,
             &config,
             &cancel,
+            basemind::scanner::EmbedMode::Inline,
         )
         .context("rescan (full)")?
     } else {
@@ -64,7 +65,7 @@ pub(super) fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, output: Scan
         return interrupted(&mut out, &report, verbosity, "rescan");
     }
     // As in `cmd_scan`: the maintenance below runs even when the summary cannot be written.
-    let summary = output.summary(&mut out, root, &report, started);
+    let summary = output.summary(&mut out, root, &report, started, None, None);
     render::render_deps_unavailable(&mut out, &report.deps_unavailable, verbosity);
     reclaim_after_scan(&mut out, &report.stats, std::mem::take(&mut store.reset_stale_schema));
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);

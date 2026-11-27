@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:fb6ff797d67ff5e52c439b60a2835337f452c577634f32b3e29afbc99c7aa4cd
-# Source-Hash: blake3:42ed917dd000c398f25f6cd197421a248de367c36effd4f924740853c653446c
+# Content-Hash: blake3:2cee82f24cca8b44ef7e243352dce4f895ca3ffbb35c62a5f8087713c7a23320
+# Source-Hash: blake3:1f14402d1840126cf7337c9a7a6a73d47e87cb3514a182fbf7b927a76a3322f9
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -26,10 +26,14 @@ that context so they can call ``ctx.inject_message(...)`` when they fire.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
+import re
 import shutil
+import socket
 import subprocess
+import sys
 import warnings
 from builtins import BaseExceptionGroup, ExceptionGroup
 from datetime import timedelta
@@ -38,6 +42,19 @@ from pathlib import Path
 _PKG_DIR = Path(__file__).resolve().parent
 _SKILLS_DIR = _PKG_DIR / "skills"
 _COMMANDS_DIR = _PKG_DIR / "commands"
+
+_SESSION_INBOX_TIMEOUT_SECONDS = 6
+# One announcing read per LLM turn: a live daemon answers in milliseconds, so a slow one is
+# skipped for this turn rather than holding the turn up.
+_TURN_INBOX_TIMEOUT_SECONDS = 2
+_VERSION_TIMEOUT_SECONDS = 5
+_PROBE_TIMEOUT_SECONDS = 0.2
+_COMMS_DIR_ENV = "BASEMIND_COMMS_DIR"
+_COMMS_SOCKET_NAME = "comms.sock"
+# The protocol generation of the basemind binary this plugin ships with: its daemon listens only in
+# `g<N>/` (`RENDEZVOUS_GENERATION` in src/daemon_lock.rs). A listener of another generation is not
+# one this binary can reach.
+_COMMS_GENERATION = 1
 
 _DISCIPLINE = (
     "basemind is available over MCP in this session: a tree-sitter code map, git history, "
@@ -161,6 +178,7 @@ def _register_hooks(ctx) -> None:
             _safe_call(inject, text, "user")
 
     def on_session_start(**_kwargs):
+        _inject(_binary_notice())
         _inject(_session_start_context(os.getcwd()))
 
     def pre_llm_call(**_kwargs):
@@ -172,7 +190,7 @@ def _register_hooks(ctx) -> None:
 
 def _session_start_context(cwd: str) -> str:
     """Boot context: the operating discipline, the agent tools, and a count of unread messages."""
-    messages = _inbox_messages(cwd, ["--peek"], 5)
+    messages = _inbox_messages(cwd, ["--peek"], 5, _SESSION_INBOX_TIMEOUT_SECONDS)
     if messages:
         return f"{_DISCIPLINE} {_COMMS_TOOLS} You have {len(messages)} unread agent message(s); read them with agent_inbox."
     return f"{_DISCIPLINE} {_COMMS_TOOLS}"
@@ -184,7 +202,9 @@ def _delta_context(cwd: str) -> str | None:
     Hermes cannot rewrite a tool call's arguments, so its agent tool calls act as the principal and
     this read does too: a session-scoped name would announce to an actor that never reads.
     """
-    messages = _inbox_messages(cwd, ["--announce"], 10)
+    if not _daemon_is_up():
+        return None
+    messages = _inbox_messages(cwd, ["--announce"], 10, _TURN_INBOX_TIMEOUT_SECONDS)
     if not messages:
         return None
     return (
@@ -194,9 +214,9 @@ def _delta_context(cwd: str) -> str | None:
     )
 
 
-def _inbox_messages(cwd: str, flags: list[str], limit: int):
+def _inbox_messages(cwd: str, flags: list[str], limit: int, timeout: float):
     """Return the inbox message list (possibly empty), or ``None`` when the daemon is unavailable."""
-    out = _run_basemind(["agent", "inbox", *flags, "--root", cwd, "--json", "--limit", str(limit)], timeout=6)
+    out = _run_basemind(["agent", "inbox", *flags, "--root", cwd, "--json", "--limit", str(limit)], timeout=timeout)
     if not out:
         return None
     try:
@@ -205,6 +225,93 @@ def _inbox_messages(cwd: str, flags: list[str], limit: int):
         return None
     messages = data.get("messages") if isinstance(data, dict) else None
     return messages if isinstance(messages, list) else []
+
+
+def _comms_base_dir() -> Path | None:
+    """The comms directory the daemon listens in, or ``None`` where the platform is not probed.
+
+    Mirrors the binary's resolution: the ``BASEMIND_COMMS_DIR`` override, else ``comms/`` under
+    the per-user data directory. Windows is never probed, with or without the override: its daemon
+    listens on a named pipe named by a hash of the directory.
+    """
+    if sys.platform == "win32":
+        return None
+    override = os.environ.get(_COMMS_DIR_ENV, "")
+    if override.strip():
+        return Path(override)
+    home = Path.home()
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "basemind" / "comms"
+    if sys.platform.startswith("linux"):
+        data_home = os.environ.get("XDG_DATA_HOME", "").strip()
+        return (Path(data_home) if data_home else home / ".local" / "share") / "basemind" / "comms"
+    return None
+
+
+def _daemon_is_up() -> bool:
+    """Whether a comms daemon accepts connections, probed with no process spawn.
+
+    Connects to the socket of this binary's generation (``g<N>/comms.sock``), so a machine with no
+    daemon costs one failed connect per turn and a daemon of another generation does not count.
+    Where the socket cannot be located (Windows names a pipe), the daemon is assumed up and the
+    CLI answers instead, so Windows keeps the per-turn CLI read.
+    """
+    base = _comms_base_dir()
+    if base is None:
+        return True
+    return _accepts_connection(base / f"g{_COMMS_GENERATION}" / _COMMS_SOCKET_NAME)
+
+
+def _accepts_connection(path: Path) -> bool:
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(_PROBE_TIMEOUT_SECONDS)
+        probe.connect(str(path))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
+
+
+def _minor(version: str) -> str | None:
+    match = re.match(r"(\d+\.\d+)\.", version)
+    return match.group(1) if match else None
+
+
+def _plugin_version() -> str | None:
+    """The version this plugin was released as, read from its manifest."""
+    for line in _read_text(_PKG_DIR / "plugin.yaml").splitlines():
+        match = re.match(r"version:\s*[\"']?([^\"'\s]+)", line)
+        if match:
+            return match.group(1)
+    return None
+
+
+@functools.cache
+def _binary_notice() -> str | None:
+    """One notice when the ``basemind`` on PATH is absent or from another minor version.
+
+    Runs ``basemind --version`` once per process. The skills name this plugin's tools, so a binary
+    from another minor version answers "unknown tool"; ``None`` means the binary matches.
+    """
+    expected = _plugin_version()
+    if expected is None:
+        return None
+    install = f"`pnpm add -g basemind@{expected}` (or `pip install basemind=={expected}`)"
+    out = _run_basemind(["--version"], timeout=_VERSION_TIMEOUT_SECONDS)
+    found = re.match(r"basemind\s+(\S+)", out.strip()) if out else None
+    if found is None:
+        return (
+            f"basemind: `basemind --version` gave no version, so basemind tools may be unavailable. "
+            f"Install it with {install}, then restart Hermes."
+        )
+    if _minor(found.group(1)) == _minor(expected):
+        return None
+    return (
+        f"basemind: the binary on PATH is {found.group(1)} but this plugin is {expected}; its tools may not "
+        f"match the skills. Install the same minor version with {install}, then restart Hermes."
+    )
 
 
 def _run_basemind(args, timeout, stdin=None):
@@ -295,12 +402,127 @@ def error_details(error: BaseException) -> str:
     return str(error)[:1024]
 
 
-async def call_tool(arguments: dict[str, object], **_kwargs: object) -> dict[str, object]:
-    """Call one supported MCP tool using the installed local CLI."""
-    from mcp.client.stdio import stdio_client
-    from mcp.shared.exceptions import McpError
+class _McpSession:
+    """One ``basemind serve`` stdio session, held open for every call from one working directory.
 
-    from mcp import ClientSession, StdioServerParameters
+    A single task owns the SDK's async contexts, because anyio requires a context to exit in the task
+    that entered it; callers hand it requests through a queue and each request runs concurrently.
+    """
+
+    def __init__(self, command: str, cwd: str) -> None:
+        self.loop = asyncio.get_running_loop()
+        self._requests: asyncio.Queue = asyncio.Queue()
+        self._ready: asyncio.Future = self.loop.create_future()
+        self._ready.add_done_callback(lambda future: future.cancelled() or future.exception())
+        self._broken = False
+        self._inflight: set[asyncio.Future] = set()
+        self._task = self.loop.create_task(self._run(command, cwd))
+
+    def usable_on(self, loop: asyncio.AbstractEventLoop) -> bool:
+        """Whether this session can serve a call made on ``loop``."""
+        return self.loop is loop and not self._broken and not self._task.done()
+
+    def close(self) -> None:
+        """Stop the server and release the session; safe from any thread."""
+        self.loop.call_soon_threadsafe(self._task.cancel)
+
+    async def call(self, tool: str, parameters: dict[str, object]):
+        """Run one tool, or the discovery request, on the open session."""
+        await asyncio.shield(self._ready)
+        if self._task.done():
+            raise RuntimeError("the basemind MCP session ended")
+        result = self.loop.create_future()
+        self._requests.put_nowait((tool, parameters, result))
+        return await result
+
+    async def _run(self, command: str, cwd: str) -> None:
+        from mcp.client.stdio import stdio_client
+
+        from mcp import ClientSession, StdioServerParameters
+
+        server = StdioServerParameters(command=command, args=SERVER_ARGUMENTS, env=os.environ.copy(), cwd=cwd)
+        try:
+            async with (
+                stdio_client(server) as (read, write),
+                ClientSession(read, write, read_timeout_seconds=timedelta(seconds=REQUEST_TIMEOUT_SECONDS)) as session,
+                asyncio.TaskGroup() as requests,
+            ):
+                await session.initialize()
+                self._ready.set_result(None)
+                while True:
+                    tool, parameters, result = await self._requests.get()
+                    if result.done():
+                        continue
+                    self._inflight.add(result)
+                    result.add_done_callback(self._inflight.discard)
+                    requests.create_task(self._serve(session, tool, parameters, result))
+        except Exception as error:
+            self._fail(error)
+        finally:
+            self._broken = True
+            self._fail(RuntimeError("the basemind MCP session ended"))
+
+    async def _serve(self, session, tool: str, parameters: dict[str, object], result: asyncio.Future) -> None:
+        from mcp.shared.exceptions import McpError
+        from mcp.types import CONNECTION_CLOSED
+
+        try:
+            answer = await (session.list_tools() if tool == DISCOVERY_TOOL else session.call_tool(tool, parameters))
+        except McpError as error:
+            if error.error.code == CONNECTION_CLOSED:
+                self._broken = True
+            self._settle(result, error=error)
+        except Exception as error:
+            self._broken = True
+            self._settle(result, error=error)
+        else:
+            self._settle(result, value=answer)
+
+    def _fail(self, error: BaseException) -> None:
+        if not self._ready.done():
+            self._ready.set_exception(error)
+        while not self._requests.empty():
+            self._settle(self._requests.get_nowait()[2], error=error)
+        for result in list(self._inflight):
+            self._settle(result, error=error)
+
+    @staticmethod
+    def _settle(result: asyncio.Future, value=None, error: BaseException | None = None) -> None:
+        if result.done():
+            return
+        if error is not None:
+            result.set_exception(error)
+        else:
+            result.set_result(value)
+
+
+_sessions: dict[str, _McpSession] = {}
+
+
+def _session_for(command: str, cwd: str) -> _McpSession:
+    """The open session for ``cwd`` on the running loop, started when there is none usable."""
+    loop = asyncio.get_running_loop()
+    session = _sessions.get(cwd)
+    if session is not None and session.usable_on(loop):
+        return session
+    _discard(cwd, session)
+    session = _sessions[cwd] = _McpSession(command, cwd)
+    return session
+
+
+def _discard(cwd: str, session: _McpSession | None) -> None:
+    """Forget ``session`` so the next call starts a fresh server, only while it is still cached for ``cwd``."""
+    if session is None or _sessions.get(cwd) is not session:
+        return
+    del _sessions[cwd]
+    if not session.loop.is_closed():
+        session.close()
+
+
+async def call_tool(arguments: dict[str, object], **_kwargs: object) -> dict[str, object]:
+    """Call one supported MCP tool on the session kept open for the working directory."""
+    import anyio
+    from mcp.shared.exceptions import McpError
 
     if not isinstance(arguments, dict) or set(arguments) - {"tool", "tool_arguments"}:
         return {"error": "Pass an object containing tool and optional tool_arguments."}
@@ -312,22 +534,20 @@ async def call_tool(arguments: dict[str, object], **_kwargs: object) -> dict[str
     if command is None:
         return {"error": f"Install {CLI_COMMAND} with MCP support and put it on PATH; see the plugin README."}
 
-    server = StdioServerParameters(command=command, args=SERVER_ARGUMENTS, env=os.environ.copy())
+    cwd = os.getcwd()
+    session = None
     try:
         async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
-            async with (
-                stdio_client(server) as (read, write),
-                ClientSession(read, write, read_timeout_seconds=timedelta(seconds=REQUEST_TIMEOUT_SECONDS)) as session,
-            ):
-                await session.initialize()
-                if tool == DISCOVERY_TOOL:
-                    result = await session.list_tools()
-                else:
-                    result = await session.call_tool(tool, parameters)
-                return result.model_dump(mode="json", exclude_none=True)
+            session = _session_for(command, cwd)
+            result = await session.call(tool, parameters)
+            return result.model_dump(mode="json", exclude_none=True)
     except TimeoutError:
+        _discard(cwd, session)
         return {"error": f"{CLI_COMMAND} MCP request timed out; reduce the workload or inspect server diagnostics."}
-    except (McpError, OSError, ExceptionGroup, ValueError) as error:
+    except McpError as error:
+        return {"error": f"{CLI_COMMAND} MCP request failed: {error_details(error)}"}
+    except (OSError, ExceptionGroup, ValueError, RuntimeError, anyio.ClosedResourceError) as error:
+        _discard(cwd, session)
         return {"error": f"{CLI_COMMAND} MCP request failed: {error_details(error)}"}
 
 

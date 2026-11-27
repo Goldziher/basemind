@@ -19,15 +19,13 @@ pub struct CodeRefsParams {
     #[serde(default)]
     #[schemars(extend("enum" = ["callers", "implementations", "importers", "definition", "cycles"]))]
     pub relation: Option<String>,
-    /// `callers`: the file defining `name`, to pin it. `definition`: the reference's file (required).
-    /// `importers`/`cycles`: that file (no `name`).
+    /// `callers`: the file defining `name`, to pin it. `definition`: the reference's file. `importers`/`cycles`: that file (no `name`).
     #[serde(default)]
     pub path: Option<RelPath>,
-    /// Needs `path`. `callers`: a 1-based line inside the definition meant. `definition`: the
-    /// reference's line (required).
+    /// Needs `path`. `callers`: a 1-based line inside the definition. `definition`: the reference's line.
     #[serde(default)]
     pub line: Option<u32>,
-    /// `definition` only: 1-based column (default: where `name` is on the line).
+    /// `definition` only: 1-based column (default: where `name` is).
     #[serde(default)]
     pub column: Option<u32>,
     /// `importers`+`path`: hops (default 1, max 5); `deeper`: more beyond.
@@ -38,7 +36,7 @@ pub struct CodeRefsParams {
     #[serde(default, rename = "match")]
     #[schemars(extend("enum" = ["exact", "substring"]))]
     pub match_mode: Option<String>,
-    /// Default 100.
+    /// Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.
@@ -47,7 +45,7 @@ pub struct CodeRefsParams {
     /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// `callers` only: keep rows of these resolutions, comma-separated.
+    /// `callers` only: keep these resolutions, comma-separated.
     #[serde(default)]
     pub resolution: Option<String>,
     /// `callers` only: files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.

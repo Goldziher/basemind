@@ -120,7 +120,7 @@ pub struct CacheStats {
     /// Recursive byte size of `views/`.
     pub views_bytes: u64,
     /// Recursive byte size of the repository group's code index (`cache/groups/<group>/index.fjall`,
-    /// ADR-0028), shared with the group's other worktrees. `0` when the workspace's group is unknown.
+    /// ADR-0028; under `v<minor>/` from 0.35 on), shared with the group's other worktrees. `0` when the workspace's group is unknown.
     pub group_index_bytes: u64,
     /// Recursive byte size of `lance/` and of the repository group's document retrieval stores
     /// (`cache/groups/<group>/lance/`, shared with the group's other worktrees).
@@ -362,29 +362,22 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
 
     let mut blob_count = 0usize;
     let mut orphan_blob_count = 0usize;
-    if blobs_dir.exists() {
-        for entry in read_dir(blobs_dir)? {
-            let entry = entry.map_err(|source| GcError::Io {
-                path: blobs_dir.to_path_buf(),
-                source,
-            })?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let Some(file_name) = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .filter(|n| blob_stem(n).is_some())
-            else {
-                continue;
-            };
-            blob_count += 1;
-            if let Some(referenced) = &referenced
-                && !referenced.keeps(file_name)
-            {
-                orphan_blob_count += 1;
-            }
+    for path in crate::store_blob_layout::blob_files(blobs_dir).map_err(|source| GcError::Io {
+        path: blobs_dir.to_path_buf(),
+        source,
+    })? {
+        let Some(file_name) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|n| blob_stem(n).is_some())
+        else {
+            continue;
+        };
+        blob_count += 1;
+        if let Some(referenced) = &referenced
+            && !referenced.keeps(file_name)
+        {
+            orphan_blob_count += 1;
         }
     }
 
@@ -401,8 +394,9 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs: &BlobStorePaths) -> Res
     let (group_bytes, group_index_bytes, group_lance_bytes) = match &group_dir {
         Some(dir) => (
             dir_size(dir)?,
-            dir_size(&dir.join(crate::index::INDEX_DIR))?,
-            dir_size(&dir.join(crate::store_layout::GROUP_LANCE_DIR))?,
+            dir_size(&crate::store_layout::group_index_path_in(dir))?,
+            dir_size(&dir.join(crate::store_layout::GROUP_LANCE_DIR))?
+                + dir_size(&dir.join(crate::store_layout::GROUP_CODE_LANCE_DIR))?,
         ),
         None => (0, 0, 0),
     };
@@ -523,9 +517,9 @@ fn per_view_file_count(basemind_dir: &Path) -> Result<Vec<(String, usize)>, GcEr
     Ok(out)
 }
 
-/// Remove the workspace's vector stores: `lance/`, the repository group's document retrieval
-/// stores (shared with the group's other worktrees, whose next scans rebuild the rows from the
-/// cached blobs) and the per-view stores of earlier builds. Feature-gated: the stores only exist
+/// Remove the workspace's vector stores: `lance/`, the repository group's document retrieval and
+/// code-chunk stores (shared with the group's other worktrees, whose next scans rebuild the rows
+/// from the cached blobs) and the per-view stores of earlier builds. Feature-gated: the stores only exist
 /// in intelligence builds, so on a code-only build this is a no-op.
 ///
 /// The group stores are written by whichever process holds the group lock, for any worktree of the
@@ -539,12 +533,19 @@ fn clear_lance(basemind_dir: &Path) -> Result<(), GcError> {
             remove_dir_if_exists(&view.path().join(crate::store_layout::RETRIEVAL_DIR))?;
         }
     }
-    if let Some(group_lance) = crate::store_layout::group_lance_dir_of(basemind_dir)
-        && group_lance.exists()
-        && let Some(group_dir) = group_lance.parent()
+    for group_store in [
+        crate::store_layout::group_lance_dir_of(basemind_dir),
+        crate::store_layout::group_code_lance_dir_of(basemind_dir),
+    ]
+    .into_iter()
+    .flatten()
     {
-        let _group = crate::store_lock::try_acquire_lock_as(group_dir, crate::store::LockHolder::Maintenance)?;
-        remove_dir_if_exists(&group_lance)?;
+        if group_store.exists()
+            && let Some(group_dir) = group_store.parent()
+        {
+            let _group = crate::store_lock::try_acquire_lock_as(group_dir, crate::store::LockHolder::Maintenance)?;
+            remove_dir_if_exists(&group_store)?;
+        }
     }
     remove_dir_if_exists(&basemind_dir.join(crate::store::LANCE_DIR))
 }

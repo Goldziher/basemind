@@ -132,6 +132,11 @@ User-visible changes get an entry under `## [Unreleased]` in `CHANGELOG.md`, gro
 `### Changed` and `### Fixed` (one heading of each kind, no duplicates). Use measured numbers only,
 with the corpus they were measured on.
 
+The GitHub release body is the version's changelog section, cut at 120000 characters. A section over
+60000 characters (`RELEASE_NOTES_CEILING` in `scripts/changelog_section.py`) fails the release: write a
+summary by hand in `docs/release-notes/<version>.md` (headline changes, index resets, breaking CLI or
+MCP changes, upgrade notes), which is then the release body, and keep the long list in `CHANGELOG.md`.
+
 ## Reporting bugs
 
 [Open an issue](https://github.com/Goldziher/basemind/issues/new) with:

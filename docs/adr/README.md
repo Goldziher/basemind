@@ -135,7 +135,7 @@ them.
 | [0044](0044-launched-agent-comms-and-user-mcp-isolation.md) | Launched agents use their comms thread, and start none of the user's MCP servers | Accepted |
 | [0045](0045-daemon-stop-and-idle-rules-as-built.md) | Daemon stop and idle rules as built after the comms v2 cutover | Accepted |
 | [0046](0046-release-commit-reaches-main-after-its-release.md) | The release commit reaches main only after its release is public | Accepted |
-| [0047](0047-analysis-commands-and-the-import-graph.md) | Analyses ship as daemon-answered CLI commands; the file-level import graph | Accepted (amended by ADR-0052) |
+| [0047](0047-analysis-commands-and-the-import-graph.md) | Analyses ship as daemon-answered CLI commands; the file-level import graph | Accepted (amended by ADR-0052, ADR-0057) |
 | [0048](0048-http-routes-and-client-calls.md) | HTTP routes as symbols, client calls as call rows, linked by path | Accepted |
 | [0049](0049-reading-outside-the-repository.md) | Reading outside the repository — session transcripts and dependency documentation | Accepted |
 | [0050](0050-one-engine-configuration-per-process.md) | One engine configuration per process, and no environment below the root layer | Accepted |
@@ -144,3 +144,6 @@ them.
 | [0053](0053-text-answers-encoded-per-tool.md) | Text answers encoded per tool, by measured tokens | Accepted |
 | [0054](0054-per-view-indexes-go-at-adoption.md) | Per-view indexes go when the group index adopts their view | Proposed |
 | [0055](0055-read-around-reducing-floor.md) | A 1.4x reducing floor for `read_around` | Accepted |
+| [0056](0056-memory-scope-and-remote-changes.md) | Memory scope: a path-keyed store, notes refiled on a remote change | Proposed |
+| [0057](0057-impact-callers-graded-by-resolution.md) | `code impact`: callers graded by resolution, and downstream dependencies | Accepted (amended by ADR-0058) |
+| [0058](0058-impact-buckets-order-and-gate.md) | `code impact`: buckets, order of work and `--fail-above` | Accepted |

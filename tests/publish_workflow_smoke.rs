@@ -316,22 +316,23 @@ fn publish_is_never_cancelled_mid_flight() {
     );
 }
 
-/// The github-pages environment admits only `main`, so the site deploys from a push to main and
-/// never from a release tag, whose deploy job the environment's protection rules refuse.
+/// The github-pages environment admits `main` and `v*` tags, and the site documents the released
+/// binary, so only a pushed release tag deploys it; main and pull requests build and check links.
 #[test]
-fn the_website_deploys_only_from_main() {
+fn the_website_deploys_only_from_a_release_tag() {
     let docs = read_workflow("docs.yaml");
     let deploy = job_block(&docs, "deploy");
+    let triggers = &docs[..docs.find("\njobs:\n").unwrap()];
     assert!(
-        deploy.contains("if: github.ref == 'refs/heads/main'"),
-        "the docs deploy job must run only on main:\n{deploy}"
+        deploy.contains("if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"),
+        "the docs deploy job must run only for a pushed release tag:\n{deploy}"
     );
     assert!(
-        !docs[..docs.find("\njobs:\n").unwrap()].contains("tags:"),
-        "a release tag must not trigger the docs workflow"
+        triggers.contains("tags: [\"v*\"]"),
+        "a release tag must trigger the docs workflow"
     );
     assert!(
-        deploy.contains("pages: write") && !docs[..docs.find("\njobs:\n").unwrap()].contains("pages: write"),
+        deploy.contains("pages: write") && !triggers.contains("pages: write"),
         "only the deploy job may write to Pages"
     );
 }
@@ -393,5 +394,216 @@ fn main_advances_to_the_release_only_after_it_is_public() {
     assert!(
         block.contains("gh workflow run ci.yaml --ref main") && block.contains("actions: write"),
         "a push with the workflow token starts no ci run, so advance_main must dispatch one:\n{block}"
+    );
+}
+
+/// The names of every job under `jobs:`, in file order.
+fn job_names(workflow: &str) -> Vec<String> {
+    let jobs = &workflow[workflow.find("\njobs:\n").expect("jobs:") + "\njobs:\n".len()..];
+    jobs.lines()
+        .filter_map(|line| {
+            let name = line.strip_prefix("  ")?.strip_suffix(':')?;
+            let valid = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+            valid.then(|| name.to_string())
+        })
+        .collect()
+}
+
+/// The jobs a job lists in `needs:`, as an inline list, a single name or a block list.
+fn needs_of(block: &str) -> Vec<String> {
+    let mut lines = block.lines();
+    let Some(header) = lines.find(|line| line.starts_with("    needs:")) else {
+        return Vec::new();
+    };
+    let inline = header.trim_start_matches("    needs:").trim();
+    if !inline.is_empty() {
+        return inline
+            .trim_matches(|c: char| c == '[' || c == ']')
+            .split(',')
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
+    }
+    lines
+        .map_while(|line| line.strip_prefix("      - "))
+        .map(|name| name.trim().to_string())
+        .collect()
+}
+
+/// A job's `if:` expression, including the lines of a folded scalar.
+fn condition_of(block: &str) -> Option<String> {
+    let mut lines = block.lines().skip_while(|line| !line.starts_with("    if:"));
+    let header = lines.next()?;
+    let rest = lines.take_while(|line| line.starts_with("      "));
+    Some(std::iter::once(header).chain(rest).collect::<Vec<_>>().join("\n"))
+}
+
+/// Whether an `if:` can evaluate false: `always()` only overrides the implicit "needs succeeded"
+/// check, so a condition that keeps any other term next to it (`always() && inputs.x`) still skips.
+fn can_skip(condition: &str) -> bool {
+    let rest = condition.replace("always()", "");
+    let rest = rest.trim_start().strip_prefix("if:").unwrap_or(&rest).to_owned();
+    rest.chars().any(|c| !c.is_whitespace() && !"(){}$&>-".contains(c))
+}
+
+/// The jobs that can be skipped on a run: one whose `if:` can evaluate false, or one with no `if:`
+/// that needs such a job (a skipped need skips its dependants).
+fn skippable_jobs(workflow: &str) -> Vec<String> {
+    let jobs: Vec<(String, Vec<String>, Option<String>)> = job_names(workflow)
+        .into_iter()
+        .map(|name| {
+            let block = job_block(workflow, &name);
+            let (needs, condition) = (needs_of(block), condition_of(block));
+            (name, needs, condition)
+        })
+        .collect();
+    let mut skippable: Vec<String> = jobs
+        .iter()
+        .filter(|(_, _, condition)| condition.as_deref().is_some_and(can_skip))
+        .map(|(name, ..)| name.clone())
+        .collect();
+    loop {
+        let before = skippable.len();
+        for (name, needs, condition) in &jobs {
+            if condition.is_none() && !skippable.contains(name) && needs.iter().any(|need| skippable.contains(need)) {
+                skippable.push(name.clone());
+            }
+        }
+        if skippable.len() == before {
+            return skippable;
+        }
+    }
+}
+
+/// The jobs that need a skippable job but do not say `always()`: on a rerun the skippable one is
+/// skipped, and without `always()` so are they. The release chain is the one intended exception.
+fn jobs_missing_always(workflow: &str, allowed: &[&str]) -> Vec<String> {
+    let skippable = skippable_jobs(workflow);
+    job_names(workflow)
+        .into_iter()
+        .filter(|name| !allowed.contains(&name.as_str()))
+        .filter(|name| {
+            let block = job_block(workflow, name);
+            needs_of(block).iter().any(|need| skippable.contains(need))
+                && !condition_of(block).is_some_and(|c| c.contains("always()"))
+        })
+        .collect()
+}
+
+/// A rerun for a tag whose release is already complete skips `create_release`, `build` and
+/// `checksums`; every job fed by one of them (or by `meta`, skipped on a plugins-only dispatch)
+/// must still run, so it sets `always()`. Without it the 0.34.0 rerun skipped every plugin job.
+#[test]
+fn every_job_fed_by_a_skippable_ancestor_sets_always() {
+    const RELEASE_CHAIN: [&str; 3] = ["create_release", "build", "checksums"];
+    let workflow = workflow();
+    assert_eq!(
+        jobs_missing_always(&workflow, &RELEASE_CHAIN),
+        Vec::<String>::new(),
+        "these jobs need a job that a rerun skips, so they need `always()` in their `if:`"
+    );
+    let skippable = skippable_jobs(&workflow);
+    for job in RELEASE_CHAIN {
+        assert!(
+            skippable.iter().any(|name| name == job),
+            "{job} is expected to be skippable on a rerun"
+        );
+        assert!(
+            job_block(&workflow, job).contains("release_assets_exist") || job == "checksums",
+            "{job} must skip on a complete release, not on a failed need"
+        );
+    }
+    for job in [
+        "finalize_release",
+        "publish_plugin_npm",
+        "publish_plugin_artifacts",
+        "publish_homebrew",
+    ] {
+        assert!(
+            condition_of(job_block(&workflow, job)).is_some_and(|c| c.contains("always()")),
+            "{job} must run on a rerun"
+        );
+    }
+}
+
+/// The check itself: a job that needs a skippable one without `always()` is reported, one with it is not.
+#[test]
+fn the_always_check_reports_a_job_that_a_skipped_need_would_skip() {
+    let workflow = "name: t\njobs:\n  a:\n    if: ${{ inputs.x }}\n    runs-on: x\n  b:\n    needs: [a]\n    if: >-\n      ${{ always() }}\n    runs-on: x\n  c:\n    needs: [a]\n    if: ${{ inputs.y }}\n    runs-on: x\n  d:\n    needs:\n      - c\n    runs-on: x\n";
+    assert_eq!(jobs_missing_always(workflow, &[]), ["c", "d"]);
+    assert_eq!(jobs_missing_always(workflow, &["c"]), ["d"]);
+}
+
+/// `always()` next to another term does not make the job unskippable: `a` is skipped when `inputs.x` is
+/// false, so the unconditional `b` that needs it is reported.
+#[test]
+fn the_always_check_reports_a_job_needing_one_guarded_by_always_and_another_term() {
+    let workflow = "name: t\njobs:\n  a:\n    if: ${{ always() && inputs.x }}\n    runs-on: x\n  b:\n    needs: [a]\n    runs-on: x\n";
+    assert_eq!(jobs_missing_always(workflow, &[]), ["b"]);
+}
+
+#[test]
+fn a_bare_always_condition_is_not_skippable() {
+    for condition in [
+        "    if: ${{ always() }}",
+        "    if: >-\n      ${{ always() }}",
+        "    if: always()",
+    ] {
+        assert!(!can_skip(condition), "{condition}");
+    }
+    assert!(can_skip("    if: >-\n      ${{ !inputs.plugins-only && (always()) }}"));
+}
+
+/// The release notes are cut under GitHub's 125000-character body limit (HTTP 422 above it); the
+/// CHANGELOG sections themselves are run through the step by `scripts/tests/test_release_notes_cap.py`.
+#[test]
+fn the_release_notes_are_capped_below_githubs_body_limit() {
+    let workflow = workflow();
+    let step = job_block(&workflow, "create_release");
+    let limit: u32 = step
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("limit = "))
+        .expect("the cap step sets `limit = N`")
+        .parse()
+        .expect("the limit is a number");
+    assert!(
+        limit <= 125_000,
+        "a release body over 125000 characters is refused: {limit}"
+    );
+    let extract = step
+        .find("changelog_section.py")
+        .expect("notes come from the CHANGELOG");
+    let cap = step.find("limit = ").expect("the cap step");
+    let create = step.find("gh release create").expect("the create step");
+    assert!(
+        extract < cap && cap < create,
+        "the notes are extracted, then capped, then used to create the release"
+    );
+}
+
+/// The CI gate ignores the failed jobs of an earlier attempt by the names this workflow gives its
+/// jobs, so every job needs a `name:` at job level (a job without one is named after its key and
+/// would count against the rerun), and the names must be unique.
+#[test]
+fn every_job_has_a_name_the_ci_gate_can_ignore() {
+    let workflow = workflow();
+    let mut names = Vec::new();
+    for job in job_names(&workflow) {
+        let name = job_block(&workflow, &job)
+            .lines()
+            .find_map(|line| line.strip_prefix("    name: "))
+            .unwrap_or_else(|| panic!("job `{job}` needs a `name:` the CI gate can match"));
+        names.push(name.to_string());
+    }
+    let mut unique = names.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), names.len(), "job names must be unique: {names:?}");
+    let gate =
+        std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".github/scripts/require-green-ci.sh"))
+            .expect("require-green-ci.sh");
+    assert!(
+        gate.contains("workflows/publish.yaml") && gate.contains("startswith($o + \" / \")"),
+        "the gate must derive the ignored names from publish.yaml, and the reusable build's jobs by prefix"
     );
 }

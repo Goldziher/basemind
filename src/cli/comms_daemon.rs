@@ -260,6 +260,7 @@ pub fn run() -> Result<()> {
                 let evicted = broker_for_prune.evict_idle_workspaces(WORKSPACE_HOT_TTL);
                 if evicted > 0 {
                     tracing::info!(evicted, "daemon: shed idle hot workspaces from RAM");
+                    crate::allocator::release_unused_memory();
                 }
                 prune_missing_registry_rows(&broker_for_prune).await;
             }
@@ -288,6 +289,7 @@ pub fn run() -> Result<()> {
                 let dropped = broker_for_stacks.evict_idle_read_stacks(READ_STACK_IDLE_TTL);
                 if dropped > 0 {
                     tracing::info!(dropped, "daemon: shed idle hosted read stacks from RAM");
+                    crate::allocator::release_unused_memory();
                 }
             }
         });

@@ -22,7 +22,7 @@ use super::docs_schema::{
     DOC_CHUNKS_TABLE, DOCS_TABLE, DocChunkHit, DocMeta, DocRows, HIT_COLUMNS, META_COLUMNS, chunks_batch,
     decode_chunk_hits, decode_doc_meta, decode_keys, doc_chunks_schema, docs_schema,
 };
-use super::{LanceStore, escape_sql_literal};
+use super::{LanceStore, SweepGate, escape_sql_literal, store_dir, sweep_gate};
 
 pub use crate::store::doc_key;
 
@@ -32,25 +32,6 @@ const KEYS_PER_STATEMENT: usize = 2_000;
 /// Directory of a repository group's retrieval stores, under the group directory
 /// (`cache/groups/<group>/lance/`).
 pub const GROUP_STORE_DIR: &str = crate::store_layout::GROUP_LANCE_DIR;
-
-/// The directory of the retrieval store for `model` at `dim`, under `parent`. The name ends in a
-/// hash of the model's own name, so two models whose readable slug collides never share, and wipe,
-/// one directory.
-pub fn store_dir(parent: &Path, model: &str, dim: u16) -> PathBuf {
-    let model = crate::embeddings::model_key(model);
-    let slug: String = model
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let hash = crate::hashing::hex(&crate::hashing::hash_bytes(model.as_bytes()));
-    parent.join(format!("{slug}-{dim}-{}", &hash[..8]))
-}
 
 /// The retrieval store of `root`'s repository group for `model` at `dim`:
 /// `cache/groups/<group>/lance/<model>-<dim>-<hash>/`. Shared by every worktree of the group.
@@ -177,23 +158,6 @@ pub struct DocStore {
     /// Opened by [`Self::open`], which creates missing tables: a writer may reuse the handle. One
     /// [`Self::shared_existing`] opened has only the tables it found.
     created: bool,
-}
-
-/// Orders the dead-row sweep against row writes of one store directory, across every view of the
-/// group in this process. A scan names a document in its file map on disk before it writes the
-/// document's rows; a write holds the gate shared, and a sweep holds it exclusively from the read of
-/// the group's liveness to its last delete. So a row is either written before the sweep reads the
-/// file map that names it, or after the sweep is done. Other processes cannot write the store: a
-/// writer holds the group lock (ADR-0028) for as long as it holds the group's index.
-type SweepGate = std::sync::Arc<parking_lot::RwLock<()>>;
-
-/// The gate of the store at `dir`: one per directory for the life of the process, so a handle
-/// opened again after the directory was removed orders against the old one.
-fn sweep_gate(dir: &Path) -> SweepGate {
-    static GATES: std::sync::OnceLock<std::sync::Mutex<AHashMap<PathBuf, SweepGate>>> = std::sync::OnceLock::new();
-    let gates = GATES.get_or_init(Default::default);
-    let mut gates = gates.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    std::sync::Arc::clone(gates.entry(dir.to_path_buf()).or_default())
 }
 
 /// The process's open document stores, by directory.

@@ -114,10 +114,7 @@ fn assert_index_backed(response: &Value, context: &str) {
         "{context}: exactly the token-carrying commit matches: {response}"
     );
     assert_eq!(
-        commits[0]
-            .as_str()
-            .and_then(|row| row.split_once(' '))
-            .map(|(_, summary)| summary),
+        commits[0]["subject"].as_str(),
         Some("add beta"),
         "{context}: the hit is the commit whose BODY carries the token: {response}"
     );

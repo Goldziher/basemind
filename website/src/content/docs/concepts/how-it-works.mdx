@@ -81,6 +81,24 @@ extracted (`files_done`) of those the scan works through (`files_total`), and `e
 seconds extraction has left at the rate it has run so far. It is read from the scan's breadcrumb, so
 a scan another process runs (`basemind scan`) is reported too.
 
+Embedding does not gate readiness. The first scan extracts documents and indexes their text, and
+`indexing` ends there; a background pass then embeds the documents that still owe vectors. While it
+runs, `index_status` reports `embeddings` (`done` of `total` documents and, once the running pass
+has embedded its first document, `eta_secs`) and `docs_search` serves its keyword lane with a
+`notice`; a lifecycle notice (a rescan, for example) takes the place of that one while it applies,
+so its absence does not mean the embeddings are done. The pass writes its progress to the workspace
+cache, so a daemon killed mid-way resumes it at the next start instead of embedding from the top; the
+documents already embedded are not embedded again. A one-shot `basemind scan` works the same way: it
+returns once the text is indexed, and with no daemon running it starts a detached background worker
+for the vectors, which the next scan resumes if it is killed.
+
+The git-history index follows the same rule. A one-shot scan that finds it unbuilt hands the
+from-scratch build, minutes on a deep history, to that worker, which builds it before embedding;
+`index_status` reports `git_history_build` (`done` of `total` commits, `eta_secs`) meanwhile, and
+the history tools walk git directly until it is done. A build cut off before it finishes is never
+read, and the next one starts again. Appending the commits made since the last sync stays part of
+the scan.
+
 ## Code versus documents
 
 The code map holds code only. Prose, data and configuration files (Markdown, reStructuredText,

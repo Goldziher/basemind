@@ -44,6 +44,10 @@ fn is_text_like(mime: &str) -> bool {
 /// types use the linear chunker at any size.
 pub fn is_structured_data(mime: &str) -> bool {
     let mime = mime.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    // Office and OpenDocument packages are zips of prose; their media types merely contain "xml".
+    if mime.contains("officedocument") || mime.contains("opendocument") {
+        return false;
+    }
     ["json", "yaml", "xml", "svg", "csv", "tab-separated"]
         .iter()
         .any(|marker| mime.contains(marker))
@@ -411,6 +415,25 @@ mod tests {
         markdown_bytes: 1000,
         plain_text_bytes: 100,
     };
+
+    #[test]
+    fn office_packages_are_prose_not_structured_data() {
+        for mime in [
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.oasis.opendocument.text",
+        ] {
+            assert!(!is_structured_data(mime), "{mime}");
+        }
+        for mime in [
+            "application/json",
+            "text/xml; charset=utf-8",
+            "image/svg+xml",
+            "text/csv",
+        ] {
+            assert!(is_structured_data(mime), "{mime}");
+        }
+    }
 
     #[test]
     fn routes_by_mime_family_and_size() {

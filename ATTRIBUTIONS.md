@@ -542,7 +542,7 @@ Tesseract 5.5.4 (commit `7e548e6eff172f38f97664afe7f7ce40db36c8d6`) and compiles
 library, without its optional image, archive, network and ICU dependencies.
 
 - **Source**: <https://github.com/tesseract-ocr/tesseract>
-- **Checked against**: `xberg-tesseract` 1.4.2
+- **Checked against**: `xberg-tesseract` 1.5.1
 - **License**: Apache-2.0
 - **Copyright**: Hewlett-Packard Ltd., Google Inc. and the Tesseract contributors
 - **Licence text**: `licenses/tesseract.txt` (the repository's `LICENSE` at that commit), shipped in
@@ -559,7 +559,7 @@ The image-processing library Tesseract is built on. `xberg-tesseract` downloads 
 zlib, PNG, JPEG, TIFF, WebP, OpenJPEG and GIF support all disabled.
 
 - **Source**: <https://github.com/DanBloomberg/leptonica>
-- **Checked against**: `xberg-tesseract` 1.4.2
+- **Checked against**: `xberg-tesseract` 1.5.1
 - **License**: BSD-2-Clause
 - **Copyright**: Leptonica
 - **Licence text**: `licenses/leptonica.txt` (the repository's `leptonica-license.txt` at that

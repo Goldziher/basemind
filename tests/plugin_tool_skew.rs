@@ -84,6 +84,38 @@ const RESULT_VOCABULARY: &[(&str, &str)] = &[
         "rescan_needed",
         "index_status on an index only a scan can rebuild (src/engine/types/index.rs)",
     ),
+    ("byte_budget", "code_grep `truncated_reason` (src/engine/types/grep.rs)"),
+    ("byte_cap", "git_diff `truncated_reason` (src/engine/git/file.rs)"),
+    ("hunk_cap", "git_diff `truncated_reason` (src/engine/git/file.rs)"),
+    (
+        "limit_clamped",
+        "find_files `truncated_reason` (src/engine/types/files.rs)",
+    ),
+    (
+        "liveness_depth",
+        "docs_search `truncated_reason` (src/lance/docs_types.rs)",
+    ),
+    ("path_cap", "git_diff `truncated_reason` (src/engine/git/log.rs)"),
+    (
+        "scan_cap",
+        "the scanning tools' `truncated_reason` (src/engine/types/mod.rs)",
+    ),
+    (
+        "shallow_clone",
+        "git_log and git_blame `truncated_reason` (src/engine/types/git.rs)",
+    ),
+    ("size_cap", "code_read `truncated_reason` (src/engine/types/code.rs)"),
+    ("span_limit", "git_log `truncated_reason` (src/engine/types/git.rs)"),
+    (
+        "stale_chunks",
+        "code_search `truncated_reason` (src/engine/types/search.rs)",
+    ),
+    ("time_budget", "code_grep `truncated_reason` (src/engine/types/grep.rs)"),
+    (
+        "too_large",
+        "git_blame `truncated_reason` (src/engine/types/git.rs); code_grep `skipped_reasons`",
+    ),
+    ("unindexed_scan", "git_log `truncated_reason` (src/engine/types/git.rs)"),
 ];
 
 /// Identifiers that appear on a line naming a tool but are not part of any tool's vocabulary: shell
@@ -103,7 +135,7 @@ const NOT_TOOL_VOCABULARY: &[&str] = &[
 const RETIRED_CLI_GROUPS: &[&str] = &["graph", "web", "shell"];
 
 /// Per-tool minimal arguments for one successful call against the fixture repo, and a string its
-/// answer must contain. A tool the server advertises without an entry here fails the test: add the
+/// answer must contain, as text or as the compact JSON the text decodes to. A tool the server advertises without an entry here fails the test: add the
 /// call that proves it answers. `None` marks the tools whose answer on this fixture has not been
 /// pinned down (they need the `full` model stack); only their `isError` is checked.
 fn minimal_call(tool: &str) -> Option<(Value, Option<&'static str>)> {
@@ -860,12 +892,16 @@ fn plugin_content_names_only_tools_the_binary_serves_and_each_answers() {
             }
             Ok(result) => {
                 let text = result_text(&result);
-                collect_keys(&result["structuredContent"], &mut served.words);
-                if let Ok(parsed) = basemind::wire::decode(&text) {
-                    collect_keys(&parsed, &mut served.words);
+                // The answer's text is TOON, a row block or compact JSON, whichever measured
+                // shortest for the tool; a marker is looked for in the text and in the compact JSON
+                // it decodes to, so a JSON-shaped marker holds whichever encoding the tool chose.
+                let decoded = basemind::wire::decode(&text).ok();
+                if let Some(parsed) = &decoded {
+                    collect_keys(parsed, &mut served.words);
                 }
+                let compact = decoded.map(|v| v.to_string()).unwrap_or_default();
                 match expect {
-                    Some(marker) if !text.contains(marker) => failures.push(format!(
+                    Some(marker) if !text.contains(marker) && !compact.contains(marker) => failures.push(format!(
                         "{name}: answered without the fixture's `{marker}`: {}",
                         text.chars().take(400).collect::<String>()
                     )),

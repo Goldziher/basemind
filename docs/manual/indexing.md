@@ -14,7 +14,54 @@ unchanged file is never extracted twice, across worktrees and repositories alike
 | Build the index from scratch | none | `basemind scan` |
 
 `basemind scan --json` and `basemind rescan --json` print only the response `index_rescan` gives
-(the counts, `elapsed_ms` and `root`), for a scan run here or forwarded to the daemon.
+(the counts, `elapsed_ms` and `root`), for a scan run here or forwarded to the daemon. A
+working-tree `scan --json` that left vectors owed adds `embeddings`: `pending_documents`,
+`pending_code`, `pending_policy` and `background` (`started`, `already_running`, `disabled` or
+`unavailable`), and one that handed the git-history build to the background adds a git-history object holding
+`pending_commits` and `background` (`started` or `already_running`).
+
+## Embeddings run in the background
+
+A working-tree `basemind scan` never waits on the embedding model: it writes the code map, every
+document's text and chunks and the keyword lane, then returns. The vectors it leaves owed (documents
+without them, code chunks when `[code_search] embed = true`, rows a changed embed policy rebuilds)
+are paid by a background pass, and the summary says so with an `embeddings: pending …` line.
+
+- With a daemon running, the scan is forwarded to it and the daemon embeds afterwards.
+- Otherwise the scan starts the hidden `embed-worker` command detached, at a lower CPU priority.
+  It embeds the owed documents 32 at a time, then runs one embedding pass over the tree when code
+  embedding is on, the embed policy changed or documents are left over. Its log is
+  `embed-worker.log` in the workspace's cache directory.
+- One worker runs per workspace; a scan that finds one running starts no other. The worker hands
+  the index back to any other writer that needs it (a scan, a rescan, `basemind cache`) and
+  resumes once that writer is done; it stops when `serve`, `watch` or the daemon takes the index.
+- What is owed stays recorded in the index, so a worker that is killed loses nothing: the next
+  `basemind scan`, a daemon or `embed-worker` run by hand in the repository (it finishes the pass
+  in the foreground) continues where it stopped.
+- `index_status` (`basemind status`) reports `embeddings: {done, total, eta_secs}` while vectors
+  are owed, and `docs_search` answers from the keyword lane with a notice for the documents still
+  without vectors. `BASEMIND_EMBED_BACKGROUND=false` stops the scan from starting the worker.
+- `scan --staged` and `scan --rev` embed as they go, as `basemind rescan` does.
+
+## The git-history index builds in the background
+
+A working-tree `basemind scan` does not build the git-history index from scratch before it returns:
+on a deep history that walk takes minutes. When the index was never built, a build was cut off, or
+the shallow clone it was built in has been deepened, the scan hands the build to the same
+`embed-worker` and prints `git-history: building in the background (N commits; …)`.
+
+- The worker builds the index before it embeds, with the same lock, priority, log and
+  `BASEMIND_EMBED_BACKGROUND=false` switch. It hands the index back to a writer that needs it and
+  starts the build again once that writer is done; it leaves the build to `serve`, `watch` or the
+  daemon when one takes the index.
+- Until the build is done the history tools (`git_log`, `git_blame` and the rest) answer from the
+  live walk, as they do for any head the index does not hold. A build that is stopped or killed is
+  never read: the index stays marked in progress until a build finishes, and the next one starts
+  from scratch.
+- `index_status` (`basemind status`) reports `git_history_build: {done, total, eta_secs}` while
+  the build is owed.
+- An append of the commits made since the last sync is quick and still runs before the scan
+  returns, as do `basemind rescan` and a scan with `BASEMIND_EMBED_BACKGROUND=false`.
 
 Besides the counts per language, `index_status` lists `large_files` (code files too long to read
 whole) and `most_imported` (the five files most others import at runtime, absent when no import
@@ -33,8 +80,9 @@ server runs at once, how many run now and how many wait; a call that waits too l
   deleted since the scan is an error naming `index_rescan`.
 - `basemind scan --staged` indexes the git staging area and `basemind scan --rev <rev>` one
   revision, each as its own view; `--view` on a query command selects it.
-- After a scan the git-history index is built or updated; `--no-git-history` skips it and
-  `--rebuild-git-history` rebuilds it after a history rewrite.
+- After a scan the git-history index is updated, or its build is handed to the background (see
+  above); `--no-git-history` skips it and `--rebuild-git-history` rebuilds it after a history
+  rewrite.
 
 ## Large repositories: the inotify watch limit
 
@@ -42,7 +90,10 @@ On Linux the daemon watches each directory of each workspace with its own inotif
 kernel caps one user's watches across every process with `fs.inotify.max_user_watches`. Many
 worktrees of a large repository can exhaust it: 20 worktrees of 20,000 directories each need about
 400,000 watches. A directory the kernel refuses a watch is not watched, so its edits are not
-indexed until a rescan.
+indexed until a rescan. While any directory is unwatched, the daemon re-checks those subtrees every
+30 seconds and re-extracts the files that changed, so edits there are indexed late rather than never;
+it also retries arming them. `basemind doctor` has a `watches` row that counts the directories the
+workspace needs and warns when that alone exceeds the limit.
 
 `index_status` reports the watches the daemon holds under `watches.held`, and once the limit is hit
 `watches.unwatched` (directories without a watch), `watches.limit` (the current value) and a

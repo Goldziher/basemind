@@ -342,45 +342,11 @@ fn a_torn_blob_sends_its_document_to_be_extracted_again() {
     assert_eq!(owed, ["torn.md"], "its rows stay owed");
 }
 
-fn git(args: &[&str], cwd: &std::path::Path) {
-    let out = crate::testing::git_command()
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .expect("run git");
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
 /// Two worktrees of one repository: their stores are views of one group.
 fn worktrees() -> (tempfile::TempDir, Store, Store, Config, Filters) {
     crate::store::init_isolated_cache();
     let tmp = tempfile::tempdir().unwrap();
-    let main = tmp.path().join("main");
-    std::fs::create_dir(&main).unwrap();
-    git(&["init", "-q", "-b", "main"], &main);
-    git(
-        &[
-            "-c",
-            "user.email=t@example.com",
-            "-c",
-            "user.name=T",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "init",
-        ],
-        &main,
-    );
-    let linked = tmp.path().join("linked");
-    git(
-        &["worktree", "add", "-q", linked.to_str().unwrap(), "-b", "linked"],
-        &main,
-    );
+    let (main, linked) = crate::testing::linked_worktrees(tmp.path());
     let a = Store::open(&main, crate::store::VIEW_WORKING).unwrap();
     let b = Store::open(&linked, crate::store::VIEW_WORKING).unwrap();
     let mut config = crate::config::default_for_root(std::path::Path::new("."));
@@ -571,6 +537,20 @@ fn the_per_view_store_of_an_earlier_build_is_replaced_by_the_group_store() {
     assert!(!legacy.exists(), "a view without documents removes it too");
 }
 
+/// Set a directory's mtime. Windows refuses to open a directory without backup semantics.
+fn set_dir_modified(dir: &std::path::Path, when: std::time::SystemTime) {
+    let mut options = std::fs::File::options();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.write(true);
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    options.open(dir).unwrap().set_modified(when).unwrap();
+}
+
 /// A scan's open stamps its own store and removes a sibling store of another model no scan has
 /// opened for the idle window, judged by the stamp or, before it, the directory's mtime.
 #[test]
@@ -592,7 +572,7 @@ fn an_open_removes_retrieval_stores_of_models_no_scan_uses() {
         .set_modified(old)
         .unwrap();
     let unstamped_old = mk("large-1024-cccccccc");
-    std::fs::File::open(&unstamped_old).unwrap().set_modified(old).unwrap();
+    set_dir_modified(&unstamped_old, old);
     let recent = mk("other-768-dddddddd");
     std::fs::File::create(recent.join(LAST_USED_FILE)).unwrap();
 

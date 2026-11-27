@@ -169,6 +169,9 @@ pub(crate) fn store_error(error: &crate::store::StoreError) -> EngineError {
         StoreError::Decompression { .. } => unreadable("a stored blob does not decompress"),
         StoreError::UnreadableFileMap { .. } => unreadable("the file map is unreadable"),
         StoreError::Locked { .. } => EngineError::Busy(error.to_string()),
+        StoreError::FileMapUnsettled { .. } => {
+            EngineError::Busy("the file map was rewritten while it was read; retry the call".to_string())
+        }
         StoreError::NewerSchema { .. } => EngineError::Unavailable(error.to_string()),
         StoreError::ViewNotScanned { .. } => EngineError::IndexUnavailable(error.to_string()),
         StoreError::Index(index) => index_error(index),
@@ -376,6 +379,16 @@ mod tests {
             held
         );
         assert_eq!(shown(EngineError::Index(IndexError::Fjall(fjall::Error::Locked))), held);
+        assert_eq!(
+            shown(EngineError::Store(StoreError::FileMapUnsettled {
+                path: PathBuf::from(DATA),
+                attempts: 3,
+            })),
+            (
+                "busy",
+                "the file map was rewritten while it was read; retry the call".to_string()
+            )
+        );
     }
 
     #[test]

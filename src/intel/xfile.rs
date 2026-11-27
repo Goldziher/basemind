@@ -382,7 +382,7 @@ pub fn stitch_cross_file_edges(
         };
         let resolver = resolvers
             .entry(language)
-            .or_insert_with_key(|lang| SpecifierResolver::for_language(lang));
+            .or_insert_with_key(|lang| SpecifierResolver::for_stitch(lang, store));
         let Some(resolver) = resolver.as_ref() else {
             continue;
         };
@@ -411,7 +411,12 @@ pub fn stitch_cross_file_edges(
                 }
                 continue;
             };
-            file_edges.hit(target_rel.clone(), import);
+            // A file is never its own import target: `from . import a` in `pkg/__init__.py` resolves the
+            // package to the importer itself. It records no file edge, but the name still binds to the
+            // package's own exports first and falls back to a submodule when none does.
+            if target_rel.as_str() != Some(importer_key.as_str()) {
+                file_edges.hit(target_rel.clone(), import);
+            }
             if import.is_type || import.module_only {
                 continue;
             }

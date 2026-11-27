@@ -40,6 +40,15 @@ fn workspace_with_sources() -> tempfile::TempDir {
     git_init(dir.path());
     std::fs::write(dir.path().join("alpha.rs"), "pub fn alpha() -> u32 { 1 }\n").expect("write alpha");
     std::fs::write(dir.path().join("beta.rs"), "pub fn beta() -> u32 { 2 }\n").expect("write beta");
+    // A stamp inside the scanner's racy window is recorded as 0 and restamped by the next scan, which
+    // counts as a change; an old stamp settles on the first pass.
+    for name in ["alpha.rs", "beta.rs"] {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.path().join(name))
+            .and_then(|file| file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)))
+            .expect("age source");
+    }
     dir
 }
 
@@ -244,15 +253,14 @@ fn embed_pass_reprocesses_the_chunk_only_sidecar_the_deferred_pass_left() {
     );
 }
 
-/// Bug #32, the document tier: a `Deferred` scan extracts a document but persists no `DocEntry`
-/// (`doc_upsert` is `None` under Deferred, see `scanner_file`), so nothing tracks it as embedded and
-/// nothing lands in LanceDB. The `embed` (Inline) pass persists the `DocEntry`, the marker that the
-/// document was embedded and is reachable via `search_documents`. Before the fix the daemon only ever
-/// ran Deferred, so `lookup_doc` stayed `None` forever. Embedder-independent: the `DocEntry` is
-/// written purely on the strength of the embed mode, not on a vector being produced.
+/// Bug #32, the document tier: a `Deferred` scan tracks a document that owes its vectors, but as not
+/// embedded and not attempted, so nothing lands in LanceDB. The `embed` (Inline) pass persists the
+/// `DocEntry` that says the embedding was attempted, the marker that the document is reachable via
+/// `search_documents`. Embedder-independent: the `DocEntry` is written purely on the strength of the
+/// embed mode, not on a vector being produced.
 #[cfg(feature = "documents")]
 #[test]
-fn embed_pass_indexes_a_document_the_deferred_pass_leaves_untracked() {
+fn embed_pass_indexes_a_document_the_deferred_pass_tracks_as_owing_vectors() {
     store::init_isolated_cache();
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
     let dir = tempfile::tempdir().expect("tempdir");
@@ -278,12 +286,13 @@ fn embed_pass_indexes_a_document_the_deferred_pass_leaves_untracked() {
         "the .svg file must route to the document tier (docs_indexed={})",
         deferred.docs_indexed
     );
-    let tracked_after_deferred = pool
-        .with_workspace(dir.path(), |store| store.lookup_doc("notes.svg").is_some())
-        .expect("read after deferred");
+    let after_deferred = pool
+        .with_workspace(dir.path(), |store| store.lookup_doc("notes.svg").cloned())
+        .expect("read after deferred")
+        .expect("the deferred pass tracks a document that owes its vectors");
     assert!(
-        !tracked_after_deferred,
-        "the deferred pass must not persist a document embedding entry"
+        !after_deferred.embedded && !after_deferred.embed_attempted,
+        "the deferred pass must not mark the document embedded: {after_deferred:?}"
     );
 
     pool.rescan(dir.path(), None, false, true, &ScanCancel::default())
@@ -558,7 +567,6 @@ async fn a_hosted_read_answers_from_the_index_while_a_scan_holds_the_writer() {
 
     let server = crate::mcp::BasemindServer::from_shared(
         shared,
-        "reader".to_string(),
         std::sync::Arc::new(crate::mcp::admission::HeavyAdmission::default()),
         None,
     );
@@ -615,7 +623,6 @@ async fn code_response(shared: &crate::mcp::ServedWorkspace, query: CodeQuery) -
     use rmcp::model::ContentBlock;
     let server = crate::mcp::BasemindServer::from_shared(
         shared.clone(),
-        "read-stack-tester".to_string(),
         std::sync::Arc::new(crate::mcp::admission::HeavyAdmission::default()),
         None,
     );
@@ -911,3 +918,7 @@ mod agent_tests;
 #[cfg(feature = "comms")]
 #[path = "workspace_pool_stack_tests.rs"]
 mod stack_tests;
+
+#[cfg(feature = "comms")]
+#[path = "workspace_pool_outline_tests.rs"]
+mod outline_tests;

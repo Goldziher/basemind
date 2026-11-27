@@ -1,13 +1,13 @@
 use super::*;
 
-/// `n` code-chunk rows of `path`; the batching and maintenance under test do not depend on the table.
+/// `n` code-chunk rows of `content`; the batching and maintenance under test do not depend on the
+/// table.
 #[cfg(feature = "code-search")]
-fn doc_rows(scope: &str, path: &str, n: usize, tag: &str) -> Vec<super::super::CodeRow> {
+fn doc_rows(content: &str, n: usize, tag: &str) -> Vec<super::super::CodeRow> {
     (0..n)
         .map(|c| super::super::CodeRow {
-            scope: scope.into(),
-            path: path.into(),
-            chunk_id: format!("{path}:{c}"),
+            content_hash: content.into(),
+            chunk_id: format!("{content}:{c}"),
             symbol: String::new(),
             kind: String::new(),
             lang: "rust".into(),
@@ -15,7 +15,7 @@ fn doc_rows(scope: &str, path: &str, n: usize, tag: &str) -> Vec<super::super::C
             line_end: 1,
             byte_start: 0,
             byte_end: 1,
-            text: format!("{tag} {path} {c}"),
+            text: format!("{tag} {content} {c}"),
             embedding: vec![0.0; 4],
         })
         .collect()
@@ -44,28 +44,21 @@ fn versions(store: &LanceStore, table: &str) -> usize {
 
 #[cfg(feature = "code-search")]
 #[test]
-fn replace_predicate_groups_by_scope_and_escapes() {
-    let items = vec![
-        ("a".to_string(), "x'y".to_string(), Vec::<u8>::new()),
-        ("b".to_string(), "q".to_string(), Vec::new()),
-        ("a".to_string(), "z".to_string(), Vec::new()),
-    ];
-    assert_eq!(
-        replace_predicate("path", &items),
-        "(scope = 'a' AND path IN ('x''y', 'z')) OR (scope = 'b' AND path IN ('q'))"
-    );
+fn content_predicate_lists_every_hash_and_escapes() {
+    let hashes = ["x'y".to_string(), "z".to_string()];
+    assert_eq!(super::super::content_in(&hashes), "content_hash IN ('x''y', 'z')");
 }
 
 #[test]
 fn pending_batch_fills_on_doc_count_and_row_count() {
     let mut b: PendingBatch<u8> = PendingBatch::default();
     assert!(b.is_empty() && !b.is_full());
-    b.push("s", "big", vec![0; BATCH_MAX_ROWS]);
+    b.push("big", vec![0; BATCH_MAX_ROWS]);
     assert!(b.is_full());
     assert_eq!(b.take().len(), 1);
     for i in 0..BATCH_MAX_DOCS {
         assert!(!b.is_full());
-        b.push("s", &format!("p{i}"), vec![0]);
+        b.push(&format!("p{i}"), vec![0]);
     }
     assert!(b.is_full());
 }
@@ -78,36 +71,24 @@ fn replace_many_commits_once_per_batch_and_replaces_rows() {
     let store = LanceStore::open(dir.path(), 4, "test").unwrap();
     let base = versions(&store, TABLE);
     let items = (0..50)
-        .map(|i| {
-            (
-                "s".to_string(),
-                format!("d{i}.md"),
-                doc_rows("s", &format!("d{i}.md"), 3, "v1"),
-            )
-        })
+        .map(|i| (format!("c{i}"), doc_rows(&format!("c{i}"), 3, "v1")))
         .collect();
     store.replace_code_chunks_many(items).unwrap();
     // First batch on an empty table: append only (the delete is skipped).
     assert_eq!(versions(&store, TABLE), base + 1);
-    assert_eq!(count(&store, TABLE, "scope = 's'"), 150);
+    assert_eq!(count(&store, TABLE, "content_hash IS NOT NULL"), 150);
 
-    // Rewrite 10 docs with 1 chunk each, and drop one doc (no rows): one delete + one append.
+    // Rewrite 10 contents with 1 chunk each, and drop one (no rows): one delete + one append.
     let mut items: Vec<_> = (0..10)
-        .map(|i| {
-            (
-                "s".to_string(),
-                format!("d{i}.md"),
-                doc_rows("s", &format!("d{i}.md"), 1, "v2"),
-            )
-        })
+        .map(|i| (format!("c{i}"), doc_rows(&format!("c{i}"), 1, "v2")))
         .collect();
-    items.push(("s".to_string(), "d49.md".to_string(), Vec::new()));
+    items.push(("c49".to_string(), Vec::new()));
     store.replace_code_chunks_many(items).unwrap();
     assert_eq!(versions(&store, TABLE), base + 3);
-    assert_eq!(count(&store, TABLE, "path = 'd3.md'"), 1);
-    assert_eq!(count(&store, TABLE, "path = 'd49.md'"), 0);
-    assert_eq!(count(&store, TABLE, "path = 'd20.md'"), 3);
-    assert_eq!(count(&store, TABLE, "scope = 's'"), 10 + 39 * 3);
+    assert_eq!(count(&store, TABLE, "content_hash = 'c3'"), 1);
+    assert_eq!(count(&store, TABLE, "content_hash = 'c49'"), 0);
+    assert_eq!(count(&store, TABLE, "content_hash = 'c20'"), 3);
+    assert_eq!(count(&store, TABLE, "content_hash IS NOT NULL"), 10 + 39 * 3);
 }
 
 /// #76: the post-scan pass collapses accumulated versions; the data survives it.
@@ -118,17 +99,13 @@ fn maintain_prunes_old_versions_and_keeps_rows() {
     let store = LanceStore::open(dir.path(), 4, "test").unwrap();
     for i in 0..12 {
         store
-            .replace_code_chunks_many(vec![(
-                "s".into(),
-                format!("d{i}.md"),
-                doc_rows("s", &format!("d{i}.md"), 2, "v"),
-            )])
+            .replace_code_chunks_many(vec![(format!("c{i}"), doc_rows(&format!("c{i}"), 2, "v"))])
             .unwrap();
     }
     assert!(versions(&store, TABLE) >= 12);
     store.maintain(Duration::ZERO).unwrap();
     assert!(versions(&store, TABLE) <= 2, "{:?}", store.version_counts());
-    assert_eq!(count(&store, TABLE, "scope = 's'"), 24);
+    assert_eq!(count(&store, TABLE, "content_hash IS NOT NULL"), 24);
 }
 
 /// The watch path writes one document at a time; auto-maintenance must bound the versions.
@@ -139,14 +116,10 @@ fn incremental_writes_keep_versions_bounded() {
     let store = LanceStore::open(dir.path(), 4, "test").unwrap();
     for i in 0..(AUTO_PRUNE_EVERY as usize * 3) {
         store
-            .replace_code_chunks_many(vec![(
-                "s".into(),
-                "d.md".into(),
-                doc_rows("s", "d.md", 1, &format!("g{i}")),
-            )])
+            .replace_code_chunks_many(vec![("c".into(), doc_rows("c", 1, &format!("g{i}")))])
             .unwrap();
     }
-    assert_eq!(count(&store, TABLE, "path = 'd.md'"), 1);
+    assert_eq!(count(&store, TABLE, "content_hash = 'c'"), 1);
     let v = versions(&store, TABLE);
     // 96 writes (one delete + one append each, minus the skipped first delete) would be ~191 versions.
     assert!(v < 2 * AUTO_PRUNE_EVERY as usize, "{v} versions");
@@ -172,7 +145,8 @@ fn dir_bytes(p: &std::path::Path) -> u64 {
 #[ignore = "benchmark: prints commits, versions and disk size"]
 fn bench_per_document_vs_batched() {
     const DOCS: usize = 3_000;
-    let all_rows = |d: usize| doc_rows("s", &format!("d{d:05}.md"), 4, "bench");
+    let key = |d: usize| format!("c{d:05}");
+    let all_rows = |d: usize| doc_rows(&key(d), 4, "bench");
     for batched in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let store = LanceStore::open(dir.path(), 4, "test").unwrap();
@@ -180,7 +154,7 @@ fn bench_per_document_vs_batched() {
         if batched {
             let mut pending: PendingBatch<super::super::CodeRow> = PendingBatch::default();
             for d in 0..DOCS {
-                pending.push("s", &format!("d{d:05}.md"), all_rows(d));
+                pending.push(&key(d), all_rows(d));
                 if pending.is_full() {
                     store.replace_code_chunks_many(pending.take()).unwrap();
                 }
@@ -191,9 +165,7 @@ fn bench_per_document_vs_batched() {
             store.maintain(Duration::ZERO).unwrap();
         } else {
             for d in 0..DOCS {
-                store
-                    .replace_code_chunks("s", &format!("d{d:05}.md"), all_rows(d))
-                    .unwrap();
+                store.replace_code_chunks_many(vec![(key(d), all_rows(d))]).unwrap();
             }
         }
         println!(
@@ -202,6 +174,6 @@ fn bench_per_document_vs_batched() {
             store.version_counts().unwrap(),
             dir_bytes(dir.path())
         );
-        assert_eq!(count(&store, TABLE, "scope = 's'"), DOCS * 4);
+        assert_eq!(count(&store, TABLE, "content_hash IS NOT NULL"), DOCS * 4);
     }
 }

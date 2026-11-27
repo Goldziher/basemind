@@ -55,10 +55,6 @@ pub(crate) struct ServerState {
     /// writes its own store.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) pool: Option<Arc<crate::comms::workspace_pool::WorkspacePool>>,
-    /// Owner segment for the individual-memory tier: the session's principal, resolved by the one
-    /// identity resolver of agent comms (ADR-0021). Group-tier writes ignore it.
-    #[allow(dead_code)]
-    pub(crate) agent_id: String,
     /// Who this session is to the agent tools: set for a daemon-hosted relay session only.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) agents: Option<std::sync::Arc<super::AgentContext>>,
@@ -74,13 +70,12 @@ impl ServerState {
     /// Each connection gets its own identity: no daemon link yet, no agent context, and the default
     /// log verbosity. The daemon-hosted transports use it to hand every accepted connection the one
     /// shared read stack.
-    pub(crate) fn for_connection(served: ServedWorkspace, agent_id: String) -> Self {
+    pub(crate) fn for_connection(served: ServedWorkspace) -> Self {
         Self {
             shared: served.workspace,
             telemetry: served.telemetry,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             pool: served.pool,
-            agent_id,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             agents: None,
             task_threshold_ms: std::sync::atomic::AtomicU64::new(super::tasks::TASK_THRESHOLD.as_millis() as u64),

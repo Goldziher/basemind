@@ -51,6 +51,17 @@ impl WorkspacePool {
         };
         let (shared, built, conn) = {
             let mut slot = entry.serve_state.lock().await;
+            // A stack built under settings an edit has since changed is dropped once this connection is
+            // the only one on it; sessions still holding it keep it until they leave.
+            let superseded = entry
+                .serve_digest
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_deref()
+                != Some(config::rules::read_stack_digest(&entry.config()).as_str());
+            if superseded && entry.active_conns.load(std::sync::atomic::Ordering::Acquire) == 1 {
+                *slot = None;
+            }
             match slot.as_ref() {
                 Some(hosted) => (hosted.shared(), false, conn),
                 None => {
@@ -91,11 +102,19 @@ impl WorkspacePool {
     ) -> anyhow::Result<crate::mcp::HostedReadStack> {
         use anyhow::Context as _;
 
+        let config = entry.config();
+        *entry.serve_digest.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(config::rules::read_stack_digest(&config));
         let store = self.hosted_store(entry, root).context("open hosted read stack store")?;
         let repo = crate::git::Repo::discover(root).ok().map(std::sync::Arc::new);
         let git_cache = std::sync::Arc::new(
-            crate::git_cache::GitCache::open(&store.basemind_dir, crate::mcp::HOSTED_GIT_CACHE_MEM, true)
-                .context("open hosted git cache")?,
+            crate::git_cache::GitCache::open_shared(
+                &store.basemind_dir,
+                &crate::git_history::shared_history_basemind_dir(root),
+                crate::mcp::HOSTED_GIT_CACHE_MEM,
+                true,
+            )
+            .context("open hosted git cache")?,
         );
         let history = if repo.is_some() && crate::git_history::index_enabled() {
             git_history(root)
@@ -104,7 +123,7 @@ impl WorkspacePool {
         };
         Ok(crate::mcp::HostedReadStack::start(
             store,
-            entry.config(),
+            config,
             repo,
             git_cache,
             history,

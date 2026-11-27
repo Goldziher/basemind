@@ -12,7 +12,7 @@ use std::sync::Arc;
 use super::{Index, LockHolder, StoreError, acquire_lock_as, memory_store_dir};
 use crate::index::group::{GroupDb, GroupLock};
 use crate::index::{IndexDb, IndexError};
-use crate::store_layout::{group_index_dir, workspace_key};
+use crate::store_layout::{group_db_dir_in, group_index_dir, workspace_key};
 
 /// File in the group directory naming the checkout that keyed it, for diagnostics.
 const GROUP_MARKER_FILE: &str = "group.json";
@@ -26,12 +26,13 @@ fn take_lock(dir: &Path, holder: LockHolder) -> Result<GroupLock, StoreError> {
     Ok(Box::new(acquire_lock_as(dir, holder)?))
 }
 
-/// [`GroupDb::open_shared`] under the group lock taken for `holder`. A lock held by another process
-/// is reported as the store's [`StoreError::Locked`], naming the holder.
-fn open_locked(dir: &Path, holder: LockHolder) -> Result<Arc<GroupDb>, StoreError> {
+/// [`GroupDb::open_shared`] on this binary's database in `group_dir`, under the group lock taken for
+/// `holder`. A lock held by another process is reported as the store's [`StoreError::Locked`],
+/// naming the holder.
+fn open_locked(group_dir: &Path, holder: LockHolder) -> Result<Arc<GroupDb>, StoreError> {
     let mut refused = None;
-    let opened = GroupDb::open_shared(dir, || {
-        take_lock(dir, holder).map_err(|error| {
+    let opened = GroupDb::open_shared(&group_db_dir_in(group_dir), || {
+        take_lock(group_dir, holder).map_err(|error| {
             refused = Some(error);
             IndexError::Fjall(fjall::Error::Locked)
         })
@@ -44,10 +45,10 @@ fn open_locked(dir: &Path, holder: LockHolder) -> Result<Arc<GroupDb>, StoreErro
 
 /// [`open_locked`], retrying a fjall `Locked`: with the group lock held, fjall's own directory lock
 /// can only be held by a handle shutting down.
-fn open_with_retry(dir: &Path, holder: LockHolder) -> Result<Arc<GroupDb>, StoreError> {
+fn open_with_retry(group_dir: &Path, holder: LockHolder) -> Result<Arc<GroupDb>, StoreError> {
     let mut attempt = 0;
     loop {
-        match open_locked(dir, holder) {
+        match open_locked(group_dir, holder) {
             Err(StoreError::Index(IndexError::Fjall(fjall::Error::Locked))) if attempt < super::INDEX_OPEN_RETRIES => {
                 attempt += 1;
                 std::thread::sleep(super::INDEX_OPEN_BACKOFF);
@@ -77,7 +78,7 @@ fn open_group_for_writer(root: &Path, holder: LockHolder) -> Result<Arc<GroupDb>
     let group = match open_with_retry(&dir, holder) {
         Err(StoreError::Index(IndexError::Corrupt(error))) => {
             tracing::warn!(%error, dir = %dir.display(), "group index is damaged; discarding it for a rebuild");
-            crate::index::durability::discard_index(&dir)?;
+            crate::index::durability::discard_index(&group_db_dir_in(&dir))?;
             open_with_retry(&dir, holder)?
         }
         opened => opened?,
@@ -164,15 +165,29 @@ pub(crate) enum ReadAccess {
 /// an open that writes no row. `None` when the lock is held (the holder writes; serve from blobs),
 /// the database does not exist, or no writer has opened it yet.
 fn open_group_for_query(dir: &Path) -> Result<Option<Arc<GroupDb>>, StoreError> {
-    if !dir.join(crate::index::INDEX_DIR).is_dir() {
+    let db_dir = group_db_dir_in(dir);
+    if !db_dir.join(crate::index::INDEX_DIR).is_dir() {
         return Ok(None);
     }
     let lock = match super::try_acquire_lock_as(dir, LockHolder::Query) {
         Ok(lock) => lock,
+        Err(StoreError::Locked { holder: Some(meta), .. })
+            if crate::store_lock::embed_yield::held_by_worker(&meta.command) =>
+        {
+            // The background pass asks to be waited for rather than answered around: it gives the
+            // lock up at its next file boundary.
+            match crate::store_lock::embed_yield::wait_for_worker(dir, || {
+                super::try_acquire_lock_as(dir, LockHolder::Query)
+            }) {
+                Ok(lock) => lock,
+                Err(StoreError::Locked { .. }) => return Ok(None),
+                Err(error) => return Err(error),
+            }
+        }
         Err(StoreError::Locked { .. }) => return Ok(None),
         Err(error) => return Err(error),
     };
-    match GroupDb::open_shared_for_reading(dir, Box::new(lock)) {
+    match GroupDb::open_shared_for_reading(&db_dir, Box::new(lock)) {
         Ok(group) => Ok(group),
         Err(IndexError::Fjall(fjall::Error::Locked)) => Ok(None),
         Err(error) => Err(error.into()),
@@ -192,7 +207,7 @@ pub(super) fn open_index_read_only(
     access: ReadAccess,
 ) -> Result<(Option<IndexDb>, bool), StoreError> {
     let dir = group_index_dir(root);
-    let held = GroupDb::shared(&dir);
+    let held = GroupDb::shared(&group_db_dir_in(&dir));
     let group = match (held, access) {
         (Some(group), _) => group,
         (None, ReadAccess::HeldHandle) => return Ok((None, false)),
@@ -227,9 +242,10 @@ const REOPEN_RELEASE_POLL: std::time::Duration = std::time::Duration::from_milli
 pub(super) fn reopen_view(root: &Path, view: &str) -> Result<IndexDb, IndexError> {
     let dir = group_index_dir(root);
     let deadline = std::time::Instant::now() + REOPEN_RELEASE_WAIT;
-    while GroupDb::shared(&dir).is_some() {
+    let db_dir = group_db_dir_in(&dir);
+    while GroupDb::shared(&db_dir).is_some() {
         if std::time::Instant::now() >= deadline {
-            return Err(IndexError::StillOpen { dir });
+            return Err(IndexError::StillOpen { dir: db_dir });
         }
         std::thread::sleep(REOPEN_RELEASE_POLL);
     }

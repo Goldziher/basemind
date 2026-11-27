@@ -173,6 +173,17 @@ fn epoch_round_trip(store: &mut Store, cache: &mut MapCache, rel: &RelPath, labe
     }
 }
 
+/// Stamp `path` an hour old: a stamp inside the scanner's racy window is recorded as 0 and restamped
+/// by the next scan, which would publish a map for a rescan that changed nothing.
+fn age(path: &Path) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+        .unwrap();
+}
+
 /// A rescan that changed one file of many decodes that file's outline and no other, forgets the
 /// outline of the content it replaced, and a rescan that changed nothing publishes nothing.
 #[test]
@@ -183,6 +194,7 @@ fn a_refresh_after_one_edit_decodes_one_outline() {
     let token = "delta_one_edit";
     for n in 0..30 {
         std::fs::write(root.join(format!("f{n}.rs")), source(token, n)).unwrap();
+        age(&root.join(format!("f{n}.rs")));
     }
     let mut store = Store::open(root, VIEW_WORKING).unwrap();
     scan(root, &mut store);
@@ -194,6 +206,7 @@ fn a_refresh_after_one_edit_decodes_one_outline() {
     let rel = RelPath::from("f7.rs");
     let old_hash = store.lookup(&rel).unwrap().hash_hex.clone();
     std::fs::write(root.join("f7.rs"), source(token, 100)).unwrap();
+    age(&root.join("f7.rs"));
     scan(root, &mut store);
     let new_hash = store.lookup(&rel).unwrap().hash_hex.clone();
     let next = cache.refreshed(&store, 0).expect("an edit changes the map");

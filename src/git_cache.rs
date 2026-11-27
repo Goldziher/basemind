@@ -129,7 +129,7 @@ type CommitFileChange = (crate::path::RelPath, ChangeKind);
 /// these values has a natural size: one `CommitInfo` carries the full commit body plus one entry per
 /// path the commit touched, and one `BlameResult` is a hunk per contiguous run of lines in a whole
 /// file. A lockfile merge is orders of magnitude bigger than a typo fix, so the same 1024 entries
-/// are a few megabytes on one repo and gigabytes on the next — `crate::mcp::l1_cache` reached the
+/// are a few megabytes on one repo and gigabytes on the next — `crate::engine::l1_cache` reached the
 /// same conclusion about decoded outlines: an entry-count LRU is the same unbounded structure with a
 /// different constant.
 ///
@@ -141,7 +141,7 @@ type CommitFileChange = (crate::path::RelPath, ChangeKind);
 /// dominant term in a daemon holding 16 hot workspaces.
 const CATEGORY_MEM_BUDGET_BYTES: u64 = 32 * 1024 * 1024;
 
-/// One category's LRU plus the running byte charge over its values — the `crate::mcp::l1_cache`
+/// One category's LRU plus the running byte charge over its values — the `crate::engine::l1_cache`
 /// shape, generalised over the three value types this cache holds.
 ///
 /// The `LruCache` is `unbounded` and the entry cap is enforced here so that EVERY eviction passes
@@ -223,18 +223,38 @@ pub struct GitCache {
     log: Mutex<Charged<LogKey, Arc<Vec<CommitInfo>>>>,
     blame: Mutex<Charged<BlameKey, Arc<BlameResult>>>,
     disk: Option<Arc<DiskTier>>,
+    /// The tier holding `commit_files/`. Those payloads are keyed by commit sha and so identical in
+    /// every worktree of a repository: this is the tier of the repository's shared directory, which
+    /// is `disk` itself for a main worktree or a cache opened without a shared directory.
+    commit_files_disk: Option<Arc<DiskTier>>,
 }
 
 impl GitCache {
     /// Open the cache. When `persist=true`, the disk dir is created under `basemind_dir` and swept
     /// down to its budget on a background thread; when `false`, only the RAM layer is used.
     pub fn open(basemind_dir: &Path, mem_capacity: usize, persist: bool) -> Result<Self, CacheError> {
-        let disk = if persist {
-            Some(open_disk(&basemind_dir.join(GIT_CACHE_DIR), log_cache_max_bytes())?)
-        } else {
-            None
-        };
-        Ok(Self::with_budget(disk, mem_capacity, CATEGORY_MEM_BUDGET_BYTES))
+        Self::open_shared(basemind_dir, basemind_dir, mem_capacity, persist)
+    }
+
+    /// Like [`GitCache::open`], with the sha-keyed `commit_files` tier kept under `shared_dir`
+    /// instead of `basemind_dir`. Pass [`crate::git_history::shared_history_basemind_dir`] so the
+    /// worktrees of one repository read and write one `commit_files` entry per commit; `log` and
+    /// `blame` stay per workspace.
+    pub fn open_shared(
+        basemind_dir: &Path,
+        shared_dir: &Path,
+        mem_capacity: usize,
+        persist: bool,
+    ) -> Result<Self, CacheError> {
+        if !persist {
+            return Ok(Self::with_budget(None, mem_capacity, CATEGORY_MEM_BUDGET_BYTES));
+        }
+        let max_bytes = log_cache_max_bytes();
+        let disk = open_disk_once(&basemind_dir.join(GIT_CACHE_DIR), max_bytes)?;
+        let commit_files_disk = open_disk_once(&shared_dir.join(GIT_CACHE_DIR), max_bytes)?;
+        let mut cache = Self::with_budget(Some(disk), mem_capacity, CATEGORY_MEM_BUDGET_BYTES);
+        cache.commit_files_disk = Some(commit_files_disk);
+        Ok(cache)
     }
 
     /// Assemble the three charged LRUs. Split out of [`GitCache::open`] so a test can pick a tiny
@@ -255,6 +275,7 @@ impl GitCache {
             blame: Mutex::new(Charged::new(mem_capacity, budget_bytes, |result: &Arc<BlameResult>| {
                 blame_heap_bytes(result)
             })),
+            commit_files_disk: disk.clone(),
             disk,
         }
     }
@@ -369,10 +390,30 @@ impl GitCache {
             }
             disk.reset();
         }
+        if let Some(shared) = self
+            .commit_files_disk
+            .as_ref()
+            .filter(|shared| self.is_foreign_tier(shared))
+        {
+            let dir = shared.dir(Subdir::CommitFiles);
+            if dir.exists() {
+                removed += count_files(&dir);
+                fs::remove_dir_all(&dir).map_err(|source| CacheError::Io {
+                    path: dir.clone(),
+                    source,
+                })?;
+            }
+            ensure_subdir(shared.root(), Subdir::CommitFiles.name())?;
+        }
         category(&self.commit_files).clear();
         category(&self.log).clear();
         category(&self.blame).clear();
         Ok(removed)
+    }
+
+    /// Whether `tier` is not this workspace's own, so a clear of the own tier has not covered it.
+    fn is_foreign_tier(&self, tier: &Arc<DiskTier>) -> bool {
+        self.disk.as_ref().is_none_or(|own| !Arc::ptr_eq(own, tier))
     }
 
     fn read_commit_files_disk(&self, sha: &str) -> Option<Vec<CommitFileChange>> {
@@ -389,7 +430,7 @@ impl GitCache {
     }
 
     fn write_commit_files_disk(&self, sha: &str, files: &[CommitFileChange]) {
-        let (Some(disk), Some(path)) = (&self.disk, self.commit_files_path(sha)) else {
+        let (Some(disk), Some(path)) = (&self.commit_files_disk, self.commit_files_path(sha)) else {
             return;
         };
         let payload = CommitFilesOut {
@@ -471,7 +512,7 @@ impl GitCache {
     }
 
     fn commit_files_path(&self, sha: &str) -> Option<PathBuf> {
-        let dir = self.disk.as_ref()?.dir(Subdir::CommitFiles);
+        let dir = self.commit_files_disk.as_ref()?.dir(Subdir::CommitFiles);
         Some(dir.join(format!("{sha}.msgpack")))
     }
 
@@ -577,6 +618,27 @@ fn open_disk(root: &Path, max_bytes: u64) -> Result<Arc<DiskTier>, CacheError> {
     let disk = DiskTier::new(root.to_path_buf(), max_bytes);
     disk.sweep_in_background();
     Ok(disk)
+}
+
+/// The disk tiers opened by this process, by root. Several workspaces of one repository open the
+/// same shared root, and each opening it afresh would give that directory a sweeper per workspace,
+/// each with its own running total.
+static OPEN_TIERS: Mutex<Vec<(PathBuf, std::sync::Weak<DiskTier>)>> = Mutex::new(Vec::new());
+
+/// The live tier over `root`, or a newly opened one.
+fn open_disk_once(root: &Path, max_bytes: u64) -> Result<Arc<DiskTier>, CacheError> {
+    let mut open = OPEN_TIERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    open.retain(|(_, tier)| tier.strong_count() > 0);
+    if let Some(tier) = open
+        .iter()
+        .find(|(open_root, _)| open_root == root)
+        .and_then(|(_, tier)| tier.upgrade())
+    {
+        return Ok(tier);
+    }
+    let tier = open_disk(root, max_bytes)?;
+    open.push((root.to_path_buf(), Arc::downgrade(&tier)));
+    Ok(tier)
 }
 
 #[cfg(test)]
@@ -867,5 +929,56 @@ mod tests {
         assert!(written > 512, "the payload carries the body, got {written}");
         assert_eq!(disk.tracked(Subdir::Log), written);
         assert_eq!(disk.tracked(Subdir::Blame), 0);
+    }
+
+    /// Two worktrees of one repository open the same shared directory: the commit one computes is
+    /// the commit the other reads, and the repository holds one `commit_files` entry for it.
+    #[test]
+    fn worktrees_share_one_commit_files_entry_per_commit() {
+        let shared = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let one = GitCache::open_shared(first.path(), shared.path(), 8, true).unwrap();
+        let two = GitCache::open_shared(second.path(), shared.path(), 8, true).unwrap();
+        let files = vec![(RelPath::from("src/lib.rs"), crate::git::ChangeKind::Modified)];
+
+        one.write_commit_files_disk("abc123", &files);
+
+        assert_eq!(two.read_commit_files_disk("abc123"), Some(files));
+        let entries = |root: &Path| count_files(&root.join(GIT_CACHE_DIR).join(Subdir::CommitFiles.name()));
+        assert_eq!(entries(shared.path()), 1);
+        assert_eq!(entries(first.path()), 0);
+        assert_eq!(entries(second.path()), 0);
+    }
+
+    /// A cache opened without a shared directory keeps `commit_files/` beside `log/` and `blame/`.
+    #[test]
+    fn open_keeps_commit_files_in_the_workspace_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = GitCache::open(dir.path(), 8, true).unwrap();
+        let files = vec![(RelPath::from("a.rs"), crate::git::ChangeKind::Added)];
+
+        cache.write_commit_files_disk("def456", &files);
+
+        let own = dir.path().join(GIT_CACHE_DIR).join(Subdir::CommitFiles.name());
+        assert_eq!(count_files(&own), 1);
+    }
+
+    /// Clearing a linked worktree's cache drops the shared `commit_files/` it reads from, and leaves
+    /// the directory in place for the next write.
+    #[test]
+    fn clear_empties_the_shared_commit_files_directory() {
+        let shared = tempfile::tempdir().unwrap();
+        let own = tempfile::tempdir().unwrap();
+        let cache = GitCache::open_shared(own.path(), shared.path(), 8, true).unwrap();
+        let files = vec![(RelPath::from("a.rs"), crate::git::ChangeKind::Added)];
+        cache.write_commit_files_disk("def456", &files);
+
+        let removed = cache.clear().unwrap();
+
+        assert_eq!(removed, 1);
+        let dir = shared.path().join(GIT_CACHE_DIR).join(Subdir::CommitFiles.name());
+        assert!(dir.is_dir());
+        assert_eq!(count_files(&dir), 0);
     }
 }

@@ -322,8 +322,7 @@ A client that read `truncated` as "there is another page" must read `next_cursor
 
 Three fields keep their own names because they say something else: `skipped_files` (`code_grep`:
 files that could not be searched), `limit_clamped` (`find_files`: an over-large `limit` was
-lowered), `body_truncated` (`git_log` search: one commit's message was shortened; read it with
-`rev`) and `too_large` (`git_diff`: a file over 4 MiB was not diffed).
+lowered) and `too_large` (`git_diff`: a file over 4 MiB was not diffed).
 
 | Tool | Before | Now |
 | --- | --- | --- |
@@ -359,7 +358,7 @@ beside `next_cursor`. The CLI's `--json` output has the same shapes.
 | `code_grep` | `pattern`, `regex`, `total_files_matched`; a hit's `path`, `column` and `symbol.kind`; `context_before` / `context_after` | `hits` is `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`, grouped by innermost enclosing symbol (`""` outside every symbol); matches on one line are a row `"<line>:<col>,<col>: <text>"` (a clipped line writes its column `"<line>:<col>: ..."`); `context: N` (0-10 lines, an integer where it was a boolean) adds rows `"<line>- <text>"`, each written once; `stale` lists edited files, their rows under `""`; `total` (was `total_matches`) only beside `next_cursor` |
 | `code_refs` | `name` and `match` echoes; a hit's `path`, and its `column` unless another call of the same callee is on its line; `callee` equal to `name`; `trait_name` equal to `name` | `hits` is `{"<path>": [hit, ...]}`; `importers` drops its `module` echo |
 | `find_files` | `returned`; a file's `language`, `size_bytes`, `score`; `total` without `next_cursor` | `files` is a list of paths (with `min_lines`, `{"<path>": <lines>}`); files git tracks that are not indexed (images, fonts) are listed too |
-| `git_log` lists | `short_sha`; `path` and `pattern` echoes; a search hit's `body`, `author_email`, `body_truncated`, `body_bytes`; a commit's `author` and `author_time_unix` | each commit is a string `"<sha12> <summary>"`, or `"<sha12> <author>: <summary>"` in a search by `author`; the recent list (`{}`) and a directory history put their files in a top-level `files: {"<sha>": {"<path>": "<change>"}}`; `rev` still shows the whole commit with `author`, `author_email`, time, `body` and `files` |
+| `git_log` lists | `short_sha`; `path` and `pattern` echoes; a search hit's `body`, `author_email`, `body_truncated`, `body_bytes`; a commit's `author_time_unix` | each commit is a row `{sha, author, date, subject}` (`sha` of 12 hex digits, `date` the author's UTC day as `YYYY-MM-DD`), in every list and search alike, which the text answer usually writes as the TOON table `commits[N]{sha,author,date,subject}:` with one row per commit, or as compact JSON when that is shorter, so a consumer must accept both forms (see [Text answers](#text-answers)); with `files: true` the recent list (`{}`) and a directory history put their files in a top-level `files: {"<sha>": {"<path>": "<change>"}}`, at most 8 entries a commit, the rest counted in `files_more: {"<sha>": <n>}`; `rev` still shows the whole commit with `author`, `author_email`, time, `body` and `files` |
 | `git_log {path, symbol}` | `path` and `name` echoes; an entry's `short_sha`; `hash_mode`; `kind` when unset; `commits_inspected` without `next_cursor` | `history` rows are `"<sha> <summary>"`, with `[introduced]` or `[removed]` after the sha for those changes (`[modified]` when a changed commit's summary starts with `[`); no date (`git_log {rev}` has it); `kind` only when set |
 | `git_blame` | `path`, `suspect_sha`, `name`, `kind`; a hunk's `commit_sha`, `short_sha`, `source_line` and per-hunk `author`, `time`, `summary` | `hunks` is `["<line>[-<end_line>] <sha12>[ <source_path>]", ...]`, adjacent hunks of one commit (and source path) merged, `limit` counting merged hunks; `source_path` is the rest of the row and may hold spaces; `commits` maps each sha to `{author, time, summary}` once (`time` is unix seconds); a symbol blame keeps `line` / `end_line`; `elapsed_us` kept |
 | `code_refs` importers | `in_cycle` as a per-file flag; `truncated` on a walk stopped at `depth`; `total` without `next_cursor` | with `path`, `in_cycle` counts the listed importers sharing an import cycle with the file (`relation: "cycles"` with `path` lists it); only `scan_cap` truncates, and `deeper: true` says importers lie past `depth`; by name (`paths`), `total` only beside `next_cursor` |
@@ -387,16 +386,18 @@ the path unchanged from one side. It still lists every other commit that changed
 
 ### Text answers
 
-A tool's MCP text block is no longer always the JSON of its answer (ADR-0053). `structuredContent`
-and the CLI's `--json` output stay JSON for every tool, with the shapes above.
+A tool's MCP text block is no longer always the JSON of its answer (ADR-0053). The CLI's `--json`
+output stays JSON for every tool, with the shapes above. A successful MCP answer no longer repeats
+its payload as `structuredContent`: the text block carries it once, roughly halving the response.
 
 | Tool | Text block |
 | --- | --- |
 | `code_grep` (rows) | the other fields as `key: value` lines, then `# <path>`, `## <symbol>` (bare `##`: outside every symbol) and the rows as `"<line>: <text>"` rows read without the quotes; rows before any symbol header are outside every symbol |
 | `code_outline`, `git_diff`, `find_files` (a list) | [TOON](https://toonformat.dev): `key: value` lines, a list of flat objects as a table `name[N]{field,...}:` with one comma-separated row each, a list of scalars inline `name[N]: a,b` |
+| `git_log`, `git_blame`, `code_symbols`, `code_refs`, `docs_search`, `code_search` | the same TOON, or compact JSON when that is shorter |
 | every other tool, `find_files` with `min_lines` | compact JSON, as before |
 
-A client that parsed the text block as JSON reads `structuredContent` instead, or decodes the text
+A client that parsed the text block as JSON decodes the text
 with `basemind::wire::decode` (Rust) or a TOON decoder plus the `code_grep` header rules. A path or
 symbol in a `code_grep` header is a JSON string when it starts with `"`, has leading or trailing
 whitespace or holds a control character. The token budget (`max_tokens`) charges the encoding the
@@ -631,7 +632,7 @@ repository with many worktrees that is gigabytes and minutes. `basemind upgrade 
 `--json` for a script) shows the cost first and writes nothing. Run it with the new binary. Per
 repository group it prints:
 
-- the group index (`cache/groups/<group>/index.fjall`): replaced when one of the group's file maps
+- the group index (`cache/groups/<group>/index.fjall`, `cache/groups/<group>/v<minor>/index.fjall` from 0.35 on): replaced when one of the group's file maps
   is of an older schema, its size freed, and the free space the scan's check then asks for. It is the
   scan's own estimate: 1.5x the index, plus 3.5x for the index rows and 2.5x for the blobs of the
   source the scan extracts, plus the `BASEMIND_MIN_FREE_MB` headroom. The plan reads no source, so
@@ -665,8 +666,11 @@ workspace rebuilds it too.
 | Release-minor schema bump (`0.28.x` to `0.29.x`) | `RELEASE_MINOR` mismatch: each view's `index.msgpack` and fjall index are reset on open and every file is re-extracted, overwriting stale blobs in place | Full re-extraction, by design |
 | `grep_bloom` index keyspace (per-file trigram bloom for `code_grep`) | A new keyspace, so `INDEX_SCHEMA_VER` is not bumped. An index without it opens with an empty `grep_bloom` and greps correctly at once (every file is a candidate); the next scan builds the rows from the bytes it reads, and an unchanged file with no row is read once to backfill it | One read per unchanged file, once; about 12.8 % of the indexed code bytes on disk |
 | Blob store namespaced by blob schema: `cache/blobs/v<schema>/` instead of `cache/blobs/` | Nothing is moved. A file map records the layout it was written for (`blob_layout`); one from before the namespaces is discarded with its index at the first open, so the first scan re-extracts into the new namespace and embeds every document and code chunk again (the embeddings live in the blobs). The blob GC removes un-namespaced blob files and the namespaces of older schemas, by the rule in [Per-version binaries](#per-version-binaries): not while a process of that version runs, and not until nothing has been written into them for `BASEMIND_PRUNE_AFTER_DAYS` days (default 14; `0` removes the wait). It never touches, counts or evicts for the namespace of a newer schema, so two installed versions no longer overwrite each other's blobs. This ships with the 0.34 release-minor bump: an older basemind left installed keeps its blobs while it is in use, and once they are reaped re-extracts on its next scan | Full re-extraction and re-embedding, once |
+| File map written as a base plus a delta log (`index.delta`); `blob_layout` stays `1` | Nothing is converted: an existing map is the base, and the first incremental pass starts the log. 0.34.0 left installed reads and writes the same map: it reads the base alone (the map of the last full write) and its scan indexes what differs from the working tree; its write renames a new base over the old one, so the log no longer matches that base and is ignored, then removed by the next full write. Its blob sweep counts the blobs the base names, so a blob only the log names may be reaped after the grace period; the next scan here extracts that file again | None |
+| Blobs sharded by hash prefix: `cache/blobs/v<schema>/<xx>/<hash>.<tier>.msgpack` (`xx` the first two hex digits) instead of flat in `v<schema>/`, from the namespace after `v34` | The `v34` namespace stays flat: every 0.34 release shares it, and 0.34.0 looks for flat names only, so a blob moved into a bucket there would be gone for it and its running daemon would leave the file out of its map. The sharded layout starts with the next namespace, which a release-minor bump fills from empty. A reader that finds a blob in the other layout of its namespace moves it into place by link and unlink, one blob at a time as it is touched; a write replaces the other copy. The blob GC and `cache stats` walk both layouts and reap a copy outside the layout whose twin is in place. A file view no longer probes each blob at build time: a missing blob is noticed when its outline is read and logged as a hint to rescan | None |
 | One index per repository group: `cache/groups/<group>/index.fjall` instead of `views/<view>/index.fjall` in each workspace (ADR-0028) | Nothing is converted: the first scan of each workspace rebuilds its views into the group index. A view's own `index.fjall` is deleted by the first scan of the view that passes the free-space check (a scan the check refuses leaves it, so the old release still has its index), and the daemon's cache sweep deletes it in every workspace whose repository's group index exists, opened since the upgrade or not (ADR-0054), by the rule in [Per-version binaries](#per-version-binaries); with the cache over its budget, every one left goes before any workspace is evicted. `cache stats` counts those left (`legacy_indexes`, `legacy_index_bytes`). Memory notes a release before 0.30 kept in it are moved to the group's notes store first; a workspace whose notes cannot be moved, or whose lock another process holds, keeps it | One full scan per workspace |
 | Memory vectors live in `cache/repos/<group>/memory.lance/<model>-<dim>-<hash>/`, beside `memory.fjall`, instead of the workspace's `lance/` | Not migrated. A `memory_search` by meaning embeds the notes that have no current vector row, from `memory.fjall`, up to 256 per call, and says so in `notice` until every note has one; the same happens for an embedding preset used for the first time and after a release-minor bump empties the table. The old `memory` table goes with the workspace's `lance/`, which the release-minor bump wipes at its first open. A store of a preset no longer used is not removed | One embedding per note, once per preset |
+| Code-chunk vectors live in `cache/groups/<group>/code-lance/<model>-<dim>-<hash>/`, keyed by content and shared by every worktree of the group, instead of the workspace's `lance/` keyed by path | Not migrated. The first scan that opens the group store removes the workspace's `lance/`; no store of the group carries the view's recorded `vector-store-id`, so the scan owes every indexed path its rows and writes them from the cached chunk blobs. A store of a preset no longer used is not removed | No embedding; one row write per distinct content |
 | `index.msgpack` fields `rebuild_pending` and `rebuild_pins`; `pending-vectors.msgpack` and `vector-store-id` beside it; `store-id` in the workspace's `lance/` | Additive: a file map written before them reads as owing no rebuild, and a view without the files as owing no vector rows. Vector rows that a development build of this release recorded as owed inside the file map are not carried over: the first scan after the upgrade embeds and writes every row again | none |
 | `memory.fjall` keyspace `store_meta` (the notes store's own version) | Written at the first open that holds the workspace lock, by a version that has it. Notes are never wiped. A store stamped by a newer basemind is refused for memory operations with "written by a newer basemind"; the code index of the workspace still opens | none |
 | `verify-blobs` marker in the workspace cache directory; `hosting/<pid>` under the data directory, holding the boot the daemon was started in, its process start, its version and the blob schema it reads | The marker is written when a scan of the workspace is found to have died without finishing, or when a process about to scan finds the `hosting/<pid>` of a daemon from an earlier boot of the machine (then for every workspace at once). A daemon that was killed while the machine stayed up leaves no request. The next scan of that workspace is a full one that decodes each combined and document blob instead of trusting it for existing, rewrites the vector rows from the blobs, then removes the marker | One blob read per file and one rewrite of the vector rows, for that one scan |
@@ -740,11 +744,25 @@ basemind"). The memory notes are refused for memory operations the same way. So:
   mismatch, as for any schema change. A `basemind.toml` that sets `[analysis] entry_points` or
   `[documents.dependencies]` stops 0.33 from loading at all, so the reset never runs: remove those
   keys first.
-- A later minor back to 0.34 is refused until you upgrade again. To stay on the older binary, give it
+- A later minor back to 0.34 is refused until you upgrade again. The refusal is the file map's: a
+  later minor rewrites it in place, and 0.34 will not read it (the blobs and the group index are
+  not what refuses it, see below). To stay on the older binary, give it
   a data directory of its own (`BASEMIND_DATA_HOME=<empty dir>`) and run `basemind scan`, which
   builds every store from scratch there; notes saved in the original data directory are not visible
   from it. `basemind cache clear --component views|lance` clears only the workspace's file maps and
-  vector stores, not the group index (`cache/groups/<group>/index.fjall`) or the git history.
+  vector stores, not the group index (`cache/groups/<group>/index.fjall`, `v<minor>/index.fjall` from 0.35 on) or the git history.
+
+Releases share one group directory without sharing a group index. Up to 0.34 the index is
+`cache/groups/<group>/index.fjall`; from 0.35 on each minor keeps its own in
+`cache/groups/<group>/v<minor>/index.fjall`, as it keeps its blobs in `cache/blobs/v<minor>/`. A
+newer release's first scan therefore never wipes, rewrites or refuses the index an older release
+that is still running reads, and the older one goes on answering from it for every repository the
+newer one has not touched. The group lock, the notes and the retrieval stores stay in the group
+directory, shared. The daemon's cache sweep reaps the index of an older minor by the rule for a
+superseded blob namespace ([Per-version binaries](#per-version-binaries)): not while a process of
+that release runs, and not until nothing has been written into it for `BASEMIND_PRUNE_AFTER_DAYS`
+days. The 0.34 index (`index.fjall` directly in the group directory) goes the same way, once no
+release up to 0.34 runs.
 
 Going back and forth costs re-extraction, never correctness, with one exception: notes saved while
 `BASEMIND_DATA_HOME` points at the separate directory stay in it and are not visible after you

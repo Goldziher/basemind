@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 
 use serde_json::json;
 
-use super::{call, call_err, commit_summaries, git, history_change, names, started, started_with};
+use super::{call, call_err, call_until, commit_summaries, git, history_change, names, started, started_with};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn git_blame_validates_its_span_and_limit() {
@@ -445,7 +445,7 @@ async fn git_status_lists_are_bounded_with_a_count_of_the_rest() {
         std::fs::write(root.join(format!("untracked_{index:03}.txt")), "x\n").unwrap();
     }
 
-    let status = call(&client, "git_diff", json!({})).await;
+    let status = call_until(&client, "git_diff", json!({}), |status| status["is_clean"] == false).await;
     let listed = status["untracked"].as_array().expect("untracked").len();
     assert_eq!(listed, 200, "{}", status["omitted"]);
     assert_eq!(status["omitted"], 400, "600 untracked files in all");
@@ -472,13 +472,16 @@ async fn git_status_lists_are_bounded_with_a_count_of_the_rest() {
     for name in ["a.txt", "b.txt"] {
         std::fs::remove_file(root.join("src").join(name)).unwrap();
     }
-    let unchanged = call(&client, "git_diff", json!({ "path": "src/" })).await;
+    let unchanged = call_until(&client, "git_diff", json!({ "path": "src/" }), |status| {
+        status["is_clean"] == true
+    })
+    .await;
     assert_eq!(unchanged["is_clean"], true, "nothing changed under it: {unchanged}");
 
     for index in 0..600 {
         std::fs::remove_file(root.join(format!("untracked_{index:03}.txt"))).unwrap();
     }
-    let clean = call(&client, "git_diff", json!({})).await;
+    let clean = call_until(&client, "git_diff", json!({}), |status| status["is_clean"] == true).await;
     assert!(
         clean.get("omitted").is_none() && clean.get("truncated").is_none(),
         "{clean}"
@@ -539,7 +542,10 @@ async fn git_diff_refuses_a_directory_that_does_not_exist_or_lacks_its_slash() {
 
     // A directory deleted from the working tree is gone from disk and still has a status.
     std::fs::remove_dir_all(root.join("tests")).unwrap();
-    let deleted = call(&client, "git_diff", json!({ "path": "tests/" })).await;
+    let deleted = call_until(&client, "git_diff", json!({ "path": "tests/" }), |status| {
+        status["is_clean"] == false
+    })
+    .await;
     assert_eq!(deleted["modified"], json!(["tests/it.rs"]), "{deleted}");
     let bare = call_err(&client, "git_diff", json!({ "path": "tests" })).await;
     assert!(bare.contains("`tests/`"), "a tree at HEAD: {bare}");

@@ -1,6 +1,15 @@
 # The value-gate corpus (ADR-0022): repositories at pinned commits. `fetch_corpus.sh` clones each,
 # checks out the commit and verifies the checksum, so the task files under `tasks/` are reproducible.
 # Columns (tab-separated): name, clone URL, commit, sha256 of `git ls-tree -r --full-tree HEAD`,
-# tracked file count. basemind is pinned at v0.33.0 and tokio at tokio-1.54.1.
-basemind	https://github.com/Goldziher/basemind.git	a144ebbf1108dfec8b98d81ac22d0984696a8a77	935daac23ae842424c4427a73c8959b788aca97694f8f86e3e48e4f2f1eb8c3b	1137
-tokio	https://github.com/tokio-rs/tokio.git	b53b2001ed2ccfd9b87e32a0c6da1a1eebdc80b8	ec7499086605a349073ebe7b73ec06f70cfdd5a1ff12bc4b6ffcdd8dd0006bea	886
+# tracked file count, languages (comma-separated basemind language names: rust, python, typescript, go,
+# java; `gen_tasks.sh` emits each language's tasks and `gate.py` reports recall per language).
+# basemind is pinned at v0.33.0, tokio at tokio-1.54.1, click (BSD-3-Clause) at 8.3.0, got (MIT) at v14.6.6,
+# cobra (Apache-2.0) at v1.9.1, gson (Apache-2.0) at gson-parent-2.15.0 and restate-examples (MIT, a polyglot
+# monorepo with eight `go.mod`, 29 `package.json` and five `pyproject.toml` roots) at v1.8.0.
+basemind	https://github.com/Goldziher/basemind.git	a144ebbf1108dfec8b98d81ac22d0984696a8a77	935daac23ae842424c4427a73c8959b788aca97694f8f86e3e48e4f2f1eb8c3b	1137	rust
+tokio	https://github.com/tokio-rs/tokio.git	b53b2001ed2ccfd9b87e32a0c6da1a1eebdc80b8	ec7499086605a349073ebe7b73ec06f70cfdd5a1ff12bc4b6ffcdd8dd0006bea	886	rust
+click	https://github.com/pallets/click.git	00fadb8904387158ce6e9aa1573be770446895c1	2511423e501fa771d4ad115075dc5d8ee2a2c07d832bff44e224c70adb4bbc38	142	python
+got	https://github.com/sindresorhus/got.git	de19b463b1875847f955a53d2f5b0a539ed0ded3	8561e50cc81e84350536d0f5d86bf43d51dc4265a158f45c6dd1f93520557ee1	120	typescript
+cobra	https://github.com/spf13/cobra.git	40b5bc1437a564fc795d388b23835e84f54cd1d1	9b25c019cec0e79762072b73b00cdec668d579d83888426c2d58562fd2b09c3b	66	go
+gson	https://github.com/google/gson.git	fcd416909db2bea96eb916bcfb2d0a83cb9b86c3	5974961d3990b2003231f89da67eab08b3e6030aa74f239881e3a146351441e6	313	java
+restate-examples	https://github.com/restatedev/examples.git	4d69714df609be067ad5506bcd72210136115487	8ce6f74316abaea74a5ab5d3896cbe053362f7b6e5642c5e88f52d5b59b0b883	1515	typescript,python,go,java

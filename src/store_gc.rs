@@ -271,7 +271,9 @@ fn collect_view_hashes(basemind_dir: &Path, skip_stale: bool) -> Result<LiveBlob
     Ok(referenced)
 }
 
-/// Sweep the GLOBAL blob store, deleting every blob whose hex stem is not in `referenced`.
+/// Sweep the GLOBAL blob store, deleting every blob whose hex stem is not in `referenced`. Blobs
+/// are found in both layouts (flat and bucketed, see `store_blob_layout`); a live blob outside this
+/// binary's layout whose twin is in place is a stale duplicate and is reaped.
 ///
 /// Files that do not match a known blob suffix are inspected (counted in `scanned`) but
 /// never deleted — a conservative choice so a stray file under `blobs/` is never reaped.
@@ -296,15 +298,11 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &LiveBlobs, grace: Duration) -> Res
     if !blobs_dir.exists() {
         return Ok(report);
     }
-    for entry in read_dir(blobs_dir)? {
-        let entry = entry.map_err(|source| GcError::Io {
-            path: blobs_dir.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
+    let files = crate::store_blob_layout::blob_files(blobs_dir).map_err(|source| GcError::Io {
+        path: blobs_dir.to_path_buf(),
+        source,
+    })?;
+    for path in files {
         let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
@@ -329,12 +327,20 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &LiveBlobs, grace: Duration) -> Res
         };
         report.scanned += 1;
         if referenced.keeps(file_name) {
+            reap_displaced_twin(blobs_dir, &path, file_name, &mut report)?;
             continue;
         }
-        let meta = std::fs::metadata(&path).map_err(|source| GcError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        // A reader may have moved the blob into place since the listing: it is no longer here.
+        let meta = match std::fs::metadata(&path) {
+            Ok(meta) => meta,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(GcError::Io {
+                    path: path.clone(),
+                    source,
+                });
+            }
+        };
         let age = meta
             .modified()
             .ok()
@@ -344,14 +350,40 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &LiveBlobs, grace: Duration) -> Res
             continue;
         }
         let size = meta.len();
-        std::fs::remove_file(&path).map_err(|source| GcError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => return Err(GcError::Io { path, source }),
+        }
         report.removed += 1;
         report.bytes_freed += size;
     }
     Ok(report)
+}
+
+/// Remove `path`, a live blob, when it is a twin outside this binary's blob layout of a copy that is
+/// in place ([`crate::store_blob_layout::is_displaced_twin`]).
+fn reap_displaced_twin(blobs_dir: &Path, path: &Path, file_name: &str, report: &mut GcReport) -> Result<(), GcError> {
+    let Some(stem) = blob_stem(file_name) else {
+        return Ok(());
+    };
+    let suffix = &file_name[stem.len()..];
+    if !crate::store_blob_layout::is_displaced_twin(blobs_dir, path, stem, suffix) {
+        return Ok(());
+    }
+    let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    match std::fs::remove_file(path) {
+        Ok(()) => {
+            report.removed += 1;
+            report.bytes_freed += size;
+            Ok(())
+        }
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(GcError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 /// Remove `path`, a stray `*.tmp`, when it is older than the grace window.
@@ -505,7 +537,14 @@ pub(crate) fn gc_global_blobs_in(
 /// reclaims the blobs the orphan was pinning. The returned [`GcReport`] carries both halves.
 pub fn reap_and_gc_global(data: &DataRoot) -> Result<GcReport, GcError> {
     let reaped = reap_orphaned_workspaces(data)?;
-    let groups = crate::store_gc_groups::reap_orphaned_group_stores(data)?;
+    let mut groups = crate::store_gc_groups::reap_orphaned_group_stores(data)?;
+    let older = crate::store_gc_groups::reap_superseded_group_indexes_in(
+        &data.cache_dir(),
+        crate::version::RELEASE_MINOR,
+        &Holds::under(data),
+    )?;
+    groups.reaped += older.reaped;
+    groups.bytes_freed += older.bytes_freed;
     let legacy = crate::store_gc_legacy_views::reap_adopted_legacy_indexes(data)?;
     let mut report = gc_global_blobs(data)?;
     report.workspaces_reaped = reaped.reaped;
@@ -572,7 +611,7 @@ pub fn gc_report_only(data: &DataRoot) -> Result<GcReport, GcError> {
 }
 
 /// How many files a blob store holds: those in its root (blobs from before the namespaces) and
-/// those of each namespace directory.
+/// those of each namespace directory, flat or in a bucket (see [`crate::store_blob_layout`]).
 pub(crate) fn count_blob_files(blobs_root: &Path) -> Result<usize, GcError> {
     if !blobs_root.exists() {
         return Ok(0);
@@ -581,7 +620,9 @@ pub(crate) fn count_blob_files(blobs_root: &Path) -> Result<usize, GcError> {
     for entry in read_dir(blobs_root)?.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            files += read_dir(&path)?.flatten().filter(|blob| blob.path().is_file()).count();
+            files += crate::store_blob_layout::blob_files(&path)
+                .map_err(|source| GcError::Io { path, source })?
+                .len();
         } else {
             files += 1;
         }
@@ -609,6 +650,10 @@ pub(crate) fn read_dir(dir: &Path) -> Result<std::fs::ReadDir, GcError> {
 #[cfg(test)]
 #[path = "store_gc_cli_tests.rs"]
 mod cli_tests;
+
+#[cfg(test)]
+#[path = "store_gc_namespace_tests.rs"]
+mod namespace_tests;
 
 #[cfg(test)]
 #[path = "store_gc_tier_tests.rs"]

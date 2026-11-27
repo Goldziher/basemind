@@ -29,6 +29,23 @@ choice_enum! {
 }
 
 choice_enum! {
+    /// `code find --indexed`: which group of files to list.
+    IndexedChoice { True => "true", False => "false", Any => "any" }
+}
+
+impl IndexedChoice {
+    /// The `find_files` filter this choice stands for.
+    pub fn filter(self) -> crate::engine::types::files::IndexedFilter {
+        use crate::engine::types::files::{IndexedFilter, IndexedWord};
+        match self {
+            Self::True => IndexedFilter::Flag(true),
+            Self::False => IndexedFilter::Flag(false),
+            Self::Any => IndexedFilter::Word(IndexedWord::Any),
+        }
+    }
+}
+
+choice_enum! {
     /// `code search` retrieval lane.
     SearchLane { Hybrid => "hybrid", Semantic => "semantic", Keyword => "keyword" }
 }

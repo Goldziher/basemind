@@ -2,8 +2,8 @@
 
 Every step here uses the CLI, so it works while the MCP server is down.
 
-1. **Run `basemind doctor`.** It checks the root, the config, the index, the grammars, the hook
-   and the daemon, and exits 1 naming the check that failed.
+1. **Run `basemind doctor`.** It checks the root, the config, the index, the grammars, the hook,
+   the daemon and (on Linux) whether the inotify watch limit covers the workspace, and exits 1 naming the check that failed.
 2. **No index, or `file_count` 0.** Run `basemind scan`. A tool answering with a `notice` of
    `empty_index` says the same.
 3. **Empty results that should not be empty.** Look for a `notice` first: `warming_up` and

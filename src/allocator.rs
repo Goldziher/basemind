@@ -47,6 +47,18 @@ unsafe impl GlobalAlloc for MiMalloc {
     }
 }
 
+/// Return every free page mimalloc holds to the OS now, instead of after its purge delay.
+///
+/// A rescan, a read-stack build or a cache eviction frees GBs of transient buffers; mimalloc keeps
+/// them in per-thread heaps and abandoned segments until a thread allocates again, so an idle daemon
+/// stays at its high-water mark. Call it where a large transient ends. Cheap relative to the work
+/// that precedes it (it walks page metadata, not the freed bytes); a no-op under the system
+/// allocator, which `mi_collect` does not manage.
+pub fn release_unused_memory() {
+    // SAFETY: `mi_collect` only frees blocks mimalloc already considers free; it is safe from any thread.
+    unsafe { libmimalloc_sys::mi_collect(true) }
+}
+
 /// Whether `ptr` points into mimalloc's heap: how a test proves which allocator a binary installed.
 pub fn owned_by_mimalloc(ptr: *const u8) -> bool {
     // SAFETY: only compares the address against mimalloc's segment map; never dereferences it.
@@ -76,6 +88,50 @@ mod tests {
                 a.dealloc(z, layout);
             }
         }
+    }
+
+    /// Committed bytes mimalloc holds, freed or not.
+    fn committed_bytes() -> usize {
+        let mut commit = 0usize;
+        // SAFETY: every out-pointer is either null (ignored) or `&mut commit`, a live `usize`.
+        unsafe {
+            libmimalloc_sys::mi_process_info(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &raw mut commit,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+        }
+        commit
+    }
+
+    /// `release_unused_memory` is safe to call with freed blocks outstanding and never grows the
+    /// committed set. How much of it the OS gets back depends on the allocator's purge policy, so
+    /// the idle-memory band is asserted end to end by the hardening soak, not here.
+    #[test]
+    fn release_unused_memory_never_grows_the_committed_set() {
+        const BLOCK: usize = 1 << 20;
+        const BLOCKS: usize = 32;
+        // SAFETY: each block is non-null (asserted), written within its length and freed once.
+        let blocks: Vec<*mut u8> = (0..BLOCKS)
+            .map(|_| unsafe {
+                let p = libmimalloc_sys::mi_malloc(BLOCK).cast::<u8>();
+                assert!(!p.is_null());
+                std::ptr::write_bytes(p, 0xA5, BLOCK);
+                p
+            })
+            .collect();
+        for p in blocks {
+            // SAFETY: allocated above by `mi_malloc`, freed exactly once.
+            unsafe { libmimalloc_sys::mi_free(p.cast()) };
+        }
+        let before = committed_bytes();
+        release_unused_memory();
+        assert!(committed_bytes() <= before);
     }
 
     /// The shim round-trips every entry point, over-aligned layouts included.

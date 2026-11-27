@@ -8,6 +8,7 @@
 //! Split out of `state.rs` so the per-connection type and the shared type each stay well under the
 //! per-file size budget.
 
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -27,10 +28,9 @@ use crate::store::Store;
 /// when these fields lived directly on `ServerState`; a future daemon can point many connections at
 /// one stack.
 pub(crate) struct Workspace {
-    /// The opened store. A synchronous, task-fair lock, so the engine names no runtime: a scan holds
-    /// the write side for its whole run, and readers wait for it as they did on the async lock this
-    /// replaces (a waiting writer holds back new readers, and a panic poisons nothing).
-    store: RwLock<Store>,
+    /// The opened store ([`StoreSlot`]): behind a lock a scan writes through, or, for a daemon-hosted
+    /// workspace, behind an `ArcSwap` a publish replaces without waiting on any reader.
+    store: StoreSlot,
     pub(crate) root: PathBuf,
     /// In-RAM mirror of every indexed file's L1 blob.
     ///
@@ -49,7 +49,7 @@ pub(crate) struct Workspace {
     /// Precomputed git-history index (posting lists `path → [commit]`). `Some` only on a writable
     /// serve in a git repo with the index enabled; a read-only serve or a Fjall-lock collision
     /// leaves it `None`, and the git tools fall back to the live walk. Used by the history tools
-    /// only when `last_indexed_head == HEAD` (the freshness gate), so it never serves stale results.
+    /// only when HEAD is an indexed tip (the freshness gate), so it never serves stale results.
     pub(crate) git_history: Option<Arc<crate::git_history::GitHistoryIndex>>,
     /// `(blob_oid, lang) -> Arc<OutlineEntry>` cache that keeps `symbol_history` fast on
     /// hot files even when the symbol's source blob shows up in many adjacent commits.
@@ -61,6 +61,9 @@ pub(crate) struct Workspace {
     /// Held on the server so the `rescan` MCP tool can re-run a scan in-process
     /// without re-reading `basemind.toml`.
     pub(crate) config: Arc<crate::config::Config>,
+    /// The host's outline caches shared between its read stacks, for a daemon-hosted workspace;
+    /// `None` gives every map a cache of its own ([`Workspace::outlines`]).
+    shared_outlines: Option<Arc<crate::engine::l1_shared::SharedOutlines>>,
     /// Sum of `size_bytes` across every indexed file. Captured at boot and
     /// after each `rescan`. Feeds the corpus-baseline cost in
     /// [`crate::mcp::savings::estimate_from_text`].
@@ -92,7 +95,10 @@ pub(crate) struct Workspace {
     pub(crate) import_graph: crate::engine::import_graph::GraphCache,
     /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
     /// Computed once at boot. Do NOT recompute per-call.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(feature = "memory"),
+        allow(dead_code, reason = "read only by memory notes, which this build lacks")
+    )]
     pub(crate) scope: String,
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
     #[cfg(feature = "code-search")]
@@ -109,6 +115,10 @@ pub(crate) struct Workspace {
     #[cfg(feature = "memory")]
     pub(crate) memory_backfill:
         std::sync::Mutex<ahash::AHashMap<(u8, String), crate::engine::memory::vectors::Backfill>>,
+    /// Whether this process has filed the group's notes under [`Workspace::scope`]
+    /// ([`Workspace::memory_index`]).
+    #[cfg(feature = "memory")]
+    pub(crate) memory_rescoped: AtomicBool,
     /// Shared embedding engine. Lazy-init on first embed call ([`Workspace::shared_embedder`]).
     #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
     pub(crate) embedder: std::sync::OnceLock<Arc<crate::embeddings::SharedEmbedder>>,
@@ -294,6 +304,25 @@ impl Workspace {
         git_history: Option<Arc<crate::git_history::GitHistoryIndex>>,
         options: OpenOptions,
     ) -> Self {
+        Self::sharing_outlines(store, root, config, repo, git_cache, git_history, options, None)
+    }
+
+    /// [`Workspace::new`] whose maps take their decoded outlines from `shared_outlines`, the cache a
+    /// daemon shares between every read stack it hosts ([`crate::engine::l1_shared`]).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Workspace::new's parts plus the one cache a host shares"
+    )]
+    pub(crate) fn sharing_outlines(
+        store: Store,
+        root: PathBuf,
+        config: Arc<crate::config::Config>,
+        repo: Option<Arc<crate::git::Repo>>,
+        git_cache: Arc<crate::git_cache::GitCache>,
+        git_history: Option<Arc<crate::git_history::GitHistoryIndex>>,
+        options: OpenOptions,
+        shared_outlines: Option<Arc<crate::engine::l1_shared::SharedOutlines>>,
+    ) -> Self {
         let scope = repo
             .as_ref()
             .map(|r| crate::git::scope_key(r))
@@ -305,7 +334,7 @@ impl Workspace {
         } else {
             Arc::new(MapCache::build(
                 &store,
-                crate::engine::l1_cache::budget_bytes_from(&config.resources),
+                outlines_of(shared_outlines.as_deref(), &config),
             ))
         };
         tracing::info!(
@@ -323,7 +352,7 @@ impl Workspace {
         Self {
             #[cfg(feature = "memory")]
             memory_owner,
-            store: RwLock::new(store),
+            store: StoreSlot::new(store),
             root,
             cache: ArcSwap::from(cache),
             repo,
@@ -332,6 +361,7 @@ impl Workspace {
             outline_cache,
             lang_rules: std::sync::OnceLock::new(),
             config,
+            shared_outlines,
             corpus_bytes: AtomicU64::new(corpus_bytes),
             cache_generation: AtomicU32::new(1),
             index_generation: AtomicU32::new(1),
@@ -348,6 +378,8 @@ impl Workspace {
             memory_lance: Default::default(),
             #[cfg(feature = "memory")]
             memory_backfill: std::sync::Mutex::new(ahash::AHashMap::new()),
+            #[cfg(feature = "memory")]
+            memory_rescoped: AtomicBool::new(false),
             initial_scan_active: AtomicBool::new(false),
             initial_scan_ms: AtomicU64::new(0),
             cache_warming: AtomicBool::new(defer_warm),
@@ -368,7 +400,26 @@ impl Workspace {
     }
 }
 
+/// Where a map of a workspace configured by `config` takes its outline cache from: `shared`, else
+/// a cache of its own, either charged against `[resources] max_map_cache_mb`.
+fn outlines_of<'a>(
+    shared: Option<&'a crate::engine::l1_shared::SharedOutlines>,
+    config: &crate::config::Config,
+) -> crate::engine::l1_shared::Outlines<'a> {
+    let budget = crate::engine::l1_cache::budget_bytes_from(&config.resources);
+    match shared {
+        Some(shared) => crate::engine::l1_shared::Outlines::shared(shared, budget),
+        None => crate::engine::l1_shared::Outlines::private(budget),
+    }
+}
+
 impl Workspace {
+    /// Where this workspace's next map takes its outline cache from: the host's shared one, else a
+    /// cache of its own.
+    pub(crate) fn outlines(&self) -> crate::engine::l1_shared::Outlines<'_> {
+        outlines_of(self.shared_outlines.as_deref(), &self.config)
+    }
+
     /// The compiled `[languages]` overrides. A table that does not compile was already reported
     /// when the config was loaded; detection then falls back to the built-in rules.
     pub(crate) fn lang_rules(&self) -> &crate::lang_rules::LangRules {
@@ -376,19 +427,40 @@ impl Workspace {
             .get_or_init(|| crate::lang_rules::LangRules::from_config(&self.config.languages).unwrap_or_default())
     }
 
-    /// Read the store, waiting while a scan holds it.
-    pub(crate) fn store_read(&self) -> RwLockReadGuard<'_, Store> {
-        self.store.read()
+    /// Read the store: a snapshot for a hosted workspace, else the lock's read side, waiting while a
+    /// scan holds it. A hosted snapshot stays valid for as long as the caller holds it, whatever is
+    /// published meanwhile.
+    pub(crate) fn store_read(&self) -> StoreRead<'_> {
+        match &self.store {
+            StoreSlot::Local(lock) => StoreRead::Local(lock.read()),
+            StoreSlot::Hosted(current) => StoreRead::Snapshot(current.load_full()),
+        }
     }
 
-    /// Write the store, waiting for every reader to finish.
-    pub(crate) fn store_write(&self) -> RwLockWriteGuard<'_, Store> {
-        self.store.write()
+    /// Write the store, waiting for every reader to finish. `None` for a hosted workspace, whose
+    /// store the daemon's pool writes and a publish replaces.
+    pub(crate) fn store_write(&self) -> Option<RwLockWriteGuard<'_, Store>> {
+        match &self.store {
+            StoreSlot::Local(lock) => Some(lock.write()),
+            StoreSlot::Hosted(_) => None,
+        }
     }
 
-    /// Read the store if no writer holds it right now.
-    pub(crate) fn try_store_read(&self) -> Result<RwLockReadGuard<'_, Store>, StoreBusy> {
-        self.store.try_read().ok_or(StoreBusy)
+    /// Read the store if no writer holds it right now. A hosted workspace has no writer here.
+    pub(crate) fn try_store_read(&self) -> Result<StoreRead<'_>, StoreBusy> {
+        match &self.store {
+            StoreSlot::Local(lock) => lock.try_read().map(StoreRead::Local).ok_or(StoreBusy),
+            StoreSlot::Hosted(current) => Ok(StoreRead::Snapshot(current.load_full())),
+        }
+    }
+
+    /// Serve `store` from now on. A hosted workspace swaps its snapshot, so it waits for no reader
+    /// and no reader waits for it; a local one takes the write side.
+    pub(crate) fn replace_store(&self, store: Store) {
+        match &self.store {
+            StoreSlot::Local(lock) => *lock.write() = store,
+            StoreSlot::Hosted(current) => current.store(Arc::new(store)),
+        }
     }
 
     /// Mark the deferred preload finished and wake every caller of
@@ -427,8 +499,7 @@ impl Workspace {
         self.lazy_cache_built.get_or_init(|| {
             let started = std::time::Instant::now();
             let store = self.store_read();
-            let budget = crate::engine::l1_cache::budget_bytes_from(&self.config.resources);
-            let cache = Arc::new(MapCache::build(&store, budget));
+            let cache = Arc::new(MapCache::build(&store, self.outlines()));
             let files = cache.len();
             self.cache.store(Arc::clone(&cache));
             self.cache_generation.fetch_add(1, Ordering::Relaxed);
@@ -501,6 +572,49 @@ impl Workspace {
         LifecycleNotice::for_state(self.lifecycle())
             .or_else(|| self.index_rebuilding_notice())
             .or_else(|| self.empty_index_notice())
+    }
+}
+
+/// Where a workspace keeps its [`Store`].
+///
+/// A workspace that scans in this process mutates its store in place, so the store sits behind a
+/// synchronous, task-fair lock (the engine names no runtime): a scan holds the write side for its
+/// whole run, and a waiting writer holds back new readers. A daemon-hosted workspace never scans
+/// here: the pool's writer does, and a publish hands over the file map it wrote. Its store is a
+/// read-only one borrowing the writer's index per call, so it sits behind an [`ArcSwap`]: a read
+/// takes the snapshot current when it starts, a publish swaps in the next one, and a long read
+/// never holds a publish back nor a publish the reads that follow.
+enum StoreSlot {
+    Local(Box<RwLock<Store>>),
+    Hosted(ArcSwap<Store>),
+}
+
+impl StoreSlot {
+    /// A store that borrows its index from the daemon's pool ([`Store::index_source`]) is hosted.
+    fn new(store: Store) -> Self {
+        if store.index_source.is_some() {
+            Self::Hosted(ArcSwap::from_pointee(store))
+        } else {
+            Self::Local(Box::new(RwLock::new(store)))
+        }
+    }
+}
+
+/// A read of the workspace's [`Store`]: the lock's read guard, or the snapshot a hosted workspace
+/// served when the read began. Dereferences to the store either way.
+pub(crate) enum StoreRead<'a> {
+    Local(RwLockReadGuard<'a, Store>),
+    Snapshot(Arc<Store>),
+}
+
+impl Deref for StoreRead<'_> {
+    type Target = Store;
+
+    fn deref(&self) -> &Store {
+        match self {
+            Self::Local(guard) => guard,
+            Self::Snapshot(store) => store,
+        }
     }
 }
 
@@ -595,3 +709,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "workspace_store_tests.rs"]
+mod store_tests;

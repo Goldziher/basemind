@@ -26,6 +26,7 @@ use crate::store_blob_codec::{
     BlobKind, CompressedPayload, checked_u32_len, compress_payload, corrupt_blob, decompress_payload, encode_prefix,
     envelope_prefix, read_u32,
 };
+use crate::store_blob_layout::locate_blob;
 
 const SINGLE_HEADER_LEN: usize = 16;
 const FILEMAP_HEADER_LEN: usize = 24;
@@ -60,6 +61,9 @@ struct BlobSchemaPeek {
     schema_ver: u16,
 }
 
+/// Filename suffix of the combined-filemap blob.
+const FM_SUFFIX: &str = ".fm.msgpack";
+
 /// Read a file's bytes, mapping a missing file to `Ok(None)`. One `read` syscall instead of
 /// the `exists()` + `read` TOCTOU pair the blob readers used before.
 pub(crate) fn read_if_exists(path: &Path) -> Result<Option<Vec<u8>>, StoreError> {
@@ -77,10 +81,10 @@ pub(crate) fn read_if_exists(path: &Path) -> Result<Option<Vec<u8>>, StoreError>
 ///
 /// Blobs are content-addressed, so `blobs_dir` + the hash is the whole identity of the read — no
 /// index, no view, and no [`Store`] (hence no store lock). That is what lets the MCP read stack's
-/// L1 cache (`crate::mcp::l1_cache`) serve a miss from a `&self` method on a shared, lock-free
+/// L1 cache (`crate::engine::l1_cache`) serve a miss from a `&self` method on a shared, lock-free
 /// handle instead of having to reach back through the async `RwLock<Store>` every reader holds.
 pub fn read_l1_blob_in(blobs_dir: &Path, hash_hex: &str) -> Result<Option<FileMapL1>, StoreError> {
-    let path = blobs_dir.join(format!("{hash_hex}.fm.msgpack"));
+    let path = locate_blob(blobs_dir, hash_hex, FM_SUFFIX);
     let Some(bytes) = read_if_exists(&path)? else {
         return Ok(None);
     };
@@ -92,7 +96,7 @@ pub fn read_l1_blob_in(blobs_dir: &Path, hash_hex: &str) -> Result<Option<FileMa
 /// Read one file's L2 calls straight out of the global blob directory — the [`Store`]-free twin of
 /// [`read_l1_blob_in`]. `Ok(None)` when the blob is absent or carries no L2 tier.
 pub fn read_l2_blob_in(blobs_dir: &Path, hash_hex: &str) -> Result<Option<FileMapL2>, StoreError> {
-    let path = blobs_dir.join(format!("{hash_hex}.fm.msgpack"));
+    let path = locate_blob(blobs_dir, hash_hex, FM_SUFFIX);
     let Some(bytes) = read_if_exists(&path)? else {
         return Ok(None);
     };
@@ -468,11 +472,13 @@ pub(crate) fn write_bytes_atomic(path: PathBuf, bytes: &[u8]) -> Result<(), Stor
 
     let tmp = TMP_SUFFIX.with(|suffix| path.with_extension(format!("msgpack.{suffix}")));
     {
-        let mut f = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&tmp)
+        let open = || OpenOptions::new().create(true).write(true).truncate(true).open(&tmp);
+        let mut f = open()
+            .or_else(|error| match (error.kind(), tmp.parent()) {
+                // The blob's bucket directory is created by its first writer.
+                (std::io::ErrorKind::NotFound, Some(bucket)) => std::fs::create_dir_all(bucket).and_then(|()| open()),
+                _ => Err(error),
+            })
             .map_err(|source| StoreError::Io {
                 path: tmp.clone(),
                 source,
@@ -538,7 +544,7 @@ impl Store {
     /// `[l1_len: u32 LE][l1 msgpack][l2 msgpack | empty]`. Skips the encode round-trip when
     /// the caller starts from a `FileEntry::hash_hex`.
     pub fn blob_path_fm_hex(&self, hash_hex: &str) -> PathBuf {
-        self.blobs_dir.join(format!("{hash_hex}.fm.msgpack"))
+        locate_blob(&self.blobs_dir, hash_hex, FM_SUFFIX)
     }
 
     /// Whether the combined-filemap blob for `hash_hex` decodes as a current one. Reads and decodes
@@ -562,7 +568,7 @@ impl Store {
 
     #[cfg(feature = "documents")]
     pub fn blob_path_doc_hex(&self, hash_hex: &str) -> PathBuf {
-        self.blobs_dir.join(format!("{hash_hex}.doc.msgpack"))
+        locate_blob(&self.blobs_dir, hash_hex, ".doc.msgpack")
     }
 
     /// Read the L1 outline from the combined-filemap blob. Deserializes only the L1 slice of
@@ -677,7 +683,7 @@ impl Store {
     /// facts (intra-file resolved edges + import/export list). A sibling of the `.fm`/`.doc`
     /// blobs, content-addressed by source hash and stored as compressed single-map msgpack.
     pub fn blob_path_rref_hex(&self, hash_hex: &str) -> PathBuf {
-        self.blobs_dir.join(format!("{hash_hex}.rref.msgpack"))
+        locate_blob(&self.blobs_dir, hash_hex, ".rref.msgpack")
     }
 
     /// Write a file's resolution facts. Always overwrites: the resolve pass writes only after a
@@ -718,7 +724,7 @@ impl Store {
     /// state remains in the plain envelope header for the unchanged-file fast path.
     #[cfg(feature = "code-search")]
     pub fn blob_path_chunk_hex(&self, hash_hex: &str) -> PathBuf {
-        self.blobs_dir.join(format!("{hash_hex}.chunk.msgpack"))
+        locate_blob(&self.blobs_dir, hash_hex, ".chunk.msgpack")
     }
 
     /// Write a file's code-chunk sidecar. Always overwrites: unlike the other content-addressed

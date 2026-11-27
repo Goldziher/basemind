@@ -54,7 +54,7 @@ pub(crate) fn flush_vector_lanes(
         flush_doc_batches_if_any(store, config, filters, doc_batches, doc_budget);
     });
     run_optional_lane(LANE_CODE_BATCHES, || {
-        flush_code_batches_if_any(store, config, filters, scope, code_batches);
+        flush_code_batches_if_any(store, config, filters, code_batches);
     });
     record_vector_store(store, filters);
     store.pending_vectors.persist(&store.view_dir)
@@ -73,10 +73,8 @@ pub(crate) fn flush_vector_lanes(
 fn owe_rows_that_may_be_lost(store: &mut Store, filters: &Filters) -> Result<(), crate::store::StoreError> {
     // A view an earlier build last scanned records no store, so only the verifying pass can
     // tell that its rows were lost.
-    let lance_dir = store.basemind_dir.join(crate::store::LANCE_DIR);
-    let lost = crate::store_pending::recorded_store(&store.view_dir).is_some_and(|recorded| {
-        filters.retrieval.vectors.store_id_at(&lance_dir).as_deref() != Some(recorded.as_str())
-    });
+    let lost = crate::store_pending::recorded_store(&store.view_dir)
+        .is_some_and(|recorded| !filters.retrieval.vectors.holds_store(store, &recorded));
     if !lost && !filters.vector_rows_unsure && !store.pending_vectors.unreadable() {
         return Ok(());
     }
@@ -208,7 +206,7 @@ fn requeue_pending_code(
 ) {
     use crate::store::StoreError;
 
-    if store.pending_vectors.code().is_empty() || !writes_code_vectors(store) {
+    if store.pending_vectors.code().is_empty() {
         return;
     }
     let cfg = &config.code_search;
@@ -328,20 +326,14 @@ pub(crate) fn flush_doc_removals_if_any(
 
 /// Push the buffered code-chunk batches into LanceDB. No-op without the `code-search` feature.
 #[cfg(feature = "code-search")]
-fn flush_code_batches_if_any(
-    store: &mut Store,
-    config: &Config,
-    filters: &Filters,
-    scope: &str,
-    batches: Vec<PendingCodeBatchOpt>,
-) {
-    if batches.is_empty() || !writes_code_vectors(store) {
+fn flush_code_batches_if_any(store: &mut Store, config: &Config, filters: &Filters, batches: Vec<PendingCodeBatchOpt>) {
+    if batches.is_empty() {
         return;
     }
     let _ = filters
         .retrieval
         .vectors
-        .write_code_rows(store, scope, batches, &config.documents.embedding_preset);
+        .write_code_rows(store, batches, &config.documents.embedding_preset);
 }
 
 #[cfg(not(feature = "code-search"))]
@@ -349,44 +341,20 @@ fn flush_code_batches_if_any(
     _store: &mut Store,
     _config: &Config,
     _filters: &Filters,
-    _scope: &str,
     _batches: Vec<PendingCodeBatchOpt>,
 ) {
 }
 
-/// Purge `code_chunks` rows for files removed since the last scan. No-op without `code-search`.
-/// Called after the batch flush so it reuses an already-open LanceStore.
+/// Purge `code_chunks` rows of the contents no view of the group holds any more, after files were
+/// removed since the last scan. No-op without `code-search`. Called after the batch flush so it
+/// reuses an already-open LanceStore.
 #[cfg(feature = "code-search")]
-pub(crate) fn flush_code_removals_if_any(
-    store: &mut Store,
-    config: &Config,
-    filters: &Filters,
-    scope: &str,
-    stale: &[String],
-) {
-    if !writes_code_vectors(store) {
-        return;
-    }
-    crate::scanner_code::delete_stale_code_chunks(store, config, filters.retrieval.vectors, scope, stale);
-}
-
-/// Whether this view's scan may write or delete `code_chunks` rows. The rows live in one store per
-/// workspace keyed by path, so a staged or revision view writing them would replace the working
-/// view's rows with other content (review M3); only the working view does.
-#[cfg(feature = "code-search")]
-fn writes_code_vectors(store: &Store) -> bool {
-    store.view == crate::store::VIEW_WORKING
+pub(crate) fn flush_code_removals_if_any(store: &mut Store, config: &Config, filters: &Filters, stale: &[String]) {
+    crate::scanner_code::delete_stale_code_chunks(store, config, filters.retrieval.vectors, stale);
 }
 
 #[cfg(not(feature = "code-search"))]
-pub(crate) fn flush_code_removals_if_any(
-    _store: &mut Store,
-    _config: &Config,
-    _filters: &Filters,
-    _scope: &str,
-    _stale: &[String],
-) {
-}
+pub(crate) fn flush_code_removals_if_any(_store: &mut Store, _config: &Config, _filters: &Filters, _stale: &[String]) {}
 
 /// Retire unreferenced postings and recompute BM25 stats after per-file commits, so the
 /// keyword lane's `N` / `avgdl` reflect this scan. Single-threaded; no-op without `code-search` or

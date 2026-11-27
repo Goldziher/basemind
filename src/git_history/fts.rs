@@ -10,6 +10,8 @@ use ahash::{AHashMap, AHashSet};
 
 use serde::{Deserialize, Serialize};
 
+use super::reach::Reach;
+use super::reader::HistoryAt;
 use super::{GitHistoryIndex, LocalDb, encoding, keys};
 use crate::git::CommitInfo;
 
@@ -45,7 +47,7 @@ impl FtsScope {
     }
 
     /// The field bytes this scope reads a term's postings from.
-    fn fields(self) -> &'static [u8] {
+    pub(super) fn fields(self) -> &'static [u8] {
         match self {
             FtsScope::Author => &[FIELD_AUTHOR],
             FtsScope::Message => &[FIELD_MESSAGE],
@@ -54,32 +56,86 @@ impl FtsScope {
     }
 }
 
+/// Longest alphanumeric run (in bytes) split into identifier parts. A longer run is a hash or a
+/// blob, whose letter/digit boundaries are noise rather than words.
+const IDENT_SPLIT_MAX_LEN: usize = 32;
+
+/// Shortest identifier part (in characters) worth indexing or querying on its own.
+const IDENT_PART_MIN_LEN: usize = 2;
+
 /// Split `text` into lowercased alphanumeric tokens, inserting each distinct token into `out`.
 /// Runs of non-alphanumeric characters are separators, so `fix(api): cache` → {`fix`, `api`,
-/// `cache`} and `jane@example.com` → {`jane`, `example`, `com`}. Tokens longer than
-/// `MAX_TERM_LEN` are dropped. `AHashSet` dedups within a field so a repeated word writes one
-/// posting edge per commit.
+/// `cache`} and `jane@example.com` → {`jane`, `example`, `com`}. A run that is an identifier
+/// (`BulkConfig`, `HTTPServer`, `sha256`) is indexed whole and as its parts, so `bulkconfig`,
+/// `bulk` and `config` all find it. Tokens longer than `MAX_TERM_LEN` are dropped. `AHashSet`
+/// dedups within a field so a repeated word writes one posting edge per commit.
 pub fn tokenize(text: &str, out: &mut AHashSet<String>) {
-    let mut current = String::new();
-    for ch in text.chars() {
-        if ch.is_alphanumeric() {
-            current.extend(ch.to_lowercase());
-        } else if !current.is_empty() {
-            flush_token(&mut current, out);
+    for run in alphanumeric_runs(text) {
+        let whole = run.to_lowercase();
+        if whole.len() > MAX_TERM_LEN {
+            continue;
         }
+        out.extend(identifier_parts(run));
+        out.insert(whole);
     }
-    flush_token(&mut current, out);
 }
 
-fn flush_token(current: &mut String, out: &mut AHashSet<String>) {
-    if current.is_empty() {
-        return;
+/// The terms a search `query` is matched on, in order, without repeats (a repeated term keeps its
+/// last place, so a query ending in a word it began with still matches that word as a prefix). Like [`tokenize`], except
+/// that an identifier is matched on its parts alone: `BulkConfig` finds both `bulk_config` and
+/// `BulkConfig`, where requiring the whole `bulkconfig` as well would miss the first. The order
+/// matters: the last term is the one matched as a prefix.
+pub fn query_terms(query: &str) -> Vec<String> {
+    let mut terms: Vec<String> = Vec::new();
+    for run in alphanumeric_runs(query) {
+        let mut parts = identifier_parts(run);
+        if parts.is_empty() {
+            parts.push(run.to_lowercase());
+        }
+        for term in parts {
+            if term.len() > MAX_TERM_LEN {
+                continue;
+            }
+            terms.retain(|known| *known != term);
+            terms.push(term);
+        }
     }
-    if current.len() <= MAX_TERM_LEN {
-        out.insert(std::mem::take(current));
-    } else {
-        current.clear();
+    terms
+}
+
+/// The maximal runs of alphanumeric characters of `text`, case as written.
+fn alphanumeric_runs(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|ch: char| !ch.is_alphanumeric())
+        .filter(|run| !run.is_empty())
+}
+
+/// The lowercased parts of an identifier `run`, cut where a lowercase letter meets an uppercase one
+/// (`bulkConfig`), at the end of an acronym (`HTTPServer` → `http`, `server`) and between letters
+/// and digits (`sha256`). Parts under [`IDENT_PART_MIN_LEN`] are dropped. Empty when `run` is one
+/// word, or too long to be an identifier.
+fn identifier_parts(run: &str) -> Vec<String> {
+    if run.len() > IDENT_SPLIT_MAX_LEN {
+        return Vec::new();
     }
+    let chars: Vec<char> = run.chars().collect();
+    let mut cuts = vec![0];
+    for at in 1..chars.len() {
+        let (prev, cur) = (chars[at - 1], chars[at]);
+        let acronym_end =
+            prev.is_uppercase() && cur.is_uppercase() && chars.get(at + 1).is_some_and(|c| c.is_lowercase());
+        if (prev.is_lowercase() && cur.is_uppercase()) || acronym_end || prev.is_alphabetic() != cur.is_alphabetic() {
+            cuts.push(at);
+        }
+    }
+    if cuts.len() < 2 {
+        return Vec::new();
+    }
+    cuts.push(chars.len());
+    cuts.windows(2)
+        .map(|span| &chars[span[0]..span[1]])
+        .filter(|part| part.len() >= IDENT_PART_MIN_LEN)
+        .map(|part| part.iter().flat_map(|ch| ch.to_lowercase()).collect())
+        .collect()
 }
 
 /// Tokenize one commit's searchable fields and push each `(field, term)` edge onto `postings`,
@@ -145,24 +201,33 @@ pub fn commit_matches(info: &CommitInfo, query: &str, scope: FtsScope) -> bool {
 }
 
 impl GitHistoryIndex {
-    /// Full-text search over indexed commits. Tokenizes `query` the same way the index was built,
-    /// then returns the commits (newest-first) that contain EVERY query term in the scoped field
-    /// set — after skipping `skip` and taking at most `take`. Result [`CommitInfo`]s carry the full
-    /// body (read from `gh_commit_text_by_ord`). An empty query, or one that tokenizes to nothing,
-    /// returns no results.
+    /// [`HistoryAt::search_commits`] at the most recently synced tip: empty when there is none.
+    pub fn search_commits(&self, query: &str, scope: FtsScope, skip: usize, take: usize) -> Vec<CommitInfo> {
+        self.latest()
+            .map_or_else(Vec::new, |view| view.search_commits(query, scope, skip, take))
+    }
+}
+
+impl HistoryAt<'_> {
+    /// Full-text search over the commits this head reaches. Tokenizes `query` the same way the index
+    /// was built, then returns the commits (newest-first) that contain EVERY query term in the scoped
+    /// field set — after skipping `skip` and taking at most `take`. Result [`CommitInfo`]s carry the
+    /// full body (read from `gh_commit_text_by_ord`). An empty query, or one that tokenizes to
+    /// nothing, returns no results.
     ///
     /// Note: this rebuilds the full term intersection on every call (offset pagination, no scan
     /// cap), so a page-K request is O(|matching set|), not O(skip + take). Fine for typical
     /// queries; a very common single token over a huge repo pays for the whole posting list per
     /// page. Acceptable for now — revisit with a lazy/most-selective-term iterator if it bites.
     pub fn search_commits(&self, query: &str, scope: FtsScope, skip: usize, take: usize) -> Vec<CommitInfo> {
-        self.local().search_commits(query, scope, skip, take)
+        let (db, reach) = self.parts();
+        db.search_commits(reach, query, scope, skip, take)
     }
 }
 
 impl LocalDb {
-    /// The local half of [`GitHistoryIndex::search_commits`].
-    fn search_commits(&self, query: &str, scope: FtsScope, skip: usize, take: usize) -> Vec<CommitInfo> {
+    /// The local half of [`HistoryAt::search_commits`].
+    fn search_commits(&self, reach: &Reach, query: &str, scope: FtsScope, skip: usize, take: usize) -> Vec<CommitInfo> {
         let mut query_terms: AHashSet<String> = AHashSet::new();
         tokenize(query, &mut query_terms);
         if query_terms.is_empty() || take == 0 {
@@ -188,7 +253,7 @@ impl LocalDb {
             return Vec::new();
         };
 
-        let mut ords: Vec<u32> = matching.into_iter().collect();
+        let mut ords: Vec<u32> = matching.into_iter().filter(|ord| reach.contains(*ord)).collect();
         ords.sort_unstable_by(|a, b| b.cmp(a));
 
         let mut cache = AHashMap::new();
@@ -205,7 +270,7 @@ impl LocalDb {
     }
 
     /// Union of a term's posting lists across the scope's fields, as an ordinal set.
-    fn ords_for_term(&self, term: &str, scope: FtsScope) -> AHashSet<u32> {
+    pub(super) fn ords_for_term(&self, term: &str, scope: FtsScope) -> AHashSet<u32> {
         let mut out = AHashSet::new();
         for &field in scope.fields() {
             if let Some(bytes) = self.term_posting_bytes(&keys::term_key(field, term.as_bytes())) {
@@ -248,6 +313,50 @@ mod tests {
         let blob = "x".repeat(MAX_TERM_LEN + 1);
         let text = format!("keep {blob} tail");
         assert_eq!(toks(&text), vec!["keep", "tail"]);
+    }
+
+    #[test]
+    fn tokenize_indexes_an_identifier_whole_and_by_parts() {
+        assert_eq!(
+            toks("BulkConfig HTTPServer sha256 snake_case"),
+            vec![
+                "256",
+                "bulk",
+                "bulkconfig",
+                "case",
+                "config",
+                "http",
+                "httpserver",
+                "server",
+                "sha",
+                "sha256",
+                "snake"
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_leaves_a_plain_word_and_a_long_run_whole() {
+        let hash = format!("a1{}", "b2".repeat(20));
+        assert_eq!(toks(&format!("Config {hash}")), vec![hash, "config".to_string()]);
+    }
+
+    #[test]
+    fn query_terms_match_an_identifier_on_its_parts() {
+        let cases: &[(&str, &[&str])] = &[
+            ("BulkConfig", &["bulk", "config"]),
+            ("bulkconfig", &["bulkconfig"]),
+            ("AMVP-165657", &["amvp", "165657"]),
+            ("amvp165657", &["amvp", "165657"]),
+            ("collectr bulk confg", &["collectr", "bulk", "confg"]),
+            ("fix fix", &["fix"]),
+            ("collec bulk collec", &["bulk", "collec"]),
+            ("v2", &["v2"]),
+            ("", &[]),
+        ];
+        for (query, expected) in cases {
+            assert_eq!(&query_terms(query), expected, "{query}");
+        }
     }
 
     #[test]

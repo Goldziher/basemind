@@ -40,12 +40,13 @@ pub fn memory_schema(dim: u16) -> SchemaRef {
 
 /// Build the schema for the per-chunk `code_chunks` table (semantic code search).
 ///
-/// Columns mirror the pointer fields `search_code` returns plus the chunk `text` and the
-/// embedding. Shares the single `meta.json` dim/model with the `documents` / `memory` tables.
+/// Rows are keyed by content, not by path or view: the table is the repository group's, so every
+/// worktree holding a file's bytes shares one set of rows, and a view reads only the contents its
+/// own file map names. Columns mirror the pointer fields `search_code` returns plus the chunk
+/// `text` and the embedding.
 ///
-/// - `scope`      UTF-8    repo identity
-/// - `path`       UTF-8    repo-relative source path
-/// - `chunk_id`   UTF-8    content-addressed `<hash>:<ordinal>`
+/// - `content_hash` UTF-8  hex hash of the source bytes: the key a view's live contents select by
+/// - `chunk_id`   UTF-8    content-addressed `<content_hash>:<ordinal>`
 /// - `symbol`     UTF-8    symbol name (empty for a module-level gap chunk)
 /// - `kind`       UTF-8    symbol kind (`function`, `method`, `module`, …)
 /// - `lang`       UTF-8    tree-sitter language pack name
@@ -58,8 +59,7 @@ pub fn memory_schema(dim: u16) -> SchemaRef {
 #[cfg(feature = "code-search")]
 pub fn code_chunks_schema(dim: u16) -> SchemaRef {
     Arc::new(Schema::new(vec![
-        Field::new("scope", DataType::Utf8, false),
-        Field::new("path", DataType::Utf8, false),
+        Field::new("content_hash", DataType::Utf8, false),
         Field::new("chunk_id", DataType::Utf8, false),
         Field::new("symbol", DataType::Utf8, false),
         Field::new("kind", DataType::Utf8, false),

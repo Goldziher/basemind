@@ -1700,7 +1700,7 @@ async fn await_settled(addr: &str, token: &str, repo: &Path) {
             json!({ "name": "x" }),
         )
         .await;
-        if response["result"]["structuredContent"].get("notice").is_none() {
+        if hosted_payload(&response).get("notice").is_none() {
             return;
         }
         assert!(Instant::now() < deadline, "the hosted stack never settled: {response}");
@@ -1728,7 +1728,7 @@ async fn await_symbol(comms_dir: &Path, repo: &Path, name: &str, bound: Duration
             json!({ "name": name }),
         )
         .await;
-        if response["result"]["structuredContent"]["results"]
+        if hosted_payload(&response)["results"]
             .as_array()
             .is_some_and(|rows| rows.len() == 1)
         {

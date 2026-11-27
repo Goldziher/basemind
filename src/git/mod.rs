@@ -16,6 +16,7 @@ mod git_form;
 mod remote;
 mod signature;
 mod status;
+mod status_cache;
 mod tracked;
 mod worktree;
 use commit::{build_commit_info, commit_files, commit_touches_path, decode_path};
@@ -77,6 +78,9 @@ pub struct Repo {
     /// [`Repo::is_shallow`] looks at it on every call: `git fetch --unshallow` deletes it while a
     /// daemon holds this `Repo`.
     shallow_file: PathBuf,
+    /// The working-tree status last computed, served until the index, `HEAD` or the watcher says
+    /// otherwise.
+    status_cache: status_cache::StatusCache,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -230,20 +234,17 @@ fn delta_base_cache_bytes() -> usize {
     crate::config::engine::with(|config| config.git.delta_cache_bytes)
 }
 
-/// Trust-mapped open options carrying basemind's resource bounds, applied to every repository we
-/// open. Only the caches are touched: discovery, trust and permissions keep gix's defaults, so this
-/// changes what a repository *costs*, never what it *resolves to*.
+/// Open options carrying basemind's resource bounds, applied to every repository we open at either
+/// trust level. Only the caches are touched: discovery, trust and permissions keep gix's defaults,
+/// so this changes what a repository *costs*, never what it *resolves to*.
 /// `extra` adds further CLI-precedence overrides (the end-of-line spellings of [`eol_config`]).
-fn bounded_open_options(extra: &[String]) -> gix::sec::trust::Mapping<gix::open::Options> {
-    let mut mapping = gix::sec::trust::Mapping::<gix::open::Options>::default();
+fn bounded_open_options(extra: &[String]) -> impl FnOnce(gix::open::Options, gix::sec::Trust) -> gix::open::Options {
     let mut overrides = vec![format!("core.deltaBaseCacheLimit={}", delta_base_cache_bytes())];
     overrides.extend_from_slice(extra);
     // ~keep CLI precedence, not API: an API override sits with the globals and a repository-local
     // ~keep `core.deltaBaseCacheLimit` would outrank it, which would let an untrusted checkout raise
     // ~keep the bound we set for our own protection.
-    mapping.full.modify(|o| o.cli_overrides(overrides.clone()));
-    mapping.reduced.modify(|o| o.cli_overrides(overrides));
-    mapping
+    move |options, _trust| options.cli_overrides(overrides)
 }
 
 fn discover_with(start: &Path, extra: &[String]) -> Result<gix::ThreadSafeRepository, GitError> {
@@ -282,6 +283,7 @@ impl Repo {
             workdir,
             origin: canonical(start),
             shallow_file,
+            status_cache: status_cache::StatusCache::default(),
         })
     }
 
@@ -559,21 +561,44 @@ impl Repo {
     /// Porcelain-style status: bucketed by stage vs working tree, including untracked files.
     /// An untracked directory is one entry or one per file, as `status.showUntrackedFiles` says.
     pub fn status_porcelain(&self) -> Result<WorkingTreeStatus, GitError> {
-        self.status_listing(None)
+        self.cached_status(status_cache::Listing::Porcelain, None)
     }
 
     /// [`status_porcelain`](Self::status_porcelain) with every untracked file listed on its own,
     /// whatever the configuration collapses: the form a status narrowed to a directory needs, since
     /// a collapsed entry for an ancestor says nothing about the paths under it.
     pub fn status_per_file(&self) -> Result<WorkingTreeStatus, GitError> {
-        self.status_listing(Some(gix::status::UntrackedFiles::Files))
+        self.cached_status(status_cache::Listing::PerFile, Some(gix::status::UntrackedFiles::Files))
     }
 
-    fn status_listing(&self, untracked: Option<gix::status::UntrackedFiles>) -> Result<WorkingTreeStatus, GitError> {
+    /// Forgets the cached working-tree statuses. The file watcher calls it for each batch of
+    /// edits, which the index and `HEAD` do not show until something stages or commits them.
+    pub fn invalidate_status(&self) {
+        self.status_cache.invalidate();
+    }
+
+    /// How many working-tree statuses were computed rather than served from the cache.
+    pub fn status_computations(&self) -> u64 {
+        self.status_cache.computations()
+    }
+
+    fn cached_status(
+        &self,
+        listing: status_cache::Listing,
+        untracked: Option<gix::status::UntrackedFiles>,
+    ) -> Result<WorkingTreeStatus, GitError> {
         let local = self.local();
+        self.status_cache
+            .get_or_compute(&local, listing, || Self::status_listing(&local, untracked))
+    }
+
+    fn status_listing(
+        local: &gix::Repository,
+        untracked: Option<gix::status::UntrackedFiles>,
+    ) -> Result<WorkingTreeStatus, GitError> {
         let mut out = WorkingTreeStatus::default();
 
-        let platform = status::platform(&local, "status")?;
+        let platform = status::platform(local, "status")?;
         let platform = match untracked {
             Some(untracked) => platform.untracked_files(untracked),
             None => platform,

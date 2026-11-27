@@ -125,8 +125,19 @@ fn human_output_writes_a_row_a_line() {
             .map(|line| {
                 line.split(' ')
                     .map(|word| {
-                        let hex = word.len() == 12 && word.bytes().all(|b| b.is_ascii_hexdigit());
-                        if hex { "<sha>" } else { word }
+                        let hex = matches!(word.len(), 8 | 12) && word.bytes().all(|b| b.is_ascii_hexdigit());
+                        let day = word.len() == 10
+                            && word
+                                .bytes()
+                                .enumerate()
+                                .all(|(i, b)| matches!(i, 4 | 7) == (b == b'-') && (b == b'-' || b.is_ascii_digit()));
+                        if hex {
+                            "<sha>"
+                        } else if day {
+                            "<date>"
+                        } else {
+                            word
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join(" ")
@@ -145,13 +156,24 @@ fn human_output_writes_a_row_a_line() {
     assert_eq!(
         lines(&["git", "log"]),
         [
-            "commits:",
-            "  <sha> init",
+            "",
+            "commits (1 items):",
+            "  sha           author  date        subject",
+            "  <sha>  t       <date>  init",
+        ],
+    );
+    assert_eq!(
+        lines(&["git", "log", "--files"]),
+        [
             "files:",
             "  <sha>",
             "    a.rs  added",
             "    b.rs  added",
             "    c.rs  added",
+            "",
+            "commits (1 items):",
+            "  sha           author  date        subject",
+            "  <sha>  t       <date>  init",
         ],
     );
     let blame = lines(&["git", "blame", "a.rs"]);

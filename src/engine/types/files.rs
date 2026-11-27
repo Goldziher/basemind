@@ -21,7 +21,7 @@ pub struct FindFilesToolParams {
     /// Language filter, e.g. `rust`, `markdown`.
     #[serde(default)]
     pub language: Option<String>,
-    /// Default 200.
+    /// Default 200, max 5000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.
@@ -33,9 +33,66 @@ pub struct FindFilesToolParams {
     /// Only code files of at least this many lines, largest first; `files` maps path to lines.
     #[serde(default)]
     pub min_lines: Option<u32>,
-    /// Files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.
+    /// Changed since a rev (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.
     #[serde(default)]
     pub changed: Option<String>,
+    /// `true`: indexed files only; `false`: list-only ones (lockfiles, archives); `any` (default): both.
+    #[serde(default)]
+    pub indexed: Option<IndexedFilter>,
+}
+
+/// The `indexed` argument of `find_files`: which of the two groups of files to list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum IndexedFilter {
+    /// `true`: files whose contents are indexed. `false`: list-only files.
+    Flag(bool),
+    /// `"any"`: both.
+    Word(IndexedWord),
+}
+
+/// The one word `indexed` takes besides a boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IndexedWord {
+    Any,
+}
+
+impl schemars::JsonSchema for IndexedFilter {
+    /// Inlined: a `$ref`/`anyOf` at a property type is outside the `input_schema` subset hosts accept.
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "IndexedFilter".into()
+    }
+
+    /// A flat scalar: `true`, `false` or the string `"any"`.
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": ["boolean", "string"],
+            "enum": [true, false, "any"]
+        })
+    }
+}
+
+impl IndexedFilter {
+    /// Whether indexed files are listed.
+    pub(crate) fn lists_indexed(filter: Option<Self>) -> bool {
+        !matches!(filter, Some(Self::Flag(false)))
+    }
+
+    /// Whether list-only files are listed.
+    pub(crate) fn lists_listed(filter: Option<Self>) -> bool {
+        !matches!(filter, Some(Self::Flag(true)))
+    }
+
+    /// Whether git-tracked files that are neither indexed nor list-only are listed: only when no
+    /// group is selected, since they belong to neither.
+    pub(crate) fn lists_tracked_only(filter: Option<Self>) -> bool {
+        !matches!(filter, Some(Self::Flag(_)))
+    }
 }
 
 /// `find_files` without a `query`: the listing's own arguments.
@@ -54,6 +111,8 @@ pub(crate) struct ListFilesParams {
     /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
     /// the in-RAM index snapshot and invalidate on rescan.
     pub cursor: Option<Cursor>,
+    /// Which of the indexed and list-only files to list.
+    pub indexed: Option<IndexedFilter>,
 }
 
 /// `find_files` with a `query`: the fuzzy search's own arguments.
@@ -76,6 +135,8 @@ pub(crate) struct FindFilesParams {
     /// the in-RAM index snapshot (and the score ordering computed for `query`); a rescan
     /// invalidates them same as `list_files`.
     pub cursor: Option<Cursor>,
+    /// Which of the indexed and list-only files to search.
+    pub indexed: Option<IndexedFilter>,
 }
 
 /// Response of `find_files`: a fuzzy search ranked best first, or a listing in path order.
@@ -131,6 +192,9 @@ impl Serialize for FileList {
                 match file {
                     FileHit::Sized(sized) => map.serialize_entry(&sized.path.to_str_lossy(), &sized.lines)?,
                     FileHit::Path(path) => map.serialize_entry(&path.to_str_lossy(), &serde_json::Value::Null)?,
+                    FileHit::Listed(listed) => {
+                        map.serialize_entry(&listed.path.to_str_lossy(), &serde_json::Value::Null)?
+                    }
                 }
             }
             map.end()
@@ -150,6 +214,28 @@ impl Serialize for FileList {
 pub(crate) enum FileHit {
     Path(RelPath),
     Sized(SizedFile),
+    Listed(ListedFile),
+}
+
+/// A list-only file in a `find_files` page: known to exist, contents never read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub(crate) struct ListedFile {
+    pub path: RelPath,
+    /// Always `false`: the file is listed, not indexed.
+    pub indexed: bool,
+    pub kind: crate::config::list_only::ListKind,
+    pub bytes: u64,
+}
+
+impl ListedFile {
+    pub(crate) fn new(path: RelPath, entry: &crate::config::list_only::ListedEntry) -> Self {
+        Self {
+            path,
+            indexed: false,
+            kind: entry.kind,
+            bytes: entry.size_bytes,
+        }
+    }
 }
 
 /// A code file and its size as indexed: a `find_files` row under `min_lines`, and a row of

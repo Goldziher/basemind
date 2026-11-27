@@ -44,7 +44,6 @@ fn more_waiting_reads_than_blocking_threads_still_let_a_post_through() {
         ));
         let server = crate::mcp::BasemindServer::from_shared(
             shared,
-            "reader".to_string(),
             Arc::new(crate::mcp::admission::HeavyAdmission::default()),
             Some(context),
         );

@@ -111,6 +111,18 @@ const META_IMPORT_PROBE_VER: &[u8] = b"import_probe_ver";
 /// imports of a submodule.
 const IMPORT_PROBE_VER: u8 = 6;
 
+/// Which Python resolver recorded the probe rows: `1` when ty's module resolver is compiled in
+/// (feature `code-intel-python`), `0` for the path arithmetic alone. The rows are only exact for the
+/// resolver that wrote them, so the stamp carries it and a build with the other resolver re-stitches
+/// every importer once. A stamp written before this byte existed has one byte and reads as `0`.
+const IMPORT_RESOLVER_PROFILE: u8 = if cfg!(feature = "code-intel-python") { 1 } else { 0 };
+
+/// Whether the `meta` row `stamp` says the probe rows were written by this layout revision and
+/// the resolver profile `profile`.
+fn import_probe_stamp_matches(stamp: &[u8], profile: u8) -> bool {
+    stamp.first() == Some(&IMPORT_PROBE_VER) && stamp.get(1).copied().unwrap_or(0) == profile
+}
+
 /// `meta` rows carrying the corpus-global BM25 stats — recomputed at the end of each scan by
 /// [`IndexDb::recompute_bm25_stats`] and read at query time. `N` = number of indexed code chunks;
 /// `total_len` = sum of their token lengths (`avgdl = total_len / N`).
@@ -245,12 +257,12 @@ fn memtable_bytes_for(name: &str) -> u64 {
 const INDEX_CACHE_FLOOR_BYTES: u64 = 32 * 1_024 * 1_024;
 
 /// Ceiling for the Fjall block cache, in bytes, **per opened `IndexDb`**. The daemon's
-/// `WorkspacePool` (see `src/comms/daemon.rs`) holds up to 16 workspaces at once under LRU
-/// eviction, each owning one `IndexDb`. This ceiling is the load-bearing memory bound: in the
-/// pathological worst case where all 16 pooled slots simultaneously hold a huge, cache-
-/// saturating monorepo index (this repo's own `armis` hardening fixture: 82 k files, a 3.1 GB
-/// on-disk index), total block-cache memory across the whole pool is bounded at
-/// `16 * INDEX_CACHE_CEILING_BYTES` = 4 GiB. That is a deliberately conservative, explicit bound
+/// `WorkspacePool` (see `src/comms/workspace_pool.rs`) keeps `DEFAULT_HOT_CAP` (4) workspaces hot at
+/// once under LRU eviction, each owning one `IndexDb`. This ceiling is the load-bearing memory
+/// bound: in the pathological worst case where all the hot slots simultaneously hold a huge, cache-
+/// saturating monorepo index (this repo's own hardening fixture: 82 k files, a 3.1 GB
+/// on-disk index), total block-cache memory across the hot pool is bounded at
+/// `DEFAULT_HOT_CAP * INDEX_CACHE_CEILING_BYTES` = 1 GiB. That is a deliberately conservative, explicit bound
 /// (not unbounded, unlike the previous zero-configuration state) — the common case is far below
 /// it, because [`index_cache_bytes`] scales the cache down for small/medium indexes instead of
 /// defaulting every pooled slot to the ceiling.
@@ -500,7 +512,6 @@ pub struct IndexDb {
     /// moved on by `ROW_VERSION` with no schema bump: the scan's sweep drops stale rows and
     /// backfills the current ones.
     pub(in crate::index) grep_bloom: scoped::Scoped,
-    #[allow(dead_code)]
     pub(crate) embeddings: Keyspace,
     /// First fatal commit error (disk full, poisoned handle) seen through any clone of this handle;
     /// shared so the writers record it where it happens and the scan polls one place.
@@ -907,7 +918,8 @@ impl IndexDb {
     /// the stamp before it rewrites any importer and sets it only after the stitch committed.
     pub fn set_import_probes_complete(&self, complete: bool) -> Result<(), IndexError> {
         if complete {
-            self.meta.insert(META_IMPORT_PROBE_VER, [IMPORT_PROBE_VER])?;
+            self.meta
+                .insert(META_IMPORT_PROBE_VER, [IMPORT_PROBE_VER, IMPORT_RESOLVER_PROFILE])?;
         } else {
             self.meta.remove(META_IMPORT_PROBE_VER)?;
         }

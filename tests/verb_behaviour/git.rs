@@ -13,7 +13,7 @@ use tempfile::TempDir;
 
 #[cfg(unix)]
 use super::call;
-use super::{Client, call_err, call_raw, json_of, serve_synced, text_of};
+use super::{Client, call_err, call_raw, call_until, json_of, serve_synced, text_of};
 
 const LIB_V1: &str = "pub fn alpha() -> u32 {\n    1\n}\n\npub fn beta() -> u32 {\n    2\n}\n";
 const LIB_V2: &str = "pub fn alpha() -> u32 {\n    10\n}\n\npub fn beta() -> u32 {\n    2\n}\n";
@@ -108,19 +108,23 @@ async fn git_log_answers_byte_for_byte() {
     let cases = [
         (
             json!({}),
-            r#"{"commits":["c48e32cbf7dd add gamma","0c2fe19c38a2 tune alpha","3f38556b6d45 init"],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"},"0c2fe19c38a2":{"src/lib.rs":"modified"},"3f38556b6d45":{"notes/readme.txt":"added","src/lib.rs":"added"}}}"#,
+            r#"{"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}]}"#,
+        ),
+        (
+            json!({ "files": true }),
+            r#"{"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"},"0c2fe19c38a2":{"src/lib.rs":"modified"},"3f38556b6d45":{"notes/readme.txt":"added","src/lib.rs":"added"}}}"#,
         ),
         (
             json!({ "path": "src/lib.rs" }),
-            r#"{"commits":["0c2fe19c38a2 tune alpha","3f38556b6d45 init"]}"#,
+            r#"{"commits":[{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}]}"#,
         ),
         (
             json!({ "query": "alpha" }),
-            r#"{"commits":["0c2fe19c38a2 tune alpha"]}"#,
+            r#"{"commits":[{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"}]}"#,
         ),
         (
             json!({ "author": "t", "limit": 1 }),
-            r#"{"commits":["c48e32cbf7dd t: add gamma"],"next_cursor":"03020ab9.kgHOxI4yyw"}"#,
+            r#"{"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"}],"next_cursor":"03020ab9.kgHOxI4yyw"}"#,
         ),
         (
             json!({ "rev": "HEAD~1" }),
@@ -128,11 +132,15 @@ async fn git_log_answers_byte_for_byte() {
         ),
         (
             json!({ "path": "src/" }),
-            r#"{"window_inspected":3,"commits":["c48e32cbf7dd add gamma","0c2fe19c38a2 tune alpha","3f38556b6d45 init"],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"},"0c2fe19c38a2":{"src/lib.rs":"modified"},"3f38556b6d45":{"notes/readme.txt":"added","src/lib.rs":"added"}}}"#,
+            r#"{"window_inspected":3,"commits_reached":3,"total_commits":3,"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}]}"#,
+        ),
+        (
+            json!({ "path": "src/", "files": true }),
+            r#"{"window_inspected":3,"commits_reached":3,"total_commits":3,"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"},"0c2fe19c38a2":{"src/lib.rs":"modified"},"3f38556b6d45":{"notes/readme.txt":"added","src/lib.rs":"added"}}}"#,
         ),
         (
             json!({ "path": "src" }),
-            r#"{"window_inspected":3,"commits":["c48e32cbf7dd add gamma","0c2fe19c38a2 tune alpha","3f38556b6d45 init"],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"},"0c2fe19c38a2":{"src/lib.rs":"modified"},"3f38556b6d45":{"notes/readme.txt":"added","src/lib.rs":"added"}}}"#,
+            r#"{"window_inspected":3,"commits_reached":3,"total_commits":3,"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}]}"#,
         ),
         (
             json!({ "path": "src/lib.rs", "symbol": "alpha" }),
@@ -140,7 +148,7 @@ async fn git_log_answers_byte_for_byte() {
         ),
         (
             json!({ "limit": 1 }),
-            r#"{"commits":["c48e32cbf7dd add gamma"],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"}},"next_cursor":"fc82f23e.kgHOxI4yyg"}"#,
+            r#"{"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"}],"next_cursor":"fc82f23e.kgHOxI4yyg"}"#,
         ),
     ];
     let mut rows = Vec::new();
@@ -200,6 +208,7 @@ async fn git_diff_answers_byte_for_byte() {
 
     std::fs::write(dir.path().join("src/lib.rs"), LIB_V2.replace("2\n}", "20\n}")).unwrap();
     std::fs::write(dir.path().join("notes/new.txt"), "new\n").unwrap();
+    call_until(&client, "git_diff", json!({}), |status| status["is_clean"] == false).await;
     let cases = [
         (
             json!({}),
@@ -268,8 +277,8 @@ async fn every_git_refusal_keeps_its_exact_words() {
         ),
         (
             "git_log",
-            json!({ "query": "x", "path": "src/lib.rs" }),
-            r#"`git_log`: `query` / `author` search the whole history and do not combine with `path`; accepted shapes: {} (recent commits), {path} (commits touching a file, or a directory when it ends with `/`), {query} and/or {author} (search messages / authors), {path, symbol} (when a symbol's body changed; add `line` when several there share the name), {rev} (one commit in full); `limit`, `cursor` and `max_tokens` page every list"#,
+            json!({ "since": "2025-01-01" }),
+            r#"`git_log`: `since` and `until` bound a `query` / `author` search; accepted shapes: {} (recent commits), {path} (commits touching a file, or a directory when it ends with `/`), {query} and/or {author} (search messages / authors), {path, symbol} (when a symbol's body changed; add `line` when several there share the name), {rev} (one commit in full); `limit`, `cursor` and `max_tokens` page every list"#,
         ),
         (
             "git_log",
@@ -501,11 +510,11 @@ fn git_churn_and_by_path_print_byte_for_byte() {
         ),
         (
             &["by-path", "^src/"],
-            r#"{"window_inspected":3,"commits":["c48e32cbf7dd add gamma","0c2fe19c38a2 tune alpha","3f38556b6d45 init"],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"},"0c2fe19c38a2":{"src/lib.rs":"modified"},"3f38556b6d45":{"notes/readme.txt":"added","src/lib.rs":"added"}}}"#,
+            r#"{"window_inspected":3,"commits_reached":3,"commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"},{"sha":"0c2fe19c38a2","author":"t","date":"2024-01-02","subject":"tune alpha"},{"sha":"3f38556b6d45","author":"t","date":"2024-01-01","subject":"init"}]}"#,
         ),
         (
             &["by-path", "^src/", "--window", "1"],
-            r#"{"window_inspected":1,"truncated":true,"truncated_reason":"span_limit","commits":["c48e32cbf7dd add gamma"],"files":{"c48e32cbf7dd":{"src/gamma.rs":"added"}},"next_cursor":"ks-AAAAAAAAAAc7EjjLL"}"#,
+            r#"{"window_inspected":1,"commits_reached":1,"truncated":true,"truncated_reason":"span_limit","commits":[{"sha":"c48e32cbf7dd","author":"t","date":"2024-01-03","subject":"add gamma"}],"next_cursor":"ks-AAAAAAAAAAc7EjjLL"}"#,
         ),
         (
             &["by-path", "^src/", "--limit", "0"],

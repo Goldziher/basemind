@@ -305,6 +305,33 @@ def idle_busy(rng: random.Random) -> list[dict[str, Any]]:
     return recs
 
 
+def idle_swing(rng: random.Random) -> list[dict[str, Any]]:
+    """The daemon's memory jumps by 3 GiB every other sample while idle, as a retained rescan peak would."""
+    recs = healthy(rng)
+    flip = False
+    for r in recs:
+        if r.get("kind") == "proc" and r["pid"] == DAEMON and r["phase"] == "idle":
+            flip = not flip
+            if flip:
+                r["rss"] += 3072 * MIB
+                if r.get("footprint") is not None:
+                    r["footprint"] += 3072 * MIB
+    return recs
+
+
+def idle_drop(rng: random.Random) -> list[dict[str, Any]]:
+    """The allocator returns 3 GiB once, a minute into the idle window, and memory then stays flat."""
+    recs = healthy(rng)
+    idle_t = sorted({r["t"] for r in recs if r.get("kind") == "proc" and r["phase"] == "idle"})
+    cut = idle_t[len(idle_t) // 2]
+    for r in recs:
+        if r.get("kind") == "proc" and r["pid"] == DAEMON and r["phase"] == "idle" and r["t"] < cut:
+            r["rss"] += 3072 * MIB
+            if r.get("footprint") is not None:
+                r["footprint"] += 3072 * MIB
+    return recs
+
+
 def fd_leak(rng: random.Random) -> list[dict[str, Any]]:
     """One descriptor per 20-second cycle is never closed."""
     recs = healthy(rng)
@@ -400,6 +427,8 @@ CASES: list[tuple[str, Callable[[random.Random], list[dict[str, Any]]], int, set
     ("comms-climb", comms_climb, 1, {"R8"}),
     ("comms-journal-overflow", comms_journal_overflow, 1, {"R8"}),
     ("idle-busy", idle_busy, 1, {"R6"}),
+    ("idle-swing", idle_swing, 1, {"R6"}),
+    ("idle-drop", idle_drop, 0, set()),
     ("fd-leak", fd_leak, 1, {"R3"}),
     ("table-growth", table_growth, 0, set()),
     ("table-fd-leak", table_fd_leak, 1, {"R3"}),

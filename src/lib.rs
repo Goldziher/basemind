@@ -18,6 +18,7 @@ pub mod daemon_lock;
 pub mod data_root;
 pub mod deps_docs;
 pub mod disk_space;
+pub mod embed_progress;
 #[cfg(feature = "intelligence")]
 pub mod embeddings;
 pub mod engine;
@@ -83,6 +84,7 @@ pub mod source_text;
 pub mod store;
 pub mod store_blob;
 mod store_blob_codec;
+pub(crate) mod store_blob_layout;
 pub mod store_cache_admin;
 pub mod store_doc_tombstone;
 pub mod store_gc;
@@ -96,6 +98,7 @@ pub mod store_gc_workspace;
 mod store_group_live;
 mod store_group_sweep;
 mod store_hash_refs;
+mod store_key_order;
 pub mod store_layout;
 mod store_lock;
 pub mod store_pending;
@@ -164,6 +167,31 @@ pub mod testing {
             .env("GIT_COMMITTER_NAME", "t")
             .env("GIT_COMMITTER_EMAIL", "t@e.x");
         command
+    }
+
+    /// A repository at `<parent>/main` with one empty commit, and a linked worktree of it at
+    /// `<parent>/linked`: two worktrees of one repository group. Returns `(main, linked)`.
+    pub fn linked_worktrees(parent: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let git = |args: &[&str], cwd: &std::path::Path| {
+            let out = git_command()
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .unwrap_or_else(|error| panic!("run git {args:?}: {error}"));
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        let main = parent.join("main");
+        std::fs::create_dir(&main).unwrap_or_else(|error| panic!("create {}: {error}", main.display()));
+        git(&["init", "-q", "-b", "main"], &main);
+        git(&["commit", "-q", "--allow-empty", "-m", "init"], &main);
+        let linked = parent.join("linked");
+        let linked_arg = linked.to_string_lossy().into_owned();
+        git(&["worktree", "add", "-q", linked_arg.as_str(), "-b", "linked"], &main);
+        (main, linked)
     }
 
     /// The empty directory [`git_command`] points `HOME` at: created fresh for each test process,

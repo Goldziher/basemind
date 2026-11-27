@@ -1,8 +1,9 @@
 # Git history
 
 The git tools read history, blame and diffs without shelling out to `git`. History queries go
-through a git-history index built after a scan, so commits touching a path come back in tens of
-microseconds; before it is ready they walk git directly. They need the workspace to be a git
+through a git-history index built after a scan (a first build runs in the background, see
+`basemind manual indexing`), so commits touching a path come back in tens of microseconds; before
+it is ready they walk git directly. They need the workspace to be a git
 repository.
 
 | Question | MCP call | CLI |
@@ -26,7 +27,10 @@ repository.
   email) find a commit arbitrarily far back and combine with each other. `symbol` needs `path`.
 - A symbol's history and a directory's history (a `path` ending in `/`) read one window of commits
   per page: an empty page with `truncated_reason: "span_limit"` and a `next_cursor` is not the end.
-  Follow the cursor until it is absent.
+  Follow the cursor until it is absent. A directory page also reports `commits_reached`, how many
+  commits (newest first) it and the pages before it have gone through, and `total_commits`, the
+  commits in the history, when the git-history index serves it, so a caller can judge how far a
+  rarely touched directory has left to go.
 - `git_blame` locates a `symbol` in the file as it is at `rev` (default HEAD), so a symbol that
   exists only uncommitted is not found. `line` / `end_line` are 1-based and inclusive.
 - A file's history, and a symbol's, comes from the git-history index when it holds HEAD, and a path

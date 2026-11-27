@@ -132,8 +132,8 @@ fn lock_open(dir: &Path, wait: std::time::Duration) -> Result<Option<crate::stor
     }
 }
 
-/// Table-layout version of every LanceDB store (the memory vectors, the workspace vector store and
-/// the document retrieval store), recorded in `meta.json` beside the model and dimension.
+/// Table-layout version of every LanceDB store (the memory vectors, the code-chunk store and the
+/// document retrieval store), recorded in `meta.json` beside the model and dimension.
 ///
 /// Independent of the release minor (ADR-0037): a minor that changes no table leaves the stores,
 /// and the memory vectors in them, in place. Stale rows are kept out by the keys, not by a wipe: a
@@ -143,6 +143,64 @@ fn lock_open(dir: &Path, wait: std::time::Duration) -> Result<Option<crate::stor
 /// 1000 so every store a minor-numbered binary wrote (`schema_ver` = the minor) reads as older.
 /// 1001: `docs` gained the nullable `package` and `package_version` columns (ADR-0049).
 pub const VECTOR_STORE_VER: u32 = 1001;
+
+/// The most files a view may hold for its code search to name their contents to the store as a
+/// prefilter: a longer `IN` list is parsed on every query, so a larger view leaves the restriction
+/// to the hit resolution.
+#[cfg(feature = "code-search")]
+pub const CODE_LIVE_PREFILTER: usize = 2_000;
+
+/// The directory of the retrieval store for `model` at `dim`, under `parent`. The name ends in a
+/// hash of the model's own name, so two models whose readable slug collides never share, and wipe,
+/// one directory.
+pub fn store_dir(parent: &Path, model: &str, dim: u16) -> PathBuf {
+    let model = crate::embeddings::model_key(model);
+    let slug: String = model
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let hash = crate::hashing::hex(&crate::hashing::hash_bytes(model.as_bytes()));
+    parent.join(format!("{slug}-{dim}-{}", &hash[..8]))
+}
+
+/// The directory holding the code-chunk vector stores of `root`'s repository group, one per
+/// embedding model: `cache/groups/<group>/code-lance/`.
+pub fn code_stores_dir(root: &Path) -> PathBuf {
+    crate::store_layout::group_index_dir(root).join(crate::store_layout::GROUP_CODE_LANCE_DIR)
+}
+
+/// The code-chunk vector store of `root`'s repository group for `model` at `dim`. Shared by every
+/// worktree of the group: rows are keyed by content ([`CodeRow::content_hash`]), so worktrees
+/// holding the same bytes write one set of rows.
+pub fn code_store_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
+    store_dir(&code_stores_dir(root), model, dim)
+}
+
+/// Orders the dead-row sweep against row writes of one store directory, across every view of the
+/// group in this process. A scan names a content in its file map on disk before it writes the
+/// content's rows; a write holds the gate shared, and a sweep holds it exclusively from the read of
+/// the group's liveness to its last delete. So a row is either written before the sweep reads the
+/// file map that names it, or after the sweep is done. Other processes cannot write the store: a
+/// writer holds the group lock (ADR-0028) for as long as it holds the group's index.
+#[cfg(any(feature = "documents", feature = "code-search"))]
+pub(crate) type SweepGate = Arc<parking_lot::RwLock<()>>;
+
+/// The gate of the store at `dir`: one per directory for the life of the process, so a handle
+/// opened again after the directory was removed orders against the old one.
+#[cfg(any(feature = "documents", feature = "code-search"))]
+pub(crate) fn sweep_gate(dir: &Path) -> SweepGate {
+    static GATES: std::sync::OnceLock<std::sync::Mutex<ahash::AHashMap<PathBuf, SweepGate>>> =
+        std::sync::OnceLock::new();
+    let gates = GATES.get_or_init(Default::default);
+    let mut gates = gates.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(gates.entry(dir.to_path_buf()).or_default())
+}
 
 /// One row in the `memory` table. It carries the note's vector and tags, never its text: a row
 /// can outlive its note, and the text of a deleted note must not.
@@ -176,8 +234,9 @@ pub struct MemoryHit {
 #[cfg(feature = "code-search")]
 #[derive(Debug, Clone)]
 pub struct CodeRow {
-    pub scope: String,
-    pub path: String,
+    /// Hex hash of the source bytes the chunk was cut from: the key the row is replaced, selected
+    /// and swept by.
+    pub content_hash: String,
     pub chunk_id: String,
     pub symbol: String,
     pub kind: String,
@@ -194,7 +253,6 @@ pub struct CodeRow {
 #[cfg(feature = "code-search")]
 #[derive(Debug, Clone)]
 pub struct CodeChunkHit {
-    pub path: String,
     pub chunk_id: String,
     pub symbol: String,
     pub kind: String,
@@ -442,123 +500,77 @@ impl LanceStore {
         &self.inner.dir
     }
 
-    /// Replace all `code_chunks` rows for a `(scope, path)` pair and insert the supplied rows.
-    /// Delete-then-insert, so a re-scan never leaves stale
-    /// chunks behind.
+    /// Delete every `code_chunks` row of the contents `hashes`, batching them into `IN (...)`
+    /// predicates so a purge of N contents is a handful of deletes rather than N table versions.
+    /// Idempotent: a content with no rows is a no-op.
     #[cfg(feature = "code-search")]
-    pub fn replace_code_chunks(&self, scope: &str, path: &str, rows: Vec<CodeRow>) -> Result<()> {
-        self.inner.rt().block_on(async {
-            let table = self
-                .inner
-                .connection
-                .open_table(schema::CODE_CHUNKS_TABLE)
-                .execute()
-                .await
-                .with_context(|| format!("open {} table", schema::CODE_CHUNKS_TABLE))?;
-            let predicate = format!(
-                "scope = '{}' AND path = '{}'",
-                escape_sql_literal(scope),
-                escape_sql_literal(path)
-            );
-            table
-                .delete(&predicate)
-                .await
-                .with_context(|| format!("delete existing code chunks for {scope}/{path}"))?;
-            self.after_commit(&table, schema::CODE_CHUNKS_TABLE).await;
-            if rows.is_empty() {
-                return Ok(());
-            }
-            let batch = build_code_chunks_batch(self.inner.dim, &rows)?;
-            table
-                .add(batch)
-                .execute()
-                .await
-                .with_context(|| format!("insert {} code_chunks rows", rows.len()))?;
-            self.after_commit(&table, schema::CODE_CHUNKS_TABLE).await;
-            anyhow::Ok(())
-        })
-    }
-
-    /// Delete every `code_chunks` row for a `(scope, path)` pair without inserting replacements.
-    /// The scanner's stale-file pass calls this when a file is removed, so a deleted path leaves no
-    /// dangling `search_code` hits. Idempotent — deleting a path with no rows is a no-op.
-    #[cfg(feature = "code-search")]
-    pub fn delete_code_chunks(&self, scope: &str, path: &str) -> Result<()> {
-        self.inner.rt().block_on(async {
-            let table = self
-                .inner
-                .connection
-                .open_table(schema::CODE_CHUNKS_TABLE)
-                .execute()
-                .await
-                .with_context(|| format!("open {} table", schema::CODE_CHUNKS_TABLE))?;
-            let predicate = format!(
-                "scope = '{}' AND path = '{}'",
-                escape_sql_literal(scope),
-                escape_sql_literal(path)
-            );
-            table
-                .delete(&predicate)
-                .await
-                .with_context(|| format!("delete code chunks for {scope}/{path}"))?;
-            anyhow::Ok(())
-        })
-    }
-
-    /// Delete every `code_chunks` row of `paths` in `scope`, batching the paths into `IN (...)`
-    /// predicates so a purge of N files is a handful of deletes rather than N table versions.
-    #[cfg(feature = "code-search")]
-    pub fn delete_code_chunks_for_paths(&self, scope: &str, paths: &[String]) -> Result<()> {
-        self.delete_paths_in(schema::CODE_CHUNKS_TABLE, "path", scope, paths)
-    }
-
-    #[cfg(feature = "code-search")]
-    pub(super) fn delete_paths_in(&self, table_name: &str, key_col: &str, scope: &str, paths: &[String]) -> Result<()> {
-        // Each batch is one delete transaction (a new table version plus a scan of `path`), so a
-        // large purge is dominated by the batch COUNT; 2000 literals keep the predicate small.
+    pub fn delete_code_chunks_for_content(&self, hashes: &[String]) -> Result<()> {
+        // Each batch is one delete transaction (a new table version plus a scan of `content_hash`),
+        // so a large purge is dominated by the batch COUNT; 2000 literals keep the predicate small.
         const BATCH: usize = 2_000;
-        if paths.is_empty() {
+        if hashes.is_empty() {
             return Ok(());
         }
         self.inner.rt().block_on(async {
             let table = self
                 .inner
                 .connection
-                .open_table(table_name)
+                .open_table(schema::CODE_CHUNKS_TABLE)
                 .execute()
                 .await
-                .with_context(|| format!("open {table_name} table"))?;
-            // Nothing stored for this scope (the common case on the first scan after an upgrade, or
-            // with embeddings off): skip the N/200 deletes, each of which scans the table and may
-            // commit a table version.
-            let in_scope = table
-                .count_rows(Some(format!("scope = '{}'", escape_sql_literal(scope))))
-                .await
-                .with_context(|| format!("count {table_name} rows in {scope}"))?;
-            if in_scope == 0 {
-                return anyhow::Ok(());
-            }
-            for batch in paths.chunks(BATCH) {
-                let list = batch
-                    .iter()
-                    .map(|p| format!("'{}'", escape_sql_literal(p)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let predicate = format!("scope = '{}' AND {key_col} IN ({list})", escape_sql_literal(scope));
+                .with_context(|| format!("open {} table", schema::CODE_CHUNKS_TABLE))?;
+            for batch in hashes.chunks(BATCH) {
                 table
-                    .delete(&predicate)
+                    .delete(&content_in(batch))
                     .await
-                    .with_context(|| format!("delete {} paths from {table_name} in {scope}", batch.len()))?;
-                self.after_commit(&table, table_name).await;
+                    .with_context(|| format!("delete {} contents from {}", batch.len(), schema::CODE_CHUNKS_TABLE))?;
+                self.after_commit(&table, schema::CODE_CHUNKS_TABLE).await;
             }
             anyhow::Ok(())
         })
     }
 
-    /// KNN over the `code_chunks` table for one scope. Returns pointer hits (path + span +
-    /// symbol + distance), best-first.
+    /// The distinct contents the `code_chunks` table holds rows for.
     #[cfg(feature = "code-search")]
-    pub fn search_code_chunks(&self, scope: &str, query: Vec<f32>, limit: usize) -> Result<Vec<CodeChunkHit>> {
+    pub fn code_content_hashes(&self) -> Result<ahash::AHashSet<String>> {
+        self.inner.rt().block_on(async {
+            let table = self
+                .inner
+                .connection
+                .open_table(schema::CODE_CHUNKS_TABLE)
+                .execute()
+                .await
+                .with_context(|| format!("open {} table", schema::CODE_CHUNKS_TABLE))?;
+            let mut stream = table
+                .query()
+                .select(lancedb::query::Select::columns(&["content_hash"]))
+                .execute()
+                .await
+                .context("list code_chunks contents")?;
+            let mut hashes = ahash::AHashSet::new();
+            while let Some(batch) = stream.try_next().await.context("read code_chunks contents")? {
+                let column = batch
+                    .column_by_name("content_hash")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .ok_or_else(|| anyhow!("`content_hash` column missing"))?;
+                hashes.extend((0..column.len()).map(|i| column.value(i).to_string()));
+            }
+            anyhow::Ok(hashes)
+        })
+    }
+
+    /// KNN over the `code_chunks` table. `Some(live)` restricts it to those contents, so another
+    /// worktree's rows cannot crowd out the view's own; an empty list names nothing and ranks
+    /// nothing. `None` ranks every row and leaves the restriction to the caller, which drops a hit
+    /// no live file holds (a view of more than [`CODE_LIVE_PREFILTER`] files). Returns pointer hits
+    /// (chunk id + span + symbol + distance), best-first.
+    #[cfg(feature = "code-search")]
+    pub fn search_code_chunks(
+        &self,
+        query: Vec<f32>,
+        limit: usize,
+        live: Option<&[String]>,
+    ) -> Result<Vec<CodeChunkHit>> {
         if query.len() != usize::from(self.inner.dim) {
             return Err(anyhow!(
                 "query vector dim {} does not match store dim {}",
@@ -566,6 +578,9 @@ impl LanceStore {
                 self.inner.dim
             ));
         }
+        if live.is_some_and(<[String]>::is_empty) {
+            return Ok(Vec::new());
+        }
         self.inner.rt().block_on(async {
             let table = self
                 .inner
@@ -574,11 +589,13 @@ impl LanceStore {
                 .execute()
                 .await
                 .with_context(|| format!("open {} table", schema::CODE_CHUNKS_TABLE))?;
-            let q = table
+            let mut q = table
                 .vector_search(query)
                 .context("build code chunk vector search")?
-                .limit(limit)
-                .only_if(format!("scope = '{}'", escape_sql_literal(scope)));
+                .limit(limit);
+            if let Some(live) = live {
+                q = q.only_if(content_in(live));
+            }
             let mut stream = q.execute().await.context("run code chunk search")?;
             let mut hits = Vec::new();
             while let Some(batch) = stream.try_next().await.context("stream next batch")? {
@@ -687,8 +704,7 @@ async fn ensure_table(
 
 #[cfg(feature = "code-search")]
 fn build_code_chunks_batch(dim: u16, rows: &[CodeRow]) -> Result<RecordBatch> {
-    let mut scope = StringBuilder::new();
-    let mut path = StringBuilder::new();
+    let mut content_hash = StringBuilder::new();
     let mut chunk_id = StringBuilder::new();
     let mut symbol = StringBuilder::new();
     let mut kind = StringBuilder::new();
@@ -708,8 +724,7 @@ fn build_code_chunks_batch(dim: u16, rows: &[CodeRow]) -> Result<RecordBatch> {
                 dim
             ));
         }
-        scope.append_value(&r.scope);
-        path.append_value(&r.path);
+        content_hash.append_value(&r.content_hash);
         chunk_id.append_value(&r.chunk_id);
         symbol.append_value(&r.symbol);
         kind.append_value(&r.kind);
@@ -729,8 +744,7 @@ fn build_code_chunks_batch(dim: u16, rows: &[CodeRow]) -> Result<RecordBatch> {
     RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(scope.finish()),
-            Arc::new(path.finish()),
+            Arc::new(content_hash.finish()),
             Arc::new(chunk_id.finish()),
             Arc::new(symbol.finish()),
             Arc::new(kind.finish()),
@@ -748,15 +762,6 @@ fn build_code_chunks_batch(dim: u16, rows: &[CodeRow]) -> Result<RecordBatch> {
 
 #[cfg(feature = "code-search")]
 fn decode_code_chunk_hits(batch: &RecordBatch, out: &mut Vec<CodeChunkHit>) -> Result<()> {
-    decode_code_chunk_hits_with_path_column(batch, "path", out)
-}
-
-#[cfg(feature = "code-search")]
-fn decode_code_chunk_hits_with_path_column(
-    batch: &RecordBatch,
-    path_column: &str,
-    out: &mut Vec<CodeChunkHit>,
-) -> Result<()> {
     use lancedb::arrow::arrow_array::{Float32Array, UInt32Array};
     let str_col = |name: &str| -> Result<&StringArray> {
         batch
@@ -770,7 +775,6 @@ fn decode_code_chunk_hits_with_path_column(
             .and_then(|c| c.as_any().downcast_ref::<UInt32Array>())
             .ok_or_else(|| anyhow!("`{name}` column missing"))
     };
-    let path = str_col(path_column)?;
     let chunk_id = str_col("chunk_id")?;
     let symbol = str_col("symbol")?;
     let kind = str_col("kind")?;
@@ -785,7 +789,6 @@ fn decode_code_chunk_hits_with_path_column(
 
     for i in 0..batch.num_rows() {
         out.push(CodeChunkHit {
-            path: path.value(i).to_string(),
             chunk_id: chunk_id.value(i).to_string(),
             symbol: symbol.value(i).to_string(),
             kind: kind.value(i).to_string(),
@@ -798,6 +801,17 @@ fn decode_code_chunk_hits_with_path_column(
         });
     }
     Ok(())
+}
+
+/// `content_hash IN ('a', 'b')` over `hashes`.
+#[cfg(feature = "code-search")]
+fn content_in(hashes: &[String]) -> String {
+    let list = hashes
+        .iter()
+        .map(|hash| format!("'{}'", escape_sql_literal(hash)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("content_hash IN ({list})")
 }
 
 /// Single-quote escape for the simple SQL-literal predicates we use.

@@ -16,17 +16,17 @@ use crate::stdio_relay::{self, StopPacing};
 /// daemon that cannot be reached when the session starts is answered for on the host's own pipe
 /// instead of ending the process before `initialize` is read.
 pub(crate) fn try_serve_relay(root: &Path, view: &str) -> Result<()> {
-    serve(root, view, false)
+    serve(root, view, false, None)
 }
 
 /// [`try_serve_relay`] for `serve --lead` (ADR-0040): the lead's two tools are answered in this
 /// process by [`crate::serve_lead`], everything else is relayed as for a plain `serve`.
 #[cfg(unix)]
-pub(crate) fn try_serve_lead(root: &Path, view: &str) -> Result<()> {
-    serve(root, view, true)
+pub(crate) fn try_serve_lead(root: &Path, view: &str, agents_policy: Option<&Path>) -> Result<()> {
+    serve(root, view, true, agents_policy)
 }
 
-fn serve(root: &Path, view: &str, lead: bool) -> Result<()> {
+fn serve(root: &Path, view: &str, lead: bool, agents_policy: Option<&Path>) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -53,7 +53,7 @@ fn serve(root: &Path, view: &str, lead: bool) -> Result<()> {
             move || open_relay_connection(canonical_root.clone(), view.clone(), agent.clone(), Arc::clone(&pacing));
         #[cfg(unix)]
         if lead {
-            let mode = crate::serve_lead::mode(root, identity.principal.clone(), host_of_session());
+            let mode = crate::serve_lead::mode(root, identity.principal.clone(), host_of_session(), agents_policy);
             let calls = mode.calls();
             let filtered = crate::serve_lead::run(tokio::io::stdin(), tokio::io::stdout(), mode, |input, output| {
                 stdio_relay::run(input, output, connect)
@@ -69,7 +69,7 @@ fn serve(root: &Path, view: &str, lead: bool) -> Result<()> {
             }
             return served.context("run persistent daemon relay");
         }
-        let _ = lead;
+        let _ = (lead, agents_policy);
         stdio_relay::run(tokio::io::stdin(), tokio::io::stdout(), connect)
             .await
             .context("run persistent daemon relay")

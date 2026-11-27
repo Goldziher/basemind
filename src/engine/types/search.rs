@@ -33,7 +33,7 @@ pub struct CodeSearchParams {
     /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.
+    /// Changed since a rev (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.
     #[serde(default)]
     pub changed: Option<String>,
 }
@@ -68,6 +68,13 @@ pub struct DocsSearchParams {
     /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Most hits one document contributes before the others rank ahead of its rest; 0 is no cap
+    /// (default 2).
+    #[serde(default)]
+    pub per_doc: Option<u32>,
+    /// Add the chunk before and after each hit (default false).
+    #[serde(default)]
+    pub context: Option<bool>,
 }
 
 /// Params for `get_chunk` — fetch a chunk body by path (the `search_code` pointer).

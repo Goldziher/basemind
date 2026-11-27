@@ -52,7 +52,8 @@ fn full_scan(root: &Path, store: &mut Store, cfg: &ConfigV1) -> ScanReport {
 }
 
 fn blob_exists(store: &Store, hash_hex: &str, suffix: &str) -> bool {
-    store.blobs_dir.join(format!("{hash_hex}.{suffix}.msgpack")).exists()
+    let name = format!("{hash_hex}.{suffix}.msgpack");
+    store.blobs_dir.join(&hash_hex[..2]).join(&name).exists() || store.blobs_dir.join(&name).exists()
 }
 
 /// Backdate a file's mtime past the sweep's young-blob grace window.
@@ -197,7 +198,11 @@ fn a_tier_migration_orphans_the_code_lane_blobs_and_the_cleanup_reclaims_only_th
     store.write_filemap_hex(&hash_hex, &l1, None).unwrap();
     // The chunk sidecar is a `code-search` artifact; other builds only have the outline blob.
     #[cfg(feature = "code-search")]
-    fs::write(store.blob_path_chunk_hex(&hash_hex), b"legacy chunk sidecar").unwrap();
+    {
+        let sidecar = store.blob_path_chunk_hex(&hash_hex);
+        fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+        fs::write(sidecar, b"legacy chunk sidecar").unwrap();
+    }
     store.upsert(
         "README.md",
         FileEntry {

@@ -52,7 +52,15 @@ fn build_corpus() -> TempDir {
              impl Module{f:03}Drawable for Module{f:03}Widget {{ fn draw(&self) {{}} }}\n\
              pub fn module_{f:03}_caller() {{ module_{f:03}_operation_000_with_a_long_name(1, \"x\"); }}\n"
         ));
-        std::fs::write(root.join(format!("module_{f:03}.rs")), src).unwrap();
+        let file = root.join(format!("module_{f:03}.rs"));
+        std::fs::write(&file, src).unwrap();
+        // A stamp inside the scanner's racy window is restamped by the next scan, and that scan holds
+        // the writer lock a read has to wait out; an old stamp settles on the first pass.
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .and_then(|handle| handle.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)))
+            .unwrap();
     }
     dir
 }
@@ -210,6 +218,7 @@ async fn collect_responses(root: &Path) -> Vec<Value> {
         out.push(parsed);
     }
     service.cancel().await.ok();
+    wait_for_writer_lock(root).await;
     out
 }
 
@@ -257,6 +266,10 @@ where
 /// in, and one that never evicted a single entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tool_output_is_identical_bounded_and_unbounded() {
+    // The serving process hands owed embeddings to a detached worker that holds the store lock, which
+    // refuses the reads this test makes; embedding is not under test, so keep it in-process.
+    // SAFETY: the only test in this binary, and nothing else reads the environment concurrently.
+    unsafe { std::env::set_var("BASEMIND_EMBED_BACKGROUND", "false") };
     let dir = build_corpus();
     let root = dir.path();
     run_scan(root);
@@ -297,4 +310,28 @@ async fn tool_output_is_identical_bounded_and_unbounded() {
             .any(|v| v.get("total").and_then(Value::as_u64).unwrap_or(0) > 0),
         "the fixture must actually produce hits, or the comparison is vacuous"
     );
+}
+
+/// Block until the server just cancelled has released the workspace's writer lock.
+///
+/// Cancelling the client only closes the duplex; the server's watcher, cache warm and GC tasks drop
+/// their handle on the store later. A second server opened meanwhile gets a read-only store with no
+/// index handle for its whole life, so wait for the lock before the next one opens.
+async fn wait_for_writer_lock(root: &Path) {
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        loop {
+            match basemind::store::Store::open(&root, basemind::store::VIEW_WORKING) {
+                Ok(store) => return drop(store),
+                Err(e) => assert!(
+                    started.elapsed() < std::time::Duration::from_secs(120),
+                    "the first server never released the writer lock: {e}"
+                ),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    })
+    .await
+    .expect("lock wait thread");
 }

@@ -231,17 +231,17 @@ fn error_text(result: &CallToolResult) -> String {
         .unwrap_or_default()
 }
 
-/// SEP-2106 contract: every tool result carries `structured_content` equal to the parsed JSON
-/// text mirror, so typed clients get the same payload without re-parsing the text block.
-fn assert_structured_matches_text(result: &CallToolResult) {
-    let structured = result
-        .structured_content
-        .as_ref()
-        .expect("tool result must carry SEP-2106 structured_content");
+/// A successful answer travels once: its payload is in the text block and `structuredContent` is
+/// absent, so a host that feeds both to the model does not pay twice.
+fn assert_single_payload(result: &CallToolResult) {
     assert_eq!(
-        structured,
-        &decode_text(result),
-        "structured_content must match the JSON text mirror"
+        result.structured_content, None,
+        "a successful answer must not repeat its payload as structuredContent"
+    );
+    assert_ne!(
+        decode_text(result),
+        Value::Null,
+        "the text block must carry the payload"
     );
 }
 
@@ -307,7 +307,7 @@ async fn mcp_server_exercises_representative_tools() {
         .call_tool(call_params("code_outline", json!({ "path": "a.rs" })))
         .await
         .expect("code_outline");
-    assert_structured_matches_text(&outline_result);
+    assert_single_payload(&outline_result);
     let body = decode_text(&outline_result);
     let symbols = body.get("symbols").and_then(Value::as_array).expect("symbols");
     let alpha = symbols
@@ -395,10 +395,9 @@ async fn mcp_server_exercises_representative_tools() {
     let hits = body.get("commits").and_then(Value::as_array).expect("commits");
     assert_eq!(hits.len(), 1, "one commit summary contains 'tweak', got {hits:?}");
     assert!(
-        hits[0]
+        hits[0]["subject"]
             .as_str()
-            .and_then(|row| row.split_once(' '))
-            .is_some_and(|(_, summary)| summary.contains("tweak")),
+            .is_some_and(|summary| summary.contains("tweak")),
         "hit summary should contain the query token"
     );
     let body = decode_text(
@@ -978,16 +977,13 @@ async fn mcp_server_exercises_representative_tools() {
         .expect("memory_search missing key");
     #[cfg(feature = "memory")]
     {
+        assert_eq!(decode_text(&read)["value"], json!("hello"));
         assert_eq!(
-            read.structured_content.as_ref().map(|note| &note["value"]),
-            Some(&json!("hello"))
+            decode_text(&missing),
+            json!({ "key": "decision/nope", "found": false }),
+            "a missing note is an object, never `null`"
         );
-        assert_eq!(
-            missing.structured_content,
-            Some(json!({ "key": "decision/nope", "found": false })),
-            "a missing note is an object, never `null`: MCP types structuredContent as an object"
-        );
-        assert_structured_matches_text(&missing);
+        assert_single_payload(&missing);
     }
     #[cfg(not(feature = "memory"))]
     let _ = (read, missing);
@@ -1446,12 +1442,15 @@ async fn spawn_paging_server() -> (TempDir, rmcp::service::RunningService<rmcp::
     (dir, service)
 }
 
-/// The shas of a list of `"<sha> <summary>"` rows.
+/// The shas of a list of commit rows: `{sha, ...}` objects, or `"<sha> <summary>"` strings.
 fn row_shas(rows: Option<&Value>) -> Vec<String> {
     rows.and_then(Value::as_array)
         .map(|arr| {
             arr.iter()
-                .filter_map(|row| row.as_str()?.split_once(' ').map(|(sha, _)| sha.to_string()))
+                .filter_map(|row| match row.as_str() {
+                    Some(row) => row.split_once(' ').map(|(sha, _)| sha.to_string()),
+                    None => row["sha"].as_str().map(str::to_string),
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -2007,6 +2006,17 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
         "per-hit document metadata is gone: {harbour}"
     );
 
+    let knobs = decode_text(
+        &call(json!({ "query": "harbour pilots", "per_doc": 1, "context": true, "limit": 1 }))
+            .await
+            .expect("docs_search"),
+    );
+    assert_eq!(knobs["hits"].as_array().map(Vec::len), Some(1), "{knobs}");
+    assert!(
+        knobs.get("truncated").is_none(),
+        "a `limit` cut is paging, not truncation: {knobs}"
+    );
+
     let by_path = decode_text(
         &call(json!({ "query": "harbour", "path": "air*.md" }))
             .await
@@ -2067,10 +2077,10 @@ async fn docs_search_filters_before_ranking_and_cites_its_hits() {
     let _ = service.cancel().await;
 }
 
-/// MCP types `structuredContent` as an object. A host that validates the result schema rejects any
-/// other value, so every answer of every verb tool must be one, including "nothing found" answers.
+/// Every successful answer of every verb tool carries its payload once, as an object in the text
+/// block, including "nothing found" answers; `structuredContent` repeats none of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_answer_carries_an_object_as_structured_content() {
+async fn every_answer_carries_its_payload_once_in_the_text_block() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
@@ -2113,10 +2123,11 @@ async fn every_answer_carries_an_object_as_structured_content() {
             continue;
         }
         answered += 1;
+        assert_single_payload(&result);
         assert!(
-            result.structured_content.as_ref().is_some_and(Value::is_object),
-            "{tool} {args}: structuredContent must be an object: {:?}",
-            result.structured_content
+            decode_text(&result).is_object(),
+            "{tool} {args}: the text block must decode to an object: {:?}",
+            result.content
         );
     }
     assert!(
@@ -3193,10 +3204,11 @@ async fn git_tools_reject_inexact_arguments() {
         "git_log must refuse a symbol history with no file: {message}"
     );
 
-    let message = refused(&service, "git_log", json!({ "query": "tweak", "path": "a.rs" })).await;
+    let message = refused(&service, "git_log", json!({ "path": "a.rs", "since": "2025-01-01" })).await;
     assert!(
-        message.contains("do not combine with `path`") && message.contains("accepted shapes:"),
-        "git_log must refuse a history search scoped to a path: {message}"
+        message.contains("`since` and `until` bound a `query` / `author` search")
+            && message.contains("accepted shapes:"),
+        "git_log must refuse a time range with no search: {message}"
     );
 
     let message = refused(&service, "git_diff", json!({ "from": "HEAD" })).await;

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use ahash::AHashMap;
 
 use crate::config::Config;
+use crate::config::list_only::{ListKind, ListedEntry};
 use crate::config::root_guard::{self, RootRefusal};
 use crate::scanner::{ScanCancel, ScanError, ScanSource};
 use crate::scanner_filter::{Filters, ignore_walk_builder};
@@ -157,6 +158,8 @@ struct Budget {
     visited: usize,
     over_cap: bool,
     over_walk: bool,
+    /// List-only files met by the walk: stat data only, never counted against `cap`.
+    listed: Vec<(String, ListedEntry)>,
     /// `visited` value at which the post-breach contributor survey stops. Only meaningful once
     /// `over_cap` is set.
     survey_until: usize,
@@ -179,8 +182,25 @@ impl Budget {
             visited: 0,
             over_cap: false,
             over_walk: false,
+            listed: Vec::new(),
             survey_until: 0,
         }
+    }
+
+    /// Record a list-only file from the walk entry's own stat. The file is not opened, and a stat
+    /// that fails still lists it, with size and time unknown.
+    fn list(&mut self, rel: &str, kind: ListKind, dent: &ignore::DirEntry) {
+        let (size_bytes, mtime) = dent
+            .metadata()
+            .map_or((0, 0), |meta| (meta.len(), crate::scanner_file::mtime_nanos(&meta)));
+        self.listed.push((
+            rel.to_string(),
+            ListedEntry {
+                kind,
+                size_bytes,
+                mtime,
+            },
+        ));
     }
 
     /// Account for one yielded walk entry of any kind. Call before deciding whether it is a
@@ -300,6 +320,14 @@ fn rel_str<'a>(base: &Path, path: &'a Path, buf: &'a mut String) -> Option<&'a s
     }
 }
 
+/// What a candidate enumeration yields: the files to extract, and the list-only files met on the way.
+pub(crate) struct Candidates {
+    /// Sorted, deduplicated keys of the files the scan extracts.
+    pub keys: Vec<String>,
+    /// List-only files and their stat data; empty for a staged or revision scan, which has no stat.
+    pub listed: Vec<(String, ListedEntry)>,
+}
+
 /// Enumerate the working tree's candidate files.
 ///
 /// Directories excluded by the glob floor / `[scan] exclude` / a skipped submodule root are pruned
@@ -313,7 +341,7 @@ pub(crate) fn walk_candidates(
     config: &Config,
     filters: &Filters,
     cancel: &ScanCancel,
-) -> Result<Vec<String>, ScanError> {
+) -> Result<Candidates, ScanError> {
     let mut budget = Budget::new(config.scan.max_candidates);
     let pruner = filters.dir_pruner(Some(root));
     let walker = ignore_walk_builder(root, config.scan.respect_gitignore, config.scan.follow_symlinks)
@@ -328,7 +356,10 @@ pub(crate) fn walk_candidates(
             // the token is tripped, so the candidates this walk never reached are not mistaken for
             // deletions. It also outranks a pending breach: a drained scan is discarded, and
             // reporting a ceiling error for a walk we deliberately cut short would be a lie. ~keep
-            return Ok(budget.into_keys());
+            return Ok(Candidates {
+                keys: budget.into_keys(),
+                listed: Vec::new(),
+            });
         }
         let path = dent.path();
         let Some(rel) = rel_str(root, path, &mut buf) else {
@@ -344,6 +375,10 @@ pub(crate) fn walk_candidates(
         if !dent.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
         }
+        if let Some(kind) = filters.listed_kind(rel) {
+            budget.list(rel, kind, &dent);
+            continue;
+        }
         if !filters.allows(rel) {
             continue;
         }
@@ -355,8 +390,12 @@ pub(crate) fn walk_candidates(
         walk_extra_roots(root, config, filters, cancel, &mut budget);
     }
     if cancel.is_cancelled() {
-        return Ok(budget.into_keys());
+        return Ok(Candidates {
+            keys: budget.into_keys(),
+            listed: Vec::new(),
+        });
     }
+    let listed = std::mem::take(&mut budget.listed);
     let out = budget.finish(root)?;
     if out.len() > LARGE_SCAN_CANDIDATE_WARN {
         tracing::warn!(
@@ -364,7 +403,7 @@ pub(crate) fn walk_candidates(
             "scan candidate set is very large; check .gitignore / [scan] exclude globs for generated or vendored trees"
         );
     }
-    Ok(out)
+    Ok(Candidates { keys: out, listed })
 }
 
 /// Walk each configured `scan.extra_roots` directory and append its files to `budget`, keyed by
@@ -434,6 +473,10 @@ fn walk_extra_roots(root: &Path, config: &Config, filters: &Filters, cancel: &Sc
             let Some(key) = key_str(path, &mut key_buf) else {
                 continue;
             };
+            if let Some(kind) = filters.listed_kind_in_extra_root(rel) {
+                budget.list(key, kind, &dent);
+                continue;
+            }
             if !filters.allows_in_extra_root(rel) {
                 continue;
             }
@@ -537,13 +580,16 @@ pub(crate) fn candidates_for_source(
     filters: &Filters,
     source: &ScanSource<'_>,
     cancel: &ScanCancel,
-) -> Result<Vec<String>, ScanError> {
-    let raw = match source {
-        ScanSource::WorkingTree => walk_candidates(root, config, filters, cancel)?,
-        ScanSource::Staged(repo) => repo.list_paths_staged()?,
-        ScanSource::Rev { repo, sha } => repo.list_paths_rev(sha)?,
+) -> Result<Candidates, ScanError> {
+    let (raw, listed) = match source {
+        ScanSource::WorkingTree => {
+            let walked = walk_candidates(root, config, filters, cancel)?;
+            (walked.keys, walked.listed)
+        }
+        ScanSource::Staged(repo) => (repo.list_paths_staged()?, Vec::new()),
+        ScanSource::Rev { repo, sha } => (repo.list_paths_rev(sha)?, Vec::new()),
     };
-    let mut out: Vec<String> = match source {
+    let mut keys: Vec<String> = match source {
         ScanSource::WorkingTree => {
             let mut walked = raw;
             walked.extend(filters.attach_dep_docs(root, config));
@@ -555,9 +601,9 @@ pub(crate) fn candidates_for_source(
             .filter(|rel| !rel.starts_with(crate::config::BASEMIND_DIR))
             .collect(),
     };
-    out.sort();
-    out.dedup();
-    Ok(out)
+    keys.sort();
+    keys.dedup();
+    Ok(Candidates { keys, listed })
 }
 
 #[cfg(test)]
@@ -732,3 +778,7 @@ mod tests {
         assert!(!is_sensitive_root(Path::new("/home/u/code/external")));
     }
 }
+
+#[cfg(test)]
+#[path = "scanner_list_only_tests.rs"]
+mod list_only_tests;

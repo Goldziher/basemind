@@ -8,11 +8,15 @@ use std::sync::atomic::Ordering;
 
 use crate::engine::MapCache;
 use crate::engine::error::EngineError;
-use crate::engine::l1_cache::budget_bytes_from;
 use crate::engine::workspace::Workspace;
 use crate::path::{RelPath, is_external_key, normalize_query_path};
 use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanError, ScanObserver, ScanReport};
 use crate::store::Store;
+
+/// Owed documents a resumed embedding pass embeds per scoped scan: few enough that a read waiting
+/// on the store write lock waits seconds, not the whole pass.
+#[cfg(feature = "documents")]
+const RESUME_BATCH_DOCUMENTS: usize = 32;
 
 /// The only thing a rescan wants out of a scan's per-file outcomes: which paths to fold into
 /// the cache delta, and which to drop from it. A restamped path is folded in like an updated one:
@@ -111,7 +115,7 @@ impl Workspace {
             if was_scoped {
                 Some(current.with_delta(&store, &updated, &removed))
             } else {
-                current.refreshed(&store, budget_bytes_from(&self.config.resources))
+                current.refreshed(&store, self.outlines())
             }
         };
         if let Some(cache) = new_cache {
@@ -122,6 +126,58 @@ impl Workspace {
         Ok(report)
     }
 
+    /// Resume an embedding pass a killed process left unfinished. The documents the store records as
+    /// owing vectors are embedded by scoped scans of [`RESUME_BATCH_DOCUMENTS`] each, every one
+    /// holding the store write lock only while it runs, so a read (a `docs_search` answering from the
+    /// keyword lane) waits for one batch rather than for the whole pass. A whole working-tree pass
+    /// then pays whatever the batches could not reach (a dependency's documentation, an extra root,
+    /// a document added since) and settles the progress record.
+    pub(crate) fn resume_embedding(&self) -> Result<ScanReport, EngineError> {
+        #[cfg(feature = "documents")]
+        self.embed_owed_documents(RESUME_BATCH_DOCUMENTS, &mut |_| {})?;
+        self.rescan(None, EmbedMode::Inline, false)
+    }
+
+    /// The batched half of [`resume_embedding`](Self::resume_embedding): `batch_documents` owed
+    /// documents per scoped scan, the progress record advanced after each, and `after_batch` handed
+    /// the count embedded so far, with the write lock released.
+    #[cfg(feature = "documents")]
+    fn embed_owed_documents(
+        &self,
+        batch_documents: usize,
+        after_batch: &mut dyn FnMut(usize),
+    ) -> Result<(), EngineError> {
+        let owed = crate::embed_progress::owed_doc_paths(&self.store_read());
+        let owed: Vec<PathBuf> = owed
+            .into_iter()
+            .filter(|rel| !rel.is_external())
+            .map(|rel| self.root.join(rel.to_path_buf()))
+            .filter(|abs| abs.is_file())
+            .collect();
+        if owed.is_empty() {
+            return Ok(());
+        }
+        let embedded = std::sync::atomic::AtomicUsize::new(0);
+        let reporter = crate::embed_progress::EmbedReporter::begin(
+            crate::store_layout::workspace_cache_dir(&self.root),
+            owed.len(),
+            &embedded,
+        );
+        for batch in owed.chunks(batch_documents.max(1)) {
+            self.rescan(Some(batch.to_vec()), EmbedMode::Inline, false)?;
+            let still_owed: std::collections::HashSet<PathBuf> =
+                crate::embed_progress::owed_doc_paths(&self.store_read())
+                    .into_iter()
+                    .map(|rel| self.root.join(rel.to_path_buf()))
+                    .collect();
+            let done = settled_documents(&owed, &still_owed);
+            embedded.store(done, Ordering::Relaxed);
+            reporter.report();
+            after_batch(done);
+        }
+        Ok(())
+    }
+
     /// The scan itself, under the store write lock.
     fn scan_into_store(
         &self,
@@ -129,7 +185,11 @@ impl Workspace {
         embed: EmbedMode,
         named: bool,
     ) -> Result<(ScanReport, RescanPaths), ScanError> {
-        let mut store = self.store_write();
+        let Some(mut store) = self.store_write() else {
+            return Err(ScanError::IndexFault(
+                "a daemon-hosted workspace scans through the daemon's pool, not in this process".to_string(),
+            ));
+        };
         // The store may have been opened via `Store::open_read_only` (the CLI / MCP query path),
         // which never creates `view_dir` on disk. On a workspace's first-ever scan that directory
         // is still missing here, and `flush()` would fail with ENOENT writing `index.msgpack.tmp`.
@@ -192,8 +252,8 @@ impl Workspace {
     )]
     pub(crate) fn publish_store(&self, store: Store) -> Option<Arc<MapCache>> {
         let current = self.cache.load_full();
-        let cache = current.refreshed(&store, budget_bytes_from(&self.config.resources));
-        *self.store_write() = store;
+        let cache = current.refreshed(&store, self.outlines());
+        self.replace_store(store);
         let published = cache.map(|cache| {
             let cache = Arc::new(cache);
             self.cache.store(Arc::clone(&cache));
@@ -207,12 +267,8 @@ impl Workspace {
     /// the map served now; `None` when it does not, and nothing is replaced or bumped.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) fn publish_store_if_changed(&self, store: Store) -> Option<Arc<MapCache>> {
-        let cache = Arc::new(
-            self.cache
-                .load_full()
-                .refreshed(&store, budget_bytes_from(&self.config.resources))?,
-        );
-        *self.store_write() = store;
+        let cache = Arc::new(self.cache.load_full().refreshed(&store, self.outlines())?);
+        self.replace_store(store);
         self.cache.store(Arc::clone(&cache));
         self.note_index_changed();
         Some(cache)
@@ -236,7 +292,7 @@ impl Workspace {
         let gate = OpenGate(self);
         let cache = {
             let store = self.store_read();
-            MapCache::build(&store, budget_bytes_from(&self.config.resources))
+            MapCache::build(&store, self.outlines())
         };
         let files = cache.len();
         let cache = Arc::new(cache);
@@ -328,3 +384,14 @@ fn is_indexed(root: &Path, cache: &mut Option<crate::store::Index>, rel: &str) -
         .keys()
         .any(|key| key.as_str().is_some_and(|key| key.starts_with(&prefix)))
 }
+
+/// How many of the `owed` documents the store no longer lists in `still_owed`: the ones a batch
+/// settled, not the ones it merely visited (a scan may defer a document past its budget).
+#[cfg(feature = "documents")]
+fn settled_documents(owed: &[PathBuf], still_owed: &std::collections::HashSet<PathBuf>) -> usize {
+    owed.iter().filter(|path| !still_owed.contains(*path)).count()
+}
+
+#[cfg(all(test, feature = "documents"))]
+#[path = "scan_resume_tests.rs"]
+mod resume_tests;

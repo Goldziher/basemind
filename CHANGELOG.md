@@ -10,6 +10,174 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `code_grep` stops a sweep after 10 seconds and answers the matches it found with `truncated_reason: time_budget`, a `notice` and a `next_cursor` resuming at the first file it did not read; the manual documents `skipped_files` and `skipped_reasons` and why the first search after a start is slower (#477)
+- `scripts/changelog_section.py` fails a release whose changelog section is over 60000 characters (`RELEASE_NOTES_CEILING`) and uses a hand-written `docs/release-notes/<version>.md` as the release body when one exists, so the release page stays a summary and the long list stays in CHANGELOG.md (#450)
+- `[resources] hard_footprint_percent` is an opt-in hard memory ceiling: past that percentage of `max_footprint_mb` the running scan cancels itself between chunks, the daemon sheds its idle hosted read stacks, and the index is left consistent and marked partial (#214)
+- `basemind code find --indexed true|false|any` lists indexed files, list-only files or both, as the `find_files` tool's `indexed` argument does
+- `code_grep` answers `skipped_reasons` beside `skipped_files`: how many files were skipped as `unavailable` (gone since the scan, or leading out of the repository), `too_large` (past `scan.max_file_bytes`) or `unreadable` (opening or reading failed) (#477)
+- A directory `git_log` page reports `commits_reached` and, when the git-history index serves it, `total_commits`, so an agent can tell how far into the history paging has got (#261)
+- The manual's paging page lists every `truncated_reason` with its next step (#261)
+- `[scan.roles]` marks files as `test`, `infra`, `generated`, `vendored` or `example` from built-in globs (Terraform and HCL, Dockerfiles, Helm and Kubernetes, Ansible, CI workflows, Bazel and Starlark, cloud-init and systemd for `infra`) plus the repository's own lists, with `!pattern` re-includes; a role labels a file and never drops it, and `index_status` reports `roles`, the file count per role. Role filters on the search tools, role-aware `code_refs`, RAG defaults and `basemind init` proposals are still to come (#490)
+- While the inotify watch limit leaves directories unwatched, the Linux watcher re-checks them every 30 seconds: it stat-diffs their subtrees so an edit under one is still indexed, and retries arming them; `basemind doctor` gains a `watches` row that warns when a workspace has more directories than `fs.inotify.max_user_watches` allows (#287)
+- `git_log` takes `files: true` to list what each commit changed in a recent or directory list: at most 8 entries a commit (a directory holding several changed files collapses to one `"<dir>/": "<n> files"` entry), the rest counted in `files_more` (#456)
+- Cross-file resolution finds code in other projects of a monorepo: a Python import searches the `src/` and the directory of every `pyproject.toml`, `setup.cfg` and `setup.py` (nearest the importer first) and falls back to `.pyi` stubs, a Java import searches the standard layout under every `pom.xml` and `build.gradle(.kts)` directory, and a Go import reaches the modules of the nearest `go.work` `use` list and the local `replace` targets of its `go.mod`. A project added mid-stitch is seen by the next one. JS/TS workspace packages and `require()` are still to come (#312)
+- Protocol Buffers and Starlark files expose symbols and an import graph. `.proto` files list the package, messages (nested ones too), enums and their values, services, `rpc` methods (the signature carries the request and response types), `oneof` groups, `extend` blocks and file-level options, and each `import` (including `public` and `weak`) is an import edge resolved against the importer's directory and its ancestors as proto source roots (`google/` paths that no root holds are external), so `code_refs` importers and dependents work. Starlark (`BUILD`, `BUILD.bazel`, `WORKSPACE`, `MODULE.bazel`, `*.bzl`, `*.star`) lists top-level `def`s, assignments and rule targets (`py_library(name = "lib")` is the symbol `lib`, its signature the rule name), and each `load("//pkg:file.bzl", ...)` is an import edge to the file it labels (`:file.bzl` beside the importer, `@repo//...` external). Existing indexes re-extract these files on the next scan (#516)
+- SQL, shell and SCSS files expose symbols: SQL `CREATE` statements for tables, views, materialized views, types, functions, procedures, indexes, triggers, sequences and schemas (the signature is the statement header, cut before the column list, `AS` clause or body); shell functions and top-level variable assignments in `*.sh`, `*.bash` and `*.zsh` (including `export` and `readonly`); SCSS variables, `@mixin`, `@function` and `%placeholder` selectors. Existing indexes re-extract these files on the next scan (#215)
+- Cross-file resolution finds code in other projects of a monorepo: a Python import searches the `src/` and the directory of every `pyproject.toml`, `setup.cfg` and `setup.py` (nearest the importer first) and falls back to `.pyi` stubs, a Java import searches the standard layout under every `pom.xml` and `build.gradle(.kts)` directory, and a Go import reaches the modules of the nearest `go.work` `use` list and the local `replace` targets of its `go.mod`. A project added mid-stitch is seen by the next one. A JS/TS import of a workspace package by name (`@acme/ui`, `@acme/ui/button`) resolves to the package's source directory with no `node_modules`: packages are found from the root `pnpm-workspace.yaml` `packages:` globs and the `workspaces` field of the root `package.json` (an array or `{packages}`, `!` excludes), the entry comes from `exports`, `source`, `types`, `module` and `main`, then `src/index` and `index`. A symlink that leads into the repository resolves to its real path, and a literal `require('./x')` of the global `require` is a file edge (#312)
+
+### Fixed
+
+- `code_grep` no longer waits for a running scan to release the index before it starts: it searches without the trigram prefilter instead, so the first search after a change is not held up for the length of the scan (#477)
+- `embed_batch_size` now bounds every embedding call: a code file or document with more chunks than the batch size is embedded in windows of that size instead of in one call, so peak memory during `[code_search] embed = true` follows the batch size and not the largest file's chunk count; lower `embed_batch_size` to trade scan time for a smaller peak (#442)
+- Memory notes saved before the repository's `origin` was added, removed or changed are no longer hidden: the first memory call of a session files every note of the store under the current scope, the newer note winning on a clash (#319)
+- A daemon-hosted workspace serves its store from a snapshot a publish swaps in, so a long read (a `code_refs` callers scan, an import-graph build) no longer holds a scan's publish back, and the reads that follow it no longer queue behind the publish (#288)
+- A CLI `git log` forwarded to an older release's running daemon no longer sends the `since`, `until` and `files` parameters it does not set, which that daemon rejected as unknown fields
+- `find_files` with `indexed: true` or `false` no longer lists tracked files that are neither indexed nor list-only, and a list-only file under a `scan.extra_roots` entry is recorded like one in the repository (#495)
+- The daemon returns freed allocator pages to the OS after every rescan and every idle workspace or read-stack eviction, so an idle daemon settles at its live data instead of holding a scan's high-water mark; the hardening soak asserts a bounded idle memory swing (R6c) (#491)
+- a batch naming a path that is gone from disk finds the index entries under it by key range instead of walking every key, so the cost no longer grows with the size of the index (#405)
+
+### Changed
+
+- A working-tree `basemind scan` no longer embeds: it writes the code map, the documents' text and chunks and the keyword lane without loading the embedding model, prints an `embeddings: pending …` line (and an `embeddings` object under `--json`), and hands the vectors to a background pass. With a daemon running the forwarded scan does not embed and the daemon embeds afterwards; otherwise the scan starts the hidden `embed-worker` command detached, at a lower CPU priority, which embeds the owed documents 32 at a time and, when `[code_search] embed = true` or the embed policy changed, runs one embedding pass over the tree. One worker runs per workspace, it gives the index back to any other writer that asks and resumes after it, and a killed worker is resumed by the next scan; `index_status` reports its progress and `docs_search` answers by keyword meanwhile. `BASEMIND_EMBED_BACKGROUND=false` stops the scan from starting it. `scan --staged`, `scan --rev` and `rescan` still embed as they go (#454)
+- A working-tree `basemind scan` no longer builds the git-history index from scratch before it returns, which took minutes on a large monorepo: when the index was never built, a build was cut off or a shallow clone was deepened, the scan prints `git-history: building in the background (N commits; …)` (and a `git_history` object, `pending_commits` and `background`, under `--json`) and hands the build to the same `embed-worker`, which runs it before embedding with the worker's lock, priority, log and `BASEMIND_EMBED_BACKGROUND=false` switch. The history tools answer from the live walk until it is done, `index_status` reports `git_history_build` (`done`, `total`, `eta_secs`), a writer that asks for the index stops the build at its next chunk of commits and it starts again from scratch afterwards, and `serve`, `watch` or the daemon taking the index leaves the build to them. An append of new commits, `rescan` and a scan with the background off still sync inline (#518)
+- The default test paths (`[scan] test_globs`, the `test` role and the default `[documents] exclude`) also match directories named `test_*`, `*_test`, `*_tests`, `test-data`, `*_test_data`, `*-test-data`, `*_testdata`, `fixture`, `__fixtures__`, `*_fixtures`, `*_mocks`, `*_snapshots`, `golden` and `goldens`, and files named `*_fixture.*`, `*_fixtures.*`, `*_mock.*`, `*_mocks.*` and `*.golden`, so a fixture directory such as `<vendor>_test_data/` is no longer indexed as documents. `[code_search] embed_exclude` defaults to the same list, so test code is never embedded (#458)
+- Test data is list-only by default: the test-data directories (`test_data/`, `testdata/`, `*_test_data/`, `__snapshots__/`, `golden/` and the like), `*.snap` and `*.golden` files, and the JSON, YAML, CSV, TSV, XML and text files under a test, fixture or mock directory are listed for `find_files` and never extracted, chunked, keyword-indexed or embedded; test code beside them stays in the code map, marked as test. A `!pattern` entry in `[scan] list_only` re-includes a path (#458)
+- A structured-data document (JSON, YAML, XML, CSV and the like) certain to pass `[documents] max_chunks_per_document` is skipped as too large from its size alone, before it is read and chunked, instead of being chunked into thousands of pieces and indexed without vectors (#454)
+- Code-chunk vectors (`[code_search] embed = true`) live in one store per repository group and embedding model, `cache/groups/<group>/code-lance/<model>-<dim>-<hash>/`, with rows keyed by content instead of by path: worktrees and views holding the same bytes share one set of rows, a search reads only the contents its view's file map names, and a row goes when no view of the group holds its content. The first scan after the upgrade removes the workspace's `lance/` directory and writes the rows again from the cached chunk blobs, without embedding (#289)
+- The hosted read stacks of a repository's linked worktrees keep one sha-keyed `commit_files` disk tier, under the main worktree's workspace cache, instead of a copy per worktree; an existing worktree's own `commit_files/` is no longer read and is dropped with its workspace (#282)
+- The daemon's hosted read stacks share one decoded-outline cache instead of one per workspace: outlines are keyed by content hash, so the worktrees of a repository decode a file they hold in common once, and the cache is charged against the largest `[resources] max_map_cache_mb` any hosted workspace sets rather than that budget once per stack. Content one stack's rescan replaced is left to the shared LRU, and the cache is released with the last stack that reads it. The term index, import graph and in-memory git cache are still per stack (#282)
+- Removed the write-only per-connection `agent_id` from the MCP server state, and the stale `#[allow(dead_code)]` on the tool router, the embeddings keyspace and the workspace scope key; the scope key is now allowed dead only in a build without `code-search` and `memory` (#225)
+- The file map layout (`blob_layout`) stays `1` with the delta log: 0.34.0 reads and rewrites a map this release wrote instead of refusing it as a newer basemind's (so its blob sweep counts the blobs the base names instead of passing the view over and reaping them), and a base it rewrote is read here without the log, which no longer matches it (#468)
+- The file map layout (`blob_layout`) is `2`: an older basemind refuses a map that depends on `index.delta` as a newer one instead of reading the base without its log, and this one rebuilds a layout-1 map over the blobs already stored (#468)
+- The `git_log` `symbol` description says a body comparison ignores comments and whitespace, so a formatter-only rewrite that `git log -L` lists is not reported; `hash_mode` on `symbol_history` is unchanged (#480)
+- Every `limit` argument's description states its maximum, so no limit is capped silently (#261)
+- The JS/TS resolver reads each `tsconfig.json` and `package.json` from disk once per stitch instead of once per importing file; the files are still recorded as probes for every importer (#315). Parsing is not yet shared across importers.
+- **BREAKING:** a `git_log` list row is `{sha, author, date, subject}` with a 12-digit sha, and no list names its files unless `files: true` is passed; `basemind git log` and `recent` take `--files` (#456)
+- `git_log`, `git_blame`, `code_symbols`, `code_refs`, `docs_search` and `code_search` write their text block as TOON, or as compact JSON when that is shorter, so a commit list is one table (#456)
+
+### Changed
+
+- The blob store shards each namespace after `v34` into 256 buckets by the first two hex digits of the hash, and a file-view build no longer stats every blob; the `v34` namespace stays flat, because 0.34.0 reads it and looks for flat names only, and a blob found in the other layout of a namespace moves into place on first read, no rescan needed (#285)
+- The blob store shards each namespace into 256 buckets by the first two hex digits of the hash, and a file-view build no longer stats every blob; flat blobs migrate on first read, no rescan needed (#285)
+- The fast first scan now tracks documents whose embeddings are still to come, so they are searchable by text as soon as it ends; the background pass embeds them, reports `embeddings {done, total, eta_secs}` in `index_status`, makes `docs_search` carry a notice while vectors are pending, and a restarted background server resumes it in batches that leave the index readable between them (#454; a one-shot command does not).
+
+### Added
+
+- `git_log` searches commit messages and authors tolerantly (typos, identifier parts, the start of the last word, authors by subsequence), lists exact matches first and the loose ones in `fuzzy`, combines `query` / `author` with `path`, `since` and `until`, and names the nearest paths of the history when `path` is not in it (#457). The git-history index schema moves, so the next scan rebuilds it.
+- `docs_search` takes `per_doc` (default 2) so one document does not fill a page, and `context` to add the chunk before and after each hit, which is off by default (#474).
+
+### Changed
+
+- `docs_search` merges chunks of one document that touch or overlap into one hit wherever they rank, and no neighbouring chunk is repeated across hits (#474).
+
+### Fixed
+
+- `code_refs` callers and references scan on past an empty examined-keys window (up to four) until the first call site, so a name with one caller no longer returns `total: 0` with `truncated` and a cursor (#478)
+- The Windows comms daemon keeps a spare listening pipe instance, so a client no longer gets `ERROR_PIPE_BUSY` for the whole connect window when the daemon is slow to create the next instance (#446)
+- `code_search` merges overlapping chunks of one symbol into one hit (#479).
+- `code_search` and `docs_search` no longer set `truncated` with `truncated_reason: "depth"` on a page cut by `limit`; only a page that reaches the paging depth does (#479).
+- The always-on exclude floor now drops tool and package-manager caches (`.cache`, `.terragrunt-cache`,
+  `.turbo`, `.nox`, `.yarn/cache`, `*.egg-info`, `.cargo/registry`, `.eslintcache`, `.coverage`, ...)
+  and lockfiles (`*.lock`, `go.sum`, `package-lock.json`, `pnpm-lock.yaml`, `.terraform.lock.hcl`, ...);
+  `[scan] floor_allow` re-includes any of them (#458)
+- `[documents]` lists (`include`, `exclude`, `embed_include`, `embed_exclude`) accept `!pattern` re-includes with gitignore semantics: the last matching entry decides (#458).
+- `[scan] test_globs`, the one list of test paths (`tests/`, `__tests__/`, `*_test.*`, `*.spec.*`, `conftest.py`, `e2e/`, `mocks/`, `fixtures/`, `*.stories.*`, `*.snap`, `*.bats`, `testing/`, `playwright/`, `*Test.java`, `*_spec.rb`, ...) that stays in the code map, and that the document tier's default exclude reuses to keep them out of RAG (#458).
+- `basemind init` detects the document scope: it counts document-like files per extension, writes `[documents] include` and `exclude` as plain glob lists, and asks keep, exclude or skip for scratch-like directories (`--yes` excludes only the large ones) (#458).
+- `[documents.ocr] enabled`, off by default (#458).
+- `[scan] list_only`: lockfiles (by name, so `pnpm-lock.yaml` and `.terraform.lock.hcl` too), archives, packet captures, fonts, columnar data and other binaries get a stat-only file-map entry (path, size, mtime, kind) and are never opened. `find_files` lists them with `indexed: false`, a `kind` and `bytes`, takes `indexed: true|false|any`, and `index_status` counts them per kind in `listed`; no search tool returns them. Entries take `!pattern` re-includes (#493).
+
+### Changed
+
+- The default `[documents] exclude` also drops test, fixture, mock, snapshot and e2e paths, agent instruction files and directories (`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.cursor/`, ...), and vendored or build output (`node_modules`, `vendor`, `dist`, `build`, `*.min.*`, `*.map`) (#458).
+- Images are no longer sent to OCR unless `[documents.ocr] enabled = true` (#458).
+- A malformed HTML file is no longer re-read as plain text, so markup is never chunked or embedded (#458).
+
+### Fixed
+
+- `code_search` with `lane: "semantic"` and `[code_search] embed` off is refused as unavailable, naming the setting, instead of returning an empty ranking that reports the vector lane as run (#473).
+
+### Fixed
+
+- Files named `Dockerfile`, `Dockerfile.<suffix>`, `Containerfile`, `Makefile`, `Jenkinsfile`, `CMakeLists.txt`, `Gemfile`, `Rakefile`, `Vagrantfile`, `BUILD` and `WORKSPACE` are classified by file name in any directory, so language filters and `index_status` counts include them (#475).
+
+### Fixed
+
+- A successful MCP `tools/call` answer carries its payload once, in the text block, instead of again as `structuredContent` (#481).
+
+### Fixed
+
+- Constant outline signatures read `const NAME = value` per member in TypeScript, TSX, JavaScript, Go and Python, and Go `const`/`var` group members each take their own span instead of repeating the group (#472).
+
+### Added
+
+- HCL and Terraform files expose symbols: `resource` and `data` blocks, `variable`, `output`, `module`, `provider` and `terraform` blocks and every `locals` entry in `*.tf` and `*.hcl`, with Terragrunt `include`, `dependency` and `inputs`; the signature is the block header (`resource "aws_s3_bucket" "logs"`). Existing indexes re-extract these files on the next scan (#215)
+
+### Fixed
+
+- A newer release minor no longer wipes the group index a running older release reads: from 0.35 on each minor keeps its group index in `cache/groups/<group>/v<minor>/`, the cache sweep reaps an older one once no process of that release runs and it has sat unwritten for `BASEMIND_PRUNE_AFTER_DAYS` (#447)
+
+### Fixed
+
+- A config edit that changes nothing a scan reads (a new `basemind.toml` holding the defaults, an `[mcp]` tweak, a comment) no longer sheds the daemon's read stack, so it no longer starts a whole-repository catch-up pass and `index_status` stays `ready`; a stack is rebuilt once a connection finds it built under scan settings or a `watch.debounce_ms` that have since changed (#459).
+
+### Fixed
+
+- A package `__init__.py` with `from . import a, b` is no longer a one-file import cycle: the names resolve to the submodules, and a file is never its own import target (#476).
+
+### Fixed
+
+- A copy of the binary not named `basemind` no longer makes the MCP connect retry for about a minute.
+  The refusal to spawn a daemon from it ("not a `basemind` binary ... Set
+  `BASEMIND_DAEMON_BINARY`") is now fatal to the relay and is reported at once (#437).
+
+### Fixed
+
+- A view keeps only its newest two `index.msgpack.unreadable-<secs>` set-asides; older ones are reaped after a week (#434).
+
+### Changed
+
+- The working-tree status is cached per worktree and served until the index, `HEAD` or a watcher batch changes it (or five seconds pass), so repeated `changed`-scoped and `git_diff` status calls on a large checkout run one status (#284).
+
+### Changed
+
+- An incremental pass appends the file-map entries it changed to a delta log (`index.delta`) instead of rewriting `index.msgpack`; a full write happens on the first flush, on a full scan and once the log outgrows a quarter of the base. `ScanReport::file_map_bytes_written` reports the bytes (#278).
+
+### Fixed
+
+- A watcher batch that retires a content no longer decodes every sibling worktree's file map: each view's holds are cached until that view writes again (#277).
+- A file map whose delta log exists but cannot be read is an error instead of the stale base, and the holds cache is invalidated when a log is replaced by one of the same length (#277, #278).
+- The git-history index stores every commit reachable from any worktree HEAD once and answers each HEAD from its own reachability, so linked worktrees on other branches get indexed (not `partial`) history, and a HEAD that diverges or is rewritten appends only its new commits instead of wiping and rebuilding the index (#283). The first sync after upgrading rebuilds the index once. A head whose commits the index cannot prove to list in the live walk's order (for example one that merges commits indexed for other heads) is answered by the live walk.
+
+### Fixed
+
+- The plugin launcher releases its install lock before it execs a binary another launch installed while it waited (#435)
+
+### Fixed
+
+- The publish gate ignores the failed jobs of the reusable build from an earlier attempt of a release, and `publish.yaml`'s job graph, release-notes cap and gate names are covered by tests (#449).
+- A Windows CI leg on every pull request tests the documents, code-intel, memory and comms features (#276).
+- `basemind serve --lead --agents-policy <file>` reads the operator's agent-launch policy from a
+  throwaway file, so an `agent_launch` round trip can be verified on a live host (#436).
+- `basemind code impact --symbol` lists the callers of a symbol up to `--depth` hops, each graded by how it was resolved (a `name_only` match is never proven or followed), the calls the symbol makes, and the files the target imports (#121)
+- `basemind code impact` buckets every impacted file as prod, config, test or external with counts per bucket, lists the order of work (targets first, then nearest files, prod before tests), and `--fail-above <n>` exits 1 when more than `n` files are impacted (#209)
+
+### Changed
+
+- The Hermes plugin keeps one `basemind serve` session per working directory instead of starting
+  one per `basemind_call`, skips its per-turn inbox read while no comms daemon of the binary's
+  generation accepts connections (no process spawn when idle on Linux and macOS; Windows keeps the
+  CLI read), gives that read 2 seconds instead of 6, and checks `basemind --version` once, injecting a notice for a missing binary or another minor version
+  (#330).
+- Python imports resolve through ty's module resolver (`ty_module_resolver` 0.0.23) through the
+  `code-intel-python` feature (included in `code-intel` and `full`), with the path arithmetic as the
+  fallback: `src` layout, namespace and stub-only packages, and a project nested in a monorepo
+  (`services/billing/app/main.py` importing `app.models`) now give import-graph edges, importers and
+  resolved callers. An index stitched by the other resolver is re-stitched on its next scan (#455).
+- The value-gate corpus covers Python, TypeScript, Go and Java: `click`, `got`, `cobra`, `gson` and the polyglot `restate-examples` are pinned beside basemind and tokio, `gen_tasks.sh` emits each language's tasks (`gen_structural.py` adds TypeScript, Go and Java `symbols`, `references` and `dependents` gold, and `gate.py` requires them per language; TypeScript `impact` / `cycles` gold now follows barrels and `index` files), and `gate.py` reports recall per language (#313).
+- The hardening workflow soaks `llvm-project`, `kibana`, `tensorflow` and `terraform-provider-aws` at pinned commits with 20 worktrees and 30 sessions, judging resident memory, per-save cost, bytes per added worktree, lock waits, answer staleness, the retire sweep and `index.msgpack` writes (#211).
+
 ## [0.34.0] - 2026-11-22
 
 **The first scan after upgrading rebuilds every index and the blob store.** `RELEASE_MINOR` goes 33

@@ -34,7 +34,7 @@ Everything else lives in the directories below. Removing them and the install re
 | Path | Holds |
 |---|---|
 | `BASEMIND_COMMS_DIR`, else `comms/` under the platform data directory above | Agent threads, messages and the agent roster, the daemon's socket and `daemon.log`. `BASEMIND_DATA_HOME` does not move it. |
-| `~/.config/basemind/agents.toml` (Linux and other Unixes), `~/Library/Application Support/basemind/agents.toml` (macOS), `%APPDATA%\basemind\config\agents.toml` (Windows) | The operator's agent-launch policy. On Unix the home directory comes from the user database, not `HOME` or `XDG_CONFIG_HOME`. |
+| `~/.config/basemind/agents.toml` (Linux and other Unixes), `~/Library/Application Support/basemind/agents.toml` (macOS), `%APPDATA%\basemind\config\agents.toml` (Windows) | The operator's agent-launch policy. On Unix the home directory comes from the user database, not `HOME` or `XDG_CONFIG_HOME`; `basemind serve --lead --agents-policy <absolute file>` reads another file instead. |
 | `$XDG_CACHE_HOME/basemind/`, else `~/.cache/basemind/` | Downloaded binaries: `versions/<version>/` (plugin launcher), `bin/<version>/` (plugin launchers up to 0.33), `<version>/` (pip wrapper). |
 | `$XDG_RUNTIME_DIR/basemind/`, else `${TMPDIR:-/tmp}/basemind-<uid>/` | Per-session markers of the plugin hooks and the status line. |
 | `~/.claude/settings.json` | The `statusLine` entry `/bm-statusline` writes. |

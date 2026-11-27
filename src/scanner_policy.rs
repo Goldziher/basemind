@@ -40,7 +40,7 @@ pub(crate) fn reconcile(store: &mut Store, config: &Config, filters: &Filters, s
     let mut applied = true;
     #[cfg(feature = "code-search")]
     {
-        applied &= crate::scanner_code::purge_unembedded_code(store, config, filters, scope);
+        applied &= crate::scanner_code::purge_unembedded_code(store, config, filters);
     }
     #[cfg(feature = "documents")]
     {
@@ -49,8 +49,10 @@ pub(crate) fn reconcile(store: &mut Store, config: &Config, filters: &Filters, s
             .documents
             .purge_unembedded(store, config, filters, scope);
     }
+    #[cfg(not(feature = "documents"))]
+    let _ = scope;
     #[cfg(not(any(feature = "code-search", feature = "documents")))]
-    let _ = (store, config, filters, scope);
+    let _ = (store, config, filters);
     applied
 }
 

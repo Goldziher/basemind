@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# shellcheck source=scripts/harden_fetch.sh
+source "$(dirname "$0")/harden_fetch.sh"
+
 ROOT="${BASEMIND_HARDEN_ROOT:-/tmp/basemind-harden}"
 RESULTS="${ROOT}/results.ndjson"
 FEATURES="${BASEMIND_HARDEN_FEATURES-full}"
@@ -65,20 +68,7 @@ for entry in "${REPOS[@]}"; do
   echo "== ${name}"
   echo "================================================================"
 
-  if [ "$(git -C "${dest}" rev-parse HEAD 2>/dev/null || true)" != "${commit}" ]; then
-    echo "==> fetching ${url} at ${commit}${depth:+ (depth ${depth})} → ${dest}"
-    rm -rf "${dest}"
-    git init -q "${dest}"
-    git -C "${dest}" remote add origin "${url}"
-    git -C "${dest}" fetch -q ${depth:+--depth="${depth}"} origin "${commit}"
-    git -C "${dest}" checkout -q --detach FETCH_HEAD
-    [ "$(git -C "${dest}" rev-parse HEAD)" = "${commit}" ] || {
-      echo "error: ${dest} is not at the pinned ${commit}" >&2
-      exit 1
-    }
-  else
-    echo "==> reusing the clone at ${dest} (${commit})"
-  fi
+  harden_fetch "${name}" "${url}" "${commit}" "${depth}" "${dest}"
 
   ok=1
   if [ -z "${BASEMIND_HARDEN_SKIP_SUITE:-}" ]; then

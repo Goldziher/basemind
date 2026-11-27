@@ -19,10 +19,9 @@ impl BasemindServer {
         title = "Commit history",
         description = "Use instead of `git log`/`git show` for \"what changed recently\", \"what \
         touched this file or function\" or \"which commit mentions X\". `{}` lists recent commits; \
-        `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. Rows: `\"<sha> <summary>\"`, \
-        `[introduced]`/`[removed]` for a symbol; recent and directory lists add `files` (sha to \
-        path to change). `rev`: one commit whole. Symbol and directory history is read in commit \
-        batches: an empty page with `next_cursor` is not the end. \
+        `path`, `query`/`author`, `path`+`symbol` or `rev` narrow it. Rows: sha (12), author, \
+        date, subject; `[introduced]`/`[removed]` for a symbol. Symbol and directory history is \
+        read in batches: an empty page with `next_cursor` is not the end. \
         Example: {\"path\":\"src/store.rs\",\"limit\":5}",
         annotations(
             read_only_hint = true,

@@ -120,3 +120,94 @@ fn a_registration_error_that_is_not_the_limit_is_not_counted() {
     watches.publish(&health);
     assert_eq!((health.held(), health.unwatched()), (0, 0));
 }
+
+/// One directory per unwatched subtree is enough to rescan it: nested refusals collapse into their
+/// topmost directory, and a sibling whose name merely starts the same stays separate.
+#[test]
+fn the_unwatched_roots_are_the_topmost_refused_directories() {
+    let (_tmp, root, filter) = tree(&["a/b/c", "a-b", "d"]);
+    let mut watches = DirWatches::default();
+    let mut registry = Limited::new(0);
+    watches.sync(
+        &mut registry,
+        &filter,
+        &[root.join("a"), root.join("a-b"), root.join("d")],
+    );
+    assert!(watches.has_unwatched());
+    assert_eq!(watches.refused.len(), 5, "{:?}", watches.refused);
+    assert_eq!(
+        watches.unwatched_roots(),
+        [root.join("a"), root.join("a-b"), root.join("d")]
+    );
+}
+
+/// With no refused directory there is nothing to poll.
+#[test]
+fn a_fully_watched_tree_has_no_unwatched_roots() {
+    let (_tmp, root, filter) = tree(&["a"]);
+    let mut watches = DirWatches::default();
+    watches.sync(&mut Limited::new(10), &filter, &[root.join("a")]);
+    assert!(!watches.has_unwatched());
+    assert!(watches.unwatched_roots().is_empty());
+}
+
+/// No event reaches a directory the watch limit refused, so an edit under one is found only by the
+/// periodic pass: it forwards the unwatched directory, and the watcher's own filter keeps it.
+#[test]
+fn an_edit_under_an_unwatched_directory_is_forwarded_by_the_poll() {
+    let (_tmp, root, filter) = tree(&["watched", "unwatched/deep"]);
+    let mut watches = DirWatches::default();
+    let mut registry = Limited::new(1);
+    watches.sync(&mut registry, &filter, &[root.join("watched"), root.join("unwatched")]);
+    assert_eq!(registry.armed, [root.join("watched")]);
+
+    std::fs::write(root.join("unwatched/deep/edited.rs"), b"fn edited() {}\n").expect("write edit");
+    filter.clear_cache();
+
+    let candidates = watches.unwatched_roots();
+    assert_eq!(candidates, [root.join("unwatched")]);
+    assert!(
+        candidates.iter().all(|dir| keep_event_path(&filter, &root, dir, true)),
+        "the filter must keep the unwatched directory so the scan expands it"
+    );
+}
+
+/// The poll retries the directories the limit refused: once room exists the same pass arms them.
+#[test]
+fn the_poll_rearms_unwatched_directories_once_the_limit_has_room() {
+    let (_tmp, root, filter) = tree(&["a", "b"]);
+    let mut watches = DirWatches::default();
+    let mut registry = Limited::new(0);
+    watches.sync(&mut registry, &filter, &[root.join("a"), root.join("b")]);
+    assert!(watches.has_unwatched());
+
+    registry.capacity = 10;
+    let polled = watches.unwatched_roots();
+    watches.sync(&mut registry, &filter, &polled);
+    assert!(!watches.has_unwatched(), "{:?}", watches.refused);
+    assert_eq!(registry.armed, [root.join("a"), root.join("b")]);
+}
+
+/// The consumer sleeps without a timer unless directories are unwatched, then wakes after the poll
+/// interval.
+#[test]
+fn waiting_for_a_message_honours_the_poll_interval() {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<WatchMsg>(1);
+    assert!(matches!(
+        wait_for_message(&rx, Some(Duration::from_millis(10))),
+        Wake::Idle
+    ));
+    tx.send(WatchMsg::Shutdown).expect("send");
+    assert!(matches!(wait_for_message(&rx, None), Wake::Message(WatchMsg::Shutdown)));
+    tx.send(WatchMsg::Shutdown).expect("send");
+    assert!(matches!(
+        wait_for_message(&rx, Some(Duration::from_secs(5))),
+        Wake::Message(WatchMsg::Shutdown)
+    ));
+    drop(tx);
+    assert!(matches!(wait_for_message(&rx, None), Wake::Closed));
+    assert!(matches!(
+        wait_for_message(&rx, Some(Duration::from_secs(5))),
+        Wake::Closed
+    ));
+}

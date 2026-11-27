@@ -422,7 +422,13 @@ def main() -> int:  # noqa: C901, PLR0915
         )  # noqa: S603,S607
         targets.append(("repo", dest, iso2))
 
-    extra = {"RAYON_NUM_THREADS": str(args.threads), **dict(kv.split("=", 1) for kv in args.env)}
+    # A one-shot scan hands owed embeddings to a detached worker that outlives the checked process;
+    # the check wants the scan's own heap, so it embeds in the scan.
+    extra = {
+        "RAYON_NUM_THREADS": str(args.threads),
+        "BASEMIND_EMBED_BACKGROUND": "false",
+        **dict(kv.split("=", 1) for kv in args.env),
+    }
     iso_g = Isolation("leaks-grammars")
     isolations.append(iso_g)
     grammars = extra.get(GRAMMAR_CACHE_ENV) or os.environ.get(GRAMMAR_CACHE_ENV)

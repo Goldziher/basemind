@@ -42,9 +42,9 @@ pub(super) const BLAME_LIMIT_MAX: u32 = 1000;
 /// Blame hunks per page when the caller passes no `limit`.
 pub(super) const BLAME_LIMIT_DEFAULT: u32 = 100;
 
-/// Hex digits of a commit sha in a `git_log` list. Twelve is the abbreviation the Linux kernel
-/// settled on: a prefix that long names one commit in any repository of a realistic size, and every
-/// tool that takes a revision resolves it.
+/// Hex digits of a commit sha in a `git_log` list. Twelve keep a listed prefix unique in a monorepo
+/// of millions of commits, so a row always opens its own commit through `rev`; a shorter prefix can
+/// collide and then fails to resolve or opens another commit. The same length a blame row uses.
 pub(super) const SHA_ABBREV: usize = 12;
 
 /// `sha` cut to [`SHA_ABBREV`] hex digits.
@@ -60,7 +60,7 @@ pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> 
                 .into_iter()
                 .map(|(path, kind)| CommitFileView {
                     path,
-                    change: kind.as_str(),
+                    change: kind.as_str().into(),
                 })
                 .collect(),
         )
@@ -71,7 +71,6 @@ pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> 
         sha: abbreviated_sha(c.sha),
         summary: c.summary,
         author: c.author,
-        with_author: false,
         author_time_unix: c.author_time_unix,
         files,
     }
@@ -83,25 +82,32 @@ pub(super) fn require_git_repo(ws: &Workspace) -> Result<&Arc<crate::git::Repo>,
     })
 }
 
-/// The git-history index, but only when it is present AND indexes exactly the current `head`.
-/// History tools use it as a pure accelerator: a stale or absent index returns `None`, and the
-/// caller falls back to the live walk, so a result is never served from a HEAD the index hasn't
-/// caught up to (or from a rewritten history). An index built in a shallow clone since deepened is
-/// stale too, though it indexes `head`: it ends at the old boundary. A stale index asks for a sync
-/// ([`Workspace::request_history_sync`]), so a commit made while the server runs is indexed for the
-/// calls after it.
+/// The git-history index as `head` sees it, but only when the index holds `head` as an ordered tip. History
+/// tools use it as a pure accelerator: a head the index has not caught up to (another worktree's, a
+/// commit made while the server runs) or an absent index returns `None`, and the caller falls back to
+/// the live walk, so a result is never served from a HEAD the index lacks. An index built in a shallow
+/// clone since deepened is stale too, though it holds `head`: it ends at the old boundary. A missing
+/// head asks for a sync ([`Workspace::request_history_sync`]), so a commit made while the server runs
+/// is indexed for the calls after it.
 pub(super) fn git_history_if_fresh<'a>(
     ws: &'a Workspace,
     head: &str,
-) -> Option<&'a crate::git_history::GitHistoryIndex> {
+) -> Option<crate::git_history::reader::HistoryAt<'a>> {
     let index = ws.git_history.as_deref()?;
     let deepened = || {
         ws.repo
             .as_deref()
             .is_some_and(|repo| crate::git_history::builder::root_deepened(index, repo))
     };
-    if index.last_indexed_head_hex().as_deref() == Some(head) && !deepened() {
-        return Some(index);
+    if let Some(view) = index.at(head)
+        && !deepened()
+    {
+        return Some(view);
+    }
+    // A tip the index holds but cannot return in the live walk's order is read live; a sync would
+    // change nothing for it.
+    if index.has_tip(head) && !deepened() {
+        return None;
     }
     ws.request_history_sync();
     None

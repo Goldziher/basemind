@@ -77,6 +77,9 @@ pub(super) fn retrieve(
     let (seeds, report): (Vec<CodeSearchHit>, LaneReport) = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
         hybrid_hits(ws, &query, depth, cancelled)?
     } else if mode.eq_ignore_ascii_case("semantic") {
+        if !ws.config.code_search.embed {
+            return Err(embeddings_off_refusal());
+        }
         (
             semantic_hits(ws, &query, depth, SEMANTIC_MEANWHILE)?,
             LaneReport::ran_only("vector"),
@@ -123,8 +126,65 @@ pub(super) fn retrieve(
     })
 }
 
+/// `hits` with the chunks of one symbol that overlap in a file merged into one hit: the chunks of a
+/// long function overlap by a few lines and each ranks on its own. The merged hit is the best-ranked
+/// chunk (first in `hits`) with the union of the lines and bytes the chunks cover, at its rank.
+pub(super) fn merge_overlapping(hits: Vec<CodeSearchHit>) -> Vec<CodeSearchHit> {
+    let mut merged: Vec<CodeSearchHit> = Vec::with_capacity(hits.len());
+    for hit in hits {
+        let Some(first) = merged.iter().position(|kept| overlaps(kept, &hit)) else {
+            merged.push(hit);
+            continue;
+        };
+        absorb(&mut merged[first], hit);
+        // The union may now reach later kept hits (a chunk bridging two earlier ones): fold them in
+        // too, so the kept hits never overlap. The kept hits did not overlap one another, so every
+        // hit the union reaches ranks after `first`, the earliest-ranked, which stays the hit.
+        while let Some(offset) = merged[first + 1..]
+            .iter()
+            .position(|kept| overlaps(kept, &merged[first]))
+        {
+            let bridged = merged.remove(first + 1 + offset);
+            absorb(&mut merged[first], bridged);
+        }
+    }
+    merged
+}
+
+/// Whether two chunks are of one symbol of one file and share lines.
+fn overlaps(a: &CodeSearchHit, b: &CodeSearchHit) -> bool {
+    a.path == b.path
+        && a.symbol == b.symbol
+        && a.kind == b.kind
+        && b.line_start <= a.line_end
+        && a.line_start <= b.line_end
+}
+
+/// Widen `kept` to the lines and bytes `hit` covers and take the paths `hit` is also at.
+fn absorb(kept: &mut CodeSearchHit, hit: CodeSearchHit) {
+    kept.line_start = kept.line_start.min(hit.line_start);
+    kept.line_end = kept.line_end.max(hit.line_end);
+    kept.byte_start = kept.byte_start.min(hit.byte_start);
+    kept.byte_end = kept.byte_end.max(hit.byte_end);
+    for path in hit.also_at {
+        if !kept.also_at.contains(&path) {
+            kept.also_at.push(path);
+        }
+    }
+}
+
 /// Why a hybrid search ran without its vector lane when `[code_search] embed` is off.
 const EMBEDDINGS_OFF: &str = "embeddings are off: set `[code_search] embed = true` and run `index_rescan`";
+
+/// The refusal of a semantic-only search while `[code_search] embed` is off: there is no vector lane
+/// to fall back on, and an empty list would claim it was searched.
+fn embeddings_off_refusal() -> EngineError {
+    EngineError::unavailable(format!(
+        "`code_search` lane \"semantic\": {EMBEDDINGS_OFF}. No search ran; this is not an empty result set. \
+         {}",
+        SEMANTIC_MEANWHILE.unwrap_or_default()
+    ))
+}
 
 /// Whether `ranking` may be kept for the pages and repeats that follow: a degraded or empty answer
 /// is the one most likely to differ a moment later. A vector lane the configuration turned off is
@@ -318,9 +378,10 @@ const SEMANTIC_MEANWHILE: Option<&str> = Some(
      lanes and names the vector lane in `lanes_unavailable`.",
 );
 
-/// Semantic lane: embed the query and run vector KNN over the scope-filtered LanceDB `code_chunks`
-/// table. Each hit carries an L2 `distance` (lower = closer) and no BM25 `score`. A vector store
-/// that is unavailable is refused, ending with `meanwhile`.
+/// Semantic lane: embed the query and run vector KNN over the LanceDB `code_chunks` table, restricted
+/// to the contents this view's file map names (the table is the repository group's). Each hit
+/// carries an L2 `distance` (lower = closer) and no BM25 `score`. A vector store that is unavailable
+/// is refused, ending with `meanwhile`.
 fn semantic_hits(
     ws: &Workspace,
     query: &str,
@@ -331,8 +392,9 @@ fn semantic_hits(
     let lance = ws
         .lance_store()
         .map_err(|unavailable| unavailable.refusal("code_search", meanwhile))?;
+    let live = ws.store_read().live_content_hashes(crate::lance::CODE_LIVE_PREFILTER);
     let hits_raw = lance
-        .search_code_chunks(&ws.scope, embedding, limit)
+        .search_code_chunks(embedding, limit, live.as_deref())
         .map_err(|e| EngineError::internal(format!("search_code_chunks: {e}")))?;
 
     // A row's own path and metadata are not used: the chunk and its live paths are resolved by

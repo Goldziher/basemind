@@ -347,11 +347,17 @@ fn authors_whose_names_are_not_utf8_stay_distinct() {
         .output()
         .expect("run basemind git log");
     let log = json(&log);
-    let rows: Vec<&str> = log["commits"]
+    let rows: Vec<String> = log["commits"]
         .as_array()
         .unwrap_or_else(|| panic!("commits: {log}"))
         .iter()
-        .map(|row| row.as_str().unwrap().split_once(' ').unwrap().1)
+        .map(|row| {
+            format!(
+                "{}: {}",
+                row["author"].as_str().unwrap(),
+                row["subject"].as_str().unwrap()
+            )
+        })
         .collect();
     assert_eq!(rows, ["Josè Ruiz: change 0", "José Ruiz: change 2"], "{log}");
 }

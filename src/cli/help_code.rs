@@ -136,6 +136,8 @@ When to use: you know part of a file's name or path but not where it lives.
 
 Returns: matching paths, code and documents alike, a query with one typo included. With no query
 it lists indexed files; `--min-lines` lists code files of at least that many lines, largest first.
+`--indexed true|false|any` picks files whose contents are indexed, list-only files
+(lockfiles, archives), or both.
 
 Example:
   basemind code find readme
@@ -172,6 +174,8 @@ When to use: before changing a file, a symbol or a branch, to see what depends o
 Returns: the files that import the target, transitively up to `--depth` levels (default 1, at most
 5), each with its depth and whether it sits in an import cycle. The target is a file, a symbol
 (`--symbol`), a change (`--diff <rev>`, `--diff A..B`) or the uncommitted changes (`--changed`).
+Each impacted file is bucketed prod, config, test or external with counts, and `order` says what to
+change first. `--fail-above <n>` exits 1 when more than `n` files are impacted.
 
 Example:
   basemind code impact src/store.rs --depth 2

@@ -95,6 +95,16 @@ const SYMBOL: &str = "the shorthand's positional `name` is the tool's `symbol`";
 
 pub fn all() -> Vec<Exception> {
     vec![
+        shape(
+            "code find",
+            "indexed",
+            "the tool takes `true`, `false` or `any` in one flat field; the CLI takes the three words",
+        ),
+        values(
+            "code find",
+            "indexed",
+            "the tool's schema lists only `any` as an enum value so that it stays one flat type",
+        ),
         // ---- renamed arguments ----
         alias("memory put", "tag", "tags", REPEATABLE),
         alias("memory search", "tag", "tags", REPEATABLE),

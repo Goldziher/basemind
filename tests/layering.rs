@@ -60,6 +60,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("data_root", Core),
     ("deps_docs", Core),
     ("disk_space", Core),
+    ("embed_progress", Core),
     ("embeddings", Retrieval),
     ("engine", Engine),
     ("eval", Root),
@@ -117,9 +118,11 @@ const LAYERS: &[(&str, Layer)] = &[
     ("store", Core),
     ("store_blob", Core),
     ("store_blob_codec", Core),
+    ("store_blob_layout", Core),
     ("store_cache_admin", Core),
     ("store_doc_tombstone", Core),
     ("store_gc", Core),
+    ("store_key_order", Core),
     ("store_gc_budget", Core),
     ("store_gc_groups", Core),
     ("scanner_hold", Core),
@@ -160,7 +163,11 @@ const FORBIDDEN_CRATES: &[(Layer, &[&str])] = &[
 /// code. `<target>` is the module named (or `extern <crate>`). Remove an entry when its edge is cut.
 /// The `src/engine` edges are the interim ones of ADR-0039, each removed by the engine-unification
 /// step named beside it.
-const KNOWN_VIOLATIONS: &[&str] = &["src/config/validate.rs -> extern jsonschema", "src/store.rs -> lance"];
+const KNOWN_VIOLATIONS: &[&str] = &[
+    "src/config/validate.rs -> extern jsonschema",
+    "src/store.rs -> lance",
+    "src/store_vector_tests.rs -> lance [test]",
+];
 
 /// One module of the library: its path, the file holding it, whether it is test-only or a test hook
 /// (under the `test-support` feature, it or a module enclosing it), the names of its child modules
@@ -1237,7 +1244,7 @@ fn retired_symbols_stay_gone() {
 /// definition; an embedder overrides both in code.
 const ALLOWED_ENV_READS: &[(&str, usize)] = &[
     ("src/config/agents_policy.rs -> directories::ProjectDirs::from", 1),
-    ("src/config/documents.rs -> std::env::var", 1),
+    ("src/config/secrets.rs -> std::env::var", 1),
     ("src/data_root.rs -> directories::ProjectDirs::from", 1),
 ];
 

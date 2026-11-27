@@ -59,11 +59,22 @@ fn not_ready(ws: &Workspace) -> Option<EngineError> {
 
 /// The innermost definition of `path` whose lines hold `line`.
 pub(super) fn symbol_at(ws: &Workspace, path: RelPath, line: u32) -> Result<Chosen, EngineError> {
+    symbol_matching(ws, path, line, None)
+}
+
+/// The innermost definition of `path` named `name` whose lines hold `line`: two definitions on
+/// one line are told apart by name.
+pub(super) fn symbol_named_at(ws: &Workspace, path: RelPath, name: &str, line: u32) -> Result<Chosen, EngineError> {
+    symbol_matching(ws, path, line, Some(name))
+}
+
+fn symbol_matching(ws: &Workspace, path: RelPath, line: u32, name: Option<&str>) -> Result<Chosen, EngineError> {
     let loaded = load(ws, &path)?;
     let symbols = &loaded.l1.symbols;
     let holding = symbols
         .iter()
         .enumerate()
+        .filter(|(_, symbol)| name.is_none_or(|wanted| symbol.name == wanted))
         .filter(|(_, symbol)| {
             let (first, last) = line_span(symbol, Some(&loaded.bytes));
             (first..=last).contains(&line)

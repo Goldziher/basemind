@@ -349,7 +349,7 @@ pub fn ensure_free_space(group_dir: &Path) -> Result<(), InsufficientSpace> {
 /// A [`SpaceEstimate`] for `group_dir` as it is on disk now, under the configured headroom.
 pub fn current_estimate(group_dir: &Path, source_bytes: u64, vectors: bool) -> SpaceEstimate {
     SpaceEstimate {
-        index_bytes: dir_bytes(&group_dir.join(crate::index::INDEX_DIR)),
+        index_bytes: dir_bytes(&crate::store_layout::group_index_path_in(group_dir)),
         source_bytes,
         vectors,
         headroom_bytes: crate::config::engine::with(|config| config.min_free_bytes),

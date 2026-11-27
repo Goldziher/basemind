@@ -76,7 +76,7 @@ pub(crate) struct FileMeta {
     pub(crate) lines: u32,
 }
 
-/// Sorted view of every indexed file that has a readable L1 blob.
+/// Sorted view of every indexed file.
 ///
 /// Sorted because `list_files`, `find_files` and the completion surface all document path order as
 /// their pagination order; an unordered view would make cursors non-deterministic. Paged
@@ -88,20 +88,16 @@ pub(crate) struct FileIndexView {
 }
 
 impl FileIndexView {
-    /// Project the store's index into the view, keeping only files whose L1 blob is actually
-    /// present.
-    ///
-    /// The existence probe is what preserves the previous semantics exactly: the old build
-    /// `filter_map`ped away any file whose blob failed to read, so a blob-less index entry was
-    /// invisible to every consumer. Probing costs one `stat` per file instead of the full read +
-    /// msgpack decode the old build paid, so this is strictly cheaper than what it replaces.
+    /// Project the store's index into the view. The file map is trusted: no blob is probed, so a
+    /// build over the whole index costs no filesystem call per file. A blob found missing when an
+    /// outline is faulted in (see [`L1Cache`]) is served as absent and logged as a hint to rescan.
     pub(crate) fn build(store: &crate::store::Store) -> Self {
         use rayon::prelude::*;
         let files: Vec<(RelPath, FileMeta)> = store
             .index
             .files
             .par_iter()
-            .filter_map(|(path, entry)| has_blob(store, entry).then(|| (path.clone(), FileMeta::from(entry))))
+            .map(|(path, entry)| (path.clone(), FileMeta::from(entry)))
             .collect();
         Self {
             files: PagedMap::from_unsorted(files),
@@ -109,8 +105,7 @@ impl FileIndexView {
     }
 
     /// The paths a [`build`](Self::build) over `store` would map differently from this view:
-    /// `updated` are in `store`'s index and absent here or projected differently (a path left out
-    /// for a missing blob is re-probed), `removed` are here and no longer in the index.
+    /// `updated` are in `store`'s index and absent here or projected differently, `removed` are here and no longer in the index.
     ///
     /// [`with_delta`](Self::with_delta) over exactly these paths yields the view `build` would. The
     /// comparison allocates nothing for an unchanged path, so a refresh whose scan changed a
@@ -172,24 +167,13 @@ impl FileIndexView {
     pub(crate) fn with_delta(&self, store: &crate::store::Store, updated: &[RelPath], removed: &[RelPath]) -> Self {
         let removals = removed.iter().map(|path| (path.clone(), None));
         let updates = updated.iter().map(|path| {
-            let meta = store
-                .index
-                .files
-                .get(path)
-                .filter(|entry| has_blob(store, entry))
-                .map(FileMeta::from);
+            let meta = store.index.files.get(path).map(FileMeta::from);
             (path.clone(), meta)
         });
         Self {
             files: self.files.patched(removals.chain(updates)),
         }
     }
-}
-
-/// Whether `entry`'s L1 blob is present in `store`'s blob directory: the files a
-/// view maps, since the old whole-corpus build dropped a file whose blob failed to read.
-pub(crate) fn has_blob(store: &crate::store::Store, entry: &crate::store::FileEntry) -> bool {
-    store.blob_path_fm_hex(&entry.hash_hex).is_file()
 }
 
 impl FileMeta {
@@ -243,14 +227,22 @@ struct Charged {
 ///
 /// Shared (behind an [`Arc`]) by every [`MapCache`](crate::engine::MapCache) snapshot derived from one
 /// another, so a watcher rescan does not throw away a warm cache or transiently double its
-/// residency.
+/// residency. A daemon shares one further, across every read stack it hosts over the same blob
+/// directory ([`crate::engine::l1_shared`]).
 pub(crate) struct L1Cache {
     /// Global content-addressed blob directory. Reading a blob needs nothing but this path, which
     /// is why a miss can be served without ever taking the store lock.
     blobs_dir: PathBuf,
-    /// Byte ceiling for decoded values; `0` means unbounded (the pre-split behaviour).
-    budget_bytes: u64,
+    /// Byte ceiling for decoded values; `0` means unbounded (the pre-split behaviour). Atomic
+    /// because a cache shared by several read stacks ([`crate::engine::l1_shared`]) is widened to
+    /// the largest budget any of them configures.
+    budget_bytes: AtomicU64,
     inner: Mutex<Charged>,
+    /// Whether a rescan drops the outlines its own view stopped naming
+    /// ([`forget_superseded`](Self::forget_superseded)). Off for a cache several read stacks share:
+    /// content one stack replaced is usually still named by a sibling worktree, and the shared LRU
+    /// ages out what no stack reads any more.
+    forgets_superseded: bool,
     /// Cumulative miss count. Diagnostic only — a test asserts a small budget really does force
     /// misses, so an "equivalent output" claim is not silently vacuous.
     misses: AtomicU64,
@@ -260,12 +252,21 @@ impl L1Cache {
     pub(crate) fn new(blobs_dir: PathBuf, budget_bytes: u64) -> Self {
         Self {
             blobs_dir,
-            budget_bytes,
+            budget_bytes: AtomicU64::new(budget_bytes),
             inner: Mutex::new(Charged {
                 lru: LruCache::unbounded(),
                 charged: 0,
             }),
+            forgets_superseded: true,
             misses: AtomicU64::new(0),
+        }
+    }
+
+    /// A cache for several read stacks to share: superseded content is left to the LRU.
+    pub(crate) fn shared(blobs_dir: PathBuf, budget_bytes: u64) -> Self {
+        Self {
+            forgets_superseded: false,
+            ..Self::new(blobs_dir, budget_bytes)
         }
     }
 
@@ -277,6 +278,25 @@ impl L1Cache {
     /// The global content-addressed blob directory this cache reads from.
     pub(crate) fn from_store(store: &crate::store::Store, budget_bytes: u64) -> Self {
         Self::new(store.blobs_dir.clone(), budget_bytes)
+    }
+
+    /// Raise the byte ceiling to `budget_bytes` when that is larger, `0` (unbounded) being larger
+    /// than any other. Never lowers it: a stack sharing the cache cannot shrink what another
+    /// configured.
+    pub(crate) fn widen_budget(&self, budget_bytes: u64) {
+        let widened = |current: u64| {
+            let wider = current != 0 && (budget_bytes == 0 || budget_bytes > current);
+            wider.then_some(budget_bytes)
+        };
+        let _ = self
+            .budget_bytes
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, widened);
+    }
+
+    /// The current byte ceiling; `0` is unbounded.
+    #[cfg(test)]
+    pub(crate) fn budget_bytes(&self) -> u64 {
+        self.budget_bytes.load(Ordering::Relaxed)
     }
 
     /// Bytes currently charged to the cache. Test surface for the budget assertions.
@@ -355,7 +375,13 @@ impl L1Cache {
         self.misses.fetch_add(1, Ordering::Relaxed);
         match crate::store_blob::read_l1_blob_in(&self.blobs_dir, hash_hex) {
             Ok(Some(map)) => Some(map),
-            Ok(None) => None,
+            Ok(None) => {
+                tracing::warn!(
+                    hash = hash_hex,
+                    "blob for an indexed file is missing; rescan to rebuild it"
+                );
+                None
+            }
             Err(error) => self.recover_unreadable(hash_hex, &error),
         }
     }
@@ -373,7 +399,7 @@ impl L1Cache {
             // A scan may rename a good blob over the damaged one at any moment, and an unlink by
             // path would take that one. So the file is identified, read once more, and removed
             // only if that read finds damage too and it is still the file that was read.
-            let path = self.blobs_dir.join(format!("{hash_hex}.fm.msgpack"));
+            let path = crate::store_blob_layout::locate_blob(&self.blobs_dir, hash_hex, ".fm.msgpack");
             let failed = BlobIdentity::of(&path);
             match crate::store_blob::read_l1_blob_in(&self.blobs_dir, hash_hex) {
                 Ok(replaced) => return replaced,
@@ -405,6 +431,9 @@ impl L1Cache {
     /// can reach them. A reader still on the previous snapshot reads such a blob again on a miss,
     /// which costs latency, never an answer.
     pub(crate) fn forget_superseded(&self, mut superseded: ahash::AHashSet<&str>, next: &FileIndexView) {
+        if !self.forgets_superseded {
+            return;
+        }
         for meta in next.files.values() {
             if superseded.is_empty() {
                 return;
@@ -442,10 +471,11 @@ impl L1Cache {
             guard.charged = guard.charged.saturating_sub(l1_heap_bytes(&previous));
         }
         guard.charged = guard.charged.saturating_add(bytes);
-        if self.budget_bytes == 0 {
+        let budget_bytes = self.budget_bytes.load(Ordering::Relaxed);
+        if budget_bytes == 0 {
             return;
         }
-        while guard.charged > self.budget_bytes && guard.lru.len() > 1 {
+        while guard.charged > budget_bytes && guard.lru.len() > 1 {
             let Some((_, evicted)) = guard.lru.pop_lru() else {
                 break;
             };
@@ -680,7 +710,8 @@ mod tests {
         let blobs = crate::store::global_blobs_dir();
         std::fs::create_dir_all(&blobs).unwrap();
         let hash = "d".repeat(64);
-        let path = blobs.join(format!("{hash}.fm.msgpack"));
+        let path = crate::store_blob_layout::blob_path(&blobs, &hash, ".fm.msgpack");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut torn = crate::store_blob::frame_filemap(&l1_with("a", 64), None).unwrap();
         torn.truncate(torn.len() / 2);
         std::fs::write(&path, torn).unwrap();
@@ -697,7 +728,8 @@ mod tests {
     fn an_outline_cached_before_an_epoch_refresh_is_read_again() {
         let dir = tempfile::tempdir().unwrap();
         let hash = "e".repeat(64);
-        let path = dir.path().join(format!("{hash}.fm.msgpack"));
+        let path = crate::store_blob_layout::blob_path(dir.path(), &hash, ".fm.msgpack");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let old_epoch = crate::extract::EXTRACT_EPOCH - 1;
         let mut stale = l1_with("before", 1);
         stale.extract_epoch = old_epoch;

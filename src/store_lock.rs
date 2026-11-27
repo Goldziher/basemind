@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::{LOCK_FILE, LOCK_META_FILE, StoreError};
 
+#[path = "store_lock_yield.rs"]
+pub(crate) mod embed_yield;
+
 /// Which basemind command is taking the exclusive store lock. Threaded from the caller
 /// (`scan` / `rescan` / `watch` / `serve`) into `Store::open_with_holder` so a lock
 /// contention error can name the *actual* holder rather than a hardcoded guess.
@@ -33,6 +36,9 @@ pub enum LockHolder {
     Maintenance,
     /// A one-shot CLI query with no daemon, reading the group index for the length of one command.
     Query,
+    /// The background embedding worker a one-shot `basemind scan` starts (`basemind embed-worker`).
+    /// It gives the lock up to any other writer that asks (`embed_yield`).
+    EmbedWorker,
 }
 
 impl LockHolder {
@@ -47,6 +53,7 @@ impl LockHolder {
             LockHolder::Daemon => "basemind comms daemon",
             LockHolder::Maintenance => "a basemind cache/maintenance task",
             LockHolder::Query => "a one-shot basemind query",
+            LockHolder::EmbedWorker => "basemind embed-worker",
         }
     }
 }
@@ -174,10 +181,19 @@ pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<LockGuard, StoreError>
 }
 
 /// Acquire the store lock, recording `holder` in the `.lock.meta` sidecar on success and
-/// reading the *existing* holder's sidecar on contention so the error names the live holder.
+/// reading the *existing* holder's sidecar on contention so the error names the live holder. A
+/// lock the background embedding worker holds is asked back and waited for
+/// ([`embed_yield::wait_for_worker`]), up to [`embed_yield::YIELD_WAIT`].
 pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<LockGuard, StoreError> {
     const LOCK_ATTEMPTS: u32 = 25;
-    acquire_lock_within(basemind_dir, holder, LOCK_ATTEMPTS)
+    match acquire_lock_within(basemind_dir, holder, LOCK_ATTEMPTS) {
+        Err(StoreError::Locked { holder: Some(meta), .. })
+            if holder != LockHolder::EmbedWorker && embed_yield::held_by_worker(&meta.command) =>
+        {
+            embed_yield::wait_for_worker(basemind_dir, || acquire_lock_within(basemind_dir, holder, 1))
+        }
+        outcome => outcome,
+    }
 }
 
 /// [`acquire_lock_as`] without waiting: one attempt, for a reader that answers from blobs when the

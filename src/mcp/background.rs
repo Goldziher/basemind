@@ -110,6 +110,18 @@ impl Writer {
         Ok((report.stats.scanned, report.stats.updated, report.stats.removed))
     }
 
+    /// Resume an interrupted embedding pass, reported as [`scan`](Self::scan) reports. In process it
+    /// runs in batches ([`Workspace::resume_embedding`]), so the served store stays readable between
+    /// them; a daemon-hosted workspace forwards one pass to the pool writer, whose lock is not the
+    /// one this process serves reads from.
+    fn resume_embedding(&self) -> Result<(usize, usize, usize), EngineError> {
+        if self.hosted() {
+            return self.scan(None, EmbedMode::Inline);
+        }
+        let report = self.ws.resume_embedding()?;
+        Ok((report.stats.scanned, report.stats.updated, report.stats.removed))
+    }
+
     /// Whether the catch-up should stop before its next step: the daemon is draining, or the pool no
     /// longer holds the workspace (evicted while the map warmed), which a scan would reopen only to
     /// publish to a stack nobody serves.
@@ -249,9 +261,11 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
         }
         let started = std::time::Instant::now();
         let outcome = writer.tree_pass(EmbedMode::Deferred);
+        let mut cancelled = false;
         let changed = match outcome {
             Ok(None) => {
                 tracing::debug!("catch-up cancelled: the daemon is draining");
+                cancelled = true;
                 false
             }
             Ok(Some((scanned, updated, removed))) => {
@@ -269,7 +283,11 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
                 false
             }
         };
-        if changed {
+        // The pass that just ended left the debt of every document still owed its vectors, as it
+        // does for one a killed process left: either way the embedding pass runs again.
+        let owes_vectors =
+            !cancelled && crate::embed_progress::read(&crate::store::workspace_cache_dir(&writer.ws.root)).is_some();
+        if changed || owes_vectors {
             spawn_scan_logged(writer.hosted(), "catch-up embedding pass task panicked", move || {
                 let _pin = pin;
                 if let Err(error) = writer.scan(None, EmbedMode::Inline) {
@@ -293,6 +311,30 @@ pub(super) fn spawn_catch_up(state: Arc<ServerState>, warm_first: bool) {
     } else {
         spawn_scan_logged(hosted, "catch-up scan task panicked", catch_up);
     }
+}
+
+/// Boot-time resume of an embedding pass a killed process left unfinished: the documents its scan
+/// indexed by text and left owing vectors are embedded in the background, the keyword lane serving
+/// them meanwhile. A no-op unless [`crate::embed_progress::resume_due`] finds a record nothing writes.
+pub(super) fn spawn_embedding_resume(state: Arc<ServerState>) {
+    if !crate::embed_progress::resume_due(&crate::store::workspace_cache_dir(&state.shared.root)) {
+        return;
+    }
+    tracing::info!("an earlier embedding pass was interrupted; resuming it in the background");
+    let writer = Writer::of(&state);
+    let hosted = writer.hosted();
+    spawn_scan_logged(hosted, "embedding resume task panicked", move || {
+        let started = std::time::Instant::now();
+        match writer.resume_embedding() {
+            Ok((scanned, updated, _)) => tracing::info!(
+                scanned,
+                updated,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "resumed embedding pass complete"
+            ),
+            Err(error) => tracing::warn!(%error, "resumed embedding pass failed"),
+        }
+    });
 }
 
 /// Boot-time in-RAM code-map preload, spawned once from `BasemindServer::new_with_options` when the
@@ -438,6 +480,9 @@ fn spawn_serve_watcher_thread(
             tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
             let health = &writer.ws.watch_health;
             let result = crate::watcher::watch_paths(&root, &config, health, shutdown_rx, |paths, kind| {
+                if let Some(repo) = writer.ws.repo.as_ref() {
+                    repo.invalidate_status();
+                }
                 if stopping.load(std::sync::atomic::Ordering::Acquire) {
                     tracing::debug!("serve watcher: stopping; batch not scanned");
                     return;
@@ -631,8 +676,8 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) -> WatcherGuard {
                         continue;
                     }
                 };
-                let budget = super::l1_cache::budget_bytes_from(&state.shared.config.resources);
-                let Some(new_cache) = state.shared.cache.load_full().refreshed(&new_store, budget) else {
+                let outlines = state.shared.outlines();
+                let Some(new_cache) = state.shared.cache.load_full().refreshed(&new_store, outlines) else {
                     tracing::debug!("view watcher: index rewritten but unchanged; keeping the current MapCache");
                     continue;
                 };

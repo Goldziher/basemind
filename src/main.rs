@@ -89,6 +89,12 @@ enum Cmd {
     /// edits, or to rebuild a stale/empty index without starting the server.
     #[command(after_long_help = basemind::cli::help::RESCAN)]
     Rescan(RescanArgs),
+    /// Pay what one-shot scans left owed: a from-scratch git-history build, documents indexed
+    /// without vectors and, with `[code_search] embed = true`, code chunks. `basemind scan` starts
+    /// it in the background; run it by hand to finish the work in the foreground. Exits at once
+    /// when one already runs.
+    #[command(name = "embed-worker", hide = true)]
+    EmbedWorker,
     /// Long-running watcher; keeps the code map current as files change.
     #[command(after_long_help = basemind::cli::help::WATCH)]
     Watch,
@@ -151,6 +157,12 @@ enum Cmd {
         /// that file launching stays off and the tools are not listed. Unix only.
         #[arg(long)]
         lead: bool,
+        /// Read the operator's agent-launch policy from this absolute file instead of the
+        /// user-level agents.toml, to try `agent_launch` against a throwaway policy. The file must
+        /// pass the same checks (owned by you, writable by nobody else, outside the workspace); a
+        /// warning on stderr names it. Needs `--lead`.
+        #[arg(long, requires = "lead", value_name = "FILE")]
+        agents_policy: Option<std::path::PathBuf>,
     },
     /// Print a compact one-line summary of the daemon's currently-hot workspaces, for a shell
     /// statusline. Fast and silent: prints nothing and exits 0 when no daemon is running.
@@ -463,6 +475,7 @@ fn run() -> Result<()> {
             cmd_scan(&root, &args, scan_matches, scan_output)
         }
         Cmd::Rescan(args) => cmd_rescan(&root, &args, scan_output),
+        Cmd::EmbedWorker => cmd_embed_worker(&root, verbosity),
         Cmd::Watch => cmd_watch(&root, verbosity, no_color),
         Cmd::Code(c) => {
             let _ = basemind::lang::ensure_grammars();
@@ -494,7 +507,7 @@ fn run() -> Result<()> {
             LangCmd::Install => lang_cli::cmd_lang_install(&root, verbosity, no_color),
             LangCmd::Clean { yes } => lang_cli::cmd_lang_clean(yes),
         },
-        Cmd::Serve { lead } => cmd_serve(&root, &view, lead),
+        Cmd::Serve { lead, agents_policy } => cmd_serve(&root, &view, lead, agents_policy.as_deref()),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         Cmd::Upgrade(args) => basemind::cli::upgrade::run(&args, json, &mut std::io::stdout().lock()),
         Cmd::Sessions(args) => basemind::cli::sessions::run(&root, json, &args),
@@ -552,6 +565,27 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
 fn bootstrap_grammars(out: &mut impl std::io::Write, verbosity: Verbosity) -> Result<()> {
     let summary = basemind::lang::ensure_grammars().map_err(|e| anyhow::anyhow!("grammar bootstrap failed: {e}"))?;
     render::render_grammar_bootstrap(out, &summary, verbosity);
+    Ok(())
+}
+
+/// `basemind embed-worker`: pay the git-history build and the vectors the scans of `root` left
+/// owed, then exit.
+fn cmd_embed_worker(root: &std::path::Path, verbosity: Verbosity) -> Result<()> {
+    let root = &guard_workspace_root(root)?;
+    bootstrap_grammars(&mut std::io::sink(), verbosity)?;
+    let config = load_or_default(root)?;
+    let Some(report) = basemind::cli::embed_worker::run(root, &config)? else {
+        return Ok(());
+    };
+    tracing::info!(
+        settled = report.documents_settled,
+        owed = report.documents_owed,
+        whole_pass = report.whole_pass,
+        stopped = report.stopped,
+        daemon = report.daemon,
+        history_commits = ?report.history_commits,
+        "background pass finished"
+    );
     Ok(())
 }
 
@@ -614,6 +648,12 @@ fn writer_collision_notice(root: &std::path::Path) -> Option<String> {
     let basemind_dir = basemind::store::workspace_cache_dir(root);
     match basemind::store::probe_writer_lock(&basemind_dir) {
         basemind::store::WriterProbe::Free => None,
+        // The background embedding worker gives the lock up when the store open asks for it.
+        basemind::store::WriterProbe::Held { holder: Some(meta) }
+            if meta.command == LockHolder::EmbedWorker.command() =>
+        {
+            None
+        }
         basemind::store::WriterProbe::Held { holder: Some(meta) } => Some(format!(
             "`{}` (pid {}) is already running against this repo and keeping the index fresh — \
              running this directly is unnecessary and would collide with it. Use `basemind rescan` \
@@ -687,7 +727,7 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
 /// server, whose lifetime was bound to the pipe, was the "drops and never returns" bug). HTTP-native
 /// clients skip `serve` entirely and dial the daemon URL directly (see `basemind daemon ensure`).
 /// Without the `comms` feature there is no daemon to relay to, so it errors with guidance.
-fn cmd_serve(root: &std::path::Path, view: &str, lead: bool) -> Result<()> {
+fn cmd_serve(root: &std::path::Path, view: &str, lead: bool, agents_policy: Option<&std::path::Path>) -> Result<()> {
     if lead && !cfg!(unix) {
         anyhow::bail!(
             "`basemind serve --lead` is not supported on this platform: launching agents needs a Unix \
@@ -721,12 +761,16 @@ fn cmd_serve(root: &std::path::Path, view: &str, lead: bool) -> Result<()> {
         // error rather than silently degrading to a fragile pipe-bound server.
         #[cfg(unix)]
         let served = if lead {
-            serve_relay::try_serve_lead(root, view)
+            serve_relay::try_serve_lead(root, view, agents_policy)
         } else {
             serve_relay::try_serve_relay(root, view)
         };
         #[cfg(not(unix))]
-        let served = serve_relay::try_serve_relay(root, view);
+        let served = {
+            // `--lead` was refused above on this platform, so there is no policy to hand on.
+            let _ = agents_policy;
+            serve_relay::try_serve_relay(root, view)
+        };
         served.context(
             "relay to the basemind daemon failed; run `basemind daemon ensure` to check the daemon, \
              then retry",
@@ -734,7 +778,7 @@ fn cmd_serve(root: &std::path::Path, view: &str, lead: bool) -> Result<()> {
     }
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     {
-        let _ = (root, lead);
+        let _ = (root, lead, agents_policy);
         anyhow::bail!(
             "`basemind serve` needs the comms daemon to host the MCP server; rebuild with \
              `--features comms` (the stdio MCP server is served by relaying to that daemon)."
@@ -765,6 +809,23 @@ mod log_directive_tests {
     #[test]
     fn default_verbosity_keeps_basemind_info_and_dependency_warnings_only() {
         assert_eq!(enabled_by_default(), [true, false, false, false, true, true]);
+    }
+}
+
+#[cfg(test)]
+mod serve_args_tests {
+    use clap::Parser as _;
+
+    use super::Cli;
+
+    #[test]
+    fn agents_policy_needs_lead() {
+        let without = Cli::try_parse_from(["basemind", "serve", "--agents-policy", "/tmp/agents.toml"]);
+        assert_eq!(
+            without.unwrap_err().kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(Cli::try_parse_from(["basemind", "serve", "--lead", "--agents-policy", "/tmp/agents.toml"]).is_ok());
     }
 }
 

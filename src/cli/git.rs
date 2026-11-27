@@ -47,6 +47,12 @@ pub enum GitCmd {
         /// Only commits whose author name or email holds every one of these terms.
         #[arg(long)]
         author: Option<String>,
+        /// With a search: only commits since this author time, `YYYY-MM-DD` or `<N>d`/`w`/`m`/`y` ago.
+        #[arg(long)]
+        since: Option<String>,
+        /// With a search: only commits until this author time, same forms, day included.
+        #[arg(long)]
+        until: Option<String>,
         /// History of this symbol's body (needs `--path`).
         #[arg(long)]
         symbol: Option<String>,
@@ -64,6 +70,9 @@ pub enum GitCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
+        /// Also list the files each commit changed (recent and directory lists).
+        #[arg(long)]
+        files: bool,
     },
     /// Who last changed each line of a file, a 1-based line span, or one symbol.
     #[command(after_long_help = crate::cli::help_code::GIT_BLAME)]
@@ -117,6 +126,9 @@ pub enum GitCmd {
         /// Token budget for the returned list; overflow is dropped and flagged `budgeted`.
         #[arg(long)]
         max_tokens: Option<u32>,
+        /// Also list the files each commit changed.
+        #[arg(long)]
+        files: bool,
     },
     /// Commits touching a path. Shorthand for `log --path <path>`.
     #[command(after_long_help = crate::cli::help_code::GIT_TOUCHING)]
@@ -139,6 +151,12 @@ pub enum GitCmd {
         /// the author alone, never the message.
         #[arg(long)]
         author: Option<String>,
+        /// With a search: only commits since this author time, `YYYY-MM-DD` or `<N>d`/`w`/`m`/`y` ago.
+        #[arg(long)]
+        since: Option<String>,
+        /// With a search: only commits until this author time, same forms, day included.
+        #[arg(long)]
+        until: Option<String>,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -239,12 +257,15 @@ fn log() -> GitLogParams {
         path: None,
         query: None,
         author: None,
+        since: None,
+        until: None,
         symbol: None,
         line: None,
         rev: None,
         limit: None,
         cursor: None,
         max_tokens: None,
+        files: false,
     }
 }
 
@@ -255,23 +276,29 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
             path,
             query,
             author,
+            since,
+            until,
             symbol,
             line,
             rev,
             limit,
             cursor,
             max_tokens,
+            files,
         } => {
             let p = GitLogParams {
                 path: path.map(|path| resolve_path(tools, &path)),
                 query,
                 author,
+                since,
+                until,
                 symbol,
                 line,
                 rev,
                 limit,
                 cursor: cursor.map(Cursor),
                 max_tokens,
+                files,
             };
             (
                 "git_log",
@@ -284,11 +311,13 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
             limit,
             cursor,
             max_tokens,
+            files,
         } => {
             let p = GitLogParams {
                 limit,
                 cursor: cursor.map(Cursor),
                 max_tokens,
+                files,
                 ..log()
             };
             (
@@ -321,6 +350,8 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
         GitCmd::Search {
             query,
             author,
+            since,
+            until,
             limit,
             cursor,
             max_tokens,
@@ -328,6 +359,8 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
             let p = GitLogParams {
                 query: Some(query),
                 author,
+                since,
+                until,
                 limit,
                 cursor: cursor.map(Cursor),
                 max_tokens,
@@ -514,6 +547,7 @@ pub async fn run(tools: &Tools, cmd: GitCmd, opts: &Emit, out: &mut impl Write) 
                         limit,
                         cursor: cursor.map(Cursor),
                         max_tokens,
+                        include_files: false,
                     },
                     async |s, p| s.cli_op(p, Workspace::git_by_path).await,
                 )

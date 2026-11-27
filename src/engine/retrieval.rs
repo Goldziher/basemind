@@ -65,21 +65,22 @@ impl Workspace {
         embedded.map_err(embed_error)
     }
 
-    /// The workspace's code-chunk vector store, opened on first use. Only a writer (holding the
-    /// workspace lock) creates or rebuilds it; any other open reads a matching one
-    /// ([`crate::lance::LanceStore::open_existing`]).
+    /// The repository group's code-chunk vector store, opened on first use. It is shared by every
+    /// worktree of the group ([`crate::lance::code_store_dir`]), so a search reads only the contents
+    /// this workspace's file map names. Only a writer (holding the workspace lock) creates or
+    /// rebuilds it; any other open reads a matching one ([`crate::lance::LanceStore::open_existing`]).
     #[cfg(feature = "code-search")]
     pub(crate) fn lance_store(&self) -> Result<Arc<crate::lance::LanceStore>, super::lance_cell::Unavailable> {
         self.lance.get_or_open(|| {
             let embedder = self.shared_embedder().map_err(|e| format!("embedder init: {e}"))?;
+            let (dim, model) = (embedder.dim(), embedder.model());
             let (dir, writer) = {
                 let store = self.store_read();
                 (
-                    store.basemind_dir.join(crate::store::LANCE_DIR),
+                    crate::lance::code_store_dir(&store.root, model, dim),
                     store.holds_writer_lock(),
                 )
             };
-            let (dim, model) = (embedder.dim(), embedder.model());
             let opened = if writer {
                 crate::lance::LanceStore::open(&dir, dim, model)
             } else {

@@ -5,7 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::default_true;
 use crate::engine::cursor::Cursor;
 use crate::path::RelPath;
 
@@ -13,27 +12,31 @@ use crate::path::RelPath;
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GitLogParams {
-    /// Only commits touching this file, or a directory (trailing `/`; 200 commits a page). Not with
-    /// `query` or `author`.
+    /// Only commits touching this file or directory (trailing `/`); narrows a `query`/`author` search.
     #[serde(default)]
     pub path: Option<RelPath>,
-    /// Words the commit message must all contain. Combines with `author` only.
+    /// Words the commit message must all contain; typos, word parts and a last-word prefix match too, after exact ones.
     #[serde(default)]
     pub query: Option<String>,
-    /// Words the author name or email must all contain; rows then name the author. Combines with
-    /// `query` only.
+    /// Words the author name or email must all contain, matched like `query`.
     #[serde(default)]
     pub author: Option<String>,
-    /// Commits that changed this symbol's body; needs `path`, combines only with `line`.
+    /// With `query`/`author`: only commits since `YYYY-MM-DD` or `<N>d|w|m|y` ago.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+    /// With `query`/`author`: only commits until then (same forms, day included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// Commits that changed this symbol's body, ignoring comments and whitespace (`git log -L` counts them); needs `path`, combines only with `line`.
     #[serde(default)]
     pub symbol: Option<String>,
     /// With `symbol`: a 1-based line inside the definition meant.
     #[serde(default)]
     pub line: Option<u32>,
-    /// Show this one commit in full; `max_tokens` bounds its file list. Combines with nothing.
+    /// Show this one commit in full; combines with nothing.
     #[serde(default)]
     pub rev: Option<String>,
-    /// Default 20.
+    /// Default 20, max 100 (500 for a directory `path`).
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.
@@ -42,6 +45,9 @@ pub struct GitLogParams {
     /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Also list each commit's changed files in a recent or directory list (capped; see `files_more`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub files: bool,
 }
 
 /// Arguments of `git_blame`.
@@ -63,7 +69,7 @@ pub struct GitBlameParams {
     /// Revision to blame at (default HEAD).
     #[serde(default)]
     pub rev: Option<String>,
-    /// Merged hunks; default 100.
+    /// Merged hunks; default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.
@@ -120,6 +126,17 @@ pub struct SearchGitHistoryParams {
     /// own `field`; these are matched against the author only, never the message.
     #[serde(default)]
     pub author: Option<String>,
+    /// Only commits that touched this file, or a file under this directory (trailing `/`).
+    #[serde(default)]
+    pub path: Option<RelPath>,
+    /// Only commits authored at or after this time: `YYYY-MM-DD`, or `<N>d`, `<N>w`, `<N>m`, `<N>y`
+    /// ago.
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Only commits authored at or before the end of this day, or of `<N>` days, weeks, months or
+    /// years ago.
+    #[serde(default)]
+    pub until: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -127,8 +144,8 @@ pub struct RecentChangesParams {
     /// Number of commits to walk back from HEAD. Default 20, max 100.
     #[serde(default)]
     pub limit: Option<u32>,
-    /// When true, include the per-file change list for each commit. Default true.
-    #[serde(default = "default_true")]
+    /// When true, include the per-file change list for each commit. Default false.
+    #[serde(default)]
     pub include_files: bool,
     /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
     /// the repo's HEAD sha at mint time; on HEAD movement the response carries
@@ -209,6 +226,9 @@ pub struct FindCommitsByPathParams {
     /// is set and `next_cursor` resumes at the first dropped commit.
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// When true, list what each commit changed. Default false.
+    #[serde(default)]
+    pub include_files: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -281,19 +301,15 @@ pub struct BlameSymbolParams {
     pub max_tokens: Option<u32>,
 }
 
-/// One commit of a `git_log` list, written as `git log --oneline` prints it: `"<sha> <summary>"`,
-/// or `"<sha> <author>: <summary>"` in a search by `author`, whose match is a substring of the name
-/// or email and so may hold several people. When it was written is `git_log {rev}`'s answer.
+/// One commit of a `git_log` list: its short sha, author, date and subject, which is what finding
+/// a commit takes. The whole message, the author's email and the changed files are
+/// `git_log {rev}`'s answer; a recent or directory list adds the files on request.
 #[derive(Debug, schemars::JsonSchema)]
 pub(crate) struct CommitView {
     pub sha: String,
     pub summary: String,
-    /// Written in the row only when `with_author`; `code explain` reads it.
     pub author: String,
-    /// The row names the author: the list was filtered by `author`.
-    #[schemars(skip)]
-    pub with_author: bool,
-    /// Not written in a list row; `code explain` reads it.
+    /// Written in the row as its UTC day, `YYYY-MM-DD`.
     pub author_time_unix: i64,
     /// The files the commit changed: each path with how (`added`, `modified`, `deleted`,
     /// `renamed`). A merge lists only what it changed against every parent. The recent list and a
@@ -303,12 +319,33 @@ pub(crate) struct CommitView {
 
 impl Serialize for CommitView {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if self.with_author {
-            serializer.serialize_str(&format!("{} {}: {}", self.sha, self.author, self.summary))
-        } else {
-            serializer.serialize_str(&format!("{} {}", self.sha, self.summary))
-        }
+        use serde::ser::SerializeStruct;
+
+        let mut row = serializer.serialize_struct("CommitView", 4)?;
+        row.serialize_field("sha", &self.sha)?;
+        row.serialize_field("author", &self.author)?;
+        row.serialize_field("date", &utc_day(self.author_time_unix))?;
+        row.serialize_field("subject", &self.summary)?;
+        row.end()
     }
+}
+
+/// `unix` seconds as a UTC `YYYY-MM-DD` day (proleptic Gregorian, after Hinnant's `civil_from_days`).
+pub(crate) fn utc_day(unix: i64) -> String {
+    let days = unix.div_euclid(86_400) + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days.rem_euclid(146_097);
+    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// The changed files of a directory's history: `{"<sha>": {"<path>": "<change>"}}`.
@@ -334,10 +371,25 @@ fn files_by_commit<S: serde::Serializer>(
 /// Each listed commit's changed files, keyed by its sha: a list response's top-level `files`.
 pub(crate) type FilesByCommit = Vec<(String, Vec<CommitFileView>)>;
 
+/// How many changed files each listed commit's entry in `files` leaves out: `{"<sha>": <count>}`.
+pub(crate) type FilesMore = Vec<(String, usize)>;
+
+/// A [`FilesMore`] written as the map it stands for.
+fn files_more<S: serde::Serializer>(more: &FilesMore, serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+
+    let mut map = serializer.serialize_map(Some(more.len()))?;
+    for (sha, count) in more {
+        map.serialize_entry(sha, count)?;
+    }
+    map.end()
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct CommitFileView {
     pub path: RelPath,
-    pub change: &'static str,
+    /// How the commit changed it; a collapsed directory says how many files it stands for.
+    pub change: std::borrow::Cow<'static, str>,
 }
 
 /// A file list written as `{"<path>": "<change>", ...}`: a path is a file's key, not a field
@@ -347,7 +399,7 @@ fn files_by_path<S: serde::Serializer>(files: &[CommitFileView], serializer: S) 
 
     let mut map = serializer.serialize_map(Some(files.len()))?;
     for file in files {
-        map.serialize_entry(&file.path.to_str_lossy(), file.change)?;
+        map.serialize_entry(&file.path.to_str_lossy(), &file.change)?;
     }
     map.end()
 }
@@ -391,12 +443,15 @@ pub(crate) struct GitShowResponse {
 pub(crate) struct SearchGitHistoryResponse {
     /// Matching commits, newest first. A message's body is not listed: `git_log {rev}` shows it.
     pub commits: Vec<CommitView>,
+    /// The shas of the commits that matched only through a tolerance (a typo, a word part, the
+    /// start of a word); the rest matched the words as typed and come first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fuzzy: Vec<String>,
     /// True when the search did not cover the whole history.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     /// `unindexed_scan`: the git-history index was not ready, so only the subjects and authors of the
-    /// newest 10,000 commits were searched, no message bodies; retry shortly. `scan_cap`: an
-    /// `author` filter stopped after 20,000 commits matching `query`.
+    /// newest 10,000 commits were searched as typed, no message bodies; retry shortly.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
     /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
@@ -442,12 +497,18 @@ pub(crate) struct WorkingTreeStatusView {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct RecentChangesResponse {
-    /// `"<sha> <summary>"` per commit, newest first.
+    /// One `{sha, author, date, subject}` row per commit, newest first.
     pub commits: Vec<CommitView>,
-    /// What each listed commit changed: `{"<sha>": {"<path>": "<change>"}}`; absent when empty.
+    /// What each listed commit changed, on request (`files`): `{"<sha>": {"<path>": "<change>"}}`.
+    /// A commit with many files lists a few, a directory standing for several (`"<n> files"`).
     #[serde(serialize_with = "files_by_commit", skip_serializing_if = "Vec::is_empty")]
     #[schemars(with = "serde_json::Value")]
     pub files: FilesByCommit,
+    /// The changed files a commit's entry in `files` leaves out: `{"<sha>": <count>}`; absent when
+    /// none.
+    #[serde(serialize_with = "files_more", skip_serializing_if = "Vec::is_empty")]
+    #[schemars(with = "serde_json::Value")]
+    pub files_more: FilesMore,
     /// `true` when the walk may have stopped early (today: shallow clone). Agents should
     /// treat the absence of an expected commit as inconclusive when this is set.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -655,6 +716,13 @@ pub(crate) struct BlameSymbolResponse {
 pub(crate) struct FindCommitsByPathResponse {
     /// Commits this page inspected, newest first from where its cursor starts.
     pub window_inspected: u32,
+    /// Where the next page starts: how many commits, newest first, this page and the ones before it
+    /// have gone through. A page that leaves matches out stops there, short of its window.
+    pub commits_reached: u64,
+    /// The commits in the whole history, so `commits_reached` reads as progress; absent when the
+    /// page was walked live, which has no count without walking the whole history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_commits: Option<u64>,
     /// Why `commits` is empty so far: no commit inspected up to this page touches the directory
     /// and it is not on disk either. The last page is then an error instead.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -666,12 +734,18 @@ pub(crate) struct FindCommitsByPathResponse {
     /// `span_limit` whenever `truncated` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
-    /// `"<sha> <summary>"` per commit, newest first.
+    /// One `{sha, author, date, subject}` row per commit, newest first.
     pub commits: Vec<CommitView>,
-    /// What each listed commit changed: `{"<sha>": {"<path>": "<change>"}}`; absent when empty.
+    /// What each listed commit changed, on request (`files`): `{"<sha>": {"<path>": "<change>"}}`.
+    /// A commit with many files lists a few, a directory standing for several (`"<n> files"`).
     #[serde(serialize_with = "files_by_commit", skip_serializing_if = "Vec::is_empty")]
     #[schemars(with = "serde_json::Value")]
     pub files: FilesByCommit,
+    /// The changed files a commit's entry in `files` leaves out: `{"<sha>": <count>}`; absent when
+    /// none.
+    #[serde(serialize_with = "files_more", skip_serializing_if = "Vec::is_empty")]
+    #[schemars(with = "serde_json::Value")]
+    pub files_more: FilesMore,
     /// True when `max_tokens` (or the default budget) dropped trailing commits; `next_cursor`
     /// resumes at the first dropped one.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -849,84 +923,5 @@ pub(crate) enum GitDiffResult {
     Structural(DiffOutlineResponse),
 }
 
-/// Arguments of `basemind git hotspots` (CLI-only, ADR-0047).
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct HotspotsParams {
-    /// Window ending at HEAD's commit time: `<N>d`, `<N>w` or `<N>y`; default `90d`.
-    #[serde(default)]
-    pub since: Option<String>,
-    /// Only files at this path or under this directory.
-    #[serde(default)]
-    pub path: Option<RelPath>,
-    /// Rows returned; default 20, at most 200.
-    #[serde(default)]
-    pub limit: Option<u32>,
-}
-
-/// The smallest value in each signal's top slice; absent when no file has the signal.
-#[derive(Debug, Default, Serialize)]
-pub(crate) struct HotspotThresholds {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub commits: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub authors: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lines: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub symbols: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub longest_function: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub importers: Option<u32>,
-}
-
-/// One file where two or more signals are in their top slice. Every number is raw; there is no score.
-#[derive(Debug, Serialize)]
-pub(crate) struct HotspotRow {
-    pub path: RelPath,
-    /// The signals whose top slice holds this file, in [`HotspotThresholds`] order.
-    pub signals: Vec<&'static str>,
-    /// Commits in the window that touched the file.
-    pub commits: u32,
-    /// Distinct author emails (the name when a commit has none) among those commits.
-    pub authors: u32,
-    pub lines: u32,
-    pub symbols: u32,
-    /// Lines of the longest function or method (0 when it has none); `null` when the file changed
-    /// since the scan.
-    pub longest_function: Option<u32>,
-    /// `name:line` of that function.
-    pub longest_function_at: Option<String>,
-    /// Files importing this one (runtime imports); `null` when no resolver reads its language.
-    pub importers: Option<u32>,
-}
-
-/// The answer of `basemind git hotspots`.
-#[derive(Debug, Serialize)]
-pub(crate) struct HotspotsResponse {
-    /// The window as asked (`90d`).
-    pub since: String,
-    /// Unix seconds: the window is `[window_start, window_end]`, ending at HEAD's commit time.
-    pub window_start: i64,
-    pub window_end: i64,
-    /// Commits in the window.
-    pub commits: u32,
-    /// Indexed files in scope that a commit in the window touched: the population ranked.
-    pub files_considered: u32,
-    /// The top slice of each signal, as a percentage of `files_considered`.
-    pub slice_percent: u32,
-    pub thresholds: HotspotThresholds,
-    /// Files with two or more signals in their top slice, before `limit`.
-    pub total: u32,
-    pub files: Vec<HotspotRow>,
-    /// Set when the commit walk stopped before the window's start.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub truncated: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub truncated_reason: Option<&'static str>,
-    /// Signals that were not measured everywhere, and why.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<String>,
-    pub elapsed_us: u64,
-}
+pub use super::hotspots::HotspotsParams;
+pub(crate) use super::hotspots::{HotspotRow, HotspotThresholds, HotspotsResponse};

@@ -26,8 +26,18 @@
 //!   building it elsewhere would be doubly wrong — it would steal the lock the daemon needs, and it
 //!   would run a multi-GB, minutes-long walk inside the process an agent is actively querying.
 //!
+//! ## Many heads, one store
+//!
+//! The commit store does not depend on a head: every commit reachable from any worktree HEAD is
+//! stored once, under an ordinal assigned in append order, and a divergence never wipes anything. What
+//! a head reaches is recorded per indexed tip as a [`reach::Reach`] bitset (`gh_meta` `tip/` rows), and
+//! a query at head `X` ([`GitHistoryIndex::at`]) answers from the posting lists keeping only the
+//! ordinals `X` reaches. A HEAD move appends only the commits no earlier sync stored. At most
+//! [`MAX_TIPS`] tips are kept, the least recently synced dropping first; a head with no tip row is read
+//! by the live walk until a sync adds it.
+//!
 //! A process that can reach neither keeps `git_history: None` and falls back to the live walk. The
-//! index is a pure accelerator — tools use it only when `last_indexed_head == HEAD` and otherwise
+//! index is a pure accelerator — tools use it only when HEAD is an indexed tip and otherwise
 //! live-walk (reporting `partial: true`), so it can never serve stale or incorrect results. A build
 //! or append marks the index in progress before it writes a row and clears the mark in the batch
 //! that stamps the new head; while the mark stands the index reports no head, so a run cut off
@@ -38,7 +48,7 @@
 //!
 //! | partition | key | value |
 //! |---|---|---|
-//! | `gh_meta` | fixed byte-strings | schema_ver, last_indexed_head, counters, fingerprint |
+//! | `gh_meta` | fixed byte-strings, `tip/ ‖ sha` | schema_ver, last_indexed_head, counters, fingerprint, one reachability bitset per indexed tip |
 //! | `gh_commit_by_ord` | `ord:u32_be` | msgpack [`CommitMeta`] (interned file list) |
 //! | `gh_ord_by_sha` | `sha:20 raw` | `ord:u32_be` |
 //! | `gh_path_id_by_path` | `u16:len ‖ rel` | `path_id:u32_be` |
@@ -46,13 +56,17 @@
 //! | `gh_path_to_ords` | `path_id:u32_be` | delta-varint ordinal posting list |
 //! | `gh_commit_text_by_ord` | `ord:u32_be` | full commit message body (FTS) |
 //! | `gh_term_to_ords` | `field:u8 ‖ term` | delta-varint ordinal posting list (FTS) |
+//! | `gh_term_dict` | `field:u8 ‖ term` | empty; the term dictionary a typo-tolerant query scans |
 
 pub mod builder;
 pub mod encoding;
 pub mod fts;
+pub mod fuzzy;
 pub mod keys;
 mod maintenance;
+pub mod progress;
 pub mod proto;
+pub mod reach;
 pub mod reader;
 use std::path::{Path, PathBuf};
 
@@ -91,7 +105,18 @@ use crate::path::RelPath;
 ///
 /// `+11` rebuilds the file list of a shallow clone's boundary commit, which is now listed as a root
 /// (its tree added), and stores the clone's `shallow` file so a deepened boundary is noticed.
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 11;
+///
+/// `+12` records the indexed tips with their reachability, so one store answers for every worktree
+/// HEAD; an index with a single stamped head has no tip rows.
+///
+/// `+13` adds the `gh_term_dict` keyspace and indexes identifier parts (`BulkConfig` → `bulk`,
+/// `config`) beside the whole term, for typo-tolerant search.
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 13;
+
+/// How many tips the index keeps reachability for. Each is a bitset of one bit per indexed commit
+/// (32 KiB at a quarter-million commits), so the bound is a few MiB; past it the tip synced least
+/// recently is dropped, and a worktree still at it is read by the live walk until its next sync.
+pub const MAX_TIPS: usize = 32;
 
 /// Memtable ceiling of each keyspace, in bytes. At fjall's 64 MiB default, eight keyspaces with up
 /// to four sealed memtables queued behind each would let one database (the daemon keeps one per
@@ -240,6 +265,17 @@ pub enum GitHistoryError {
          set BASEMIND_GIT_DISCOVER_PARENTS=1 to index the ancestor repository's history anyway."
     )]
     ForeignHistory { root: PathBuf, workdir: PathBuf },
+    /// A forwarded read named a head the index cannot answer for in the live walk's order: the
+    /// index was never built, the head is no indexed tip, or it is a tip whose order is unproven
+    /// (see [`GitHistoryIndex::at`]). `None` is the latest indexed tip. The caller live-walks.
+    #[error(
+        "the git-history index has no ordered view of {}; read the history by the live walk",
+        .head.as_deref().unwrap_or("the latest indexed tip")
+    )]
+    NoOrderedView { head: Option<String> },
+    /// A build or append was stopped by its [`builder::BuildControl`] before it finished.
+    #[error("the git-history build was stopped before it finished; the next sync rebuilds it")]
+    Cancelled,
 }
 
 /// Name prefix of a git-history directory set aside by [`discard_dir`] and not yet deleted.
@@ -286,6 +322,18 @@ fn sweep_discarded(basemind_dir: &Path) {
     }
 }
 
+/// Bytes of the sync time at the head of a tip row's value.
+const TIP_STAMP_BYTES: usize = 8;
+
+/// The tips to drop so that `tips` plus the tip being written (`keep`, which is never dropped) stay
+/// within `cap`: the ones synced least recently.
+fn evicted_tips(mut tips: Vec<([u8; 20], u64)>, keep: &[u8; 20], cap: usize) -> Vec<[u8; 20]> {
+    tips.retain(|(head, _)| head != keep);
+    let excess = (tips.len() + 1).saturating_sub(cap);
+    tips.sort_by_key(|&(head, stamp)| (stamp, head));
+    tips.into_iter().take(excess).map(|(head, _)| head).collect()
+}
+
 /// Per-commit metadata stored in `gh_commit_by_ord`. File paths are interned to `path_id` (u32) so
 /// the change edges are not duplicated as full path strings (the key size control on a monorepo).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -318,6 +366,9 @@ pub(crate) struct LocalDb {
     /// `gh_term_to_ords`: `field:u8 ‖ term` → newest-first ordinal posting list. Backs
     /// `search_git_history`. See [`fts`].
     term_to_ords: Keyspace,
+    /// `gh_term_dict`: the keys of `gh_term_to_ords` with empty values, so a typo-tolerant query reads
+    /// the vocabulary without reading the posting lists. See [`fuzzy`].
+    term_dict: Keyspace,
     /// Serializes syncs of this database (see [`builder::sync`]): every holder of a clone of the
     /// handle (the daemon's socket path, each session it hosts) shares it, so N sessions asking at
     /// once produce one history walk and the rest find the index fresh.
@@ -417,6 +468,7 @@ impl GitHistoryIndex {
         let path_to_ords = db.keyspace("gh_path_to_ords", keyspace_options)?;
         let commit_text_by_ord = db.keyspace("gh_commit_text_by_ord", keyspace_options)?;
         let term_to_ords = db.keyspace("gh_term_to_ords", keyspace_options)?;
+        let term_dict = db.keyspace("gh_term_dict", keyspace_options)?;
         meta.insert(keys::META_SCHEMA_VER, GIT_HISTORY_SCHEMA.to_be_bytes())?;
         Ok(Self {
             db: LocalDb {
@@ -429,6 +481,7 @@ impl GitHistoryIndex {
                 path_to_ords,
                 commit_text_by_ord,
                 term_to_ords,
+                term_dict,
                 build_lock: std::sync::Arc::default(),
             },
         })
@@ -464,6 +517,7 @@ impl GitHistoryIndex {
             db: db.clone(),
             batch: db.db.batch(),
             staged: 0,
+            ordered: false,
         })
     }
 
@@ -481,6 +535,54 @@ impl GitHistoryIndex {
     /// Last indexed HEAD as a 40-char hex string — the freshness key the MCP tools compare HEAD to.
     pub fn last_indexed_head_hex(&self) -> Option<String> {
         self.db.indexed_head().map(|s| keys::sha_raw_to_hex(&s))
+    }
+
+    /// Whether `head` (a 40-char hex sha) is an indexed tip the index answers for. False while a build
+    /// or append is in progress.
+    pub fn has_tip(&self, head: &str) -> bool {
+        keys::sha_hex_to_raw(head).is_some_and(|head20| self.db.reach_of(&head20).is_some())
+    }
+
+    /// Whether the indexed tip `head` returns its commits in the order the live walk does: the one
+    /// condition under which a read may answer from the index (see [`HistoryAt`](reader::HistoryAt)).
+    /// False for a head that is no tip.
+    pub fn tip_is_ordered(&self, head: &[u8; 20]) -> bool {
+        self.db.tip_is_ordered(head)
+    }
+
+    /// The indexed tips, most recently synced first, as 40-char hex shas.
+    pub fn tips(&self) -> Vec<String> {
+        let mut tips = self.db.tips();
+        tips.sort_by_key(|&(head, stamp)| std::cmp::Reverse((stamp, head)));
+        tips.into_iter().map(|(head, _)| keys::sha_raw_to_hex(&head)).collect()
+    }
+
+    /// The reachability of the indexed tip `head`, as the builder extends it for a descendant.
+    pub(crate) fn reach_of(&self, head: &[u8; 20]) -> Option<reach::Reach> {
+        self.db.reach_of(head)
+    }
+
+    /// Marks the indexed tip `head` as the one just synced: it becomes the latest head and its sync
+    /// time is renewed, so a sync that finds it already indexed keeps it out of the eviction order
+    /// and reads at no head see it. Walks no commit. A `head` that is not an indexed tip is left
+    /// alone.
+    pub(crate) fn touch_tip(&self, head: &[u8; 20]) -> Result<(), GitHistoryError> {
+        let meta = &self.db.meta;
+        let Some(row) = meta.get(keys::tip_key(head))? else {
+            return Ok(());
+        };
+        let Some((_, bits)) = row.split_at_checked(TIP_STAMP_BYTES) else {
+            return Ok(());
+        };
+        let mut batch = self.db.db.batch();
+        batch.insert(
+            meta,
+            keys::tip_key(head),
+            [builder::now_unix().to_be_bytes().as_slice(), bits].concat(),
+        );
+        batch.insert(meta, keys::META_LAST_HEAD, head.to_vec());
+        batch.commit()?;
+        Ok(())
     }
 
     /// Next free commit ordinal (also the count of indexed commits).
@@ -554,6 +656,7 @@ impl LocalDb {
             &self.path_to_ords,
             &self.commit_text_by_ord,
             &self.term_to_ords,
+            &self.term_dict,
         ] {
             ks.clear()?;
         }
@@ -577,6 +680,33 @@ impl LocalDb {
             return None;
         }
         self.meta_sha(keys::META_LAST_HEAD)
+    }
+
+    /// The reachability of `head`, or `None` while a build or append is in progress or was cut off
+    /// and when `head` is not an indexed tip.
+    fn reach_of(&self, head: &[u8; 20]) -> Option<reach::Reach> {
+        if self.build_in_progress() {
+            return None;
+        }
+        let row = self.meta.get(keys::tip_key(head)).ok().flatten()?;
+        let (_, bits) = row.split_at_checked(TIP_STAMP_BYTES)?;
+        Some(reach::Reach::from_bytes(bits))
+    }
+
+    fn tip_is_ordered(&self, head: &[u8; 20]) -> bool {
+        self.meta.contains_key(keys::ordered_key(head)).unwrap_or(false)
+    }
+
+    /// Every stored tip with the unix second it was last synced.
+    fn tips(&self) -> Vec<([u8; 20], u64)> {
+        self.meta
+            .prefix(keys::META_TIP_PREFIX)
+            .filter_map(|guard| {
+                let (key, value) = guard.into_inner().ok()?;
+                let stamp = value.get(..TIP_STAMP_BYTES)?;
+                Some((keys::parse_tip_key(&key)?, u64::from_be_bytes(stamp.try_into().ok()?)))
+            })
+            .collect()
     }
 
     /// A read error counts as in progress, so the index fails closed.
@@ -705,6 +835,7 @@ pub struct GitHistoryWriter {
     db: LocalDb,
     batch: OwnedWriteBatch,
     staged: usize,
+    ordered: bool,
 }
 
 /// Flush the Fjall batch every N staged ops (mirrors the scanner's `INDEX_COMMIT_BATCH`).
@@ -722,6 +853,12 @@ impl GitHistoryWriter {
         mark.remove(&self.db.meta, keys::META_LAST_HEAD);
         mark.commit()?;
         Ok(())
+    }
+
+    /// Whether the tip [`finish_meta`](Self::finish_meta) stamps returns its commits in the live
+    /// walk's order. Unset, the tip is read by the live walk.
+    pub fn set_ordered(&mut self, ordered: bool) {
+        self.ordered = ordered;
     }
 
     /// Record the `shallow` file this build read, so a later fetch that moves a boundary is seen.
@@ -779,6 +916,7 @@ impl GitHistoryWriter {
     pub fn put_term_posting(&mut self, term_key: &[u8], encoded: &[u8]) -> Result<(), GitHistoryError> {
         self.batch
             .insert(&self.db.term_to_ords, term_key.to_vec(), encoded.to_vec());
+        self.batch.insert(&self.db.term_dict, term_key.to_vec(), Vec::new());
         self.maybe_flush()
     }
 
@@ -797,14 +935,15 @@ impl GitHistoryWriter {
         Ok(())
     }
 
-    /// Write the meta fingerprint + counters, commit everything and sync the journal. Call LAST:
-    /// `last_indexed_head` becoming visible is the commit point — a crash before this leaves the
+    /// Write the meta fingerprint + counters and the tip `head` with the commits it `reach`es, commit
+    /// everything and sync the journal. Call LAST: the tip becoming visible is the commit point — a crash before this leaves the
     /// index looking unbuilt, so the next revalidate triggers an idempotent full rebuild. Compacts
     /// nothing unless the write buffer or a small keyspace's tables have grown; a full rebuild
     /// compacts afterwards.
     pub fn finish_meta(
         mut self,
         head: &[u8; 20],
+        reach: &reach::Reach,
         root: &[u8; 20],
         next_ord: u32,
         next_path_id: u32,
@@ -817,6 +956,21 @@ impl GitHistoryWriter {
         meta.insert(&self.db.meta, keys::META_COMMIT_COUNT, commit_count.to_be_bytes());
         meta.insert(&self.db.meta, keys::META_ROOT_SHA, root.to_vec());
         meta.insert(&self.db.meta, keys::META_LAST_HEAD, head.to_vec());
+        let stamp = builder::now_unix().to_be_bytes();
+        meta.insert(
+            &self.db.meta,
+            keys::tip_key(head),
+            [stamp.as_slice(), reach.as_bytes()].concat(),
+        );
+        if self.ordered {
+            meta.insert(&self.db.meta, keys::ordered_key(head), [1u8]);
+        } else {
+            meta.remove(&self.db.meta, keys::ordered_key(head));
+        }
+        for stale in evicted_tips(self.db.tips(), head, MAX_TIPS) {
+            meta.remove(&self.db.meta, keys::tip_key(&stale));
+            meta.remove(&self.db.meta, keys::ordered_key(&stale));
+        }
         meta.remove(&self.db.meta, keys::META_BUILD_IN_PROGRESS);
         meta.remove(&self.db.meta, keys::META_FAILED_BUILD);
         meta.commit()?;
@@ -826,175 +980,5 @@ impl GitHistoryWriter {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn stamp_schema_ver(basemind_dir: &Path, ver: u32) {
-        let index = GitHistoryIndex::open(basemind_dir).expect("open index");
-        let db = index.local();
-        db.meta.insert(keys::META_ROOT_SHA, vec![7u8; 20]).expect("write a row");
-        db.meta
-            .insert(keys::META_SCHEMA_VER, ver.to_be_bytes())
-            .expect("stamp schema version");
-    }
-
-    fn raw_meta(basemind_dir: &Path, key: &[u8]) -> Option<Vec<u8>> {
-        let db = Database::builder(basemind_dir.join(GIT_HISTORY_DIR))
-            .worker_threads(1)
-            .open()
-            .expect("open raw index");
-        let meta = db.keyspace("gh_meta", keyspace_options).expect("meta keyspace");
-        meta.get(key).expect("read meta").map(|value| value.to_vec())
-    }
-
-    /// `max_memtable_size` has no getter and fjall persists it at keyspace creation, so this
-    /// observes it after a reopen: writing past the budget, but far below fjall's 64 MiB default,
-    /// must rotate and flush the memtable.
-    #[test]
-    fn a_reopened_keyspace_flushes_at_its_memtable_budget() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        drop(GitHistoryIndex::open(dir.path()).expect("create index"));
-        let index = GitHistoryIndex::open(dir.path()).expect("reopen index");
-        let keyspace = &index.local().commit_text_by_ord;
-        let value = vec![0u8; 4_096];
-        let rows = 12 * 1024 * 1024 / value.len();
-        for row in 0..rows {
-            keyspace.insert(row.to_be_bytes(), value.as_slice()).expect("insert");
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while keyspace.disk_space() == 0 && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert!(
-            keyspace.disk_space() > 0,
-            "no flush after {} bytes: fjall kept its 64 MiB default memtable",
-            rows * value.len()
-        );
-    }
-
-    #[test]
-    fn open_refuses_an_index_stamped_by_a_newer_basemind_and_leaves_it_intact() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let newer = GIT_HISTORY_SCHEMA + 1;
-        stamp_schema_ver(dir.path(), newer);
-
-        let Err(error) = GitHistoryIndex::open(dir.path()) else {
-            panic!("a newer git-history index must not open");
-        };
-
-        assert!(
-            matches!(
-                error,
-                GitHistoryError::NewerSchema { stored, current } if stored == newer && current == GIT_HISTORY_SCHEMA
-            ),
-            "expected NewerSchema, got: {error}"
-        );
-        assert!(
-            error.to_string().contains("upgrade basemind"),
-            "the error must be actionable, got: {error}"
-        );
-        assert_eq!(
-            raw_meta(dir.path(), keys::META_SCHEMA_VER),
-            Some(newer.to_be_bytes().to_vec()),
-            "the newer index keeps its stamp: it was neither wiped nor restamped"
-        );
-        assert_eq!(
-            raw_meta(dir.path(), keys::META_ROOT_SHA),
-            Some(vec![7u8; 20]),
-            "the newer index keeps its rows"
-        );
-    }
-
-    #[test]
-    fn open_sweeps_a_directory_an_interrupted_wipe_set_aside() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let aside = dir.path().join(format!("{DISCARD_PREFIX}1-0"));
-        std::fs::create_dir_all(aside.join("journals")).expect("a half-deleted leftover");
-
-        drop(GitHistoryIndex::open(dir.path()).expect("open"));
-
-        assert!(!aside.exists(), "the leftover is deleted on the next open");
-    }
-
-    #[test]
-    fn clear_drops_the_head_with_every_row_and_keeps_the_stamp() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let index = GitHistoryIndex::open(dir.path()).expect("open");
-        let sha = "11".repeat(20);
-        let sha20 = keys::sha_hex_to_raw(&sha).expect("a valid sha");
-        let mut writer = index.writer().expect("writer");
-        writer.begin().expect("mark the build");
-        let meta = CommitMeta {
-            sha,
-            summary: "c1".to_owned(),
-            author: "t".to_owned(),
-            author_email: "t@e.x".to_owned(),
-            author_time_unix: 0,
-            files: Vec::new(),
-        };
-        writer.put_commit_meta(0, &meta).expect("commit row");
-        writer.put_ord_for_sha(&sha20, 0).expect("sha row");
-        writer.finish_meta(&sha20, &sha20, 1, 0, 1).expect("stamp the head");
-        assert_eq!(index.last_indexed_head(), Some(sha20));
-
-        index.clear().expect("clear");
-
-        assert_eq!(index.last_indexed_head(), None);
-        assert!(!index.build_interrupted());
-        assert_eq!(index.ord_for_sha(&sha20), None);
-        assert_eq!(index.commit_count(), 0);
-        drop(index);
-        assert_eq!(
-            raw_meta(dir.path(), keys::META_SCHEMA_VER),
-            Some(GIT_HISTORY_SCHEMA.to_be_bytes().to_vec())
-        );
-    }
-
-    /// An older patch binary of the same minor shares this index and knows no in-progress mark:
-    /// had the head survived a cut-off append, it would append past the rows the cut left.
-    #[test]
-    fn a_build_in_progress_leaves_no_head_on_disk_for_a_binary_that_ignores_the_mark() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let index = GitHistoryIndex::open(dir.path()).expect("open");
-        let sha20 = [0x22u8; 20];
-        index
-            .writer()
-            .expect("writer")
-            .finish_meta(&sha20, &sha20, 0, 0, 0)
-            .expect("stamp a head");
-        index.writer().expect("writer").begin().expect("mark an append");
-        drop(index);
-
-        assert_eq!(raw_meta(dir.path(), keys::META_BUILD_IN_PROGRESS), Some(vec![1u8]));
-        assert_eq!(
-            raw_meta(dir.path(), keys::META_LAST_HEAD),
-            None,
-            "no head to append from"
-        );
-    }
-
-    #[test]
-    fn open_wipes_an_index_stamped_by_an_older_basemind() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        stamp_schema_ver(dir.path(), GIT_HISTORY_SCHEMA - 1);
-
-        drop(GitHistoryIndex::open(dir.path()).expect("an older index is wiped and reopened"));
-
-        assert_eq!(
-            raw_meta(dir.path(), keys::META_SCHEMA_VER),
-            Some(GIT_HISTORY_SCHEMA.to_be_bytes().to_vec()),
-            "the rebuilt index carries the current stamp"
-        );
-        assert_eq!(
-            raw_meta(dir.path(), keys::META_ROOT_SHA),
-            None,
-            "rows written under the older schema are gone"
-        );
-        let leftovers = std::fs::read_dir(dir.path())
-            .expect("read the workspace dir")
-            .flatten()
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with(DISCARD_PREFIX))
-            .count();
-        assert_eq!(leftovers, 0, "the wiped database was set aside and deleted");
-    }
-}
+#[path = "mod_tests.rs"]
+mod tests;

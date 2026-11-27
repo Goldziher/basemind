@@ -1,0 +1,22 @@
+@use "sass:math";
+
+$primary: #0a84ff;
+$gap: 4px !default;
+
+@mixin button($color: red) {
+  $inner: 1;
+  color: $color;
+}
+
+@function rem($px) {
+  @return math.div($px, 16);
+}
+
+%card {
+  border-radius: 4px;
+}
+
+.btn {
+  @include button;
+  $local: 2;
+}

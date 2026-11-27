@@ -56,7 +56,7 @@ pub(super) fn gate(cmd: &MigrationCmd) -> Option<super::analysis::Gate> {
         MigrationCmd::Check {
             fail_on_remaining: true,
             ..
-        } => Some(fail_on_remaining),
+        } => Some(Box::new(fail_on_remaining)),
         MigrationCmd::Check { .. } => None,
     }
 }

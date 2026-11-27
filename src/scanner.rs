@@ -15,7 +15,7 @@ use crate::scan_retrieval::PendingDocBatch;
 use crate::scanner_candidates::candidates_for_source;
 #[cfg(feature = "code-search")]
 use crate::scanner_code::PendingCodeBatch;
-use crate::scanner_drive::{DriveOutcome, ProgressObserver, ScanDrive, drive_scan};
+use crate::scanner_drive::{DriveOutcome, FOOTPRINT_CEILING_REASON, ProgressObserver, ScanDrive, drive_scan};
 use crate::scanner_file::scanner_pool;
 use crate::scanner_filter::Filters;
 use crate::scanner_flush::{
@@ -208,6 +208,10 @@ pub struct ScanStats {
     /// Paths that changed tier in this pass: a code-mapped path now routed to the document tier
     /// (prose, data and config files), or the reverse. Their old-tier index rows were purged.
     pub tier_migrated: usize,
+    /// The scan cancelled itself because the process footprint passed the hard ceiling
+    /// (`[resources] hard_footprint_percent`). The pass is partial; the daemon sheds its hosted
+    /// read stacks on seeing this.
+    pub footprint_ceiling_hit: bool,
 }
 
 impl ScanStats {
@@ -355,6 +359,9 @@ pub struct ScanReport {
     pub phase_peaks: Vec<crate::scan_phase_peaks::PhasePeak>,
     /// Dependencies `[documents.dependencies]` names whose documentation was not indexed, and why.
     pub deps_unavailable: Vec<crate::deps_docs::DepUnavailable>,
+    /// Bytes this pass wrote to the view's file map: the whole map for a full pass, the changed
+    /// entries for an incremental one.
+    pub file_map_bytes_written: u64,
 }
 
 /// Cooperative cancellation token for a scan.
@@ -365,8 +372,15 @@ pub struct ScanReport {
 /// enrichment lanes. A tripped token never tears state: completed files are already committed
 /// per-batch, and the caller returns before the stale purge so unscanned files are not mistaken
 /// for deleted ones. Clone freely — all clones share the flag.
+///
+/// A [`child`](Self::child) is cancelled by its own [`cancel`](Self::cancel) or by its parent's, and
+/// cancelling it leaves the parent alone: the scan can stop itself (the footprint hard ceiling)
+/// without tripping a token that other scans, or a daemon drain, share.
 #[derive(Clone, Debug, Default)]
-pub struct ScanCancel(Arc<AtomicBool>);
+pub struct ScanCancel {
+    flag: Arc<AtomicBool>,
+    parent: Option<Arc<ScanCancel>>,
+}
 
 impl ScanCancel {
     /// A fresh, untripped token.
@@ -376,12 +390,20 @@ impl ScanCancel {
 
     /// Trip the token. Idempotent; every in-flight scan sharing it stops at its next check.
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.flag.store(true, Ordering::Relaxed);
     }
 
-    /// Whether the token has been tripped.
+    /// Whether this token, or any ancestor, has been tripped.
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.flag.load(Ordering::Relaxed) || self.parent.as_deref().is_some_and(ScanCancel::is_cancelled)
+    }
+
+    /// A token that follows this one and can also be tripped on its own.
+    pub fn child(&self) -> Self {
+        Self {
+            flag: Arc::default(),
+            parent: Some(Arc::new(self.clone())),
+        }
     }
 }
 
@@ -402,12 +424,13 @@ pub(crate) fn submodule_roots_for_source(root: &Path, source: &ScanSource<'_>) -
 
 /// Whether the expensive embedding step runs during the scan.
 ///
-/// - `Inline` (today's default; used by the CLI `basemind scan`, the watcher, and manual `rescan`)
+/// - `Inline` (the watcher, `rescan`, `scan --staged` / `--rev` and the background embedding pass)
 ///   embeds during the scan — code chunks and documents get their vectors + LanceDB rows in one pass.
 /// - `Deferred` skips embedding: the scan still writes the code-map, the BM25 keyword lane, and the
 ///   content-addressed blobs, but emits **no** vector rows and does **not** persist the
-///   embedding-completion markers (the `.chunk.msgpack` sidecar / the doc `DocEntry`). Serve boot uses
-///   this for a fast first pass, then runs a second `Inline` scan in the background to fill vectors in.
+///   embedding-completion markers (the `.chunk.msgpack` sidecar / the doc `DocEntry`). A one-shot
+///   working-tree `basemind scan` and serve boot use it for a fast pass, then an `Inline` pass in the
+///   background fills the vectors in (`basemind embed-worker`, or the server's own).
 ///
 /// It is threaded as an explicit parameter rather than mutated onto `config` because the serve path
 /// shares a single `Arc<Config>` across every reader — mutating it would poison concurrent queries.
@@ -467,6 +490,8 @@ pub fn scan_with_observer(
     observer: &mut dyn ScanObserver,
     retrieval: Retrieval,
 ) -> Result<ScanReport, ScanError> {
+    // The pass may stop itself at the footprint hard ceiling; that must not trip the caller's token. ~keep
+    let cancel = &cancel.child();
     // Held for the whole pass and dropped on every exit — the two cancellation returns, the `?` on ~keep
     // a walk that hit the candidate ceiling, an unwinding panic. That is what makes a surviving ~keep
     // record mean "this process never ran a destructor", i.e. a hard kill (issue #62). Only the ~keep
@@ -488,7 +513,8 @@ pub fn scan_with_observer(
     filters.verify_blobs = crate::scan_evidence::blobs_need_verifying(&store.basemind_dir);
     filters.vector_rows_unsure = filters.verify_blobs;
     advance(&mut breadcrumb, &phase_peaks, PHASE_CANDIDATES, None);
-    let candidates = candidates_for_source(root, config, &filters, &source, cancel)?;
+    let walked = candidates_for_source(root, config, &filters, &source, cancel)?;
+    let (candidates, listed) = (walked.keys, walked.listed);
     debug!(count = candidates.len(), kind = source.label(), "scan candidates");
     crate::scanner_integrity::ensure_scan_space(store, root, &source, &filters, config, &candidates)?;
     store.reap_legacy_index()?;
@@ -496,6 +522,7 @@ pub fn scan_with_observer(
 
     let scope = derive_scope(root, &source);
     let mut report = ScanReport::default();
+    let file_map_before = store.file_map_bytes_written();
     let drive = ScanDrive {
         root,
         filters: &filters,
@@ -506,7 +533,8 @@ pub fn scan_with_observer(
         cancel,
     };
     let bm25_pass = crate::scanner_flush::begin_bm25_pass_if_any(store, config, true);
-    let mut progress = ProgressObserver::new(observer, breadcrumb.as_mut());
+    let embed_reporter = begin_embed_reporter(root, store, config, &filters, &source, embed);
+    let mut progress = ProgressObserver::new(observer, breadcrumb.as_mut()).with_embed(embed_reporter);
     let driven = drive_scan(&drive, &candidates, store, &mut report.stats, &mut progress)?;
     let (seen_count, total_candidates) = (driven.seen.len(), candidates.len());
     // Before the cancel check and the stale purge: a drive stopped by a fatal commit failure is a ~keep
@@ -524,17 +552,35 @@ pub fn scan_with_observer(
         report.cancelled = true;
         flush_code_map(
             store,
-            &ScanHealth::partial("cancelled", seen_count, total_candidates),
+            &ScanHealth::partial(
+                if report.stats.footprint_ceiling_hit {
+                    FOOTPRINT_CEILING_REASON
+                } else {
+                    "cancelled"
+                },
+                seen_count,
+                total_candidates,
+            ),
             false,
         )?;
         let (docs, code) = (driven.doc_batches, driven.code_batches);
         flush_vector_lanes(store, config, &filters, &scope, docs, code, REQUEUE_PER_INCREMENTAL)?;
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
+        report.file_map_bytes_written = store.file_map_bytes_written() - file_map_before;
         return Ok(report);
     }
 
     advance(&mut breadcrumb, &phase_peaks, PHASE_PURGE, None);
+    // The walk saw every list-only file of a whole working-tree pass, so its set replaces the
+    // recorded one: a deleted or newly indexed file leaves it. A staged or revision pass has no
+    // stat to record and leaves the working view's set alone.
+    if matches!(source, ScanSource::WorkingTree) {
+        store.index.listed = listed
+            .into_iter()
+            .map(|(rel, entry)| (crate::path::RelPath::from(rel), entry))
+            .collect();
+    }
     let working = store.view == crate::store::VIEW_WORKING && matches!(source, ScanSource::WorkingTree);
     report.deps_unavailable = crate::deps_docs::record(&store.basemind_dir, working, filters.dep_docs());
 
@@ -632,8 +678,10 @@ pub fn scan_with_observer(
             code_batches,
             REQUEUE_PER_INCREMENTAL,
         )?;
+        settle_cancelled_embed_progress(root, store, config, &filters, &source);
         phase_peaks.sample_now();
         report.phase_peaks = phase_peaks.snapshot();
+        report.file_map_bytes_written = store.file_map_bytes_written() - file_map_before;
         return Ok(report);
     }
 
@@ -654,7 +702,7 @@ pub fn scan_with_observer(
     advance(&mut breadcrumb, &phase_peaks, PHASE_LANES, None);
     flush_vector_lanes(store, config, &filters, &scope, doc_batches, code_batches, REQUEUE_ALL)?;
     run_optional_lane(LANE_CODE_REMOVALS, || {
-        flush_code_removals_if_any(store, config, &filters, &scope, &stale);
+        flush_code_removals_if_any(store, config, &filters, &stale);
     });
     #[cfg(feature = "documents")]
     crate::scanner_integrity::remove_docs_and_flush(store, config, &filters, &scope, &doc_stale)?;
@@ -670,9 +718,86 @@ pub fn scan_with_observer(
     if filters.verify_blobs && matches!(source, ScanSource::WorkingTree) {
         crate::scan_evidence::blobs_verified(&store.basemind_dir);
     }
+    settle_embed_progress(root, store, config, &filters, &source);
     phase_peaks.sample_now();
     report.phase_peaks = phase_peaks.snapshot();
+    report.file_map_bytes_written = store.file_map_bytes_written() - file_map_before;
     Ok(report)
+}
+
+/// Start reporting the embedding progress of a whole working-tree `Inline` pass that has documents
+/// owed their vectors (see [`crate::embed_progress`]); `None` for every other pass.
+#[cfg(feature = "documents")]
+fn begin_embed_reporter<'a>(
+    root: &Path,
+    store: &Store,
+    config: &Config,
+    filters: &'a Filters,
+    source: &ScanSource<'_>,
+    embed: EmbedMode,
+) -> Option<crate::embed_progress::EmbedReporter<'a>> {
+    if !matches!(source, ScanSource::WorkingTree) || !matches!(embed, EmbedMode::Inline) {
+        return None;
+    }
+    let owed = crate::embed_progress::docs_owed(store, config, filters);
+    (owed > 0).then(|| {
+        crate::embed_progress::EmbedReporter::begin(
+            crate::store_layout::workspace_cache_dir(root),
+            owed,
+            &filters.docs_embedded,
+        )
+    })
+}
+
+#[cfg(not(feature = "documents"))]
+fn begin_embed_reporter<'a>(
+    _root: &Path,
+    _store: &Store,
+    _config: &Config,
+    _filters: &'a Filters,
+    _source: &ScanSource<'_>,
+    _embed: EmbedMode,
+) -> Option<crate::embed_progress::EmbedReporter<'a>> {
+    None
+}
+
+/// Documents the store tracks that still owe their vectors; none without the document tier.
+fn docs_owed(store: &Store, config: &Config, filters: &Filters) -> usize {
+    #[cfg(feature = "documents")]
+    return crate::embed_progress::docs_owed(store, config, filters);
+    #[cfg(not(feature = "documents"))]
+    {
+        let _ = (store, config, filters);
+        0
+    }
+}
+
+/// The end of a whole working-tree pass settles the embedding record: it names the documents still
+/// owed their vectors (the mark a restarted process resumes from) and is removed once none are. An
+/// `Inline` pass that could not pay a document (no embedder, a budget) leaves it owed too.
+fn settle_embed_progress(root: &Path, store: &Store, config: &Config, filters: &Filters, source: &ScanSource<'_>) {
+    if !matches!(source, ScanSource::WorkingTree) {
+        return;
+    }
+    let cache_dir = crate::store_layout::workspace_cache_dir(root);
+    match docs_owed(store, config, filters) {
+        0 => crate::embed_progress::clear(&cache_dir),
+        owed => crate::embed_progress::record_owed(&cache_dir, owed),
+    }
+}
+
+/// A cancelled pass skips [`settle_embed_progress`]: when it had already paid every document, the
+/// record it wrote is removed; while any is owed it stays as written.
+fn settle_cancelled_embed_progress(
+    root: &Path,
+    store: &Store,
+    config: &Config,
+    filters: &Filters,
+    source: &ScanSource<'_>,
+) {
+    if matches!(source, ScanSource::WorkingTree) && docs_owed(store, config, filters) == 0 {
+        crate::embed_progress::clear(&crate::store_layout::workspace_cache_dir(root));
+    }
 }
 
 /// Move the pass's breadcrumb (and the per-phase memory tally) to `phase`, if one could be written at all. Folding the `Option` in
@@ -689,3 +814,7 @@ fn advance(
         crumb.advance(phase, candidates);
     }
 }
+
+#[cfg(all(test, feature = "documents"))]
+#[path = "scanner_embed_settle_tests.rs"]
+mod embed_settle_tests;

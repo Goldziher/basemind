@@ -111,7 +111,7 @@ fn legacy_uncompressed_filemap_blobs_remain_readable() {
     legacy.extend_from_slice(&(l1_bytes.len() as u32).to_le_bytes());
     legacy.extend_from_slice(&l1_bytes);
     legacy.extend_from_slice(&l2_bytes);
-    std::fs::write(store.blob_path_fm_hex(&hash_hex), legacy).expect("write legacy frame");
+    plant(&store.blob_path_fm_hex(&hash_hex), &legacy);
 
     assert_eq!(store.read_l1_by_hex(&hash_hex).unwrap(), Some(l1));
     assert_eq!(store.read_l2_by_hex(&hash_hex).unwrap(), Some(l2));
@@ -217,7 +217,7 @@ fn legacy_uncompressed_single_map_blobs_remain_readable() {
     let hash_hex = "1".repeat(64);
     let refs = FileResolvedRefs::new("rust");
     let legacy = rmp_serde::to_vec_named(&refs).expect("serialize legacy blob");
-    std::fs::write(store.blob_path_rref_hex(&hash_hex), legacy).expect("write legacy blob");
+    plant(&store.blob_path_rref_hex(&hash_hex), &legacy);
 
     assert_eq!(store.read_resolved_by_hex(&hash_hex).unwrap(), Some(refs));
 }
@@ -279,7 +279,7 @@ fn legacy_uncompressed_chunk_blobs_remain_readable_and_peekable() {
         embeddings: Vec::new(),
     };
     let legacy = rmp_serde::to_vec_named(&blob).expect("serialize legacy chunk blob");
-    std::fs::write(store.blob_path_chunk_hex(&hash_hex), legacy).expect("write legacy chunk blob");
+    plant(&store.blob_path_chunk_hex(&hash_hex), &legacy);
 
     assert_eq!(store.read_chunks_by_hex(&hash_hex).unwrap(), Some(blob));
     let peek = store.peek_chunk_state(&hash_hex).unwrap().expect("legacy chunk peek");
@@ -431,7 +431,7 @@ fn a_chunk_envelope_without_an_epoch_reads_as_epoch_zero() {
         chunks: (0..3).map(noisy_chunk).collect(),
         embeddings: (0..3).map(|i| vec![i as f32; 4]).collect(),
     };
-    std::fs::write(store.blob_path_chunk_hex(&hash_hex), pre_epoch_chunk_envelope(&blob)).unwrap();
+    plant(&store.blob_path_chunk_hex(&hash_hex), &pre_epoch_chunk_envelope(&blob));
 
     let peek = store.peek_chunk_state(&hash_hex).unwrap().expect("peek present");
     assert_eq!(peek.extract_epoch, 0, "no epoch in the header reads as stale");
@@ -478,4 +478,73 @@ fn has_l2_reads_the_tier_from_the_header() {
     assert!(store.has_l2_by_hex(&with));
     assert!(!store.has_l2_by_hex(&without));
     assert!(!store.has_l2_by_hex(&absent));
+}
+
+/// Write `bytes` at `path`, creating the blob's bucket directory first.
+fn plant(path: &Path, bytes: &[u8]) {
+    std::fs::create_dir_all(path.parent().expect("a blob has a bucket")).expect("create the bucket");
+    std::fs::write(path, bytes).expect("plant the blob");
+}
+
+const FM: &str = ".fm.msgpack";
+
+#[test]
+fn a_written_blob_lands_in_the_layout_of_its_namespace() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+    let hash_hex = format!("ab{}", "c".repeat(62));
+
+    store.write_filemap_hex(&hash_hex, &sample_l1(), None).expect("write");
+
+    let expected = crate::store_blob_layout::blob_path(&store.blobs_dir, &hash_hex, FM);
+    assert_eq!(store.blob_path_fm_hex(&hash_hex), expected);
+    assert!(expected.is_file(), "the blob is in place");
+    assert!(
+        !crate::store_blob_layout::displaced_blob_path(&store.blobs_dir, &hash_hex, FM).exists(),
+        "nothing is written in the other layout"
+    );
+}
+
+#[test]
+fn a_blob_of_the_other_layout_is_read_and_moved_into_place() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+    let hash_hex = format!("0f{}", "1".repeat(62));
+    let displaced = crate::store_blob_layout::displaced_blob_path(&store.blobs_dir, &hash_hex, FM);
+    plant(
+        &displaced,
+        &crate::store_blob::frame_filemap(&sample_l1(), Some(&sample_l2())).unwrap(),
+    );
+
+    assert_eq!(store.read_l1_by_hex(&hash_hex).unwrap(), Some(sample_l1()));
+
+    assert!(!displaced.exists(), "the displaced blob moved");
+    assert!(
+        crate::store_blob_layout::blob_path(&store.blobs_dir, &hash_hex, FM).is_file(),
+        "into place"
+    );
+    assert_eq!(
+        store.read_l2_by_hex(&hash_hex).unwrap(),
+        Some(sample_l2()),
+        "and still reads whole"
+    );
+}
+
+#[test]
+fn a_blob_written_over_a_displaced_one_replaces_it_instead_of_leaving_a_twin() {
+    init_isolated_cache();
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+    let hash_hex = format!("7e{}", "2".repeat(62));
+    let displaced = crate::store_blob_layout::displaced_blob_path(&store.blobs_dir, &hash_hex, FM);
+    plant(&displaced, b"stale");
+
+    store
+        .overwrite_filemap_hex(&hash_hex, &sample_l1(), None)
+        .expect("overwrite");
+
+    assert!(!displaced.exists(), "no twin is left in the other layout");
+    assert_eq!(store.read_l1_by_hex(&hash_hex).unwrap(), Some(sample_l1()));
 }

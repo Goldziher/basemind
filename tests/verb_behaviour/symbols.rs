@@ -6,14 +6,18 @@
 
 use serde_json::{Value, json};
 
-use super::{Client, call_err, call_raw, started, text_of};
+use super::{Client, call_err, call_raw, json_of, started, text_of};
 
-/// The tool's JSON text; it must not be an error.
+/// The tool's answer as compact JSON (checked to be the tool's own encoding); it must not be an error.
 async fn answer(client: &Client, arguments: Value) -> String {
     let result = call_raw(client, "code_symbols", arguments.clone()).await;
-    let text = text_of(&result);
-    assert_ne!(result.is_error, Some(true), "code_symbols {arguments} failed: {text}");
-    text
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "code_symbols {arguments} failed: {}",
+        text_of(&result)
+    );
+    json_of("code_symbols", &result)
 }
 
 /// `text` with its `next_cursor` replaced: the cursor carries the map generation, which a deferred
@@ -70,7 +74,8 @@ async fn code_symbols_answers_byte_for_byte() {
         let actual = without_cursor(&answer(&client, arguments.clone()).await);
         rows.push((format!("code_symbols {arguments}"), actual, expected.to_string()));
     }
-    let first = basemind::wire::decode(&answer(&client, json!({ "name": "outline", "limit": 2 })).await).unwrap();
+    let first =
+        serde_json::from_str::<Value>(&answer(&client, json!({ "name": "outline", "limit": 2 })).await).unwrap();
     let cursor = first["next_cursor"].as_str().expect("a second page").to_string();
     let rest = answer(&client, json!({ "name": "outline", "limit": 2, "cursor": cursor })).await;
     rows.push((

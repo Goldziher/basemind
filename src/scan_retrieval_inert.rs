@@ -57,8 +57,8 @@ impl VectorStore for Inert {
         Err(absent())
     }
 
-    fn store_id_at(&self, _dir: &Path) -> Option<String> {
-        None
+    fn holds_store(&self, _store: &Store, _id: &str) -> bool {
+        false
     }
 
     fn open_store_id(&self, _store: &Store) -> Option<String> {
@@ -73,7 +73,6 @@ impl VectorStore for Inert {
     fn write_code_rows(
         &self,
         _store: &mut Store,
-        _scope: &str,
         _batches: Vec<crate::scanner_code::PendingCodeBatch>,
         _model: &str,
     ) -> usize {
@@ -81,7 +80,7 @@ impl VectorStore for Inert {
     }
 
     #[cfg(feature = "code-search")]
-    fn delete_code_rows(&self, _store: &mut Store, _config: &Config, _scope: &str, _paths: &[String]) -> bool {
+    fn delete_code_rows(&self, _store: &mut Store, _config: &Config, _paths: &[String]) -> bool {
         true
     }
 }

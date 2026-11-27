@@ -22,10 +22,11 @@ const CONTENT: [&str; 2] = ["plugin/skills", "plugin/commands"];
 
 /// Flags the plugin text names that belong to another program, with that program. An entry no
 /// file names any more fails the test.
-const OTHER_PROGRAMS_FLAGS: [(&str, &str); 3] = [
+const OTHER_PROGRAMS_FLAGS: [(&str, &str); 4] = [
     ("--explain", "the `/bm-stats` slash command"),
     ("--features", "cargo"),
     ("--release", "cargo"),
+    ("--unshallow", "git"),
 ];
 
 /// Tokens that end the `basemind` part of a shell line.

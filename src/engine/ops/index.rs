@@ -136,7 +136,13 @@ impl Workspace {
         };
         let notice = self.lifecycle_notice();
         let watches = watch_status(&self.watch_health, crate::watch_health::max_user_watches);
-        let scan_progress = crate::scan_evidence::live_progress(&crate::store::workspace_cache_dir(&self.root));
+        let cache_dir = crate::store::workspace_cache_dir(&self.root);
+        let scan_progress = crate::scan_evidence::live_progress(&cache_dir);
+        let embeddings = crate::embed_progress::status(&cache_dir, crate::embed_progress::now_unix_ms());
+        let git_history_build = crate::git_history::progress::status(
+            &crate::git_history::shared_history_basemind_dir(&self.root),
+            crate::embed_progress::now_unix_ms(),
+        );
         let identity = self.repo_identity();
         let submodules = self.repo.as_ref().map(|r| r.submodule_paths()).unwrap_or_default();
         let Ok(store) = self.try_store_read() else {
@@ -161,8 +167,12 @@ impl Workspace {
                 notice,
                 watches,
                 scan_progress,
+                embeddings,
+                git_history_build,
                 total_size_bytes: 0,
                 languages: BTreeMap::new(),
+                listed: BTreeMap::new(),
+                roles: BTreeMap::new(),
                 large_files: None,
                 most_imported: Vec::new(),
                 cache_dir: self.cache_dir(),
@@ -215,8 +225,15 @@ impl Workspace {
             notice,
             watches,
             scan_progress,
+            embeddings,
+            git_history_build,
             total_size_bytes: total_size,
             languages: by_lang,
+            listed: listed_by_kind(&store.index.listed),
+            roles: files_by_role(
+                &crate::config::PathRoles::from_scan(&self.config.scan),
+                store.index.files.keys(),
+            ),
             large_files: Some(large_files),
             most_imported,
             cache_dir: self.cache_dir(),
@@ -293,6 +310,33 @@ struct RepoIdentity {
     branch: Option<String>,
     head_sha: Option<String>,
     head_short_sha: Option<String>,
+}
+
+/// How many list-only files the index holds of each kind.
+fn listed_by_kind(
+    listed: &ahash::AHashMap<crate::path::RelPath, crate::config::list_only::ListedEntry>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for entry in listed.values() {
+        *counts.entry(entry.kind.as_str().to_string()).or_insert(0) += 1;
+    }
+    counts
+}
+
+/// How many of `paths` carry each role; a path with two roles counts under both, and a path with
+/// none under neither.
+fn files_by_role<'a>(
+    roles: &crate::config::PathRoles,
+    paths: impl IntoIterator<Item = &'a crate::path::RelPath>,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for path in paths {
+        let Some(path) = path.as_str() else { continue };
+        for role in roles.roles_of(path) {
+            *counts.entry(role.as_str().to_string()).or_insert(0) += 1;
+        }
+    }
+    counts
 }
 
 /// Where the tree-sitter grammars are cached; shared with every other user of the language pack.
@@ -442,6 +486,60 @@ mod tests {
         assert!(note.contains("scan"), "note suggests a rescan");
     }
 
+    #[test]
+    fn listed_files_are_counted_per_kind() {
+        use crate::config::list_only::{ListKind, ListedEntry};
+        let listed: ahash::AHashMap<crate::path::RelPath, ListedEntry> = [
+            ("a/Cargo.lock", ListKind::Lockfile),
+            ("b/Cargo.lock", ListKind::Lockfile),
+            ("c.zip", ListKind::Archive),
+        ]
+        .into_iter()
+        .map(|(path, kind)| {
+            (
+                crate::path::RelPath::from(path),
+                ListedEntry {
+                    kind,
+                    size_bytes: 1,
+                    mtime: 0,
+                },
+            )
+        })
+        .collect();
+        let counts = listed_by_kind(&listed);
+        assert_eq!(
+            counts.into_iter().collect::<Vec<_>>(),
+            [("archive".to_string(), 1), ("lockfile".to_string(), 2)]
+        );
+        assert!(listed_by_kind(&ahash::AHashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn files_are_counted_per_role_and_plain_code_under_none() {
+        let roles = crate::config::PathRoles::from_scan(&crate::config::Config::with_defaults().scan);
+        let paths: Vec<crate::path::RelPath> = [
+            "src/lib.rs",
+            "deploy/main.tf",
+            "deploy/Dockerfile",
+            "tests/a.rs",
+            "tests/net/main.tf",
+            "api/user.pb.go",
+        ]
+        .into_iter()
+        .map(crate::path::RelPath::from)
+        .collect();
+        let counts = files_by_role(&roles, &paths);
+        assert_eq!(
+            counts.into_iter().collect::<Vec<_>>(),
+            [
+                ("generated".to_string(), 1),
+                ("infra".to_string(), 3),
+                ("test".to_string(), 2),
+            ]
+        );
+        assert!(files_by_role(&roles, &Vec::<crate::path::RelPath>::new()).is_empty());
+    }
+
     fn entry(lines: u32, bytes: u64) -> crate::store::FileEntry {
         crate::store::FileEntry {
             hash_hex: String::new(),
@@ -538,5 +636,64 @@ mod tests {
         drop(breadcrumb);
         let status = ws.index_status(IndexStatusParams {}).expect("status");
         assert_eq!(status.scan_progress, None, "a finished scan is not reported");
+    }
+
+    #[test]
+    fn status_reports_the_embedding_pass_and_drops_it_once_the_vectors_are_written() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = unscanned_workspace(dir.path());
+        assert_eq!(
+            ws.index_status(IndexStatusParams {}).expect("status").embeddings,
+            None,
+            "no document owes vectors"
+        );
+
+        let cache_dir = crate::store::workspace_cache_dir(dir.path());
+        crate::embed_progress::record_owed(&cache_dir, 7);
+        let embeddings = ws
+            .index_status(IndexStatusParams {})
+            .expect("status")
+            .embeddings
+            .expect("the owed vectors are reported");
+        assert_eq!((embeddings.done, embeddings.total, embeddings.eta_secs), (0, 7, None));
+
+        crate::embed_progress::clear(&cache_dir);
+        assert_eq!(ws.index_status(IndexStatusParams {}).expect("status").embeddings, None);
+    }
+
+    #[test]
+    fn status_reports_a_handed_off_history_build_and_drops_it_once_it_is_built() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = unscanned_workspace(dir.path());
+        let status = |ws: &Workspace| ws.index_status(IndexStatusParams {}).expect("status").git_history_build;
+        assert_eq!(status(&ws), None, "no build is owed");
+
+        let history_dir = crate::git_history::shared_history_basemind_dir(dir.path());
+        crate::git_history::progress::record_owed(&history_dir, 9);
+        let build = status(&ws).expect("the owed build is reported");
+        assert_eq!((build.done, build.total, build.eta_secs), (0, 9, None));
+
+        crate::git_history::progress::clear(&history_dir);
+        assert_eq!(status(&ws), None);
+    }
+
+    /// `rescanning` and a progress block are claims that a scan is running: with no pass holding the
+    /// workspace's rescan mark and no live scan breadcrumb, status carries neither.
+    #[test]
+    fn status_reports_rescanning_only_while_a_pass_holds_the_rescan_mark() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = unscanned_workspace(dir.path());
+        let state = |ws: &Workspace| {
+            let status = ws.index_status(IndexStatusParams {}).expect("status");
+            (status.notice.map(|notice| notice.state), status.scan_progress)
+        };
+
+        let mark = ws.mark_rescan();
+        assert_eq!(state(&ws).0, Some("rescanning"), "a pass holds the mark");
+
+        drop(mark);
+        let (notice, progress) = state(&ws);
+        assert_ne!(notice, Some("rescanning"), "no pass holds the mark");
+        assert_eq!(progress, None, "no scan runs, so there is nothing to report");
     }
 }

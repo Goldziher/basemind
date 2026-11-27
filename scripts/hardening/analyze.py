@@ -65,6 +65,7 @@ class Rule:
     value: str = ""
     threshold: str = ""
     waived: bool = False
+    unmeasured: bool = False
 
 
 @dataclass
@@ -375,6 +376,47 @@ def floor_rule(v: Verdict, label: str, points: list[tuple[float, float]], args: 
     v.rules.append(Rule(label, waived, detail + note, value, f"{args.floor_tol} MiB/min{suffix}", waived))
 
 
+def max_rise(values: list[float]) -> tuple[float, float, float]:
+    """Return the largest increase from an earlier sample to a later one, as (rise, low, high).
+
+    A series that only falls has a rise of 0; a sawtooth has a rise of its tooth height.
+    """
+    low = values[0]
+    best = (0.0, values[0], values[0])
+    for value in values[1:]:
+        if value - low > best[0]:
+            best = (value - low, low, value)
+        low = min(low, value)
+    return best
+
+
+def idle_memory_rule(v: Verdict, pid: int, idle: list[dict[str, Any]], args: argparse.Namespace) -> None:
+    """Fail when a daemon's memory rises by more than `--idle-swing-mib` while nothing is asked of it.
+
+    An idle daemon must settle, not breathe: a transient that the allocator keeps after a rescan or
+    a read-stack rebuild shows up as memory that jumps by GBs within a minute with no call in
+    flight. The rule measures the largest rise from any earlier sample to a later one after
+    `--idle-settle`. A fall is the allocator returning load's freed pages and is not judged, so a
+    single drop after load passes while a sawtooth fails on its upstroke.
+    """
+    key = "footprint" if idle and idle[0].get("footprint") is not None else "rss"
+    values = [r[key] for r in sorted(idle, key=lambda r: r["t"]) if r.get(key) is not None]
+    label = f"R6c daemon {pid} idle memory ({key})"
+    if len(values) < 2:  # noqa: PLR2004 - a rise needs two samples
+        v.add(label, False, f"{len(values)} idle samples (need >= 2)")
+        return
+    rise, low, high = max_rise(values)
+    v.add(
+        label,
+        rise / MIB <= args.idle_swing_mib,
+        f"rise {rise / MIB:.1f} MiB from {low / MIB:.0f} to {high / MIB:.0f} MiB over "
+        f"{len(values)} idle samples (band {args.idle_swing_mib} MiB; start {values[0] / MIB:.0f}, "
+        f"end {values[-1] / MIB:.0f} MiB)",
+        f"{rise / MIB:.1f} MiB",
+        f"{args.idle_swing_mib} MiB",
+    )
+
+
 def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:  # noqa: C901, PLR0912, PLR0915
     v = Verdict()
     meta = next((r for r in records if r.get("kind") == "meta"), {})
@@ -515,6 +557,8 @@ def analyze(records: list[dict[str, Any]], args: argparse.Namespace) -> Verdict:
                 f"{rate:.1f}/s",
                 f"{args.idle_wakeups}/s",
             )
+        for pid in daemon_pids:
+            idle_memory_rule(v, pid, [r for r in idle if r["pid"] == pid], args)
     else:
         v.add("R6 idle CPU", False, f"idle window after settle is {window:.0f}s (need >= {args.min_idle_window}s)")
 
@@ -675,9 +719,12 @@ def call_table(calls: list[dict[str, Any]], records: list[dict[str, Any]]) -> st
 
 
 def rule_verdict(r: Rule) -> str:
-    """A rule's verdict cell: a waived pass says so, so the waiver stays visible until it is lifted."""
+    """A rule's verdict cell: a waived pass says so, so the waiver stays visible until it is lifted, and a
+    rule the run could not measure says "not measured" rather than passing."""
     if not r.passed:
         return "**FAIL**"
+    if r.unmeasured:
+        return "not measured"
     return "waived" if r.waived else "pass"
 
 
@@ -760,6 +807,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument(
         "--idle-wakeups", type=float, default=100.0, help="idle wakeups/s summed over the run (macOS only; default 100)"
+    )
+    ap.add_argument(
+        "--idle-swing-mib",
+        type=float,
+        default=256.0,
+        help="MiB the daemon's memory may rise between an earlier and a later idle sample; falls are not judged (default 256)",
     )
     ap.add_argument(
         "--idle-settle", type=float, default=30.0, help="seconds at the start of idle not judged (default 30)"

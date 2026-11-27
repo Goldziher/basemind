@@ -260,12 +260,15 @@ impl Workspace {
             path: None,
             query: None,
             author: None,
+            since: None,
+            until: None,
             symbol: None,
             line: None,
             rev: None,
             limit: Some(RECENT_COMMITS),
             cursor: None,
             max_tokens: None,
+            files: false,
         };
         let Ok(GitLogResult::Recent(log)) = self.git_log(params) else {
             return None;

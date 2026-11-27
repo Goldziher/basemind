@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
+use crate::config::list_only::ListedEntry;
 use crate::engine::l1_cache;
+use crate::engine::l1_shared::Outlines;
 use crate::engine::paged_map::PagedSet;
 use crate::extract::FileMapL1;
 use crate::path::RelPath;
@@ -29,6 +31,23 @@ pub(crate) struct MapCache {
     /// files resolve against this set instead of [`Self::files`]. Projected straight from the index
     /// (no blob or LanceDB read) by every build, and patched from the paths of a delta.
     pub(crate) doc_paths: Arc<PagedSet<RelPath>>,
+    /// Every list-only file (`[scan] list_only`) with its stat data, sorted by path. Known to
+    /// exist, never read: `find_files` lists them and `index_status` counts them, no search tool
+    /// reads them. Projected from the index by every build; a delta keeps the previous set when the
+    /// index's is the same.
+    pub(crate) listed: Arc<Vec<(RelPath, ListedEntry)>>,
+}
+
+/// The sorted list-only files of `store`'s index.
+fn listed_of(store: &Store) -> Arc<Vec<(RelPath, ListedEntry)>> {
+    let mut listed: Vec<(RelPath, ListedEntry)> = store
+        .index
+        .listed
+        .iter()
+        .map(|(path, entry)| (path.clone(), *entry))
+        .collect();
+    listed.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    Arc::new(listed)
 }
 
 /// The sorted document-tier paths of `store`'s index.
@@ -37,20 +56,22 @@ fn doc_paths_of(store: &Store) -> Arc<PagedSet<RelPath>> {
 }
 
 impl MapCache {
-    /// Build the read stack's map over `store`, charging decoded L1s against `budget_bytes`
-    /// (`0` = unbounded).
+    /// Build the read stack's map over `store`, with the outline cache `outlines` names: one of the
+    /// map's own charged against a byte budget (a bare `u64`, `0` = unbounded), or the cache the host
+    /// shares between its read stacks ([`crate::engine::l1_shared`]).
     ///
     /// Unlike the whole-corpus map this replaces, `build` decodes NO L1 blobs: it projects the
     /// index into [`l1_cache::FileIndexView`] and leaves the outlines to be faulted in on demand.
-    pub(crate) fn build(store: &Store, budget_bytes: u64) -> Self {
+    pub(crate) fn build<'a>(store: &Store, outlines: impl Into<Outlines<'a>>) -> Self {
         let files = l1_cache::FileIndexView::build(store);
-        let l1 = Arc::new(l1_cache::L1Cache::from_store(store, budget_bytes));
+        let l1 = outlines.into().cache_for(store);
         Self {
             files,
             l1,
             terms: Default::default(),
             routes: Default::default(),
             doc_paths: doc_paths_of(store),
+            listed: listed_of(store),
         }
     }
 
@@ -67,6 +88,7 @@ impl MapCache {
             terms: Default::default(),
             routes: Default::default(),
             doc_paths: Default::default(),
+            listed: Default::default(),
         }
     }
 
@@ -97,6 +119,7 @@ impl MapCache {
             terms: Default::default(),
             routes: Default::default(),
             doc_paths: Default::default(),
+            listed: Default::default(),
         }
     }
 
@@ -254,6 +277,7 @@ impl MapCache {
             terms: Default::default(),
             routes: Default::default(),
             doc_paths: doc_paths.unwrap_or_else(|| self.doc_paths_patched(store, updated, removed)),
+            listed: self.listed_refreshed(store),
         };
         self.l1.forget_superseded(superseded, &next.files);
         if let Some(terms) = self.terms.get() {
@@ -262,6 +286,25 @@ impl MapCache {
                 .set(Arc::new(terms.patched(updated, removed, |p| next.get(p))));
         }
         next
+    }
+
+    /// The list-only files of `store`: this map's set when it is the same, so a scan that changed
+    /// none keeps the allocation.
+    fn listed_refreshed(&self, store: &Store) -> Arc<Vec<(RelPath, ListedEntry)>> {
+        let fresh = listed_of(store);
+        if fresh == self.listed {
+            Arc::clone(&self.listed)
+        } else {
+            fresh
+        }
+    }
+
+    /// The stat data of `path` when it is a list-only file.
+    pub(crate) fn listed_entry(&self, path: &RelPath) -> Option<&ListedEntry> {
+        self.listed
+            .binary_search_by(|(listed, _)| listed.cmp(path))
+            .ok()
+            .map(|at| &self.listed[at].1)
     }
 
     /// The document paths of `store`, patched from this map's for the paths of a delta: each one is
@@ -304,24 +347,17 @@ impl MapCache {
     ///
     /// `None` is what keeps a no-op daemon scan from transiently doubling the map's residency. The
     /// boot placeholder, or a cache over other blob directories than `store` reads, is rebuilt.
-    pub(crate) fn refreshed(&self, store: &Store, budget_bytes: u64) -> Option<Self> {
+    /// `outlines` is where a rebuilt map takes its outline cache from, as for [`build`](Self::build).
+    pub(crate) fn refreshed<'a>(&self, store: &Store, outlines: impl Into<Outlines<'a>>) -> Option<Self> {
         if !self.l1.serves(store) {
-            return Some(Self::build(store, budget_bytes));
+            return Some(Self::build(store, outlines));
         }
         let (updated, removed) = self.files.diff(store);
         let doc_paths = doc_paths_of(store);
-        // A path left out of the view for a missing blob is re-probed by every diff; while its
-        // blob is still missing the delta would map exactly what this map does.
         let unchanged = removed.is_empty()
             && doc_paths == self.doc_paths
-            && updated.iter().all(|path| {
-                !self.files.contains(path)
-                    && store
-                        .index
-                        .files
-                        .get(path)
-                        .is_none_or(|entry| !l1_cache::has_blob(store, entry))
-            });
+            && *listed_of(store) == *self.listed
+            && updated.is_empty();
         if unchanged {
             return None;
         }

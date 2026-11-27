@@ -128,9 +128,43 @@ pub fn group_index_dir(root: &Path) -> PathBuf {
     DataRoot::current().group_index_dir(root)
 }
 
+/// The last release minor whose group index sits directly in the group directory
+/// (`cache/groups/<group>/index.fjall`). A later minor keeps its own under [`group_index_namespace`],
+/// so two installed releases never open, wipe or refuse each other's index.
+pub const LAST_UNNAMESPACED_GROUP_MINOR: u16 = 34;
+
+/// The directory the group database of release minor `minor` lives in, under the group directory
+/// `group_dir`: the group directory itself up to [`LAST_UNNAMESPACED_GROUP_MINOR`], `v<minor>/`
+/// after it. The group lock, the marker and the retrieval stores stay in `group_dir`, shared by
+/// every minor.
+pub fn group_index_namespace(group_dir: &Path, minor: u16) -> PathBuf {
+    if minor <= LAST_UNNAMESPACED_GROUP_MINOR {
+        group_dir.to_path_buf()
+    } else {
+        group_dir.join(format!("v{minor}"))
+    }
+}
+
+/// The database directory of this binary's group index within the group directory `group_dir`
+/// (the fjall database is `index::INDEX_DIR` inside it).
+pub fn group_db_dir_in(group_dir: &Path) -> PathBuf {
+    group_index_namespace(group_dir, crate::version::RELEASE_MINOR)
+}
+
+/// The fjall directory of this binary's group index within the group directory `group_dir`.
+pub fn group_index_path_in(group_dir: &Path) -> PathBuf {
+    group_db_dir_in(group_dir).join(crate::index::INDEX_DIR)
+}
+
 /// Directory of a repository group's document retrieval stores, under its [`GROUPS_DIR`] entry:
 /// `cache/groups/<group>/lance/`, one store per embedding model (`crate::lance::docs`).
 pub const GROUP_LANCE_DIR: &str = "lance";
+
+/// Directory of a repository group's code-chunk vector stores, under its [`GROUPS_DIR`] entry:
+/// `cache/groups/<group>/code-lance/`, one store per embedding model (`crate::lance::code_store_dir`).
+/// Beside [`GROUP_LANCE_DIR`], not in it: a scan prunes the model stores it finds there that no scan
+/// has opened lately, which would take an idle-looking code store.
+pub const GROUP_CODE_LANCE_DIR: &str = "code-lance";
 
 /// The group key the workspace cache dir `basemind_dir` belongs to: the group its marker records,
 /// else the group of its root while the root exists. `None` when neither names a group, or the
@@ -159,6 +193,12 @@ pub fn group_lance_dir_of(basemind_dir: &Path) -> Option<PathBuf> {
     group_dir_of(basemind_dir).map(|group| group.join(GROUP_LANCE_DIR))
 }
 
+/// The group code-chunk vector stores ([`GROUP_CODE_LANCE_DIR`]) of the workspace cache dir
+/// `basemind_dir`, under its [`group_dir_of`].
+pub fn group_code_lance_dir_of(basemind_dir: &Path) -> Option<PathBuf> {
+    group_dir_of(basemind_dir).map(|group| group.join(GROUP_CODE_LANCE_DIR))
+}
+
 /// The group's user-memory Fjall database: `<repo_group_dir>/memory.fjall`. Outlives every
 /// workspace in the group, so budget eviction and the orphan reaper never touch it.
 pub fn memory_store_dir(root: &Path) -> PathBuf {
@@ -180,9 +220,14 @@ pub fn memory_vectors_dir(root: &Path) -> PathBuf {
 }
 
 /// The layout of the blob store, recorded in every file map ([`crate::store::Index::blob_layout`]).
-/// `0`: blobs flat in `cache/blobs/`. `1`: one namespace directory per blob schema. A file map of
-/// an earlier layout names blobs that are not where this binary looks, so it is discarded and the
+/// `0`: blobs flat in `cache/blobs/`. `1`: one namespace directory per blob schema. A file map of an
+/// earlier layout names blobs that are not where this binary looks, so it is discarded and the
 /// workspace scanned again, without waiting for a release to change the schema as well.
+///
+/// The file map's delta log (`index.delta`) is not a layout: a release that does not know it reads
+/// the base file alone, and every write of the base by such a release leaves the log stamped for a
+/// base that is gone, which this binary then ignores (see `store_file_map_log`). Raising the layout
+/// for it would make the earlier releases of the same minor refuse this binary's map.
 pub const BLOB_LAYOUT: u8 = 1;
 
 /// Root of the global blob store: `<data home>/cache/blobs/`. Holds one namespace directory per
@@ -391,17 +436,20 @@ pub fn status_sidecar_path(basemind_dir: &Path) -> PathBuf {
     basemind_dir.join(STATUS_SIDECAR_FILE)
 }
 
-/// Count content-addressed filemap blobs (`*.fm.msgpack`) in `blobs_dir` — the same population the
+/// Count content-addressed filemap blobs (`*.fm.msgpack`) in `blobs_dir`, flat or bucketed — the same population the
 /// MCP `status` tool reports as `blob_count`. Returns `0` when the directory is absent or unreadable;
 /// the count is advisory, never load-bearing.
 pub fn count_fm_blobs(blobs_dir: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(blobs_dir) else {
-        return 0;
-    };
-    entries
-        .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".fm.msgpack")))
-        .count()
+    crate::store_blob_layout::blob_files(blobs_dir).map_or(0, |files| {
+        files
+            .iter()
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".fm.msgpack"))
+            })
+            .count()
+    })
 }
 
 /// Best-effort atomic write of the `status.json` sidecar into `basemind_dir`. `scanned_unix` is set
@@ -919,3 +967,7 @@ pub(crate) fn sync_directory(path: &Path) -> std::io::Result<()> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "store_layout_namespace_tests.rs"]
+mod group_namespace_tests;

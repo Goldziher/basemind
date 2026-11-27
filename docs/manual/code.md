@@ -49,7 +49,14 @@ symbol or span you need. Paths are repository-relative with forward slashes.
   overlapping windows written once, as `rg -C N` prints them. In JSON (`structuredContent`,
   `--json`) the rows are `{"<path>": {"<symbol>": ["<line>: <text>", ...]}}`. The sweep stops
   reading once the files read hold more matches than `limit`; `total` then counts only those
-  files and `total_is_partial` says so, and each `next_cursor` page counts on from there.
+  files and `total_is_partial` says so, and each `next_cursor` page counts on from there. A sweep
+  that runs 10 seconds stops the same way: it keeps the matches it found, sets `truncated_reason`
+  to `time_budget` and a `notice`, and `next_cursor` resumes at the first file it did not read.
+  `skipped_files` counts the files it could not search, and `skipped_reasons` splits them into
+  `unavailable` (gone since the scan, or leading out of the repository), `too_large` (past
+  `scan.max_file_bytes`) and `unreadable` (opening or reading failed). The first search after a
+  start waits for the code map to load, and while a scan runs it reads every file instead of
+  using the trigram prefilter; both make it slower than the ones after it.
 - `code_search` returns pointers (path, `line` / `end_line`, symbol), not bodies. It reports the
   lanes that ran and `lanes_unavailable` for the ones that did not. It needs a build with the
   `code-search` feature; without it the call is an error naming the feature.
@@ -93,7 +100,19 @@ These read the index (the daemon answers them when one runs) and have no MCP too
 - `basemind code impact <target>` lists the files that depend on a file (`path` or `path:line`), on
   a symbol's defining files (`--symbol`), or on a change (`--diff <rev>`, `--diff A..B`, `--diff A...B`,
   `--changed` for the uncommitted changes), transitively through the import graph up to
-  `--depth` levels (default 1, at most 5), each with its depth and whether it sits in a cycle.
+  `--depth` levels (default 1, at most 5), each with its depth and whether it sits in a cycle. It
+  also lists the files the target imports (`dependencies`). For a symbol it adds `callers`, the
+  call sites that reach it, followed up to `--depth` hops, and `calls`, what its body calls. Every
+  caller says how it was established: `same_file` or `imported` (`proven`, bound to the definition
+  by the resolution facts), `name_only` (a callee named alike) or `path_match` (a call by a literal
+  route path), the last two listed but never followed and never proven. Call sites that bind to
+  another definition are not callers and are left out.
+  Each impacted file (an importer reached or a file holding a caller, targets excluded) is counted
+  once in `impacted_files` and in its `buckets` count: `prod`, `config`, `test` or `external`
+  (vendored or third-party code), judged from the path. `order` lists what to change first: the
+  targets, then the impacted files nearest first, prod before config before tests before external
+  code. `--fail-above <n>` exits 1 for CI when `impacted_files` exceeds `n`; a report from an index
+  that is not ready exits 1 instead of passing.
 - `basemind code cycles` lists import cycles, smallest first, each with an import chain that closes
   it; `--path` narrows to a file or directory and `--max-size` drops larger cycles.
   `basemind code cycles --check <from> <to>` says whether `from` importing `to` would close a cycle.

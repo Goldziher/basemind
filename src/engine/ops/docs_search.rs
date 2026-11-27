@@ -97,7 +97,14 @@ mod enabled {
             if cancelled() {
                 return Err(EngineError::Cancelled);
             }
-            let mut page = crate::lance::docs_page::page(store.as_ref(), ranking, offset, limit, budget(p.max_tokens));
+            let paging = crate::lance::docs_page::Paging {
+                offset,
+                limit,
+                max_tokens: budget(p.max_tokens),
+                per_doc: p.per_doc.unwrap_or(crate::lance::docs_page::PER_DOC_DEFAULT),
+                context: p.context.unwrap_or(false),
+            };
+            let mut page = crate::lance::docs_page::page(store.as_ref(), ranking, paging);
             if let Some(reason) = refusal.filter(|_| page.hits.is_empty()) {
                 return Err(EngineError::invalid_argument(format!("`docs_search`: {reason}")));
             }
@@ -107,6 +114,14 @@ mod enabled {
             let notice = self.lifecycle_notice();
             if notice.is_some() {
                 page.notice = None;
+            } else if let Some(pending) = crate::embed_progress::status(
+                &crate::store::workspace_cache_dir(&self.root),
+                crate::embed_progress::now_unix_ms(),
+            ) {
+                page.notice = Some(match page.notice.take() {
+                    Some(existing) => format!("{existing}; {}", pending.notice()),
+                    None => pending.notice(),
+                });
             }
             Ok(DocsSearchResponse {
                 page,

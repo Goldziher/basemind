@@ -1143,10 +1143,7 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .collect();
                 let consistent = commits.iter().all(|c| {
                     // A row starts with its sha.
-                    let sha = c
-                        .as_str()
-                        .and_then(|row| row.split_once(' '))
-                        .map_or("", |(sha, _)| sha);
+                    let sha = c["sha"].as_str().unwrap_or_default();
                     !sha.is_empty() && by_token.iter().any(|full| full.starts_with(sha))
                 });
                 record

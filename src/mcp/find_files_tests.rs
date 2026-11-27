@@ -78,6 +78,7 @@ fn listing(query: Option<&str>, language: Option<&str>) -> FindFilesToolParams {
         max_tokens: None,
         min_lines: None,
         changed: None,
+        indexed: None,
     }
 }
 
@@ -88,6 +89,16 @@ fn paths(payload: &Value) -> Vec<String> {
         .expect("files")
         .iter()
         .map(|f| f.as_str().expect("a file is its path").to_string())
+        .collect()
+}
+
+/// The path of every row of a page, whether the row is a bare path or a `{path, ...}` object.
+fn paths_or_rows(payload: &Value) -> Vec<String> {
+    payload["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .map(|f| f.as_str().or_else(|| f["path"].as_str()).expect("a path").to_string())
         .collect()
 }
 
@@ -167,6 +178,34 @@ async fn find_and_list_cover_files_git_tracks_that_are_not_indexed() {
 
     let listed = server.find_files_call(listing(None, None)).await.expect("files");
     assert!(paths(&json_of(&listed)).contains(&"assets/banner.png".to_string()));
+
+    // A tracked file that is neither indexed nor list-only belongs to no `indexed` group.
+    for (filter, query) in [
+        (Some(crate::engine::types::files::IndexedFilter::Flag(true)), None),
+        (
+            Some(crate::engine::types::files::IndexedFilter::Flag(true)),
+            Some("banner"),
+        ),
+        (Some(crate::engine::types::files::IndexedFilter::Flag(false)), None),
+        (
+            Some(crate::engine::types::files::IndexedFilter::Flag(false)),
+            Some("banner"),
+        ),
+    ] {
+        let mut params = listing(query, None);
+        params.indexed = filter;
+        let result = server.find_files_call(params).await.expect("files");
+        assert!(
+            !paths_or_rows(&json_of(&result)).contains(&"assets/banner.png".to_string()),
+            "{filter:?} {query:?}"
+        );
+    }
+    let mut params = listing(None, None);
+    params.indexed = Some(crate::engine::types::files::IndexedFilter::Word(
+        crate::engine::types::files::IndexedWord::Any,
+    ));
+    let any = server.find_files_call(params).await.expect("files");
+    assert!(paths_or_rows(&json_of(&any)).contains(&"assets/banner.png".to_string()));
     let rust = server
         .find_files_call(listing(None, Some("rust")))
         .await
@@ -206,4 +245,60 @@ async fn files_lists_documents_alongside_code() {
         ["files"],
         "a whole listing carries nothing else (no `total` without `next_cursor`): {payload}"
     );
+}
+
+/// A lockfile is known to exist: `find_files` lists it with `indexed: false` and its kind, `indexed`
+/// selects either group, and the file is not git-tracked-but-unindexed twice.
+#[tokio::test]
+async fn find_lists_list_only_files_with_their_kind_and_filters_by_indexed() {
+    use crate::engine::types::files::{IndexedFilter, IndexedWord};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("infra")).unwrap();
+    let lock_body = "provider \"x\" {}\n";
+    std::fs::write(root.join("infra/.terraform.lock.hcl"), lock_body).unwrap();
+    std::fs::write(root.join("capture.pcap"), [0xd4, 0xc3, 0xb2, 0xa1, 0, 0]).unwrap();
+    let server = server(root);
+
+    let rows = |filter: Option<IndexedFilter>, query: Option<&str>| {
+        let mut params = listing(query, None);
+        params.indexed = filter;
+        let server = &server;
+        async move {
+            let result = server.find_files_call(params).await.expect("files");
+            json_of(&result)["files"].as_array().expect("files").clone()
+        }
+    };
+
+    let any = rows(None, None).await;
+    let lock = any
+        .iter()
+        .find(|row| row["path"] == "infra/.terraform.lock.hcl")
+        .unwrap_or_else(|| panic!("the lockfile is listed: {any:?}"));
+    assert_eq!(lock["indexed"], false);
+    assert_eq!(lock["kind"], "lockfile");
+    assert_eq!(lock["bytes"], lock_body.len());
+    assert!(
+        any.iter()
+            .any(|row| row["path"] == "capture.pcap" && row["kind"] == "data")
+    );
+    assert!(
+        any.iter().any(|row| row == "widget_factory.rs"),
+        "indexed files still list"
+    );
+
+    let only_listed = rows(Some(IndexedFilter::Flag(false)), None).await;
+    assert_eq!(only_listed.len(), 2, "{only_listed:?}");
+    assert!(only_listed.iter().all(|row| row["indexed"] == false));
+
+    let only_indexed = rows(Some(IndexedFilter::Flag(true)), None).await;
+    assert!(only_indexed.iter().all(|row| row.is_string()), "{only_indexed:?}");
+    assert!(only_indexed.iter().any(|row| row == "widget_factory.rs"));
+
+    assert_eq!(rows(Some(IndexedFilter::Word(IndexedWord::Any)), None).await, any);
+
+    let queried = rows(Some(IndexedFilter::Flag(false)), Some("terraform.lock")).await;
+    assert_eq!(queried.len(), 1, "{queried:?}");
+    assert_eq!(queried[0]["kind"], "lockfile");
 }

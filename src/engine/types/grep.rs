@@ -27,7 +27,7 @@ pub struct CodeGrepParams {
     /// Lines before and after each hit, 0-10.
     #[serde(default)]
     pub context: Option<u32>,
-    /// Default 100.
+    /// Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior `next_cursor`.
@@ -36,7 +36,7 @@ pub struct CodeGrepParams {
     /// Default 6000.
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Files changed since rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.
+    /// Changed since a rev (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.
     #[serde(default)]
     pub changed: Option<String>,
 }
@@ -298,6 +298,43 @@ pub(crate) enum GrepTruncation {
     /// The corpus was larger than one call may read. Narrow with `path` / `language`, or
     /// page with `next_cursor`. Only reachable on workspaces of multiple gigabytes of source.
     ByteBudget,
+    /// The sweep ran out of wall-clock time before reading every file. `notice` says so and
+    /// `next_cursor` continues with the files it did not reach.
+    TimeBudget,
+}
+
+/// Why `code_grep` could not search the files it counts in `skipped_files`. A reason with no file
+/// is absent.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub(crate) struct SkippedBreakdown {
+    /// Gone since the scan, or now leading out of the repository.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unavailable: usize,
+    /// Grown past `scan.max_file_bytes`.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub too_large: usize,
+    /// Present, but opening or reading it failed (permission denied, an I/O error).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unreadable: usize,
+}
+
+impl SkippedBreakdown {
+    /// Files skipped for any reason.
+    pub(crate) fn total(&self) -> usize {
+        self.unavailable + self.too_large + self.unreadable
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+}
+
+impl std::ops::AddAssign for SkippedBreakdown {
+    fn add_assign(&mut self, other: Self) {
+        self.unavailable += other.unavailable;
+        self.too_large += other.too_large;
+        self.unreadable += other.unreadable;
+    }
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -307,18 +344,19 @@ pub(crate) struct WorkspaceGrepResponse {
     /// a `next_cursor`: a page without one lists every hit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<u32>,
-    /// True when the sweep stopped reading once the files read held more than `limit` hits, so
+    /// True when the sweep stopped reading once the files read held more than `limit` hits, or at its
+    /// time budget, so
     /// `total` is a lower bound. `next_cursor` continues, and each later page counts on from where
     /// this one stopped. Absent when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub total_is_partial: bool,
-    /// True when the byte budget left files unread, so `total` does not cover them. Never true
+    /// True when the byte or time budget left files unread, so `total` does not cover them. Never true
     /// because `limit` cut the page or because the sweep stopped once the page was full. Absent when
     /// false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
-    /// `byte_budget` whenever `truncated` is true. There is no `omitted`: the matches in the
-    /// unread files were never counted. `next_cursor` continues with those files.
+    /// `byte_budget` or `time_budget` whenever `truncated` is true. There is no `omitted`: the matches
+    /// in the unread files were never counted. `next_cursor` continues with those files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<GrepTruncation>,
     /// True when a `max_tokens` budget dropped trailing hits. Page the rest with `next_cursor`.
@@ -337,6 +375,9 @@ pub(crate) struct WorkspaceGrepResponse {
     /// Files this call could not search: gone, unreadable, or leading out of the repository.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped_files: usize,
+    /// `skipped_files` by why, each reason beside its count; absent when nothing was skipped.
+    #[serde(default, skip_serializing_if = "SkippedBreakdown::is_empty")]
+    pub skipped_reasons: SkippedBreakdown,
     /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
     /// (a rescan happened between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]

@@ -63,6 +63,71 @@ pub fn compile_patterns<'a>(patterns: impl IntoIterator<Item = &'a str>) -> Resu
     builder.build().map_err(|e| e.to_string())
 }
 
+/// An ordered glob list with gitignore semantics: the last pattern that matches a path decides, and
+/// a `!pattern` entry re-includes what an earlier pattern matched. Built by [`compile_rules`].
+#[derive(Debug, Clone, Default)]
+pub struct RuleSet {
+    /// `(patterns, negated)` in list order.
+    rules: Vec<(GlobSet, bool)>,
+}
+
+impl RuleSet {
+    /// Does the list select `key`? True when the last matching entry is a plain pattern, false when
+    /// it is a `!` entry or nothing matches.
+    pub fn is_match(&self, key: &str) -> bool {
+        self.rules
+            .iter()
+            .rev()
+            .find(|(set, _)| set.is_match(key))
+            .is_some_and(|(_, negated)| !negated)
+    }
+}
+
+/// Compile `patterns` into a [`RuleSet`]. Unlike [`compile_patterns`] a leading `!` is accepted and
+/// marks a re-include; the rest of the entry expands exactly as [`expand_pattern`] describes.
+pub fn compile_rules<'a>(patterns: impl IntoIterator<Item = &'a str>) -> Result<RuleSet, String> {
+    let rules = patterns
+        .into_iter()
+        .map(|pattern| {
+            let trimmed = pattern.trim_start();
+            let (body, negated) = trimmed.strip_prefix('!').map_or((pattern, false), |rest| (rest, true));
+            compile_patterns([body])
+                .map(|set| (set, negated))
+                .map_err(|e| format!("{pattern:?}: {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(RuleSet { rules })
+}
+
+/// Classifies repo-relative paths as test files from `[scan] test_globs`, the one list behind the
+/// code map's `is_test` flag and the document tier's default test exclusion.
+#[derive(Debug, Clone)]
+pub struct TestPaths(GlobSet);
+
+impl TestPaths {
+    /// Compile `globs`; an invalid glob is a config error.
+    pub fn new(globs: &[String]) -> Result<Self, String> {
+        compile_patterns(globs.iter().map(String::as_str)).map(Self)
+    }
+
+    /// The matcher for `[scan] test_globs`, falling back to the default list when the configured
+    /// one does not compile (validation rejects that earlier, so this is a safety net).
+    pub fn from_config(cfg: &ConfigV1) -> Self {
+        Self::new(&cfg.scan.test_globs).unwrap_or_else(|_| {
+            let defaults = super::documents::TEST_PATH_GLOBS
+                .iter()
+                .map(|g| (*g).to_string())
+                .collect::<Vec<_>>();
+            Self(compile_patterns(defaults.iter().map(String::as_str)).unwrap_or_default())
+        })
+    }
+
+    /// Is the repo-relative, forward-slash `path` a test path?
+    pub fn is_test(&self, path: &str) -> bool {
+        self.0.is_match(path)
+    }
+}
+
 /// Post-deserialization checks the JSON schema cannot express: non-empty `[scan] include`, valid
 /// globs in every list, no empty `[analysis] entry_points` pattern, and a well-formed `[languages]`
 /// table.
@@ -74,17 +139,24 @@ pub fn validate(cfg: &ConfigV1) -> Result<(), String> {
                 .to_string(),
         );
     }
-    let lists: [(&str, &[String]); 9] = [
+    let lists: [(&str, &[String]); 4] = [
         ("[scan] include", &cfg.scan.include),
+        ("[scan] test_globs", &cfg.scan.test_globs),
         ("[scan] exclude", &cfg.scan.exclude),
+        ("[analysis] entry_points", &cfg.analysis.entry_points),
+    ];
+    let ordered: [(&str, &[String]); 7] = [
+        ("[scan] list_only", &cfg.scan.list_only),
         ("[documents] include", &cfg.documents.include),
         ("[documents] exclude", &cfg.documents.exclude),
         ("[documents] embed_include", &cfg.documents.embed_include),
         ("[documents] embed_exclude", &cfg.documents.embed_exclude),
         ("[code_search] embed_include", &cfg.code_search.embed_include),
         ("[code_search] embed_exclude", &cfg.code_search.embed_exclude),
-        ("[analysis] entry_points", &cfg.analysis.entry_points),
     ];
+    for (name, list) in ordered {
+        compile_rules(list.iter().map(String::as_str)).map_err(|e| format!("invalid glob in {name}: {e}"))?;
+    }
     if cfg
         .analysis
         .entry_points
@@ -104,6 +176,7 @@ pub fn validate(cfg: &ConfigV1) -> Result<(), String> {
             format!("invalid glob in {name}: {e}{advice}")
         })?;
     }
+    super::roles::PathRoles::new(&cfg.scan)?;
     crate::lang_rules::LangRules::from_config(&cfg.languages)?;
     Ok(())
 }
@@ -216,6 +289,31 @@ pub fn doc_guard_digest(cfg: &DocumentsConfig, doc_digest: &str) -> String {
     )
 }
 
+/// Fingerprint of every setting that decides what a scan reads, extracts or stores: the walk
+/// (`[scan]`, `[languages]`), the extractors (`[code_intel]`, `[code_search]`, `[documents]`) and the
+/// resource limits they run under. A config edit that leaves it unchanged (a new file holding the
+/// defaults, a `[mcp]` or `[watch]` tweak) cannot change what an index holds, so it owes no rescan.
+pub fn scan_inputs_digest(cfg: &ConfigV1) -> String {
+    digest_of(
+        "scan-inputs/1",
+        &(
+            &cfg.scan,
+            &cfg.languages,
+            &cfg.code_intel,
+            &cfg.code_search,
+            &cfg.documents,
+            &cfg.resources,
+        ),
+    )
+}
+
+/// Fingerprint of every setting a daemon-hosted read stack is built from: the scan inputs
+/// ([`scan_inputs_digest`]) and `watch.debounce_ms`, which its watcher reads once at start. A stack
+/// built under a different digest is rebuilt; an edit that leaves it unchanged keeps the stack.
+pub fn read_stack_digest(cfg: &ConfigV1) -> String {
+    digest_of("read-stack/1", &(scan_inputs_digest(cfg), cfg.watch.debounce_ms))
+}
+
 /// Fingerprint of everything that decides which derived rows (vectors, keyword postings) should
 /// exist for a path. When it differs from the value stored in the index, the next full scan
 /// re-flushes eligible files and purges the rows of files that are no longer eligible.
@@ -244,6 +342,135 @@ mod tests {
         compile_patterns(patterns.iter().copied())
             .expect("compiles")
             .is_match(path)
+    }
+
+    fn ruled(patterns: &[&str], path: &str) -> bool {
+        compile_rules(patterns.iter().copied())
+            .expect("compiles")
+            .is_match(path)
+    }
+
+    #[test]
+    fn rule_sets_let_the_last_matching_entry_decide() {
+        for (patterns, path, expected) in [
+            (&["**/*.html"][..], "a/b.html", true),
+            (&["**/*.html", "!docs/**"][..], "docs/b.html", false),
+            (&["**/*.html", "!docs/**"][..], "web/b.html", true),
+            (&["!docs/**", "**/*.html"][..], "docs/b.html", true),
+            (
+                &["**/*.html", "!docs/**", "docs/drafts"][..],
+                "docs/drafts/b.html",
+                true,
+            ),
+            (&["!docs/**"][..], "docs/b.html", false),
+            (&[][..], "docs/b.html", false),
+        ] {
+            assert_eq!(ruled(patterns, path), expected, "{patterns:?} on {path}");
+        }
+    }
+
+    #[test]
+    fn rule_sets_reject_an_invalid_glob_behind_a_negation() {
+        let err = compile_rules(["!src/[unclosed"]).expect_err("unbalanced class");
+        assert!(err.contains("src/[unclosed"), "{err}");
+    }
+
+    #[test]
+    fn document_lists_validate_with_negations_but_scan_lists_do_not() {
+        let mut cfg = ConfigV1::with_defaults();
+        cfg.documents.exclude.push("!docs/**".to_string());
+        validate(&cfg).expect("a `!` entry is valid in a document list");
+        cfg.scan.exclude.push("!docs/**".to_string());
+        let err = validate(&cfg).expect_err("scan lists stay negation-free");
+        assert!(err.contains("[scan] exclude"), "{err}");
+    }
+
+    #[test]
+    fn test_paths_follow_the_configured_globs() {
+        let default = TestPaths::from_config(&ConfigV1::with_defaults());
+        for path in [
+            "tests/a.rs",
+            "pkg/test/a.py",
+            "web/__tests__/a.ts",
+            "src/foo_test.go",
+            "pkg/test_foo.py",
+            "web/a.spec.ts",
+            "web/a.test.js",
+            "pkg/conftest.py",
+            "e2e/flow.ts",
+            "app/mocks/api.ts",
+            "app/fixtures/a.json",
+            "ui/__snapshots__/a.snap",
+        ] {
+            assert!(default.is_test(path), "{path} is a test path");
+        }
+        for path in ["src/lib.rs", "docs/testing.md", "src/contest.py", "latest/a.py"] {
+            assert!(!default.is_test(path), "{path} is not a test path");
+        }
+        let custom = TestPaths::new(&["qa/**".to_string()]).expect("compiles");
+        assert!(custom.is_test("qa/a.rs") && !custom.is_test("tests/a.rs"));
+        assert!(TestPaths::new(&["a/[".to_string()]).is_err());
+    }
+
+    #[test]
+    fn extended_test_globs_match_their_shape_and_not_look_alikes() {
+        let default = TestPaths::from_config(&ConfigV1::with_defaults());
+        for (positive, negative) in [
+            ("ci/run.bats", "ci/run.bat"),
+            ("ui/a.snap", "ui/a.snapshot"),
+            ("ui/a.stories.tsx", "ui/a.story.tsx"),
+            ("ui/a.mock.ts", "ui/a.mocking.ts"),
+            ("ui/a.mocks.ts", "ui/a.mockery.ts"),
+            ("ui/__mocks__/a.ts", "ui/__mock__/a.ts"),
+            ("ui/mock/a.ts", "ui/mockery/a.ts"),
+            ("pkg/testing/a.py", "pkg/contesting/a.py"),
+            ("web/playwright/a.ts", "web/playwrighty/a.ts"),
+            ("web/cypress/a.ts", "web/cypresses/a.ts"),
+            ("ui/stories/a.tsx", "ui/mystories/a.tsx"),
+            ("src/FooTest.java", "src/Contest.java"),
+            ("src/FooTests.java", "src/Attests.java"),
+            ("src/FooTest.kt", "src/Contest.kt"),
+            ("lib/foo_spec.rb", "lib/foo.rb"),
+            ("src/foo_tests.rs", "src/attestation.rs"),
+            ("pkg/test_utils/a.py", "pkg/mytest_utils/a.py"),
+            ("pkg/testutils/a.go", "pkg/contestutils/a.go"),
+            ("pkg/tests.py", "pkg/attests.py"),
+            ("web/a.e2e.ts", "web/e2e.ts"),
+            ("web/a.cy.ts", "web/a.cyan.ts"),
+            ("src/foo_test.py", "src/latest/x.py"),
+        ] {
+            assert!(default.is_test(positive), "{positive} is a test path");
+            assert!(!default.is_test(negative), "{negative} is not a test path");
+        }
+        for path in ["src/contest.py", "attestation.go", "src/latest/x.py"] {
+            assert!(!default.is_test(path), "{path} is not a test path");
+        }
+    }
+
+    #[test]
+    fn scan_inputs_digest_tracks_scan_settings_and_ignores_the_rest() {
+        let base = ConfigV1::with_defaults();
+        let mut watch_only = base.clone();
+        watch_only.watch.debounce_ms += 1;
+        assert_eq!(scan_inputs_digest(&base), scan_inputs_digest(&watch_only));
+
+        let mut excluded = base.clone();
+        excluded.scan.exclude.push("generated".to_string());
+        assert_ne!(scan_inputs_digest(&base), scan_inputs_digest(&excluded));
+    }
+
+    #[test]
+    fn read_stack_digest_adds_the_watcher_debounce_to_the_scan_inputs() {
+        let base = ConfigV1::with_defaults();
+        let mut debounced = base.clone();
+        debounced.watch.debounce_ms += 1;
+        assert_ne!(read_stack_digest(&base), read_stack_digest(&debounced));
+
+        let mut excluded = base.clone();
+        excluded.scan.exclude.push("generated".to_string());
+        assert_ne!(read_stack_digest(&base), read_stack_digest(&excluded));
+
+        assert_eq!(read_stack_digest(&base), read_stack_digest(&base.clone()));
     }
 
     #[test]
@@ -433,6 +660,12 @@ mod tests {
                 .expect_err("bad glob")
                 .contains("[code_search] embed_exclude")
         );
+
+        let mut cfg = ConfigV1::with_defaults();
+        cfg.scan.roles.infra = vec!["!deploy/**".to_string()];
+        validate(&cfg).expect("a role list takes `!` entries");
+        cfg.scan.roles.generated = vec!["a/[".to_string()];
+        assert!(validate(&cfg).expect_err("bad glob").contains("[scan.roles] generated"));
     }
 
     #[test]
