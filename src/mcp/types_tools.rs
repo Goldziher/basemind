@@ -20,9 +20,6 @@ macro_rules! tool_args {
         /// Every verb tool's MCP name, in declaration order.
         pub const VERB_TOOLS: &[&str] = &[$($tool),+];
 
-        /// The mode-dispatched tools the verb tools replaced (ADR-0018). None may be advertised.
-        pub const RETIRED_TOOLS: &[&str] = &["code", "git", "memory", "admin", "graph", "web", "shell", "workspace", "agents"];
-
         /// Run `tool`'s own argument parse on `arguments`: `Some(Err(message))` is the rejection an
         /// agent would be shown, `None` a name that is not a verb tool.
         #[cfg(feature = "test-support")]
@@ -53,6 +50,7 @@ tool_args! {
     IndexRescanParams => "index_rescan",
 }
 
+pub use crate::engine::tool_names::RETIRED_TOOLS;
 pub use crate::engine::types::code::{CodeOutlineParams, CodeReadParams, CodeSymbolsParams};
 pub use crate::engine::types::files::FindFilesToolParams;
 pub use crate::engine::types::git::{GitBlameParams, GitDiffParams, GitLogParams};

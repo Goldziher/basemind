@@ -7,6 +7,9 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 
+use crate::engine::savings;
+use crate::engine::telemetry::Telemetry;
+
 /// The response text of a tool result, so telemetry can route it through the real tokenizer; the
 /// byte length is recovered as `.len()` for the rows that report raw response bytes. Image /
 /// resource / link content is skipped — basemind tools only ever return text.
@@ -40,8 +43,8 @@ fn result_text(result: &CallToolResult) -> std::borrow::Cow<'_, str> {
 /// errors are logged via `tracing::warn!` and swallowed so a misbehaving telemetry write can never
 /// break a tool response. Only successful calls produce rows — error responses don't carry a
 /// meaningful "saved" number.
-pub(super) fn record_call_to(
-    telemetry: &super::telemetry::Telemetry,
+pub(crate) fn record_call_to(
+    telemetry: &Telemetry,
     corpus: u64,
     tool: &'static str,
     params: &Value,
@@ -53,9 +56,9 @@ pub(super) fn record_call_to(
     let resp_text = result_text(r);
     let resp_bytes = resp_text.len() as u64;
     let savings = if r.is_error == Some(true) {
-        super::savings::refusal(resp_text.as_ref())
+        savings::refusal(resp_text.as_ref())
     } else {
-        super::savings::estimate_from_text(tool, corpus, resp_text.as_ref())
+        savings::estimate_from_text(tool, corpus, resp_text.as_ref())
     };
     telemetry.record(tool, params, resp_bytes, elapsed_us, &savings);
 }

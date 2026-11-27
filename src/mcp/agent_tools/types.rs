@@ -22,19 +22,8 @@ use crate::comms::v2::api::{
     Actor, Cursor, InboxMessage, InboxReply, MessageId, PostReply, Principal, RepoKey, ThreadId, ThreadSummary,
     ThreadsReply, WaitOutcome,
 };
+pub use crate::engine::tool_names::{AGENT_INBOX, AGENT_POST, AGENT_THREADS, AGENT_TOOLS};
 use crate::mcp::strict::ToolArgs;
-
-/// MCP name of the tool that posts a message.
-pub const AGENT_POST: &str = "agent_post";
-
-/// MCP name of the tool that reads messages.
-pub const AGENT_INBOX: &str = "agent_inbox";
-
-/// MCP name of the tool that lists and changes threads.
-pub const AGENT_THREADS: &str = "agent_threads";
-
-/// The three agent tools, in declaration order. Deferred, so not part of `VERB_TOOLS`.
-pub const AGENT_TOOLS: &[&str] = &[AGENT_POST, AGENT_INBOX, AGENT_THREADS];
 
 impl ToolArgs for AgentPostParams {
     const TOOL: &'static str = AGENT_POST;

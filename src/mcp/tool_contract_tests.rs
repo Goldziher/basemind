@@ -601,7 +601,8 @@ mod error_mapping {
     use rmcp::model::ErrorCode;
     use serde_json::json;
 
-    use super::super::tool_contract::{kind_data, kind_of, kind_structured, scrub};
+    use super::super::tool_contract::{kind_of, kind_structured, scrub};
+    use crate::dispatch::kind_data;
     use crate::engine::error_kind::{ALL_KINDS, ERROR_KEY, ErrorKind};
     use crate::engine::redaction::Redaction;
 

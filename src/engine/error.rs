@@ -7,6 +7,10 @@
 //! adapter maps the variants onto MCP error codes, which the CLI turns into exit codes
 //! (`src/mcp/adapter.rs`).
 
+/// Key of the error `data` field that marks a failure as contention for the workspace writer lock:
+/// the adapters write it and the CLI reads it back to exit `3`.
+pub const BUSY_DATA: &str = "busy";
+
 /// Why an engine operation did not answer.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

@@ -6,7 +6,7 @@ use std::io::Write;
 use anyhow::Result;
 use clap::Args;
 
-use super::context::Tools;
+use super::context::CliContext;
 use super::render::{Emit, emit};
 use super::run_tool;
 use crate::engine::Workspace;
@@ -24,7 +24,7 @@ pub struct OverviewArgs {
 }
 
 /// Run `overview` and print its answer.
-pub(super) async fn run(tools: &Tools, args: OverviewArgs, opts: &Emit, out: &mut impl Write) -> Result<()> {
+pub(super) async fn run(tools: &CliContext, args: OverviewArgs, opts: &Emit, out: &mut impl Write) -> Result<()> {
     let p = OverviewParams {
         sections: args.sections,
         limit: args.limit,

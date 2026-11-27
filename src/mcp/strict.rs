@@ -21,14 +21,9 @@
 use std::borrow::Cow;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 
-/// The arguments of one verb tool: the wire name the error messages cite.
-pub(crate) trait ToolArgs: DeserializeOwned + JsonSchema + 'static {
-    /// The MCP tool name, e.g. `code_grep`.
-    const TOOL: &'static str;
-}
+pub(crate) use crate::engine::paging::ToolArgs;
 
 /// Arguments that either parsed exactly or carry the message explaining why not.
 pub(crate) struct Strict<T>(pub Result<T, String>);

@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 
-use crate::mcp::BasemindServer;
+use crate::dispatch::LocalEngine;
 use crate::mcp::tokens::{TOKENS_ARE_COUNTED, o200k_counted};
 
 pub use gate::{
@@ -83,7 +83,7 @@ fn parse_mode(s: &str) -> std::result::Result<EvalMode, String> {
 }
 
 /// Run the evaluation. Returns an error (non-zero exit) on a bad task file or a regression.
-pub async fn run(server: &BasemindServer, args: &EvalArgs, out: &mut impl Write) -> Result<()> {
+pub(crate) async fn run(server: &LocalEngine, args: &EvalArgs, out: &mut impl Write) -> Result<()> {
     let text = std::fs::read_to_string(&args.tasks).with_context(|| format!("read {}", args.tasks.display()))?;
     let mut tasks = parse_tasks(&text)?;
     if !args.modes.is_empty() {
@@ -92,7 +92,7 @@ pub async fn run(server: &BasemindServer, args: &EvalArgs, out: &mut impl Write)
     if tasks.is_empty() {
         bail!("no tasks to run in {}", args.tasks.display());
     }
-    let root = server.state.shared.root.clone();
+    let root = server.root().to_path_buf();
 
     if args.warmup {
         for t in &tasks {

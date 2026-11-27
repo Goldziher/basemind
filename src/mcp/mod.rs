@@ -20,24 +20,13 @@ mod cli_only;
 mod completions;
 pub mod lead_tools;
 pub(crate) use crate::engine::cursor;
-mod cursor_bind;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;
-mod helpers;
 pub(crate) use adapter::BUSY_DATA;
-
-/// The overload refusal a CLI session answers with ([`admission::ServerBusy::into_cli_error`]).
-#[cfg(all(test, feature = "comms", any(unix, windows)))]
-pub(crate) fn busy_for_cli() -> rmcp::ErrorData {
-    admission::ServerBusy.into_cli_error()
-}
 #[cfg(all(test, feature = "comms", feature = "code-intel-js", any(unix, windows)))]
 mod code_refs_hosted_tests;
 #[cfg(test)]
 mod code_refs_tests;
-mod helpers_telemetry;
-mod history_sync;
-pub(crate) mod identity;
 #[cfg(feature = "test-support")]
 pub mod in_memory;
 #[cfg(test)]
@@ -50,12 +39,11 @@ mod prompts;
 pub mod replay;
 mod resources;
 mod router_cache;
-pub(crate) mod savings;
 mod server_handler;
 mod state;
 mod strict;
 mod tasks;
-pub(crate) mod telemetry;
+pub(crate) use crate::engine::telemetry;
 pub(crate) use crate::engine::tokens;
 mod tool_contract;
 mod tools;
@@ -64,7 +52,6 @@ mod tools_admin;
 mod tools_agents;
 mod tools_git;
 mod tools_memory;
-mod types;
 mod types_tools;
 
 use std::path::PathBuf;
@@ -74,6 +61,7 @@ use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::task_manager::TaskManager;
 
+use crate::dispatch::history_sync;
 use crate::engine::workspace::BootScan;
 use crate::store::Store;
 
@@ -174,14 +162,12 @@ impl HostedReadStack {
     }
 }
 
-/// Public re-export of every tool `*Params` type, so the in-process CLI (`src/cli/`) can build
-/// tool arguments and call the same `*_call` bodies the `#[tool]` shims call. This is the
-/// parity-by-construction surface: the CLI runs the identical tool code an MCP client would reach.
+/// Public re-export of every verb tool's `*Params` type and the argument parser the server runs,
+/// for the integration tests and the evaluation harness.
 pub mod params {
     pub use rmcp::handler::server::wrapper::Parameters;
 
     pub(crate) use super::strict::parse as parse_args;
-    pub use super::types::{FindCommitsByPathParams, HotFilesParams, HotspotsParams, TelemetrySummaryParams};
     #[cfg(feature = "test-support")]
     pub use super::types_tools::check_arguments;
     pub use super::types_tools::{
@@ -264,15 +250,7 @@ pub struct ServerOptions {
 
 impl From<ServerOptions> for crate::engine::workspace::OpenOptions {
     fn from(options: ServerOptions) -> Self {
-        Self {
-            background: options.background,
-            read_only: options.read_only,
-            forwards_writes: false,
-            lazy_cache: options.lazy_cache,
-            history_sync: Some(history_sync::request),
-            #[cfg(feature = "memory")]
-            memory_owner: identity::resolve_agent_id,
-        }
+        crate::dispatch::open_options(options.background, options.read_only, options.lazy_cache)
     }
 }
 
@@ -340,9 +318,9 @@ impl BasemindServer {
         git_cache: Arc<crate::git_cache::GitCache>,
         options: ServerOptions,
     ) -> Self {
-        let agent_id = identity::resolve_agent_id(&store.root);
         let history_dir = crate::git_history::shared_history_basemind_dir(&root);
-        let git_history = Self::open_git_history(&root, &history_dir, repo.is_some(), &agent_id, &options);
+        let git_history =
+            crate::dispatch::open_git_history(&history_dir, repo.is_some(), options.background, options.read_only);
         // ~keep Boot decisions depend on the opened store, so compute them before it moves into the stack.
         let plan = crate::engine::workspace::boot_plan(&store, &options.into());
         let basemind_dir = store.basemind_dir.clone();
@@ -459,60 +437,6 @@ impl BasemindServer {
     pub(crate) fn for_cli(mut self) -> Self {
         self.cli = true;
         self
-    }
-
-    /// The git-history handle this session gets, if any. Fjall's directory lock is exclusive — even a
-    /// read-only open takes it — so `git-history.fjall/` has exactly one holder machine-wide, and the
-    /// only question here is whether that holder is us or the daemon:
-    ///
-    /// * **a daemon is up**: the DAEMON holds the database. A session it hosts reads it in process
-    ///   through the daemon's handle. Any other session (a CLI command on a view the daemon does not
-    ///   host) gets no handle and live-walks: it cannot win the lock, and trying would burn the retry
-    ///   ladder on every invocation. The CLI asks whether a daemon is up, which is one `stat` when
-    ///   there is none (see [`crate::comms::singleton::daemon_is_up`]).
-    /// * **no daemon** (a standalone process, or a non-`comms` build): this process holds the
-    ///   database and builds it in-process, as before. Nobody else can, and history tools would
-    ///   otherwise permanently live-walk.
-    /// * **read-only fallback** (another process owns the write lock, no daemon): no handle — history
-    ///   tools live-walk, visibly (`partial: true`). A one-shot CLI command beside such a process
-    ///   does not try the database at all, and tries a free one once, never the retry ladder.
-    fn open_git_history(
-        root: &std::path::Path,
-        history_dir: &std::path::Path,
-        has_repo: bool,
-        agent_id: &str,
-        options: &ServerOptions,
-    ) -> Option<Arc<crate::git_history::GitHistoryIndex>> {
-        if !has_repo || !crate::git_history::index_enabled() {
-            return None;
-        }
-        #[cfg(all(feature = "comms", any(unix, windows)))]
-        if crate::comms::singleton::daemon_is_up() {
-            // ~keep The daemon holds the database and fjall's lock is exclusive even to a reader
-            // ~keep (fjall `locked_file.rs` `try_lock`), so a session it does not host live-walks.
-            return None;
-        }
-        let _ = (root, agent_id);
-        // ~keep A one-shot query never syncs, so an index it would open empty would stay empty.
-        if options.read_only || (!options.background && !crate::git_history::GitHistoryIndex::exists(history_dir)) {
-            return None;
-        }
-        // ~keep A one-shot query holds no writer lock, so a held index is another process's for as
-        // ~keep long as it runs: it live-walks at once instead of climbing the retry ladder (~1.5 s).
-        let opened = if options.background {
-            crate::git_history::GitHistoryIndex::open(history_dir)
-        } else if crate::store_lock::writer_lock_is_held(history_dir) {
-            return None;
-        } else {
-            crate::git_history::GitHistoryIndex::open_once(history_dir)
-        };
-        match opened {
-            Ok(index) => Some(Arc::new(index)),
-            Err(error) => {
-                tracing::warn!(?error, "git-history index unavailable; tools will live-walk");
-                None
-            }
-        }
     }
 
     /// Names of every tool this server advertises via `tools/list`. Exposed for the

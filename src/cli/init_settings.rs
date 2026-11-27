@@ -35,7 +35,7 @@ const LEGACY_WILDCARD: &str = "mcp__plugin_basemind_basemind__*";
 
 /// The `permissions.allow` entries `init` adds: every read-only verb tool, under each prefix.
 fn permission_entries() -> Vec<String> {
-    let tools = crate::mcp::offline::read_only_verb_tools();
+    let tools = crate::engine::tool_names::READ_ONLY_VERB_TOOLS;
     TOOL_PREFIXES
         .iter()
         .flat_map(|prefix| tools.iter().map(move |tool| format!("{prefix}{tool}")))
@@ -48,7 +48,7 @@ fn is_obsolete(entry: &str) -> bool {
         || TOOL_PREFIXES.iter().any(|prefix| {
             entry
                 .strip_prefix(prefix)
-                .is_some_and(|tool| crate::mcp::params::RETIRED_TOOLS.contains(&tool))
+                .is_some_and(|tool| crate::engine::tool_names::RETIRED_TOOLS.contains(&tool))
         })
 }
 

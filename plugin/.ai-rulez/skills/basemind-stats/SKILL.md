@@ -60,7 +60,7 @@ stats", or invokes `/bm-stats` directly. This skill is strictly user-invoked —
 If they invoke `/bm-stats --explain` or ask how the savings number is
 derived, include the per-baseline breakdown from the `per_baseline` field of the
 response and call out which tools fall into which bucket. The estimator lives in
-`src/mcp/savings.rs` if they want to read the code.
+`src/engine/savings.rs` if they want to read the code.
 
 ## Notes
 

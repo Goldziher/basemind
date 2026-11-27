@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.15.0'
 scope = 'all'
-tree = 'sha256:27a3ba10720a229d4d8caba214e26054d48af7175ad6ffbbb33ba098d6d9aef7'
+tree = 'sha256:de3219f94c4a66e3017fef674e316cd269ce560afb421e597355407a0183eab8'
 
 [[served]]
 name = 'adr-workflow'
@@ -82,7 +82,7 @@ digest = 'sha256:5bdcc7bfa81315e82624f76fe389ad5c706d78c731dc7191ccd9fbbfc219657
 name = 'mcp-tool-checklist'
 source = '.ai-rulez/skills/mcp-tool-checklist/SKILL.md'
 commit = ''
-digest = 'sha256:93e993711ced840c76cbb3ed608a3f9e69b24b9f333d0ef4cef0f0b06f172240'
+digest = 'sha256:619937a0d67061ec33182dc30155484f71d4a16d152da1a1c6db9d1e16bcaba0'
 
 [[served]]
 name = 'observability-standards'
@@ -232,7 +232,7 @@ digest = 'sha256:a403f2754ff781dd8f5e8e80077ee141564fd59774194de0b4d78b15c89453c
 kind = 'context'
 id = 'mcp-surface'
 path = 'context/mcp-surface.md'
-digest = 'sha256:eb3aca3e869ce182ae371828406edd71d72726413f400d88d485adb414572d92'
+digest = 'sha256:380efe0e9beaf05ac3e8f99338c6cf57e78669173c5e525b7852d9ed9bbdf831'
 
 [[item]]
 kind = 'context'
@@ -327,7 +327,7 @@ digest = 'sha256:554dd19dc3c34106abb9d1b3c458bcae6c96e575707d44684d88c8ab2da6b4d
 kind = 'skill'
 id = 'mcp-tool-checklist'
 path = 'skills/mcp-tool-checklist'
-digest = 'sha256:fa3dec8cc43ff0aeeb47ed6f8606bf8d6c71479da57b3a8a9a5863c8e70f90c9'
+digest = 'sha256:2cff8d769759aaa50bea4c0082821445105439c64bfea4fb08d7cae32714492b'
 
 [[item]]
 kind = 'skill'

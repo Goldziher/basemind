@@ -14,9 +14,12 @@ use std::path::Path;
 use anyhow::Result;
 use clap::Subcommand;
 
-use super::context::Tools;
-use crate::mcp::cursor::Cursor;
-use crate::mcp::params::*;
+use super::context::CliContext;
+use crate::engine::Workspace;
+use crate::engine::cursor::Cursor;
+use crate::engine::types::memory::{
+    MemoryClearParams, MemoryDeleteParams, MemorySaveParams, MemorySearchToolParams, Visibility,
+};
 
 use super::render::{Emit, emit};
 use super::run_tool;
@@ -117,7 +120,7 @@ fn clear_prompt(root: &Path) -> String {
 }
 
 /// Dispatch a `memory` subcommand through the in-process server.
-pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
+pub async fn run(tools: &CliContext, cmd: MemoryCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     let (tool, result) = match cmd {
         MemoryCmd::Put {
             key,
@@ -134,7 +137,9 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
             (
                 "memory_save",
                 tools
-                    .call("memory_save", p, async |s, p| s.memory_save_call(p).await)
+                    .call("memory_save", p, async |s, p| {
+                        s.op_unpaged(p, Workspace::memory_save).await
+                    })
                     .await,
             )
         }
@@ -153,7 +158,7 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
             (
                 "memory_search",
                 tools
-                    .call("memory_search", p, async |s, p| s.memory_search_call(p).await)
+                    .call("memory_search", p, async |s, p| s.op(p, Workspace::memory_search).await)
                     .await,
             )
         }
@@ -165,7 +170,7 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
             (
                 "memory_search",
                 tools
-                    .call("memory_search", p, async |s, p| s.memory_search_call(p).await)
+                    .call("memory_search", p, async |s, p| s.op(p, Workspace::memory_search).await)
                     .await,
             )
         }
@@ -186,7 +191,7 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
             (
                 "memory_search",
                 tools
-                    .call("memory_search", p, async |s, p| s.memory_search_call(p).await)
+                    .call("memory_search", p, async |s, p| s.op(p, Workspace::memory_search).await)
                     .await,
             )
         }
@@ -198,7 +203,9 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
             (
                 "memory_delete",
                 tools
-                    .call("memory_delete", p, async |s, p| s.memory_delete_call(p).await)
+                    .call("memory_delete", p, async |s, p| {
+                        s.cli_op(p, Workspace::memory_delete).await
+                    })
                     .await,
             )
         }
@@ -210,7 +217,7 @@ pub async fn run(tools: &Tools, cmd: MemoryCmd, opts: &Emit, out: &mut impl Writ
                 "memory_clear",
                 tools
                     .call("memory_clear", MemoryClearParams {}, async |s, p| {
-                        s.memory_clear_call(p).await
+                        s.cli_op(p, Workspace::memory_clear).await
                     })
                     .await,
             )

@@ -121,7 +121,7 @@ into a submodule of `src/engine/` rather than raising it.
 9. **`README.md`** — add the tool's row. One line, ≤ 120 chars.
 
 Also update `src/mcp/server_handler.rs` instructions when an agent needs to know the tool exists,
-`src/mcp/tasks.rs` `SLOW_CALLS` when it routinely runs for seconds, and `src/mcp/savings.rs` when
+`src/mcp/tasks.rs` `SLOW_CALLS` when it routinely runs for seconds, and `src/engine/savings.rs` when
 it has a measured shell baseline.
 
 ## Constraints not to "fix" locally

@@ -1,7 +1,7 @@
 # basemind retrieval-quality and token-savings evaluation
 
 `basemind admin eval` scores basemind's lookups against gold generated from the repository itself,
-and measures whether the token savings the dashboard claims (`src/mcp/savings.rs`) hold up.
+and measures whether the token savings the dashboard claims (`src/engine/savings.rs`) hold up.
 Nothing here is specific to one repository: the generators only need a git checkout
 (the AST-based ones read Python; the rest are language-agnostic).
 
@@ -150,7 +150,7 @@ files in `read` with the same tokenizer, and records `baseline_tokens / basemind
 gold must be non-empty; otherwise the task is listed as withheld. A cheap wrong answer is not a saving.
 
 Per mode the report gives the credited distribution (median and p90 of the ratio and of tokens saved) and compares the
-median ratio with what `src/mcp/savings.rs` would assume for the same response (its fixed per-tool multiplier, keyed by
+median ratio with what `src/engine/savings.rs` would assume for the same response (its fixed per-tool multiplier, keyed by
 tool name and calibrated from this eval: `code_outline` 1.2x, `code_symbols` 25x, `docs_search` 2.5x; 1x, i.e. no
 saving, for `code_refs` (which serves `references`, `callers` and `dependents`), `find_files`, `code_grep` and
 `git_log`; see the constants in that file). A mode whose measured median

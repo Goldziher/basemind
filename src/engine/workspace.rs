@@ -66,7 +66,7 @@ pub(crate) struct Workspace {
     shared_outlines: Option<Arc<crate::engine::l1_shared::SharedOutlines>>,
     /// Sum of `size_bytes` across every indexed file. Captured at boot and
     /// after each `rescan`. Feeds the corpus-baseline cost in
-    /// [`crate::mcp::savings::estimate_from_text`].
+    /// [`crate::engine::savings::estimate_from_text`].
     pub(crate) corpus_bytes: AtomicU64,
     /// Monotonic counter bumped every time `cache` is swapped (boot, rescan, view watcher).
     /// In-memory pagination cursors embed this value as a snapshot id so a resume call

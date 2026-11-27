@@ -6,7 +6,7 @@ use clap::Subcommand;
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
-use super::context::Tools;
+use super::context::CliContext;
 use super::exit::{CliExit, ERROR};
 use crate::engine::Workspace;
 use crate::engine::types::migration::MigrationCheckParams;
@@ -33,7 +33,7 @@ pub enum MigrationCmd {
 }
 
 /// Run a migration command, returning its tool name and result.
-pub(super) async fn call(tools: &Tools, cmd: MigrationCmd) -> (&'static str, Result<CallToolResult, McpError>) {
+pub(super) async fn call(tools: &CliContext, cmd: MigrationCmd) -> (&'static str, Result<CallToolResult, McpError>) {
     match cmd {
         MigrationCmd::Check { name, ranges, .. } => {
             let params = MigrationCheckParams {

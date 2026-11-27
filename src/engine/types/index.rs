@@ -183,6 +183,22 @@ pub(crate) struct AdmissionStatus {
     pub queue_wait_ms: u64,
 }
 
+impl AdmissionStatus {
+    /// The lanes of a process that has admitted nothing: every slot free, none waiting.
+    pub(crate) fn idle(limits: crate::config::daemon::AdmissionLimits) -> Self {
+        let lane = |limit| LaneStatus {
+            limit,
+            in_use: 0,
+            queued: 0,
+        };
+        Self {
+            heavy: lane(limits.heavy_concurrency),
+            medium: lane(limits.medium_concurrency),
+            queue_wait_ms: u64::try_from(limits.queue_wait.as_millis()).unwrap_or(u64::MAX),
+        }
+    }
+}
+
 /// One work class's slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub(crate) struct LaneStatus {

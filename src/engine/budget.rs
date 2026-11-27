@@ -4,7 +4,7 @@
 //! result list costs. The result list is already best-first (the tools rank as they
 //! build), so budgeting is a keep-prefix-that-fits operation: walk the items in order,
 //! sum each item's estimated token cost (serialized bytes / 4, the same factor the
-//! telemetry estimator in `mcp::savings` uses), and drop the suffix once the running
+//! telemetry estimator in `engine::savings` uses), and drop the suffix once the running
 //! total would exceed the budget.
 //!
 //! The budget bounds the RESULT LIST, not the whole response envelope — the surrounding

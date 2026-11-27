@@ -14,6 +14,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::error::EngineError;
 use super::savings::SavingsRow;
 
 /// Filename relative to `.basemind/`. Single source of truth so the statusline
@@ -169,24 +170,17 @@ const TELEMETRY_SUMMARY_RECENT_COUNT: usize = 10;
 /// Read the JSONL telemetry log at `path`, filter by `params.window` + `params.tool`,
 /// aggregate per-tool + per-baseline counts, and return the dashboard payload.
 ///
-/// All blocking I/O is offloaded via `spawn_blocking` so the MCP server stays
-/// responsive when the JSONL is large (read cap: 10 000 rows).
-pub(super) async fn summarize(
+/// Reads the log synchronously (read cap: 10 000 rows); an adapter runs it on a blocking thread.
+pub(crate) fn summarize(
     path: &std::path::Path,
-    params: super::types::TelemetrySummaryParams,
-) -> Result<super::types::TelemetrySummaryResponse, rmcp::ErrorData> {
-    use rmcp::ErrorData as McpError;
-
+    params: super::types::telemetry::TelemetrySummaryParams,
+) -> Result<super::types::telemetry::TelemetrySummaryResponse, EngineError> {
     let window = params.window.as_deref().unwrap_or("today").to_string();
     let cutoff_micros = window_cutoff_micros(&window)
-        .map_err(|e| McpError::invalid_params(format!("unknown window `{window}`: {e}"), None))?;
+        .map_err(|e| EngineError::invalid_argument(format!("unknown window `{window}`: {e}")))?;
     let tool_filter = params.tool.clone();
 
-    let path_buf = path.to_path_buf();
-    let rows = tokio::task::spawn_blocking(move || read_telemetry_tail(&path_buf))
-        .await
-        .map_err(|e| McpError::internal_error(format!("telemetry read join: {e}"), None))?
-        .map_err(|e| McpError::internal_error(format!("telemetry read: {e}"), None))?;
+    let rows = read_telemetry_tail(path).map_err(|e| EngineError::internal(format!("telemetry read: {e}")))?;
     let truncated = rows.len() >= TELEMETRY_SUMMARY_READ_CAP;
 
     let mut per_tool: ahash::AHashMap<String, (usize, u64)> = ahash::AHashMap::new();
@@ -194,7 +188,7 @@ pub(super) async fn summarize(
     let mut total_calls: usize = 0;
     let mut total_resp_bytes: u64 = 0;
     let mut total_saved: u64 = 0;
-    let mut recent: Vec<super::types::RecentCallView> = Vec::with_capacity(TELEMETRY_SUMMARY_RECENT_COUNT);
+    let mut recent: Vec<super::types::telemetry::RecentCallView> = Vec::with_capacity(TELEMETRY_SUMMARY_RECENT_COUNT);
 
     for row in rows.iter().rev() {
         if let Some(c) = cutoff_micros
@@ -217,7 +211,7 @@ pub(super) async fn summarize(
         b.0 += 1;
         b.1 = b.1.saturating_add(row.est_tokens_saved);
         if recent.len() < TELEMETRY_SUMMARY_RECENT_COUNT {
-            recent.push(super::types::RecentCallView {
+            recent.push(super::types::telemetry::RecentCallView {
                 ts_micros: row.ts_micros,
                 tool: row.tool.clone(),
                 resp_bytes: row.resp_bytes,
@@ -226,18 +220,18 @@ pub(super) async fn summarize(
             });
         }
     }
-    let mut per_tool_vec: Vec<super::types::ToolCallCount> = per_tool
+    let mut per_tool_vec: Vec<super::types::telemetry::ToolCallCount> = per_tool
         .into_iter()
-        .map(|(tool, (calls, est))| super::types::ToolCallCount {
+        .map(|(tool, (calls, est))| super::types::telemetry::ToolCallCount {
             tool,
             calls,
             est_tokens_saved: est,
         })
         .collect();
     per_tool_vec.sort_by(|a, b| b.calls.cmp(&a.calls).then(a.tool.cmp(&b.tool)));
-    let mut per_baseline_vec: Vec<super::types::BaselineCount> = per_baseline
+    let mut per_baseline_vec: Vec<super::types::telemetry::BaselineCount> = per_baseline
         .into_iter()
-        .map(|(baseline, (calls, est))| super::types::BaselineCount {
+        .map(|(baseline, (calls, est))| super::types::telemetry::BaselineCount {
             baseline,
             calls,
             est_tokens_saved: est,
@@ -245,7 +239,7 @@ pub(super) async fn summarize(
         .collect();
     per_baseline_vec.sort_by(|a, b| b.calls.cmp(&a.calls).then(a.baseline.cmp(&b.baseline)));
 
-    Ok(super::types::TelemetrySummaryResponse {
+    Ok(super::types::telemetry::TelemetrySummaryResponse {
         window,
         total_calls,
         total_resp_bytes,
