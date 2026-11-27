@@ -16,13 +16,13 @@ pub(crate) fn bytes_to_tokens(bytes: u64) -> u64 {
 
 /// Count the tokens in `text`.
 #[cfg(feature = "tokenizer")]
-pub(crate) fn count_tokens(text: &str) -> u64 {
+pub fn count_tokens(text: &str) -> u64 {
     xberg::chunking::count_tokens(text, None) as u64
 }
 
 /// `bytes / 4` fallback when no tokenizer is compiled in.
 #[cfg(not(feature = "tokenizer"))]
-pub(crate) fn count_tokens(text: &str) -> u64 {
+pub fn count_tokens(text: &str) -> u64 {
     (text.len() as u64) / 4
 }
 

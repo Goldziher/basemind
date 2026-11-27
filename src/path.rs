@@ -203,7 +203,7 @@ impl std::borrow::Borrow<BStr> for RelPath {
 /// Returns the normalized key, or `None` when the path escapes / falls outside
 /// the repository. An empty result (path resolves to the repo root itself) also
 /// yields `None` since there is no file key for the root.
-pub(crate) fn normalize_query_path(user_path: &str, repo_root: &std::path::Path) -> Option<String> {
+pub fn normalize_query_path(user_path: &str, repo_root: &std::path::Path) -> Option<String> {
     let path = std::path::Path::new(user_path);
 
     if path.is_absolute() {

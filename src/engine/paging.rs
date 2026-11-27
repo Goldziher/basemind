@@ -23,7 +23,7 @@ use super::cursor::{Cursor, reject_zero_limit, stale_cursor};
 use super::error::EngineError;
 
 /// The arguments of one verb tool: the wire name the error messages cite.
-pub(crate) trait ToolArgs: DeserializeOwned + schemars::JsonSchema + 'static {
+pub trait ToolArgs: DeserializeOwned + schemars::JsonSchema + 'static {
     /// The MCP tool name, e.g. `code_grep`.
     const TOOL: &'static str;
 }
@@ -35,7 +35,7 @@ const PAGING_KEYS: [&str; 3] = ["limit", "cursor", "max_tokens"];
 const SEPARATOR: char = '.';
 
 /// The arguments of a paginated verb tool.
-pub(crate) trait Paged: ToolArgs + Serialize {
+pub trait Paged: ToolArgs + Serialize {
     /// `(field, value)` for each string argument whose omission the tool reads as that value.
     /// Passing the default explicitly selects the same list as leaving it out, so the two must
     /// bind a cursor alike. Each entry mirrors the default applied in the tool's body.
@@ -144,7 +144,7 @@ fn unbind(tool: &str, cursor: &Cursor, id: u32) -> Result<Cursor, EngineError> {
 ///
 /// Every tool that takes `limit` pages through here, so this is also where `limit: 0` is refused,
 /// once and in the same words for all of them.
-pub(crate) fn bound_value<T, R, F>(mut params: T, body: F) -> Result<Value, EngineError>
+pub fn bound_value<T, R, F>(mut params: T, body: F) -> Result<Value, EngineError>
 where
     T: Paged,
     R: Serialize,

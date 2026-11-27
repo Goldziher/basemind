@@ -190,7 +190,7 @@ async fn every_reference_read_answers_from_the_session_view() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let store = scanned_store(dir.path());
-    let cache = super::MapCache::build(&store, 0);
+    let cache = crate::engine::MapCache::build(&store, 0);
     let (view, log) = recording(&store);
     let view: std::sync::Arc<dyn crate::index::view::IndexView> = std::sync::Arc::new(view);
 

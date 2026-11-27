@@ -11,7 +11,7 @@ use crate::extract::FileMapL1;
 use crate::path::RelPath;
 use crate::store::Store;
 
-pub(crate) struct MapCache {
+pub struct MapCache {
     /// Symbol-free view of every indexed file. Permanent and O(files) — never O(symbols).
     files: l1_cache::FileIndexView,
     /// The only place a decoded [`FileMapL1`] lives: a byte-charged, read-through LRU keyed by

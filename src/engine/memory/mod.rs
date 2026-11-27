@@ -4,11 +4,11 @@
 //! `memory_search` by meaning reads, is derived from it ([`vectors`]). A search no model can embed
 //! matches the notes by words ([`lexical`]).
 
-pub(crate) mod lexical;
-pub(crate) mod ops;
+pub mod lexical;
+pub mod ops;
 #[cfg(test)]
-pub(crate) mod test_support;
-pub(crate) mod vectors;
+pub mod test_support;
+pub mod vectors;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -94,7 +94,7 @@ pub(crate) fn index_unavailable(root: &Path) -> EngineError {
 }
 
 /// [`index_unavailable`] given whether the workspace's group index exists on disk.
-pub(crate) fn index_refusal(index_exists: bool) -> EngineError {
+pub fn index_refusal(index_exists: bool) -> EngineError {
     if !index_exists {
         return EngineError::index_unavailable(
             "memory: this workspace has no index yet. Run `basemind scan` first, then retry.",

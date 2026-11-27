@@ -8,14 +8,14 @@
 use serde_json::Value;
 
 /// Key of the code: in an error's `data` and in an `isError` result's `structuredContent`.
-pub(crate) const ERROR_KEY: &str = "error";
+pub const ERROR_KEY: &str = "error";
 
 /// Key of the retry flag in an `isError` result's `structuredContent`.
-pub(crate) const RETRYABLE_KEY: &str = "retryable";
+pub const RETRYABLE_KEY: &str = "retryable";
 
 /// What a failed tool call says the caller can do next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ErrorKind {
+pub enum ErrorKind {
     /// The call cannot be answered as given; the caller changes the arguments.
     InvalidArgument,
     /// The operation is not available in this workspace, session or build.
@@ -31,7 +31,7 @@ pub(crate) enum ErrorKind {
 }
 
 /// Every kind, in the order the documentation lists them.
-pub(crate) const ALL_KINDS: [ErrorKind; 6] = [
+pub const ALL_KINDS: [ErrorKind; 6] = [
     ErrorKind::InvalidArgument,
     ErrorKind::Unavailable,
     ErrorKind::IndexUnavailable,

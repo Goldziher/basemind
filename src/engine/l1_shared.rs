@@ -26,7 +26,7 @@ use crate::store::Store;
     allow(dead_code, reason = "only the daemon's workspace pool hosts read stacks to share it")
 )]
 #[derive(Default)]
-pub(crate) struct SharedOutlines {
+pub struct SharedOutlines {
     open: Mutex<Vec<(PathBuf, Weak<L1Cache>)>>,
 }
 

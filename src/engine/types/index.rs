@@ -24,7 +24,7 @@ pub struct IndexRescanParams {
 
 /// Response of `index_status`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct StatusResponse {
+pub struct StatusResponse {
     pub file_count: usize,
     /// Count of content-addressed blob files in `.basemind/blobs/` (one `.fm.msgpack` per
     /// indexed content hash). Reported alongside `file_count` so a lost/empty view index over
@@ -177,7 +177,7 @@ pub(crate) struct StatusResponse {
 /// `code_refs`, the CLI's import-graph analyses) each have their own slots. A call that finds every
 /// slot of its class taken waits up to `queue_wait_ms` and is then answered `server_busy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
-pub(crate) struct AdmissionStatus {
+pub struct AdmissionStatus {
     pub heavy: LaneStatus,
     pub medium: LaneStatus,
     pub queue_wait_ms: u64,
@@ -201,7 +201,7 @@ impl AdmissionStatus {
 
 /// One work class's slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
-pub(crate) struct LaneStatus {
+pub struct LaneStatus {
     /// Calls of the class that may run at once.
     pub limit: usize,
     /// Calls of the class running now.
@@ -240,7 +240,7 @@ pub(crate) struct LargeFiles {
 
 /// The `queued_scan` block of `index_status`.
 #[derive(Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
-pub(crate) struct QueuedScan {
+pub struct QueuedScan {
     /// Watcher batches merged into the waiting pass.
     pub batches: usize,
     /// Distinct paths the pass will scan; 0 for a whole-tree pass.
@@ -253,7 +253,7 @@ pub(crate) struct QueuedScan {
 
 /// Response of `index_rescan`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct RescanResponse {
+pub struct RescanResponse {
     pub scanned: usize,
     pub updated: usize,
     /// Documents (PDF / Office / HTML / MDX — anything with no tree-sitter grammar) re-extracted and

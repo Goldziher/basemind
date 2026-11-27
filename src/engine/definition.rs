@@ -4,7 +4,7 @@ use crate::path::RelPath;
 
 /// `resolution_note` when a cross-file edge was read from an index whose resolve pass is unsettled,
 /// or that holds other content for one of the files than this session's file map.
-pub(crate) const SNAPSHOT_REFUSED: &str = "the index is updating for the files involved; retry in a moment";
+pub const SNAPSHOT_REFUSED: &str = "the index is updating for the files involved; retry in a moment";
 
 /// The definition the use at `pos` in `use_path` binds to. `intra_def` is the in-file binding the
 /// file's resolution facts name, which the index hop starts from and which is served when the hop

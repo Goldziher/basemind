@@ -640,7 +640,7 @@ impl Filters {
 /// skipped submodule roots. Owned and `Send + Sync`, so the watcher's debouncer callback can drop
 /// such events before they are queued; it does no I/O.
 #[derive(Clone)]
-pub(crate) struct ExclusionGate {
+pub struct ExclusionGate {
     exclude: globset::GlobSet,
     dir_exclude: Arc<globset::GlobSet>,
     submodule_prefixes: Arc<[String]>,
@@ -757,7 +757,7 @@ fn compile_globs<'a>(patterns: impl IntoIterator<Item = &'a str>) -> Result<glob
 /// Single source of truth for the `ignore` crate's walk configuration. Both the full-scan
 /// `walk_candidates` and the incremental `IndexFilter` build their walkers here so the gitignore /
 /// git-exclude / hidden semantics stay identical between a full scan and a watcher batch.
-pub(crate) fn ignore_walk_builder(dir: &Path, respect_gitignore: bool, follow_links: bool) -> WalkBuilder {
+pub fn ignore_walk_builder(dir: &Path, respect_gitignore: bool, follow_links: bool) -> WalkBuilder {
     let mut b = WalkBuilder::new(dir);
     b.standard_filters(respect_gitignore)
         .follow_links(follow_links)
@@ -781,7 +781,7 @@ pub(crate) fn ignore_walk_builder(dir: &Path, respect_gitignore: bool, follow_li
 /// level-by-level correctly rejects a path whose *ancestor* directory is itself gitignored — the
 /// case a single flat `Gitignore` matcher gets wrong — while each level still reads the ignore
 /// files of its parent directories, so a root `*.log` rule reaches `sub/x.log`.
-pub(crate) struct IndexFilter {
+pub struct IndexFilter {
     filters: Filters,
     root: PathBuf,
     respect_gitignore: bool,

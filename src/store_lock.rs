@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::store::{LOCK_FILE, LOCK_META_FILE, StoreError};
 
 #[path = "store_lock_yield.rs"]
-pub(crate) mod embed_yield;
+pub mod embed_yield;
 
 /// Which basemind command is taking the exclusive store lock. Threaded from the caller
 /// (`scan` / `rescan` / `watch` / `serve`) into `Store::open_with_holder` so a lock
@@ -107,7 +107,7 @@ to refresh the index, or stop that server before running `basemind scan`.";
 /// live the reader skips Fjall entirely and serves from the concurrently-readable blobs
 /// (`index_db = None`). Returns `false` when no lock file exists or the probe can't run — the
 /// caller then falls through to attempting the open (correct for the no-writer CLI case).
-pub(crate) fn writer_lock_is_held(basemind_dir: &Path) -> bool {
+pub fn writer_lock_is_held(basemind_dir: &Path) -> bool {
     let path = basemind_dir.join(LOCK_FILE);
     let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else {
         return false;
@@ -153,7 +153,7 @@ pub fn probe_writer_lock(basemind_dir: &Path) -> WriterProbe {
 /// outlives the close, and the next `try_lock` on the file finds it held. An unlock releases it
 /// whatever copies exist.
 #[derive(Debug)]
-pub(crate) struct LockGuard(File);
+pub struct LockGuard(File);
 
 impl LockGuard {
     /// Take over `file`, on which the caller has just won a lock.
@@ -184,7 +184,7 @@ pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<LockGuard, StoreError>
 /// reading the *existing* holder's sidecar on contention so the error names the live holder. A
 /// lock the background embedding worker holds is asked back and waited for
 /// ([`embed_yield::wait_for_worker`]), up to [`embed_yield::YIELD_WAIT`].
-pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<LockGuard, StoreError> {
+pub fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<LockGuard, StoreError> {
     const LOCK_ATTEMPTS: u32 = 25;
     match acquire_lock_within(basemind_dir, holder, LOCK_ATTEMPTS) {
         Err(StoreError::Locked { holder: Some(meta), .. })
@@ -198,7 +198,7 @@ pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result
 
 /// [`acquire_lock_as`] without waiting: one attempt, for a reader that answers from blobs when the
 /// lock is held rather than delay its caller or the holder.
-pub(crate) fn try_acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<LockGuard, StoreError> {
+pub fn try_acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<LockGuard, StoreError> {
     acquire_lock_within(basemind_dir, holder, 1)
 }
 

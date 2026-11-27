@@ -34,7 +34,7 @@ impl Root {
 }
 
 /// The directories one workspace's tool errors are redacted against.
-pub(crate) struct Redaction {
+pub struct Redaction {
     roots: Vec<Root>,
 }
 

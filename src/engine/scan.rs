@@ -49,7 +49,7 @@ impl ScanObserver for RescanPaths {
 /// caller's to retry or rescan through: [`EngineError::Busy`], which the CLI exits `3` for as it does
 /// for every other lock contention. A store that cannot be read and an index that cannot be written
 /// name their repair (`scan_error` in `src/engine/error.rs`).
-pub(crate) fn rescan_error(error: &ScanError) -> EngineError {
+pub fn rescan_error(error: &ScanError) -> EngineError {
     match error {
         ScanError::Store(_) | ScanError::IndexFault(_) => {
             tracing::warn!(error = %error, "a rescan failed; the reply carries the settled message");
@@ -332,7 +332,7 @@ impl Workspace {
 /// deleted directory, anything under it): rescanning a deleted file is how its entry is pruned,
 /// whereas a typo should fail loudly instead of reporting a green no-op. Every problem is collected
 /// into one message so the caller fixes them in a single pass.
-pub(crate) fn resolve_rescan_paths(root: &Path, raw: &[String]) -> Result<Vec<PathBuf>, String> {
+pub fn resolve_rescan_paths(root: &Path, raw: &[String]) -> Result<Vec<PathBuf>, String> {
     let mut resolved = Vec::with_capacity(raw.len());
     let mut problems = Vec::new();
     let mut indexed: Option<crate::store::Index> = None;

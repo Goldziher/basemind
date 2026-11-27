@@ -159,7 +159,7 @@ fn move_blob(from: &Path, to: &Path) -> bool {
 /// inside its bucket directories. A missing `blobs_dir` yields none. A
 /// bucket that vanishes while it is walked (a concurrent wipe) is skipped; any other read failure is
 /// an error, so a sweep never decides on a partial listing.
-pub(crate) fn blob_files(blobs_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+pub fn blob_files(blobs_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let entries = match std::fs::read_dir(blobs_dir) {
         Ok(entries) => entries,

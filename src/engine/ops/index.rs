@@ -16,7 +16,7 @@ use crate::scanner::{EmbedMode, ScanStats};
 /// The counts a [`RescanResponse`] reports, from a scan into the workspace's own store or one a
 /// writer in another process ran for it (which reports no per-file skip breakdown, so those read 0).
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct RescanStats {
+pub struct RescanStats {
     pub(crate) scanned: usize,
     pub(crate) updated: usize,
     pub(crate) docs_indexed: usize,
@@ -106,7 +106,7 @@ fn large_files<'a>(
 }
 
 /// Where `index_rescan` reports progress, for a host that shows it (an MCP progress token).
-pub(crate) trait RescanProgress {
+pub trait RescanProgress {
     /// The targets were accepted and the scan starts.
     fn started(&mut self) {}
     /// The scan finished, having looked at `scanned` files.

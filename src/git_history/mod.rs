@@ -132,7 +132,7 @@ const JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Open-file cache of one database, against fjall's 150 (macOS) / 900 (Linux) default. Counted by
 /// the daemon's descriptor budget ([`crate::comms::fd_budget`]).
-pub(crate) const CACHED_FILES: usize = 64;
+pub const CACHED_FILES: usize = 64;
 
 /// The database at `dir` under this module's budgets.
 fn open_database(dir: &Path) -> Result<Database, fjall::Error> {

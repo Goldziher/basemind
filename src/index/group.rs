@@ -64,7 +64,7 @@ const GROUP_FORMAT: u32 = 6;
 pub(crate) type GroupLock = Box<dyn Send + Sync>;
 
 /// The open group database. See the module docs.
-pub(crate) struct GroupDb {
+pub struct GroupDb {
     dir: PathBuf,
     db: Database,
     keyspaces: AHashMap<&'static str, Keyspace>,

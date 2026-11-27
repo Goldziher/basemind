@@ -14,7 +14,7 @@ use crate::engine::types::index::QueuedScan;
 /// One pass's worth of queued work.
 #[cfg(any(test, all(feature = "comms", any(unix, windows))))]
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum QueuedPass {
+pub enum QueuedPass {
     /// Scan these paths, sorted and distinct.
     Paths(Vec<PathBuf>),
     /// Scan the whole tree: the OS dropped events, so no path set stands for what changed.
@@ -34,7 +34,7 @@ struct Queued {
 
 /// Batches queued for a workspace's next scan pass.
 #[derive(Default)]
-pub(crate) struct ScanQueue(Mutex<Queued>);
+pub struct ScanQueue(Mutex<Queued>);
 
 impl ScanQueue {
     /// Queue one batch; `None` asks for a whole-tree pass. Returns `true` when no drain owns the

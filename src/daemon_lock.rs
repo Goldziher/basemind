@@ -185,7 +185,7 @@ fn daemons_root_of(data: &DataRoot) -> PathBuf {
 /// register and the only place its listings look. Keyed on the resolved data home; the `_in`/`_at`
 /// helpers take a directory explicitly so unit tests inject a temp dir without mutating the
 /// process-global `BASEMIND_DATA_HOME`.
-pub(crate) fn daemons_dir() -> PathBuf {
+pub fn daemons_dir() -> PathBuf {
     generation_registry_in(&daemons_root())
 }
 
@@ -196,7 +196,7 @@ fn generation_registry_in(root: &Path) -> PathBuf {
 
 /// Whether `name` names a generation's directory, in the registry or in a comms directory: `g`
 /// followed by decimal digits.
-pub(crate) fn is_generation_name(name: &str) -> bool {
+pub fn is_generation_name(name: &str) -> bool {
     name.strip_prefix('g')
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
 }

@@ -575,7 +575,7 @@ fn peak_rss() -> Option<u64> {
 }
 
 /// A byte count in the largest binary unit that keeps it at or above 1: `512B`, `1.5KB`, `2.0MB`.
-pub(crate) fn human_bytes(b: u64) -> String {
+pub fn human_bytes(b: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
     const GB: u64 = 1024 * MB;

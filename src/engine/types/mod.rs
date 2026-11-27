@@ -1,21 +1,21 @@
 //! The engine's request and response types. Their doc comments are what an agent reads: a params
 //! struct's field docs are its tool's schema descriptions (ADR-0018), so they move byte for byte.
 
-pub(crate) mod code;
-pub(crate) mod deadcode;
-pub(crate) mod explain;
-pub(crate) mod files;
-pub(crate) mod git;
-pub(crate) mod graph;
-pub(crate) mod grep;
-pub(crate) mod hotspots;
-pub(crate) mod index;
-pub(crate) mod memory;
-pub(crate) mod migration;
-pub(crate) mod overview;
-pub(crate) mod refs;
-pub(crate) mod search;
-pub(crate) mod telemetry;
+pub mod code;
+pub mod deadcode;
+pub mod explain;
+pub mod files;
+pub mod git;
+pub mod graph;
+pub mod grep;
+pub mod hotspots;
+pub mod index;
+pub mod memory;
+pub mod migration;
+pub mod overview;
+pub mod refs;
+pub mod search;
+pub mod telemetry;
 
 use serde::Serialize;
 
@@ -27,7 +27,7 @@ use crate::engine::Lifecycle;
 ///
 /// [`Ready`]: crate::engine::Lifecycle::Ready
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
-pub(crate) struct LifecycleNotice {
+pub struct LifecycleNotice {
     /// Machine-readable state tag: `"warming_up"`, `"building_index"`, `"rescanning"`, or `"index_rebuilding"`.
     pub state: &'static str,
     /// Human/agent-readable explanation of what the server is doing and what it means for this result.

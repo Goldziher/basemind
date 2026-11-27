@@ -124,7 +124,7 @@ pub fn record_owed(cache_dir: &Path, total: usize) {
 
 /// Reports an `Inline` pass's embedding progress, once per drive chunk. The count it reports is the
 /// scan's own, read from `embedded` (bumped by the workers as each document gets its vectors).
-pub(crate) struct EmbedReporter<'a> {
+pub struct EmbedReporter<'a> {
     cache_dir: PathBuf,
     total: usize,
     started_unix_ms: u64,
@@ -212,7 +212,7 @@ fn writer_is_running(_record: &EmbedRecord) -> bool {
 }
 
 /// Unix milliseconds now, or `0` if the clock is before the epoch.
-pub(crate) fn now_unix_ms() -> u64 {
+pub fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
@@ -244,7 +244,7 @@ pub(crate) fn docs_owed(
 /// attempted. Unlike [`docs_owed`] it reads no config: a document whose embedding has since been
 /// turned off or excluded is listed too, and the scan handed it settles it by its stat.
 #[cfg(feature = "documents")]
-pub(crate) fn owed_doc_paths(store: &crate::store::Store) -> Vec<crate::path::RelPath> {
+pub fn owed_doc_paths(store: &crate::store::Store) -> Vec<crate::path::RelPath> {
     let mut owed: Vec<_> = store
         .index
         .doc_files

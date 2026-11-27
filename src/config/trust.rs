@@ -186,7 +186,7 @@ pub fn deprecated_settings_set(config: &ConfigV1) -> Vec<&'static str> {
 
 /// Log a warning the first time this process sees `message`, and say whether it was logged; a CLI
 /// invocation loads the config several times and would otherwise repeat it.
-pub(crate) fn warn_once(message: String) -> bool {
+pub fn warn_once(message: String) -> bool {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let mut seen = SEEN
         .get_or_init(Default::default)

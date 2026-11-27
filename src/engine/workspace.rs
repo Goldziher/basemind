@@ -27,7 +27,7 @@ use crate::store::Store;
 /// path exactly one `ServerState` points at a given `Workspace`, so behavior is identical to
 /// when these fields lived directly on `ServerState`; a future daemon can point many connections at
 /// one stack.
-pub(crate) struct Workspace {
+pub struct Workspace {
     /// The opened store ([`StoreSlot`]): behind a lock a scan writes through, or, for a daemon-hosted
     /// workspace, behind an `ArcSwap` a publish replaces without waiting on any reader.
     store: StoreSlot,
@@ -195,7 +195,7 @@ pub(crate) struct Workspace {
 
 /// Pins the host process while long detached work runs: the guard it returns holds the pin until
 /// dropped.
-pub(crate) type WorkPin = Arc<dyn Fn() -> Box<dyn Send> + Send + Sync>;
+pub type WorkPin = Arc<dyn Fn() -> Box<dyn Send> + Send + Sync>;
 
 /// Whether the workspace's `status.json` records a partial or unresolved last scan. A missing or
 /// unreadable sidecar is not degraded: the empty-index checks above own the never-scanned case.
@@ -206,7 +206,7 @@ fn last_scan_degraded(store: &Store) -> bool {
 /// How a [`Workspace`] is opened: which background facilities its host runs and how the index is
 /// written. The MCP adapter converts its `ServerOptions` into this.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct OpenOptions {
+pub struct OpenOptions {
     /// The host keeps the workspace fresh in the background: a deferred map warm, the git-history
     /// catch-up.
     pub(crate) background: bool,
@@ -228,7 +228,7 @@ pub(crate) struct OpenOptions {
 
 /// The scan a workspace owes when it is opened, per [`boot_plan`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BootScan {
+pub enum BootScan {
     /// None: the host keeps the index fresh from here (a watcher), or never writes it.
     None,
     /// A from-scratch scan: the index is empty, or its last full scan was cancelled or aborted
@@ -251,7 +251,7 @@ pub(crate) enum BootScan {
 /// Factored out so [`Workspace::new`] (which sets the `cache_warming` atomic + eager/deferred
 /// cache) and `BasemindServer::new_with_options` (which spawns the matching background tasks) agree
 /// by construction rather than by duplicated expressions.
-pub(crate) fn boot_plan(store: &Store, options: &OpenOptions) -> BootPlan {
+pub fn boot_plan(store: &Store, options: &OpenOptions) -> BootPlan {
     let view_is_working = store.view == crate::store::VIEW_WORKING;
     let fjall_index_empty = store
         .index_handle()
@@ -660,7 +660,7 @@ pub(crate) const CACHE_WARM_WAIT_CAP: std::time::Duration = std::time::Duration:
 /// [`Rescanning`](Lifecycle::Rescanning) (a watcher-driven incremental refresh is in flight) >
 /// [`Ready`](Lifecycle::Ready).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Lifecycle {
+pub enum Lifecycle {
     Ready,
     WarmingUp,
     BuildingIndex,

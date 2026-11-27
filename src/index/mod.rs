@@ -23,7 +23,7 @@ pub(crate) mod bm25_pass;
 pub(crate) mod durability;
 pub mod fault;
 pub mod grep_bloom;
-pub(crate) mod group;
+pub mod group;
 pub(crate) mod group_sweep;
 #[cfg(test)]
 mod group_sweep_tests;
@@ -130,7 +130,7 @@ const META_BM25_DOC_COUNT: &[u8] = b"code_bm25_n";
 const META_BM25_TOTAL_LEN: &[u8] = b"code_bm25_total_len";
 
 const BM25_PRUNE_BATCH_BYTES: u64 = 1024 * 1024;
-pub(crate) const INDEX_DIR: &str = "index.fjall";
+pub const INDEX_DIR: &str = "index.fjall";
 
 /// Per-keyspace memtable sizes, in bytes. Three tiers, assigned by how much one scan writes to the
 /// keyspace: [`MEMTABLE_HOT_BYTES`] for the BM25 posting list (the densest writer by far — one

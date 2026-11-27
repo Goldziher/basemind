@@ -29,8 +29,6 @@ mod code_refs_hosted_tests;
 mod code_refs_tests;
 #[cfg(feature = "test-support")]
 pub mod in_memory;
-#[cfg(test)]
-mod index_view_tests;
 #[cfg(all(test, feature = "memory"))]
 mod memory_tests;
 mod notifications;

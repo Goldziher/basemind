@@ -90,7 +90,7 @@ impl EngineError {
 }
 
 /// What to do about an index or store that cannot be read.
-pub(crate) const INDEX_REPAIR: &str = "run `basemind doctor`; `basemind scan` rebuilds it";
+pub const INDEX_REPAIR: &str = "run `basemind doctor`; `basemind scan` rebuilds it";
 
 impl EngineError {
     /// This error as one of the variants that carry their message, worded for the agent that reads it:
