@@ -139,9 +139,10 @@ mod inner {
         .find(|s| s.name == "caller_location")
         .expect("caller_location symbol");
     assert_eq!(sym.kind, SymbolKind::Function);
-    assert_eq!((sym.start_row, sym.start_col), (2, 4));
+    // A symbol's range starts at its attributes, as for an item outside a macro body.
+    assert_eq!((sym.start_row, sym.start_col), (1, 4));
     let body = &src[sym.start_byte as usize..sym.end_byte as usize];
-    assert!(body.starts_with("pub(crate) fn caller_location"), "{body}");
+    assert!(body.starts_with("#[track_caller]"), "{body}");
     assert!(body.ends_with("{ 0 }"), "{body}");
     assert_eq!(sym.signature.as_deref(), Some("pub(crate) fn caller_location() -> u32"));
 
