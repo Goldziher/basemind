@@ -14,6 +14,8 @@ pub mod doc_guard;
 pub mod doc_tiers;
 pub(crate) mod http;
 #[cfg(test)]
+mod java_imports_tests;
+#[cfg(test)]
 mod java_modifier_tests;
 #[cfg(test)]
 mod java_parity_tests;
