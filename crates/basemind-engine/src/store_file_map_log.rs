@@ -99,7 +99,7 @@ fn file_identity(_meta: &Metadata, _path: &Path) -> u64 {
 /// two equal stamps of one view mean the file map has not been written in between. The log is
 /// stamped by identity as well as length, so a log replaced by one of the same length differs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ViewStamp {
+pub struct ViewStamp {
     base: Option<BaseStamp>,
     log: Option<BaseStamp>,
 }

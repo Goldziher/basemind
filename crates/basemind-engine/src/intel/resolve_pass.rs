@@ -152,7 +152,7 @@ pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool, footprint:
 /// the index, `other` paths that are not indexed (a `tsconfig.json`, a `package.json`) but that a
 /// resolver may have read or probed for. All are repo-relative.
 #[cfg_attr(not(any(feature = "code-intel-js", feature = "code-intel-stack")), allow(dead_code))]
-pub(crate) struct PathDelta<'a> {
+pub struct PathDelta<'a> {
     pub changed: &'a [String],
     pub removed: &'a [String],
     pub other: &'a [String],

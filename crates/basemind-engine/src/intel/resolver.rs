@@ -37,7 +37,7 @@ use crate::path::RelPath;
 /// decides through the files it probes.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 #[derive(Default)]
-pub(crate) struct ProbeSet(ahash::AHashSet<String>);
+pub struct ProbeSet(ahash::AHashSet<String>);
 
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 impl ProbeSet {
@@ -78,7 +78,7 @@ impl ProbeSet {
 /// the enabled features, and a language with no compiled-in resolver yields `None` from
 /// [`for_language`], so its imports are skipped by the stitch.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
-pub(crate) enum SpecifierResolver {
+pub enum SpecifierResolver {
     /// JavaScript/TypeScript (Node/tsconfig resolution via oxc). Feature `code-intel-js`. Boxed —
     /// the oxc `Resolver` it wraps dwarfs the unit-struct Python/Java variants, so an inline field
     /// would bloat every enum value when the stack variants are also compiled in (clippy
@@ -464,7 +464,7 @@ pub(crate) mod js {
     /// TS-aware Node resolver wrapping [`oxc_resolver`]. Built once per stitch and reused across all
     /// JS/TS importers — construction is expensive (it seeds oxc's file-system cache), and that cache
     /// is also what makes the per-file tsconfig discovery cheap, so never build one per file.
-    pub(crate) struct JsResolver {
+    pub struct JsResolver {
         inner: ResolverGeneric<RecordingFs>,
         log: ProbeLog,
         /// The canonical form of the repo root, computed on first use: oxc canonicalises some
@@ -663,7 +663,7 @@ pub(crate) mod java {
 
     /// Resolves Java imports. Discovers the repository's source roots on first use.
     #[derive(Default)]
-    pub(crate) struct JavaResolver {
+    pub struct JavaResolver {
         roots: OnceLock<Vec<SourceRoot>>,
     }
 

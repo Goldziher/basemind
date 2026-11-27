@@ -37,7 +37,7 @@ const SWEEP_HEADROOM_DIVISOR: u64 = 10;
 
 /// One flat directory of payload files under the cache root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Subdir {
+pub enum Subdir {
     Log,
     Blame,
     CommitFiles,
@@ -66,7 +66,7 @@ impl Subdir {
 }
 
 /// The cache's directories, their budget and the bytes written to each since it was last measured.
-pub(crate) struct DiskTier {
+pub struct DiskTier {
     root: PathBuf,
     /// Byte budget of each subdirectory; `0` disables eviction.
     max_bytes: u64,

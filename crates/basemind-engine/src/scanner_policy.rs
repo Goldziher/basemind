@@ -13,7 +13,7 @@ use crate::scanner_filter::Filters;
 use crate::store::Store;
 
 /// Result of comparing the recorded embed policy with the current config.
-pub(crate) struct PolicyChange {
+pub struct PolicyChange {
     pub digest: String,
     /// The recorded policy differs (or none was recorded): purge ineligible rows.
     pub changed: bool,

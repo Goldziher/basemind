@@ -44,7 +44,7 @@ pub fn prune_hold_from(raw: Option<&str>) -> Duration {
 
 /// Where a basemind reads its blobs from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BlobNamespace {
+pub enum BlobNamespace {
     /// Directly in the blobs root: every release up to 0.33.
     Unnamespaced,
     /// `v<N>/`, `N` being the blob schema.
@@ -82,7 +82,7 @@ pub(crate) fn namespace_recorded(
 
 /// What keeps a superseded namespace on disk.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Holds {
+pub struct Holds {
     /// The namespaces a live basemind process reads.
     pub(crate) live: Vec<BlobNamespace>,
     /// Whether a live basemind process reads a namespace its record does not tell: a hosting

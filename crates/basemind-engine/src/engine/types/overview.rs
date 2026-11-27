@@ -24,7 +24,7 @@ pub struct OverviewParams {
 
 /// Answer of `overview`. Every section is absent when not asked for.
 #[derive(Debug, Serialize)]
-pub(crate) struct OverviewResponse {
+pub struct OverviewResponse {
     /// Indexed code files, their lines and bytes.
     pub files: usize,
     pub lines: u64,
@@ -71,7 +71,7 @@ pub(crate) struct OverviewResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct LanguageRow {
+pub struct LanguageRow {
     pub language: String,
     pub files: usize,
     pub lines: u64,
@@ -79,7 +79,7 @@ pub(crate) struct LanguageRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct DirectoryRow {
+pub struct DirectoryRow {
     pub path: String,
     pub files: usize,
     pub lines: u64,
@@ -89,7 +89,7 @@ pub(crate) struct DirectoryRow {
 
 /// One target, with the manifest declaring it.
 #[derive(Debug, Serialize)]
-pub(crate) struct EntryPoint {
+pub struct EntryPoint {
     pub manifest: RelPath,
     #[serde(flatten)]
     pub target: Target,
@@ -97,7 +97,7 @@ pub(crate) struct EntryPoint {
 
 /// What the import graph covers.
 #[derive(Debug, Serialize)]
-pub(crate) struct GraphCoverage {
+pub struct GraphCoverage {
     /// Indexed languages with no import resolver: their files take no part in the count.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub no_resolver: Vec<String>,
@@ -107,14 +107,14 @@ pub(crate) struct GraphCoverage {
 
 /// A file and how many files import it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
-pub(crate) struct ImportedFile {
+pub struct ImportedFile {
     pub path: RelPath,
     pub importers: usize,
 }
 
 /// HTTP route definitions extracted from the code (ADR-0048).
 #[derive(Debug, Default, Serialize)]
-pub(crate) struct Routes {
+pub struct Routes {
     pub count: usize,
     pub files: usize,
     /// Routes per HTTP method.
@@ -124,7 +124,7 @@ pub(crate) struct Routes {
 
 /// The naming conventions of one language.
 #[derive(Debug, PartialEq, Eq, Serialize)]
-pub(crate) struct NamingRow {
+pub struct NamingRow {
     pub language: String,
     /// File names, without their extension.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -136,7 +136,7 @@ pub(crate) struct NamingRow {
 
 /// The most common case among a set of names, and its share of the names that have a case.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct CaseShare {
+pub struct CaseShare {
     pub case: &'static str,
     pub percent: u8,
     /// Names counted: those with a case (a single lower-case word has none).
@@ -144,7 +144,7 @@ pub(crate) struct CaseShare {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct RecentCommit {
+pub struct RecentCommit {
     pub sha: String,
     pub summary: String,
     pub author: String,

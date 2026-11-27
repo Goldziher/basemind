@@ -273,13 +273,13 @@ pub fn boot_plan(store: &Store, options: &OpenOptions) -> BootPlan {
 
 /// What [`boot_plan`] decided.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct BootPlan {
+pub struct BootPlan {
     pub(crate) scan: BootScan,
     pub(crate) defer_warm: bool,
 }
 
 /// One background rescan in flight on a [`Workspace`], counted in its lifecycle until dropped.
-pub(crate) struct RescanMark(Arc<AtomicUsize>);
+pub struct RescanMark(Arc<AtomicUsize>);
 
 impl Drop for RescanMark {
     fn drop(&mut self) {
@@ -602,7 +602,7 @@ impl StoreSlot {
 
 /// A read of the workspace's [`Store`]: the lock's read guard, or the snapshot a hosted workspace
 /// served when the read began. Dereferences to the store either way.
-pub(crate) enum StoreRead<'a> {
+pub enum StoreRead<'a> {
     Local(RwLockReadGuard<'a, Store>),
     Snapshot(Arc<Store>),
 }
@@ -620,7 +620,7 @@ impl Deref for StoreRead<'_> {
 
 /// The store is held by a writer (a scan) right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct StoreBusy;
+pub struct StoreBusy;
 
 /// A one-way gate a preload opens and readers wait on. The condition itself lives with the caller
 /// (an atomic flag); the mutex only orders a waiter's check against [`open`](Self::open), so a

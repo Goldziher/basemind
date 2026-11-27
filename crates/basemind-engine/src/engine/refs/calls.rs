@@ -323,7 +323,7 @@ fn refuse_stale(stamped: Option<[u8; GENERATION_LEN]>, generation: u64) -> Resul
 /// Deliberately NOT a complete caller set: it is everything resolution can *prove*, which is a
 /// subset of the truth whose gap resolution cannot measure. See [`run_find_callers`].
 #[derive(Default)]
-pub(crate) struct ResolvedCallers {
+pub struct ResolvedCallers {
     /// `path` → proven call-site start bytes. Probed per name-scan hit to set its `resolution`.
     /// A map-of-sets rather than a set of `(RelPath, u32)` so probing borrows the hit's path
     /// instead of cloning it per hit on the scan's inner loop.

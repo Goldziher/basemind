@@ -27,7 +27,7 @@ pub(crate) fn parse_path(tool: &str, value: Option<&str>) -> Result<Option<PathF
 }
 
 /// The filters of one call.
-pub(crate) struct Filters<'a> {
+pub struct Filters<'a> {
     pub tool: &'a str,
     pub path: Option<&'a PathFilter>,
     pub language: Option<&'a str>,
@@ -35,7 +35,7 @@ pub(crate) struct Filters<'a> {
 
 /// What a set of files looked like to a call's filters.
 #[derive(Default)]
-pub(crate) struct Tally {
+pub struct Tally {
     any: bool,
     path_seen: bool,
     language_seen: bool,

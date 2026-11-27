@@ -30,7 +30,7 @@ const MEMORY_BY_KEY: &str = "memory_by_key";
 
 /// What an open does about the store's version.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Version {
+pub enum Version {
     /// A writer: refuse a newer store, stamp one that carries no version.
     Stamp,
     /// A reader: refuse a newer store and write no version.
@@ -46,7 +46,7 @@ struct Opened {
 /// The group memory store. An existing store is opened with the handle; an absent one is created
 /// by the first write ([`MemoryDb::notes_for_write`]) and reads of it answer empty until then, so a
 /// session that never saves a note leaves no database (and no 64 MiB preallocated journal) behind.
-pub(crate) struct MemoryDb {
+pub struct MemoryDb {
     dir: PathBuf,
     opened: OnceLock<Opened>,
     /// Serializes the open, so two threads never both take the Fjall lock on the directory.

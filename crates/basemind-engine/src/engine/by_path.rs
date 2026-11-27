@@ -15,7 +15,7 @@ use serde::{Serialize, Serializer};
 use crate::path::RelPath;
 
 /// A row that belongs to one line of one file.
-pub(crate) trait Located {
+pub trait Located {
     fn located(&self) -> &RelPath;
     /// 1-based line, `0` when the row has no recorded position.
     fn line(&self) -> u32;

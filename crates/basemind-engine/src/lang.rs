@@ -341,7 +341,7 @@ impl QueryKind {
 /// to avoid re-doing the negative lookup for every file in that language.
 type CachedQuery = Option<Arc<Query>>;
 /// What a query cache holds: the compiled query, or the compile error it will keep producing.
-pub(crate) type QueryOutcome = Result<CachedQuery, LangError>;
+pub type QueryOutcome = Result<CachedQuery, LangError>;
 static QUERIES: LazyLock<OnceMap<(LangId, QueryKind), QueryOutcome>> = LazyLock::new(OnceMap::default);
 
 /// Per-language cache for the combined L1 query (symbols + imports + implementations in one

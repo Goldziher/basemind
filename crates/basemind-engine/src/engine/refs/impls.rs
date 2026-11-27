@@ -17,7 +17,7 @@ use crate::engine::types::refs::{FindImplementationsParams, FindImplementationsR
 use crate::path::RelPath;
 
 /// One page of the implementation scan, before the token budget is applied.
-pub(crate) struct ImplScanPage {
+pub struct ImplScanPage {
     pub total: usize,
     pub total_is_partial: bool,
     pub hits: Vec<ImplementationHit>,

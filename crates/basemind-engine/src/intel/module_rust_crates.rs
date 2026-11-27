@@ -24,7 +24,7 @@ pub(crate) const STD_CRATES: [&str; 5] = ["std", "core", "alloc", "proc_macro", 
 
 /// Where a dependency's source lives.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DependencySource {
+pub enum DependencySource {
     /// A registry or git dependency, unless the workspace patches it to a path.
     Registry,
     /// A path dependency: the repo-relative directory of its package.
@@ -37,7 +37,7 @@ pub(crate) enum DependencySource {
 
 /// A declared dependency.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Dependency {
+pub struct Dependency {
     /// The key as written, which `[workspace.dependencies]` is keyed by too.
     pub key: String,
     /// The package name (`package = "…"`, else the key).
@@ -47,7 +47,7 @@ pub(crate) struct Dependency {
 
 /// The `[workspace]` side of a manifest: path dependencies it declares and patches.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct WorkspaceSection {
+pub struct WorkspaceSection {
     /// `[workspace.dependencies]` by key: the package name and its source (never `Workspace`).
     pub dependencies: AHashMap<String, Dependency>,
     /// `[patch.*]` entries with a path in the repository: package name -> package directory.
@@ -56,7 +56,7 @@ pub(crate) struct WorkspaceSection {
 
 /// What the resolver reads from one `Cargo.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Manifest {
+pub struct Manifest {
     /// The repo-relative root files of the targets declaring a `path`.
     pub targets: Vec<String>,
     /// The library's root file when `[lib]` declares a `path`.
@@ -72,7 +72,7 @@ pub(crate) struct Manifest {
 
 /// Which crate a name at the head of a `use` path is.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CrateRef {
+pub enum CrateRef {
     /// The standard library or a dependency outside the repository.
     External,
     /// A crate of the repository: the directory of its package.

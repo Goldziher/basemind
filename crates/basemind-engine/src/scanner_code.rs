@@ -38,7 +38,7 @@ use crate::store::Store;
 /// Fjall immediately after this descriptor is built) and cleared before the descriptor is
 /// accumulated, so they never ride along the corpus-wide Vec either.
 #[derive(Debug, Clone)]
-pub(crate) struct PendingCodeBatch {
+pub struct PendingCodeBatch {
     /// Repository-relative path, forward-slash separated.
     pub rel_path: String,
     /// Content hash (hex) of the source file — the key under which the `.chunk.msgpack` sidecar is

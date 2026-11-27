@@ -321,7 +321,7 @@ fn rel_str<'a>(base: &Path, path: &'a Path, buf: &'a mut String) -> Option<&'a s
 }
 
 /// What a candidate enumeration yields: the files to extract, and the list-only files met on the way.
-pub(crate) struct Candidates {
+pub struct Candidates {
     /// Sorted, deduplicated keys of the files the scan extracts.
     pub keys: Vec<String>,
     /// List-only files and their stat data; empty for a staged or revision scan, which has no stat.

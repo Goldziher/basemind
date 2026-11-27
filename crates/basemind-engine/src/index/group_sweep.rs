@@ -64,7 +64,7 @@ struct ViewPending {
 /// The path writes each view's writer made that no file map the view wrote reflects yet: the
 /// content keys it staged, which are live, and whether it is unsettled at all. See the module docs.
 #[derive(Default)]
-pub(crate) struct PendingContents {
+pub struct PendingContents {
     seq: u64,
     /// The unsettled views.
     by_view: AHashMap<u32, ViewPending>,
@@ -199,7 +199,7 @@ impl GroupDb {
 }
 
 /// Ends the sweep window on drop.
-pub(crate) struct SweepWindow {
+pub struct SweepWindow {
     group: Arc<GroupDb>,
 }
 
@@ -222,7 +222,7 @@ pub struct GroupSweepReport {
 }
 
 /// An open group sweep; see the module docs. The caller reads the file maps after opening it.
-pub(crate) struct GroupSweep<'a> {
+pub struct GroupSweep<'a> {
     db: &'a IndexDb,
     group: Arc<GroupDb>,
     _window: SweepWindow,

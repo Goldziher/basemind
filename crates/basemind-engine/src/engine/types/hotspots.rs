@@ -21,7 +21,7 @@ pub struct HotspotsParams {
 
 /// The smallest value in each signal's top slice; absent when no file has the signal.
 #[derive(Debug, Default, Serialize)]
-pub(crate) struct HotspotThresholds {
+pub struct HotspotThresholds {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commits: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,7 +38,7 @@ pub(crate) struct HotspotThresholds {
 
 /// One file where two or more signals are in their top slice. Every number is raw; there is no score.
 #[derive(Debug, Serialize)]
-pub(crate) struct HotspotRow {
+pub struct HotspotRow {
     pub path: RelPath,
     /// The signals whose top slice holds this file, in [`HotspotThresholds`] order.
     pub signals: Vec<&'static str>,
@@ -59,7 +59,7 @@ pub(crate) struct HotspotRow {
 
 /// The answer of `basemind git hotspots`.
 #[derive(Debug, Serialize)]
-pub(crate) struct HotspotsResponse {
+pub struct HotspotsResponse {
     /// The window as asked (`90d`).
     pub since: String,
     /// Unix seconds: the window is `[window_start, window_end]`, ending at HEAD's commit time.

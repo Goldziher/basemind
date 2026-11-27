@@ -22,7 +22,7 @@ const METHOD_PATH_SEPARATOR: &str = " /";
 
 /// One indexed route.
 #[derive(Debug, Clone)]
-pub(crate) struct RouteDef {
+pub struct RouteDef {
     pub(crate) path: RelPath,
     pub(crate) name: String,
     pub(crate) endpoint: Endpoint,
@@ -38,7 +38,7 @@ pub(crate) struct RouteDef {
 
 /// Every route the index holds, bucketed for lookup by request and by handler.
 #[derive(Debug, Default)]
-pub(crate) struct Routes {
+pub struct Routes {
     defs: Vec<RouteDef>,
     /// Routes without a tail wildcard, by their last literal segment: `(segments from the end,
     /// route)`.

@@ -224,7 +224,7 @@ pub(crate) fn preset_dimension(preset: &str) -> Result<u16> {
 /// The scan's [`Embedder`](crate::scan_retrieval::Embedder). `dim` reads the preset table;
 /// `embed_batch` loads a [`SharedEmbedder`] and embeds through it.
 #[cfg(feature = "code-search")]
-pub(crate) struct ScanEmbedder;
+pub struct ScanEmbedder;
 
 #[cfg(feature = "code-search")]
 impl crate::scan_retrieval::Embedder for ScanEmbedder {

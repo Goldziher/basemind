@@ -297,7 +297,7 @@ impl Gate {
     }
 }
 
-pub(crate) struct Filters {
+pub struct Filters {
     /// The document and vector stack this scan hands chunks and documents to, bound once here so
     /// no file pays for resolving it.
     #[cfg(any(feature = "documents", feature = "code-search"))]
@@ -703,7 +703,7 @@ fn dir_exclude_patterns(patterns: &[String]) -> Vec<String> {
 /// Owned, `'static` directory gate for `WalkBuilder::filter_entry` (which demands
 /// `Fn(&DirEntry) -> bool + Send + Sync + 'static` and so cannot borrow [`Filters`]). Cloned out of
 /// a `Filters` by [`Filters::dir_pruner`]; every field is a refcount bump.
-pub(crate) struct DirPruner {
+pub struct DirPruner {
     dir_exclude: Arc<globset::GlobSet>,
     submodule_prefixes: Arc<[String]>,
     base: Option<PathBuf>,

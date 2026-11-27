@@ -67,7 +67,7 @@ impl LiveBlobs {
 
 /// Machine-wide advisory lock serialising destructive global sweeps. Held for the sweep's duration
 /// and released on drop (or process death, so a crash never wedges it).
-pub(crate) struct SweepLock(std::fs::File);
+pub struct SweepLock(std::fs::File);
 
 impl SweepLock {
     const FILE: &'static str = "gc.lock";

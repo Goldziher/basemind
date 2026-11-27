@@ -61,7 +61,7 @@ const META_FORMAT: &[u8] = b"\xffgroup/format";
 const GROUP_FORMAT: u32 = 6;
 
 /// Keeps the cross-process group lock held for as long as the database is open.
-pub(crate) type GroupLock = Box<dyn Send + Sync>;
+pub type GroupLock = Box<dyn Send + Sync>;
 
 /// The open group database. See the module docs.
 pub struct GroupDb {
@@ -93,13 +93,13 @@ pub struct GroupDb {
 
 /// One view of a group database: the handle that keeps it open and the view's id.
 #[derive(Clone)]
-pub(crate) struct GroupView {
+pub struct GroupView {
     pub(crate) group: Arc<GroupDb>,
     pub(crate) view_id: u32,
 }
 
 /// A view id held for an open; see [`GroupDb::claim_view`].
-pub(crate) struct ViewClaim {
+pub struct ViewClaim {
     id: u32,
     live: Arc<LiveKeysCell>,
 }

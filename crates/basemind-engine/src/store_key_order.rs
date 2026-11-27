@@ -12,7 +12,7 @@ use crate::store::Index;
 /// Every key `Index.files`, `doc_files` and `doc_tombstones` hold, once. The [`crate::store::Store`]
 /// mutators keep it in step with those maps, so mutate them through the store.
 #[derive(Debug, Default)]
-pub(crate) struct KeyOrder(BTreeSet<RelPath>);
+pub struct KeyOrder(BTreeSet<RelPath>);
 
 impl KeyOrder {
     pub(crate) fn of(index: &Index) -> Self {

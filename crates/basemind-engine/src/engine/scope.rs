@@ -45,7 +45,7 @@ pub(crate) const IMPORTERS_SUFFIX: &str = "+importers";
 
 /// Which change a scope is taken from.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ChangeBase {
+pub enum ChangeBase {
     /// The working tree against a revision; `None` is `HEAD`.
     WorkingTree(Option<String>),
     /// The tree of `from` against the tree of `to`.
@@ -58,7 +58,7 @@ pub(crate) enum ChangeBase {
 
 /// A parsed `changed` value.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ChangeSpec {
+pub struct ChangeSpec {
     pub(crate) base: ChangeBase,
     /// The value ended in [`IMPORTERS_SUFFIX`].
     pub(crate) importers: bool,
@@ -105,7 +105,7 @@ fn refuse_form(value: &str, why: &str) -> EngineError {
 
 /// The files one change touches.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct ChangeScope {
+pub struct ChangeScope {
     paths: AHashSet<RelPath>,
 }
 

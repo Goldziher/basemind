@@ -15,7 +15,7 @@ use crate::path::RelPath;
 const CANDIDATES_MAX: usize = 20;
 
 /// The definition a pinned call names.
-pub(crate) struct Picked<'a> {
+pub struct Picked<'a> {
     pub symbol: &'a Symbol,
     /// Position among the same-named definitions of the file with the same nesting, in outline
     /// order, with [`NESTED_OCCURRENCE`] set for a nested one. `git_log` uses it to follow the same

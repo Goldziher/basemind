@@ -50,7 +50,7 @@ const SOURCE_KINDS: [(&str, &str); 2] = [(".py", "__init__.py"), (".pyi", "__ini
 
 /// Resolves Python import specifiers. Discovers the repository's package roots on first use.
 #[derive(Default)]
-pub(crate) struct PythonResolver {
+pub struct PythonResolver {
     roots: OnceLock<Vec<SourceRoot>>,
     /// ty's module resolver over the indexed Python files, asked first; `None` resolves by path
     /// arithmetic alone.

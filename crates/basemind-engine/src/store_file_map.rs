@@ -270,7 +270,7 @@ fn read_base(path: &Path) -> Result<(Index, BaseStamp), StoreError> {
 /// decision both that open and `basemind upgrade --plan` ([`crate::upgrade_plan`]) act on, so the
 /// plan cannot name a different set of views than the open then rebuilds.
 #[derive(Debug)]
-pub(crate) enum ViewOnOpen {
+pub enum ViewOnOpen {
     /// No file map: the view starts empty.
     Absent,
     /// A map of this binary's schema and blob layout: kept. Boxed, being far larger than the rest.

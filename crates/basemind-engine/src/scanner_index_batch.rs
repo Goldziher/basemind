@@ -80,7 +80,7 @@ const CEILING_MIN_COMMIT_BYTES: u64 = 1024 * 1024;
 /// and without `Drop` releasing, the dead worker's contribution would stay charged for the lifetime
 /// of the *process*: a long-lived daemon that scans repeatedly would shrink its own ceiling scan by
 /// scan until every file forced a commit.
-pub(crate) struct StagedByteLedger {
+pub struct StagedByteLedger {
     in_flight: AtomicU64,
     ceiling: u64,
     /// Commits performed by the batches reporting here. Carries no policy — it exists so a test can
@@ -137,7 +137,7 @@ pub(crate) static SCAN_STAGED_BYTES: StagedByteLedger = StagedByteLedger::new(IN
 ///
 /// Borrows `&IndexDb` (cheap `Arc`-backed handle) for the worker's lifetime. When the store
 /// has no index (`index_db == None`, read-only mode) staging is a no-op.
-pub(crate) struct WorkerIndexBatch<'a> {
+pub struct WorkerIndexBatch<'a> {
     index: Option<&'a IndexDb>,
     writer: Option<IndexWriter>,
     staged: usize,

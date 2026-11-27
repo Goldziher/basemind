@@ -44,7 +44,7 @@ const METHODS: [&str; 8] = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OP
 
 /// An HTTP endpoint as routes and client calls name it: a method and normalized path segments.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Endpoint {
+pub struct Endpoint {
     pub(super) method: &'static str,
     pub(super) segments: Vec<String>,
 }
@@ -102,7 +102,7 @@ pub(super) fn is_literal(segment: &str) -> bool {
 
 /// How well a route matches a request; a larger score is a better match. Field order is rank order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Score {
+pub struct Score {
     /// A literal segment matched: a match through parameters and wildcards alone ranks below any
     /// match that names a segment of the path.
     has_literal: bool,
@@ -202,7 +202,7 @@ impl Routes {
 
 /// Decides which requests are calls to one endpoint: those it matches at least as well as every
 /// indexed route does. Memoized per callee, since a scan meets each request path many times.
-pub(crate) struct RouteLinker<'r> {
+pub struct RouteLinker<'r> {
     routes: &'r Routes,
     target: Endpoint,
     /// No indexed route is the target (a `METHOD /path` name no route has): the target is one more
@@ -288,7 +288,7 @@ const HANDLER_CALLS_MAX: usize = 2_000;
 /// What the callers of a handler definition gain (ADR-0048 decision 5): the routes that name it and
 /// the HTTP calls linked to those routes, each graded `path_match` and keyed by its place in the
 /// `calls_by_callee` order, so it merges into the name scan's pages like an aliased call site.
-pub(crate) struct HandlerLinks {
+pub struct HandlerLinks {
     pub(crate) hits: Vec<(Vec<u8>, ReferenceHit)>,
     /// The linked calls were cut at [`HANDLER_CALLS_MAX`] or the scan's examined-keys cap.
     pub(crate) partial: bool,

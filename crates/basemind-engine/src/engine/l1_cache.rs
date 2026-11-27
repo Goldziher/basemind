@@ -57,7 +57,7 @@ const STREAM_CHUNK: usize = 256;
 /// Every field is already in `store.index.files`; they are copied into the view so a read tool can
 /// answer membership / language / size questions without taking the store lock.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct FileMeta {
+pub struct FileMeta {
     /// Content hash of the source file — the [`L1Cache`] key and the blob name to read on a miss.
     pub(crate) hash_hex: Box<str>,
     pub(crate) language: Box<str>,
@@ -83,7 +83,7 @@ pub(crate) struct FileMeta {
 /// ([`PagedMap`]) so that the view a watcher batch derives shares every page the batch did not
 /// touch with this one.
 #[derive(Default)]
-pub(crate) struct FileIndexView {
+pub struct FileIndexView {
     files: PagedMap<RelPath, FileMeta>,
 }
 
@@ -229,7 +229,7 @@ struct Charged {
 /// another, so a watcher rescan does not throw away a warm cache or transiently double its
 /// residency. A daemon shares one further, across every read stack it hosts over the same blob
 /// directory ([`crate::engine::l1_shared`]).
-pub(crate) struct L1Cache {
+pub struct L1Cache {
     /// Global content-addressed blob directory. Reading a blob needs nothing but this path, which
     /// is why a miss can be served without ever taking the store lock.
     blobs_dir: PathBuf,

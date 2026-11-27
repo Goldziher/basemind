@@ -275,7 +275,7 @@ impl IndexDb {
 
 /// The group's sweep window, held by a sweep of the bloom rows (see
 /// [`IndexDb::grep_bloom_sweep_window`]); closed on drop.
-pub(crate) struct GrepBloomWindow {
+pub struct GrepBloomWindow {
     _window: Option<super::group_sweep::SweepWindow>,
 }
 

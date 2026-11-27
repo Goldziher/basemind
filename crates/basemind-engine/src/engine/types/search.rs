@@ -97,7 +97,7 @@ pub struct GetChunkParams {
 /// source. Mirrors the `search_symbols`/`outline` → `expand` two-call token pattern.
 #[cfg(feature = "code-search")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct CodeSearchHit {
+pub struct CodeSearchHit {
     /// The first (sorted) indexed path holding this chunk's content now.
     pub path: String,
     /// Other indexed paths with the same content (copies of the file), so they are one hit.
@@ -149,7 +149,7 @@ pub(crate) struct CodeSearchHit {
 /// A retrieval lane that did not run for a query, and why.
 #[cfg(feature = "code-search")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct LaneUnavailable {
+pub struct LaneUnavailable {
     pub lane: String,
     pub reason: String,
 }
@@ -158,7 +158,7 @@ pub(crate) struct LaneUnavailable {
 /// the paging depth (and one more), and what the ranking says about itself.
 #[cfg(feature = "code-search")]
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct CodeSearchRanking {
+pub struct CodeSearchRanking {
     pub query: String,
     /// `stale_chunks` when ranked chunks no indexed file holds any more were dropped.
     pub truncated_reason: Option<String>,
@@ -181,7 +181,7 @@ pub(crate) struct CodeSearchRanking {
 /// last the lifecycle `notice`.
 #[cfg(feature = "code-search")]
 #[derive(Debug)]
-pub(crate) struct CodeSearchPage {
+pub struct CodeSearchPage {
     pub ranking: CodeSearchRanking,
     /// Files the `changed` scope holds, when one was passed: `0` is a change that touched nothing,
     /// told apart from one with no hit.
@@ -246,7 +246,7 @@ impl Serialize for CodeSearchPage {
 /// Response for `get_chunk` — the full chunk body plus its metadata.
 #[cfg(feature = "code-search")]
 #[derive(Debug, Serialize)]
-pub(crate) struct GetChunkResponse {
+pub struct GetChunkResponse {
     pub path: String,
     pub chunk_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -272,7 +272,7 @@ pub(crate) struct GetChunkResponse {
 /// ([`crate::lance::docs_page`]) plus the paging and timing fields.
 #[cfg(feature = "documents")]
 #[derive(Debug, Serialize)]
-pub(crate) struct DocsSearchResponse {
+pub struct DocsSearchResponse {
     #[serde(flatten)]
     pub page: crate::lance::docs_types::DocsPage,
     #[serde(default, skip_serializing_if = "Option::is_none")]

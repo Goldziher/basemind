@@ -17,7 +17,7 @@ pub(crate) const RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// A lazily opened vector store.
 #[derive(Default)]
-pub(crate) struct LanceCell {
+pub struct LanceCell {
     store: OnceLock<Arc<LanceStore>>,
     /// Held by the one open running; the calls behind it wait here.
     opening: Mutex<()>,
@@ -81,7 +81,7 @@ impl LanceCell {
 
 /// A call went without the store: its open failed, now or less than [`RETRY_AFTER`] ago.
 #[derive(Debug)]
-pub(crate) struct Unavailable {
+pub struct Unavailable {
     /// Why the open failed.
     reason: String,
     /// How long until a call opens the store again.

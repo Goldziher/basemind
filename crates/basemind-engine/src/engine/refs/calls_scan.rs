@@ -17,7 +17,7 @@ use crate::path::RelPath;
 
 /// A call site within a file: the callee identifier, its start byte offset, and its position.
 #[derive(Clone)]
-pub(crate) struct CallRef {
+pub struct CallRef {
     pub callee: String,
     pub start_byte: u32,
     /// 1-based line (`start_row + 1`), matching `resolve_call_line_col`.
@@ -92,7 +92,7 @@ pub(crate) fn names_call(finder: &memchr::memmem::Finder<'_>, callee: &str, name
 
 /// How a scan lists a call site it keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Kept {
+pub struct Kept {
     pub(crate) resolution: Resolution,
     pub(crate) ambiguous: bool,
 }
@@ -106,7 +106,7 @@ impl Kept {
 }
 
 /// One file's call sites with the content key they were read under.
-pub(crate) type FileCalls = (ContentKey, Vec<CallRef>);
+pub type FileCalls = (ContentKey, Vec<CallRef>);
 
 /// The content key each of `paths` is read under, in request order, from one snapshot of the view's
 /// live keys; `None` for a path the view does not hold.
@@ -139,7 +139,7 @@ pub(crate) fn calls_in_files(
 /// `total_is_partial` and resumes from the last key it examined.
 pub(crate) const SCAN_KEYS_EXAMINED_MAX: usize = 200_000;
 
-pub(crate) struct CallScanPage {
+pub struct CallScanPage {
     pub total: u32,
     pub total_is_partial: bool,
     pub hits: Vec<ReferenceHit>,
@@ -187,7 +187,7 @@ impl CallScanPage {
 }
 
 /// Result of applying a `max_tokens` budget to a call-scan page.
-pub(crate) struct BudgetedCallPage {
+pub struct BudgetedCallPage {
     pub hits: Vec<ReferenceHit>,
     pub next_cursor: Option<Cursor>,
     pub budgeted: bool,

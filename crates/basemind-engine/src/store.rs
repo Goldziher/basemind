@@ -366,7 +366,7 @@ pub struct Store {
 }
 
 /// How a read store borrows another store's index handle per call ([`Store::index_source`]).
-pub(crate) type IndexSource = std::sync::Arc<dyn Fn() -> Option<IndexDb> + Send + Sync>;
+pub type IndexSource = std::sync::Arc<dyn Fn() -> Option<IndexDb> + Send + Sync>;
 
 impl Store {
     /// The index handle a read uses, owned for the call: this store's own, or the one its

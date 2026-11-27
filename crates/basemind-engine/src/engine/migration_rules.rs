@@ -93,7 +93,7 @@ struct RawPattern {
 
 /// A checked migration: its rule file's rules, compiled.
 #[derive(Debug)]
-pub(crate) struct Migration {
+pub struct Migration {
     pub name: String,
     pub(crate) description: Option<String>,
     pub rules: Vec<Rule>,
@@ -101,7 +101,7 @@ pub(crate) struct Migration {
 
 /// One compiled rule.
 #[derive(Debug)]
-pub(crate) struct Rule {
+pub struct Rule {
     pub(crate) name: String,
     pub(crate) guidance: Option<String>,
     include: Option<GlobSet>,
@@ -135,7 +135,7 @@ impl Rule {
 
 /// What a pattern is matched against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Target {
+pub enum Target {
     Call,
     Import,
     Identifier,
@@ -144,7 +144,7 @@ pub(crate) enum Target {
 
 /// One compiled pattern.
 #[derive(Debug)]
-pub(crate) struct Pattern {
+pub struct Pattern {
     pub(crate) target: Target,
     matcher: Matcher,
     /// A `text` pattern's line regex, compiled once: the literal escaped, `^` / `$` at each line.

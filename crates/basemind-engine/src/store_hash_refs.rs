@@ -9,7 +9,7 @@ use crate::store::FileEntry;
 /// the 64-character strings, since there is one per distinct content. Two hashes sharing a digest
 /// share a count, so a collision can only keep a hash "held" a little longer, never free a held one.
 #[derive(Debug, Default)]
-pub(crate) struct HashRefs(AHashMap<u64, u32>);
+pub struct HashRefs(AHashMap<u64, u32>);
 
 fn digest(hash_hex: &str) -> u64 {
     // Fixed seeds: the digest only has to be stable within the process.

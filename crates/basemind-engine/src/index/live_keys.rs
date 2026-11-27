@@ -215,7 +215,7 @@ const CURSOR_STEPS: usize = 8;
 /// ascending content-key order, so the next key is usually a few runs past the last one, on the
 /// same or the next cache line. A key behind the cursor, or too far ahead, is looked up by its
 /// bucket and the cursor moves there. Answers exactly what [`LiveKeys::holders`] answers.
-pub(crate) struct LiveCursor<'a> {
+pub struct LiveCursor<'a> {
     live: &'a LiveKeys,
     /// Index into `runs` of the first run not below the last key looked up.
     at: usize,
@@ -276,7 +276,7 @@ impl super::IndexDb {
 }
 
 /// The site key and path a cursor names: holders of that site up to the path were already listed.
-pub(crate) type Resume = Option<(Vec<u8>, Vec<u8>)>;
+pub type Resume = Option<(Vec<u8>, Vec<u8>)>;
 
 /// Where a scan of a name-led keyspace resumes after `cursor`, a hit key or a bare site key: the
 /// lower bound in stored row keys, and the site and path the cursor names within it.
@@ -335,7 +335,7 @@ impl Row {
 }
 
 /// See the module docs.
-pub(crate) struct ExpandHits<'a> {
+pub struct ExpandHits<'a> {
     rows: KvIter<'a>,
     live: Arc<LiveKeys>,
     shape: NameRow,

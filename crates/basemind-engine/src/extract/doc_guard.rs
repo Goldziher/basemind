@@ -375,10 +375,10 @@ pub mod test_stall {
 
 /// A stalled extraction (see `test_stall`); uninhabited without the `test-support` feature.
 #[cfg(feature = "test-support")]
-pub(crate) type StallTicket = test_stall::Ticket;
+pub type StallTicket = test_stall::Ticket;
 /// A stalled extraction; uninhabited without the `test-support` feature.
 #[cfg(not(feature = "test-support"))]
-pub(crate) type StallTicket = std::convert::Infallible;
+pub type StallTicket = std::convert::Infallible;
 
 /// The stall the extraction of `path` must wait out, when a test asked for one.
 #[cfg(feature = "test-support")]

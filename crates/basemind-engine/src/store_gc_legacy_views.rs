@@ -31,7 +31,7 @@ use crate::store_gc_namespaces::{BlobNamespace, Holds};
 
 /// What a reap of per-view indexes removed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct LegacyIndexReap {
+pub struct LegacyIndexReap {
     /// Per-view index databases removed.
     pub(crate) reaped: usize,
     /// Their on-disk size.
@@ -40,7 +40,7 @@ pub(crate) struct LegacyIndexReap {
 
 /// The per-view indexes left under a workspaces directory.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct LegacyIndexes {
+pub struct LegacyIndexes {
     /// Per-view index databases.
     pub(crate) count: usize,
     /// Their on-disk size.

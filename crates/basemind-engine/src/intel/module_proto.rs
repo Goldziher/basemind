@@ -17,7 +17,7 @@ const EXTERNAL_PREFIX: &str = "google/";
 
 /// Resolves the `import` statements of `.proto` files.
 #[derive(Default)]
-pub(crate) struct ProtoImports;
+pub struct ProtoImports;
 
 impl ProtoImports {
     pub(crate) fn resolve(&mut self, probe: &mut Probe<'_>, importer: &str, imports: &[Import]) -> Vec<ModuleImport> {

@@ -12,7 +12,7 @@ const MAX_DECOMPRESSED_BLOB_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub(crate) enum BlobKind {
+pub enum BlobKind {
     Single = 1,
     FileMap = 2,
     Chunk = 3,
@@ -34,12 +34,12 @@ impl BlobKind {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct EnvelopePrefix {
+pub struct EnvelopePrefix {
     pub(crate) kind: BlobKind,
     pub(crate) schema_ver: u16,
 }
 
-pub(crate) struct CompressedPayload<'a> {
+pub struct CompressedPayload<'a> {
     pub(crate) uncompressed_len: usize,
     pub(crate) bytes: &'a [u8],
 }

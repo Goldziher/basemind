@@ -12,7 +12,7 @@ use crate::intel::module_resolver::{ModuleImport, ModuleTarget, Probe, join, par
 
 /// Resolves the `load()` statements of Starlark files.
 #[derive(Default)]
-pub(crate) struct StarlarkLoads;
+pub struct StarlarkLoads;
 
 impl StarlarkLoads {
     pub(crate) fn resolve(&mut self, probe: &mut Probe<'_>, importer: &str, imports: &[Import]) -> Vec<ModuleImport> {

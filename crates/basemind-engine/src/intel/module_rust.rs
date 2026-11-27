@@ -128,7 +128,7 @@ struct DeclaredModule {
 /// Rust module resolver. Caches each `Cargo.toml` path's parse (`None` when absent) and each shared
 /// module directory's including crates.
 #[derive(Default)]
-pub(crate) struct RustModules {
+pub struct RustModules {
     manifests: AHashMap<String, Option<Rc<Manifest>>>,
     includers: AHashMap<String, Vec<String>>,
 }

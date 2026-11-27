@@ -2,7 +2,7 @@
 //! the caller can do about it. The MCP adapter turns a [`LaneCause`] into its error.
 
 /// The two fjall-backed lanes' rankings, plus why they could not run.
-pub(crate) struct LaneOutcome {
+pub struct LaneOutcome {
     /// BM25 `(chunk_id, score)`, best first.
     pub(crate) keyword: Vec<(String, f32)>,
     /// Exact symbol-name lane chunk ids, best first.
@@ -25,7 +25,7 @@ impl From<Degraded> for LaneOutcome {
 /// What the caller can do about lanes that did not run, which picks the error a call that has no
 /// other lane answers with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LaneCause {
+pub enum LaneCause {
     /// Another process holds the workspace's index and nothing serves it to this session: retry,
     /// as for every lock contention (the CLI exits `3`).
     Held,
@@ -35,7 +35,7 @@ pub(crate) enum LaneCause {
 
 /// Why the lanes did not run, and the reason text `lanes_unavailable` carries.
 #[derive(Debug)]
-pub(crate) struct Degraded {
+pub struct Degraded {
     pub(crate) reason: String,
     pub(crate) cause: LaneCause,
 }

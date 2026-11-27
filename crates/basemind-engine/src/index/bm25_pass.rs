@@ -62,7 +62,7 @@ const RETIRED_KEY_OVERHEAD: u64 = 24;
 /// What one writer's batch did to this view's BM25 forward rows. Applied to the ledger only once
 /// the batch has committed.
 #[derive(Default)]
-pub(crate) struct Bm25Delta {
+pub struct Bm25Delta {
     /// The pass the delta was staged under; `0` until the writer stages in one.
     generation: u64,
     docs: i64,
@@ -148,7 +148,7 @@ struct PassState {
 
 /// The open pass's tally. One per view, shared by every handle on it (`GroupDb::open_view`), so a
 /// second handle's writes land in the same pass.
-pub(crate) struct Bm25PassLedger {
+pub struct Bm25PassLedger {
     /// The open pass's generation; `0` while none is open.
     generation: AtomicU64,
     next_generation: AtomicU64,
@@ -253,14 +253,14 @@ impl Bm25PassLedger {
 /// Which pass a [`Bm25Pass`] ends: only a full pass pays the group's owed sweep. An incremental
 /// pass (a watcher batch) leaves a debt, or the garbage of an incomplete tally, owed to the next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PassKind {
+pub enum PassKind {
     Full,
     Incremental,
 }
 
 /// How a finished pass brought the BM25 state up to date.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PassOutcome {
+pub struct PassOutcome {
     /// The stats came from the stored base plus the ledger, not a walk of the view's forward rows.
     pub(crate) stats_from_ledger: bool,
     /// The whole posting list was swept.
@@ -269,7 +269,7 @@ pub(crate) struct PassOutcome {
 
 /// An open full pass; see the module docs. Dropping it unfinished (a cancelled or failed pass)
 /// closes the ledger and leaves the view's stats unvouched and the group's sweep owed.
-pub(crate) struct Bm25Pass {
+pub struct Bm25Pass {
     db: IndexDb,
     kind: PassKind,
     generation: u64,

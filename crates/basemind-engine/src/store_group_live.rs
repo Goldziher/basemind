@@ -153,7 +153,7 @@ fn holds_of_all(
 
 /// The contents held by the views of a group other than the sweeping one, read from their file maps.
 #[derive(Debug, Default)]
-pub(crate) struct SiblingContents(Vec<std::sync::Arc<ViewHolds>>);
+pub struct SiblingContents(Vec<std::sync::Arc<ViewHolds>>);
 
 impl SiblingContents {
     /// The contents named by the file maps under `view_dirs` (see [`holds_of`]).
@@ -167,7 +167,7 @@ impl SiblingContents {
 }
 
 /// Liveness of a content for one sweep: held by the sweeping store's own file map or by a sibling.
-pub(crate) struct ContentLiveness<'a> {
+pub struct ContentLiveness<'a> {
     store: &'a Store,
     siblings: SiblingContents,
 }

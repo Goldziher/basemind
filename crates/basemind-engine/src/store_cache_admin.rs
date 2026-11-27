@@ -19,7 +19,7 @@ use crate::store_gc_namespaces::namespace_schema;
 
 /// Where the machine-global blob store and the record of its last sweep are.
 #[derive(Debug, Clone)]
-pub(crate) struct BlobStorePaths {
+pub struct BlobStorePaths {
     /// `cache/blobs/`: one namespace directory per blob schema, and the un-namespaced blob files
     /// of builds from before the namespaces.
     pub root: PathBuf,

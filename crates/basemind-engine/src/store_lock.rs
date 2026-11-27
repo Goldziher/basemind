@@ -260,7 +260,7 @@ pub(crate) mod hook {
     }
 
     #[cfg(unix)]
-    pub(crate) struct Guard;
+    pub struct Guard;
 
     #[cfg(unix)]
     impl Drop for Guard {

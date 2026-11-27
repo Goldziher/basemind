@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use ahash::AHashMap;
 
 /// Build-once map. Reads after the first build take one shared read lock.
-pub(crate) struct OnceMap<K, V> {
+pub struct OnceMap<K, V> {
     ready: RwLock<AHashMap<K, V>>,
     building: Mutex<AHashMap<K, Arc<Mutex<()>>>>,
 }

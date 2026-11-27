@@ -22,7 +22,7 @@ use crate::intel::module_resolver::{ModuleImport, ModuleTarget, Probe, join, par
 
 /// Go module resolver. Caches `go.mod` module paths and package directory listings.
 #[derive(Default)]
-pub(crate) struct GoModules {
+pub struct GoModules {
     /// `go.mod` path -> its module path; `None` when there is no such file or no `module` line.
     modules: AHashMap<String, Option<String>>,
     /// Package directory -> its indexed non-test `.go` files.

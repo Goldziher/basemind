@@ -552,7 +552,7 @@ mod recording {
 
     /// Shared handle on the reads a [`RecordingView`] has served, as `"<op>[:<keyspace>]"` strings.
     #[derive(Clone, Default)]
-    pub(crate) struct ReadLog(Arc<Mutex<Vec<String>>>);
+    pub struct ReadLog(Arc<Mutex<Vec<String>>>);
 
     impl ReadLog {
         fn record(&self, op: &str, part: Option<Part>) {
@@ -570,7 +570,7 @@ mod recording {
     }
 
     /// Delegates every read to a [`StandaloneView`] after logging it.
-    pub(crate) struct RecordingView {
+    pub struct RecordingView {
         inner: StandaloneView<IndexDb>,
         log: ReadLog,
     }

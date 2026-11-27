@@ -33,7 +33,7 @@ pub(crate) fn held_by_worker(command: &str) -> bool {
 }
 
 /// A writer's request that the worker let go of the lock, withdrawn when dropped.
-pub(crate) struct Request {
+pub struct Request {
     path: PathBuf,
     pid: String,
 }

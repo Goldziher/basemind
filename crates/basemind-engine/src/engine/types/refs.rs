@@ -141,7 +141,7 @@ pub struct GotoDefinitionParams {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct DependentsResponse {
+pub struct DependentsResponse {
     /// Importing files, across every page. Written only beside a `next_cursor`: a page without one
     /// lists every importer.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -158,7 +158,7 @@ pub(crate) struct DependentsResponse {
 /// Answer of `code_refs` `importers` with `path`: the files that reach it over the resolved
 /// file-level import graph (ADR-0047 decision 5), nearest first.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct GraphImportersResponse {
+pub struct GraphImportersResponse {
     /// Importing files within `depth`, across every page. Written only beside a `next_cursor`: a
     /// page without one lists every importer.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -195,7 +195,7 @@ pub(crate) struct GraphImportersResponse {
 
 /// One import cycle of `code_refs` `cycles`: a strongly connected component of the import graph.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct ImportCycle {
+pub struct ImportCycle {
     /// Every file of the cycle. Listed along the loop (each imports the next, the last the first)
     /// when one shortest loop runs through all of them, else in path order.
     pub files: Vec<RelPath>,
@@ -207,7 +207,7 @@ pub(crate) struct ImportCycle {
 /// Answer of `code_refs` `cycles`: the import cycles, smallest first, or with `path` the one
 /// holding that file.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct CyclesResponse {
+pub struct CyclesResponse {
     /// Cycles across every page.
     pub total: usize,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -227,7 +227,7 @@ pub(crate) struct CyclesResponse {
 }
 
 #[derive(Debug, schemars::JsonSchema)]
-pub(crate) struct ReferenceHit {
+pub struct ReferenceHit {
     /// The file of the call site: the key the hit is listed under.
     pub path: RelPath,
     /// 1-based line of the call site; `0` when the index holds no position for it.
@@ -317,7 +317,7 @@ impl Serialize for ReferenceHit {
 /// resolution facts already indexed. The order is the order `resolution_counts` lists them in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Resolution {
+pub enum Resolution {
     /// Binds to a definition in the same file.
     SameFile,
     /// Binds through an import to a definition in another file.
@@ -367,7 +367,7 @@ impl Resolution {
 
 /// The `resolution` filter of `code_refs`: the values a row must have to be listed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ResolutionFilter(u8);
+pub struct ResolutionFilter(u8);
 
 impl ResolutionFilter {
     /// Parse a comma-separated list of [`Resolution`] values; the error names the value refused and
@@ -394,7 +394,7 @@ impl ResolutionFilter {
 }
 
 /// Rows per [`Resolution`] value on a page, before the `resolution` filter.
-pub(crate) type ResolutionCounts = std::collections::BTreeMap<Resolution, u32>;
+pub type ResolutionCounts = std::collections::BTreeMap<Resolution, u32>;
 
 /// Whether a page's `resolution_default` goes unwritten: there is none (no rows), or it is
 /// `name_only`, which a page without the field means. A page in a language with no resolution
@@ -404,7 +404,7 @@ fn default_is_implied(default: &Option<Resolution>) -> bool {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct FindReferencesResponse {
+pub struct FindReferencesResponse {
     /// The most common `resolution` on the page; a row leaves its own out when it is this one.
     /// Unwritten when it is `name_only`.
     #[serde(skip_serializing_if = "default_is_implied")]
@@ -443,7 +443,7 @@ pub(crate) struct FindReferencesResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct FindCallersResponse {
+pub struct FindCallersResponse {
     /// The definition the callers were pinned to.
     pub definition: DefinitionView,
     /// Why no hit was checked against the definition: `unsupported for <language>`, `no resolution
@@ -484,7 +484,7 @@ pub(crate) struct FindCallersResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct DefinitionView {
+pub struct DefinitionView {
     pub path: RelPath,
     pub name: String,
     pub kind: &'static str,
@@ -496,7 +496,7 @@ pub(crate) struct DefinitionView {
 
 /// A resolved definition site returned by `goto_definition`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct DefinitionLocation {
+pub struct DefinitionLocation {
     pub path: RelPath,
     /// 1-based.
     pub line: u32,
@@ -508,7 +508,7 @@ pub(crate) struct DefinitionLocation {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct GotoDefinitionResponse {
+pub struct GotoDefinitionResponse {
     /// Echo of the queried file.
     pub path: RelPath,
     /// Normalized 1-based line / 0-based byte column of the queried position.
@@ -657,7 +657,7 @@ impl Serialize for ImplementationHit {
 /// implementations of a trait, the importers of a module, or the definition a reference binds to.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub(crate) enum CodeRefsResult {
+pub enum CodeRefsResult {
     References(FindReferencesResponse),
     Callers(FindCallersResponse),
     Implementations(FindImplementationsResponse),

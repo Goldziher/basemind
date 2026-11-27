@@ -93,7 +93,7 @@ pub(crate) fn ranked_offset(tool: &str, cursor: Option<&Cursor>, generation: u32
     allow(dead_code, reason = "only `code_search` pages this way")
 )]
 #[derive(Debug)]
-pub(crate) struct RankedPage<T> {
+pub struct RankedPage<T> {
     pub hits: Vec<T>,
     /// The token budget dropped trailing hits of the page.
     pub budgeted: bool,

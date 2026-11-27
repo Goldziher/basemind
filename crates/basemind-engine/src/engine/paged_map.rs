@@ -18,7 +18,7 @@ const PAGE: usize = 256;
 type Page<K, V> = Arc<[Arc<(K, V)>]>;
 
 /// A sorted map from `K` to `V` with structural sharing between versions.
-pub(crate) struct PagedMap<K, V> {
+pub struct PagedMap<K, V> {
     /// Non-empty pages in key order; the last key of one is below the first of the next.
     pages: Vec<Page<K, V>>,
     len: usize,
@@ -180,7 +180,7 @@ impl<K: std::fmt::Debug, V: std::fmt::Debug> std::fmt::Debug for PagedMap<K, V> 
 }
 
 /// A sorted set of `K` with the structural sharing of [`PagedMap`].
-pub(crate) struct PagedSet<K>(PagedMap<K, ()>);
+pub struct PagedSet<K>(PagedMap<K, ()>);
 
 impl<K> Default for PagedSet<K> {
     fn default() -> Self {

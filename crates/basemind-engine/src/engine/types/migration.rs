@@ -21,7 +21,7 @@ pub struct MigrationCheckParams {
 
 /// The report of `code_migration_check`: one entry per migration checked.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct MigrationCheckResponse {
+pub struct MigrationCheckResponse {
     pub migrations: Vec<MigrationReport>,
     /// Lifecycle notice when the index is not fully ready; absent when it is.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -33,7 +33,7 @@ pub(crate) struct MigrationCheckResponse {
 
 /// One migration's rules, totals and recorded progress.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct MigrationReport {
+pub struct MigrationReport {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -50,7 +50,7 @@ pub(crate) struct MigrationReport {
 
 /// One rule's answer.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct RuleReport {
+pub struct RuleReport {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guidance: Option<String>,
@@ -86,7 +86,7 @@ pub(crate) struct RuleReport {
 
 /// The remaining uses of one rule in one file.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct FileUses {
+pub struct FileUses {
     pub path: RelPath,
     /// Lines holding an old form.
     pub count: u32,
@@ -100,7 +100,7 @@ pub(crate) struct FileUses {
 
 /// Progress of a migration across checks, from the history kept in the workspace cache directory.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct Progress {
+pub struct Progress {
     /// Runs recorded, this one included.
     pub runs: u32,
     /// The first run recorded; absent when this is the first.
@@ -118,7 +118,7 @@ pub(crate) struct Progress {
 
 /// One recorded check of a migration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub(crate) struct RunPoint {
+pub struct RunPoint {
     /// Seconds since the Unix epoch.
     pub at: u64,
     /// Short HEAD of the repository at the run; absent outside git.

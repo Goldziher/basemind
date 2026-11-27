@@ -16,7 +16,7 @@ pub(crate) fn outside_repository(tool: &str, path: &RelPath) -> EngineError {
 
 /// Where the files of this workspace's index are read from.
 #[derive(Clone, Copy)]
-pub(crate) struct IndexedFiles<'a> {
+pub struct IndexedFiles<'a> {
     pub root: &'a std::path::Path,
     /// `scan.follow_symlinks` as the scan applied it: the index then holds links whose targets are
     /// outside the root, by the operator's grant.
@@ -27,7 +27,7 @@ pub(crate) struct IndexedFiles<'a> {
 
 /// Why [`IndexedFiles::file`] did not name a file to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Unreadable {
+pub enum Unreadable {
     /// The index holds no such path, so nothing on disk is consulted for it.
     NotIndexed,
     /// The path leaves the repository.
@@ -88,7 +88,7 @@ impl<'a> IndexedFiles<'a> {
 /// Resolving every path would cost a `realpath` per file. A file leaves the repository through a
 /// link in one of two places: one of its directories, or the file itself. Each distinct directory
 /// is resolved once per sweep and remembered, and the file costs one `lstat`.
-pub(crate) struct Sweep<'a> {
+pub struct Sweep<'a> {
     files: IndexedFiles<'a>,
     /// The resolved root; `None` when it cannot be resolved, and nothing is then inside it.
     root: Option<std::path::PathBuf>,

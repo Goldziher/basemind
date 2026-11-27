@@ -26,7 +26,7 @@ const RESUME_BATCH_DOCUMENTS: usize = 32;
 /// are all that ever needed to survive a file's result — the status, the buffered index entry and
 /// the pending batches never leave the drive chunk.
 #[derive(Default)]
-pub(crate) struct RescanPaths {
+pub struct RescanPaths {
     pub(crate) updated: Vec<RelPath>,
     pub(crate) removed: Vec<RelPath>,
 }

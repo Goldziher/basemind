@@ -27,7 +27,7 @@ pub struct CodeOutlineParams {
 
 /// Response of `code_outline`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct OutlineResponse {
+pub struct OutlineResponse {
     pub path: RelPath,
     pub language: String,
     pub size_bytes: u64,
@@ -66,7 +66,7 @@ pub(crate) struct OutlineResponse {
 /// One symbol of a `code_outline` page. `line` and `end_line` are 1-based and inclusive, the span
 /// `code_read` and `git_blame` take.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct OutlineSymbol {
+pub struct OutlineSymbol {
     pub name: String,
     pub kind: &'static str,
     pub line: u32,
@@ -178,7 +178,7 @@ pub struct ExpandParams {
 
 /// Response from the `expand` MCP tool.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct ExpandResponse {
+pub struct ExpandResponse {
     /// Repo-relative path of the file that was read.
     pub path: String,
     /// Resolved symbol name.
@@ -212,7 +212,7 @@ pub(crate) struct ExpandResponse {
 
 /// Response of a `code_read` line-span read.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct ReadSpanResponse {
+pub struct ReadSpanResponse {
     pub path: String,
     /// 1-based first line returned.
     pub line: u32,
@@ -242,7 +242,7 @@ pub(crate) struct ReadSpanResponse {
 /// Answer of `code_read`: a symbol's body, or a line span.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub(crate) enum CodeReadResult {
+pub enum CodeReadResult {
     Symbol(ExpandResponse),
     Span(ReadSpanResponse),
 }
@@ -281,7 +281,7 @@ pub struct CodeSymbolsParams {
 
 /// The `code_symbols` sweep's own arguments, filled from [`CodeSymbolsParams`].
 #[derive(Debug)]
-pub(crate) struct SearchSymbolsParams {
+pub struct SearchSymbolsParams {
     /// Substring matched against symbol name (case-sensitive).
     pub needle: String,
     /// Optional kind filter: function, method, struct, enum, class, interface,
@@ -313,7 +313,7 @@ pub(crate) struct SearchSymbolsParams {
 /// followed by `; <signature>` when there is one. Rows keep their rank, so they are not grouped by
 /// file.
 #[derive(Debug)]
-pub(crate) struct SearchHitView {
+pub struct SearchHitView {
     pub path: RelPath,
     /// 1-based line of the definition.
     pub line: u32,
@@ -357,7 +357,7 @@ impl Serialize for SearchHitView {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct SearchResponse {
+pub struct SearchResponse {
     /// Matching symbols in the corpus, across every page. Written only beside a `next_cursor`: a
     /// page without one lists every match.
     #[serde(skip_serializing_if = "Option::is_none")]

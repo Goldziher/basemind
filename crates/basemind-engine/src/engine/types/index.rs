@@ -212,7 +212,7 @@ pub struct LaneStatus {
 
 /// The `watches` block of `index_status`.
 #[derive(Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
-pub(crate) struct WatchStatus {
+pub struct WatchStatus {
     /// Watches the watcher holds, one per watched directory.
     pub held: usize,
     /// Directories the inotify watch limit refused a watch: their edits are not indexed until a
@@ -231,7 +231,7 @@ pub(crate) struct WatchStatus {
 /// The code files of at least `threshold_lines` lines: how many there are and the largest of them.
 /// `find_files` with `min_lines` lists them all.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct LargeFiles {
+pub struct LargeFiles {
     pub threshold_lines: u32,
     pub count: usize,
     /// The longest few, largest first (ties by path).

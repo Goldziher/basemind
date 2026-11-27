@@ -14,7 +14,7 @@ use crate::scanner_code::PendingCodeBatch;
 use crate::store::Store;
 
 /// The scan's vector store: the repository group's code-chunk LanceDB store a [`Store`] keeps open.
-pub(crate) struct LanceVectors;
+pub struct LanceVectors;
 
 /// This build's retrieval stack, for the retrieval layer's own tests, which may not reach the engine
 /// layer's binding (`crate::retrieval_wiring::backend`, which binds the same implementations).

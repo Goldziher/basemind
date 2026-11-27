@@ -103,7 +103,7 @@ pub trait VectorStore: Sync {
 /// was the memory leak this shape fixes: the flush now rebuilds one file's rows at a time.
 #[cfg(feature = "documents")]
 #[derive(Debug, Clone)]
-pub(crate) struct PendingDocBatch {
+pub struct PendingDocBatch {
     /// Repository-relative path, forward-slash separated. Becomes the `path`
     /// column in LanceDB.
     pub rel_path: String,

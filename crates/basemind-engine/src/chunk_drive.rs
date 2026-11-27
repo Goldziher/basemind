@@ -39,7 +39,7 @@
 /// resolve pass. It is a *budget*, not a limit: the chunk that crosses it includes the item that
 /// did, because a chunk must never be empty.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ChunkCut {
+pub struct ChunkCut {
     max_items: usize,
     max_weight: u64,
 }

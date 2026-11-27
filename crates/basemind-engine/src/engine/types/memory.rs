@@ -63,7 +63,7 @@ pub struct MemorySearchToolParams {
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub(crate) enum MemorySearchAnswer {
+pub enum MemorySearchAnswer {
     Search(MemorySearchResponse),
     Get(MemoryEntry),
     Missing(MemoryMissing),
@@ -73,7 +73,7 @@ pub(crate) enum MemorySearchAnswer {
 /// `memory_search {key}` for a key no note has.
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize)]
-pub(crate) struct MemoryMissing {
+pub struct MemoryMissing {
     pub key: String,
     /// Always `false`: no note has this key in the tier read.
     pub found: bool,
@@ -98,7 +98,7 @@ pub struct MemoryPutParams {
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct MemoryPutResponse {
+pub struct MemoryPutResponse {
     pub key: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -120,7 +120,7 @@ pub struct MemoryGetParams {
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
-pub(crate) struct MemoryEntry {
+pub struct MemoryEntry {
     pub key: String,
     pub value: String,
     pub tags: Vec<String>,
@@ -149,7 +149,7 @@ pub struct MemoryListParams {
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct MemoryListResponse {
+pub struct MemoryListResponse {
     /// Notes matching the listing. A lower bound when `truncated`.
     pub total: usize,
     /// True when counting stopped at the scan cap, so `total` is a lower bound. A page cut at
@@ -190,7 +190,7 @@ pub struct MemorySearchParams {
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct MemorySearchHit {
+pub struct MemorySearchHit {
     pub key: String,
     pub value: String,
     pub tags: Vec<String>,
@@ -199,7 +199,7 @@ pub(crate) struct MemorySearchHit {
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct MemorySearchResponse {
+pub struct MemorySearchResponse {
     pub query: String,
     pub hits: Vec<MemorySearchHit>,
     /// True when no model could embed the query and the notes were matched by its words instead.
@@ -228,7 +228,7 @@ pub struct MemoryDeleteParams {
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct MemoryDeleteResponse {
+pub struct MemoryDeleteResponse {
     pub deleted: bool,
     /// Vector stores that could not be purged of the note's rows; the delete can be run again to
     /// retry them. Zero when every store was purged.
@@ -242,7 +242,7 @@ pub struct MemoryClearParams {}
 
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct MemoryClearResponse {
+pub struct MemoryClearResponse {
     /// Notes removed, of every tier and owner.
     pub notes_removed: usize,
     /// Embedding models' vector stores emptied of their rows and purged.

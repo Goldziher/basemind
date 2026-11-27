@@ -305,7 +305,7 @@ pub struct BlameSymbolParams {
 /// a commit takes. The whole message, the author's email and the changed files are
 /// `git_log {rev}`'s answer; a recent or directory list adds the files on request.
 #[derive(Debug, schemars::JsonSchema)]
-pub(crate) struct CommitView {
+pub struct CommitView {
     pub sha: String,
     pub summary: String,
     pub author: String,
@@ -369,10 +369,10 @@ fn files_by_commit<S: serde::Serializer>(
 }
 
 /// Each listed commit's changed files, keyed by its sha: a list response's top-level `files`.
-pub(crate) type FilesByCommit = Vec<(String, Vec<CommitFileView>)>;
+pub type FilesByCommit = Vec<(String, Vec<CommitFileView>)>;
 
 /// How many changed files each listed commit's entry in `files` leaves out: `{"<sha>": <count>}`.
-pub(crate) type FilesMore = Vec<(String, usize)>;
+pub type FilesMore = Vec<(String, usize)>;
 
 /// A [`FilesMore`] written as the map it stands for.
 fn files_more<S: serde::Serializer>(more: &FilesMore, serializer: S) -> Result<S::Ok, S::Error> {
@@ -386,7 +386,7 @@ fn files_more<S: serde::Serializer>(more: &FilesMore, serializer: S) -> Result<S
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct CommitFileView {
+pub struct CommitFileView {
     pub path: RelPath,
     /// How the commit changed it; a collapsed directory says how many files it stands for.
     pub change: std::borrow::Cow<'static, str>,
@@ -412,7 +412,7 @@ fn is_true(flag: &bool) -> bool {
 /// The commit `git_log {rev}` shows: its whole message and its author's email, beside what a list
 /// row carries.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct GitCommitHit {
+pub struct GitCommitHit {
     pub sha: String,
     pub summary: String,
     pub author: String,
@@ -426,7 +426,7 @@ pub(crate) struct GitCommitHit {
 
 /// Response of `git_log` with `rev`: one commit with its whole message and changed-file list.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct GitShowResponse {
+pub struct GitShowResponse {
     pub commit: GitCommitHit,
     /// The files the commit changed, each path with how.
     #[serde(serialize_with = "files_by_path")]
@@ -440,7 +440,7 @@ pub(crate) struct GitShowResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct SearchGitHistoryResponse {
+pub struct SearchGitHistoryResponse {
     /// Matching commits, newest first. A message's body is not listed: `git_log {rev}` shows it.
     pub commits: Vec<CommitView>,
     /// The shas of the commits that matched only through a tolerance (a typo, a word part, the
@@ -465,7 +465,7 @@ pub(crate) struct SearchGitHistoryResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct WorkingTreeStatusView {
+pub struct WorkingTreeStatusView {
     /// Each list is left out when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub staged_added: Vec<RelPath>,
@@ -496,7 +496,7 @@ pub(crate) struct WorkingTreeStatusView {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct RecentChangesResponse {
+pub struct RecentChangesResponse {
     /// One `{sha, author, date, subject}` row per commit, newest first.
     pub commits: Vec<CommitView>,
     /// What each listed commit changed, on request (`files`): `{"<sha>": {"<path>": "<change>"}}`.
@@ -529,7 +529,7 @@ pub(crate) struct RecentChangesResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct CommitsTouchingResponse {
+pub struct CommitsTouchingResponse {
     pub commits: Vec<CommitView>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
@@ -549,13 +549,13 @@ pub(crate) struct CommitsTouchingResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct DiffSymbolView {
+pub struct DiffSymbolView {
     pub name: String,
     pub kind: String,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct DiffOutlineResponse {
+pub struct DiffOutlineResponse {
     pub path: RelPath,
     pub rev: String,
     pub added: Vec<DiffSymbolView>,
@@ -570,7 +570,7 @@ pub(crate) struct DiffOutlineResponse {
 /// One blame hunk: a run of lines one commit last changed. Written as a row of
 /// [`BlameHunks`], its commit's author, time and summary once per page under `commits`.
 #[derive(Debug, Clone)]
-pub(crate) struct BlameHunkView {
+pub struct BlameHunkView {
     pub commit_sha: String,
     /// 1-based first line of the hunk in the blamed file.
     pub start_line: u32,
@@ -612,7 +612,7 @@ const BLAME_SHA_ABBREV: usize = 12;
 /// `"<line>[-<end_line>] <sha>[ <source_path>]"` row per hunk, and `commits`, each sha's `author`,
 /// `time` (unix seconds) and `summary` once, left out with no hunk.
 #[derive(Debug, Default)]
-pub(crate) struct BlameHunks(pub Vec<BlameHunkView>);
+pub struct BlameHunks(pub Vec<BlameHunkView>);
 
 impl Serialize for BlameHunks {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -655,7 +655,7 @@ impl Serialize for BlameHunks {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct BlameResponse {
+pub struct BlameResponse {
     /// `hunks` and `commits` ([`BlameHunks`]).
     #[serde(flatten)]
     #[schemars(skip)]
@@ -681,7 +681,7 @@ pub(crate) struct BlameResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct BlameSymbolResponse {
+pub struct BlameSymbolResponse {
     /// 1-based first line of the symbol, as `code_outline` reports it.
     #[serde(rename = "line")]
     pub line_start: u32,
@@ -713,7 +713,7 @@ pub(crate) struct BlameSymbolResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct FindCommitsByPathResponse {
+pub struct FindCommitsByPathResponse {
     /// Commits this page inspected, newest first from where its cursor starts.
     pub window_inspected: u32,
     /// Where the next page starts: how many commits, newest first, this page and the ones before it
@@ -760,7 +760,7 @@ pub(crate) struct FindCommitsByPathResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct HotFileEntry {
+pub struct HotFileEntry {
     pub path: RelPath,
     pub commits_touching: u32,
     pub added: u32,
@@ -769,7 +769,7 @@ pub(crate) struct HotFileEntry {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct HotFilesResponse {
+pub struct HotFilesResponse {
     pub window_inspected: u32,
     pub total_files_changed: u32,
     pub files: Vec<HotFileEntry>,
@@ -783,7 +783,7 @@ pub(crate) struct HotFilesResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct HunkView {
+pub struct HunkView {
     pub old_line_start: u32,
     pub old_line_count: u32,
     pub new_line_start: u32,
@@ -794,7 +794,7 @@ pub(crate) struct HunkView {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct DiffFileResponse {
+pub struct DiffFileResponse {
     pub path: RelPath,
     /// Full sha of the old side.
     pub from: String,
@@ -835,7 +835,7 @@ pub(crate) struct DiffFileResponse {
 /// of a summary. When it was written is `git_log {rev}`'s answer: a date on every row costs the
 /// list the value gate's locating floor (ADR-0052).
 #[derive(Debug, schemars::JsonSchema)]
-pub(crate) struct SymbolHistoryEntry {
+pub struct SymbolHistoryEntry {
     pub sha: String,
     pub summary: String,
     /// Not written in the row; `code explain` reads it.
@@ -856,7 +856,7 @@ impl Serialize for SymbolHistoryEntry {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct SymbolHistoryResponse {
+pub struct SymbolHistoryResponse {
     /// The kind the symbol was pinned to, when `kind` was resolved; absent otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
@@ -897,7 +897,7 @@ pub(crate) struct SymbolHistoryResponse {
 /// Answer of `git_log`: the shape its arguments select, serialized as that shape alone.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub(crate) enum GitLogResult {
+pub enum GitLogResult {
     Recent(RecentChangesResponse),
     Touching(CommitsTouchingResponse),
     Directory(FindCommitsByPathResponse),
@@ -909,7 +909,7 @@ pub(crate) enum GitLogResult {
 /// Answer of `git_blame`: a file or span, or one symbol.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub(crate) enum GitBlameResult {
+pub enum GitBlameResult {
     File(BlameResponse),
     Symbol(BlameSymbolResponse),
 }
@@ -917,7 +917,7 @@ pub(crate) enum GitBlameResult {
 /// Answer of `git_diff`: the working-tree status, a text diff or a symbol-level diff.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub(crate) enum GitDiffResult {
+pub enum GitDiffResult {
     Status(WorkingTreeStatusView),
     Text(DiffFileResponse),
     Structural(DiffOutlineResponse),

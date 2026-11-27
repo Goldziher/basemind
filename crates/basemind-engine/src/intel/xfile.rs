@@ -495,7 +495,7 @@ pub fn stitch_cross_file_edges(
 /// Collects one importer's [`FileEdges`] while its imports resolve. Shared with the file-level
 /// module stitch ([`crate::intel::module_resolver`]), whose resolvers classify a miss themselves.
 #[derive(Default)]
-pub(crate) struct FileEdgesBuilder {
+pub struct FileEdgesBuilder {
     targets: AHashMap<crate::path::RelPath, TargetImports>,
     external: u32,
     unresolved: u32,

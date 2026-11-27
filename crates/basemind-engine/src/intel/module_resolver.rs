@@ -44,7 +44,7 @@ const RESOLVE_CHUNK_IMPORTERS: usize = 1024;
 
 /// What one import resolved to.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ModuleTarget {
+pub enum ModuleTarget {
     /// The indexed files the import names: one Rust module file, or every file of a Go package.
     Files(Vec<String>),
     /// A module outside the repository: a dependency or the standard library.
@@ -60,7 +60,7 @@ pub(crate) enum ModuleTarget {
 
 /// One import of an importer and its resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ModuleImport {
+pub struct ModuleImport {
     /// Byte offset of the import in the importer.
     pub anchor: u32,
     /// The import as written, kept for an unresolved one.
@@ -72,7 +72,7 @@ pub(crate) struct ModuleImport {
 
 /// The lookups a resolver makes for one importer. Every repo-relative path it consults is recorded
 /// in `probes`, so that adding, deleting or changing that path re-stitches the importer.
-pub(crate) struct Probe<'a> {
+pub struct Probe<'a> {
     pub root: &'a Path,
     /// Whether a repo-relative path is an indexed file.
     pub indexed: &'a dyn Fn(&str) -> bool,
@@ -95,7 +95,7 @@ impl Probe<'_> {
 /// A per-language file-level module resolver. Holds caches of the files it reads outside the index
 /// (`Cargo.toml`, `go.mod`, package directories) for one stitch; it records every consulted path
 /// for every importer whether or not the cache answered.
-pub(crate) enum ModuleResolver {
+pub enum ModuleResolver {
     Rust(RustModules),
     Go(GoModules),
     Proto(ProtoImports),

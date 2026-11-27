@@ -30,7 +30,7 @@ use crate::index::view::IndexView;
 use crate::path::RelPath;
 
 /// A node of the graph: an index into its path-sorted node list.
-pub(crate) type NodeId = u32;
+pub type NodeId = u32;
 
 /// Importer depth a bounded walk takes when the caller names none.
 pub(crate) const DEPTH_DEFAULT: u8 = 1;
@@ -44,7 +44,7 @@ const CACHE_BYTES_MAX: usize = 128 * 1024 * 1024;
 /// Which edges a graph answer follows. The default, [`Tiers::RUNTIME`], follows runtime imports
 /// only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Tiers {
+pub struct Tiers {
     /// Also follow type-only imports (the CLI's `--include-type-imports`).
     pub(crate) type_imports: bool,
     /// Also follow Rust `mod x;` declarations from a parent module to its child file (the CLI's
@@ -73,7 +73,7 @@ impl Tiers {
 
 /// Which way a walk follows the edges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Direction {
+pub enum Direction {
     /// From a file to the files that import it.
     Importers,
     /// From a file to the files it imports.
@@ -82,7 +82,7 @@ pub(crate) enum Direction {
 
 /// One edge as seen from one of its ends: `node` is the other end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Edge {
+pub struct Edge {
     pub(crate) node: NodeId,
     /// Byte offset in the importer of the first import of the target (of a runtime import when
     /// there is one).
@@ -115,7 +115,7 @@ impl Csr {
 
 /// What the resolvers of one language contributed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct LanguageCoverage {
+pub struct LanguageCoverage {
     /// The TSLP pack name.
     pub(crate) language: String,
     /// A resolver for the language is compiled in. Without one its files have no edges.
@@ -138,7 +138,7 @@ pub(crate) struct LanguageCoverage {
 
 /// What the graph knows, per language, sorted by language.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Coverage {
+pub struct Coverage {
     pub(crate) languages: Vec<LanguageCoverage>,
 }
 
@@ -162,7 +162,7 @@ impl Coverage {
 
 /// Why a bounded walk stopped before it ran out of edges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Truncation {
+pub enum Truncation {
     /// Files lie beyond the deepest level walked.
     Depth,
     /// The walk reported [`WalkLimits::node_cap`] files and more were reachable.
@@ -181,7 +181,7 @@ impl Truncation {
 
 /// Bounds of a walk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct WalkLimits {
+pub struct WalkLimits {
     pub(crate) depth: u8,
     pub(crate) node_cap: usize,
 }
@@ -199,7 +199,7 @@ impl WalkLimits {
 
 /// A file a walk reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Reached {
+pub struct Reached {
     pub(crate) node: NodeId,
     /// Edges from the nearest start: 1 for a direct importer or dependency.
     pub(crate) depth: u8,
@@ -209,14 +209,14 @@ pub(crate) struct Reached {
 
 /// The files a bounded walk reached, by depth and then path; the starts are not among them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Walk {
+pub struct Walk {
     pub(crate) reached: Vec<Reached>,
     pub(crate) truncated: Option<Truncation>,
 }
 
 /// The file-level import graph of one index generation.
 #[derive(Debug, Default)]
-pub(crate) struct ImportGraph {
+pub struct ImportGraph {
     /// Node id -> path, sorted.
     paths: Vec<RelPath>,
     forward: Csr,
@@ -632,7 +632,7 @@ type Flight = Arc<OnceLock<Option<Arc<ImportGraph>>>>;
 
 /// The workspace's graph, kept for one `cache_generation`, and the builds in flight.
 #[derive(Default)]
-pub(crate) struct GraphCache {
+pub struct GraphCache {
     slot: Mutex<Option<(u32, Arc<ImportGraph>)>>,
     flights: Mutex<AHashMap<u32, Flight>>,
     #[cfg(test)]

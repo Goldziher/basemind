@@ -16,7 +16,7 @@ use crate::path::RelPath;
 const SEP: u8 = 0;
 
 /// Searchable text of one file.
-pub(crate) struct FileTerms {
+pub struct FileTerms {
     /// Symbol names joined by [`SEP`], in outline order.
     names: Box<[u8]>,
     /// End offset of each symbol's name within `names`, in outline order.
@@ -110,7 +110,7 @@ impl FileTerms {
 
 /// Path-ordered terms of every indexed file.
 #[derive(Default)]
-pub(crate) struct TermIndex {
+pub struct TermIndex {
     files: PagedMap<RelPath, FileTerms>,
 }
 

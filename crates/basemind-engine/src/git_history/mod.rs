@@ -351,7 +351,7 @@ pub struct CommitMeta {
 
 /// Handle to every git-history partition. Cloned cheaply (each `Keyspace` is `Arc`'d by Fjall).
 #[derive(Clone)]
-pub(crate) struct LocalDb {
+pub struct LocalDb {
     db: Database,
     meta: Keyspace,
     commit_by_ord: Keyspace,

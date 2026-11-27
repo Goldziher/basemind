@@ -42,7 +42,7 @@ struct Entry {
 
 /// Ranked lists by query, least recently used first. Bounded by [`ENTRIES_MAX`] and [`BYTES_MAX`].
 #[derive(Default)]
-pub(crate) struct RankedCache {
+pub struct RankedCache {
     entries: Mutex<VecDeque<Entry>>,
 }
 

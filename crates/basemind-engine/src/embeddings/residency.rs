@@ -16,7 +16,7 @@ pub(crate) const IDLE_RELEASE_AFTER: Duration = Duration::from_secs(120);
 /// What an embedding served: a request (a search query or a memory note, one text) or a scan pass
 /// (batches of chunks).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Use {
+pub enum Use {
     Request,
     Pass,
 }
@@ -24,7 +24,7 @@ pub(crate) enum Use {
 /// The bookkeeping behind the release decisions. Every method takes the current time, so the rules
 /// are tested without a clock.
 #[derive(Debug, Default)]
-pub(crate) struct Residency {
+pub struct Residency {
     /// An embedding succeeded since the engine was last released.
     resident: bool,
     /// Full passes in flight.

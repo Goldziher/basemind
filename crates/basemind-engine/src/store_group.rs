@@ -152,7 +152,7 @@ pub(super) fn open_index_for_writer(
 
 /// How a read-only open may reach the group database when its process holds no handle on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ReadAccess {
+pub enum ReadAccess {
     /// Only through a handle the process already holds: a long-lived reader (`serve` beside a
     /// writer) must never hold the group lock, or every writer of the group would wait on it.
     HeldHandle,

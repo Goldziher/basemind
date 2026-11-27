@@ -20,7 +20,7 @@ use crate::scanner_filter::Filters;
 use crate::store::Store;
 
 /// The document tier as the scan sees it.
-pub(crate) struct DocumentLane;
+pub struct DocumentLane;
 
 impl DocumentSink for DocumentLane {
     fn warn_unavailable_settings(&self, cfg: &DocumentsConfig) {

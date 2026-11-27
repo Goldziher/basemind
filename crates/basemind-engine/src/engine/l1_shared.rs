@@ -59,7 +59,7 @@ impl SharedOutlines {
 /// Where a map build takes its outline cache from: a cache of its own at the workspace's budget,
 /// or the host's shared one.
 #[derive(Clone, Copy)]
-pub(crate) struct Outlines<'a> {
+pub struct Outlines<'a> {
     budget_bytes: u64,
     shared: Option<&'a SharedOutlines>,
 }

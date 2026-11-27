@@ -41,7 +41,7 @@ struct HostRecord {
 /// blob namespace from.
 #[cfg(any(unix, windows))]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct HostBuild {
+pub struct HostBuild {
     /// The host's build version.
     pub(crate) version: Option<String>,
     /// The blob schema the host reads; `None` in a marker that records only the version.

@@ -38,7 +38,7 @@ pub(crate) const GO_FILES_READ_MAX: usize = 20_000;
 /// The build system a manifest belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Ecosystem {
+pub enum Ecosystem {
     Cargo,
     Npm,
     Python,
@@ -61,7 +61,7 @@ pub(crate) const MANIFEST_NAMES: &[(&str, Ecosystem)] = &[
 /// What a build starts from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum TargetKind {
+pub enum TargetKind {
     /// A library root: Cargo `[lib]` or `src/lib.rs`.
     Lib,
     /// An executable: Cargo `[[bin]]`, `src/main.rs` or `src/bin/*`, a `package.json` `bin`, a Go
@@ -86,7 +86,7 @@ pub(crate) enum TargetKind {
 
 /// One target of a manifest.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub(crate) struct Target {
+pub struct Target {
     pub kind: TargetKind,
     /// The target's own name, when the manifest gives or implies one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,7 +102,7 @@ pub(crate) struct Target {
 
 /// Dependencies one manifest declares, by tier.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub(crate) struct DependencyCounts {
+pub struct DependencyCounts {
     /// Runtime dependencies (Go: direct requirements).
     pub runtime: usize,
     /// Development, test and optional dependencies.
@@ -122,7 +122,7 @@ fn is_zero(n: &usize) -> bool {
 
 /// What one manifest declares.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct Manifest {
+pub struct Manifest {
     pub path: RelPath,
     pub ecosystem: Ecosystem,
     /// Package name (Go: the module path; Maven: the `artifactId`).
@@ -191,7 +191,7 @@ impl Manifest {
 
 /// The indexed files of a workspace, as sorted repository-relative strings: what a manifest's
 /// declared paths are checked against.
-pub(crate) struct FileSet<'a> {
+pub struct FileSet<'a> {
     sorted: Vec<&'a str>,
 }
 
@@ -272,7 +272,7 @@ pub(crate) fn parent_dir(path: &str) -> &str {
 
 /// What a manifest parser may read beyond its own text: the indexed files, and the head of another
 /// file of the repository (a Go file's `package` clause, a Gradle `settings.gradle`).
-pub(crate) struct Context<'a, 'f> {
+pub struct Context<'a, 'f> {
     pub files: &'a FileSet<'f>,
     /// The text of a repository-relative file, at most `max` bytes of it; `None` when unreadable.
     pub read: &'a dyn Fn(&str, usize) -> Option<String>,

@@ -15,7 +15,7 @@ use crate::path::RelPath;
 
 /// What the index recorded about a file's content when it scanned it.
 #[derive(Clone, Copy)]
-pub(crate) struct IndexedStamp<'a> {
+pub struct IndexedStamp<'a> {
     pub hash_hex: &'a str,
     pub size_bytes: u64,
     /// Nanoseconds since the epoch; `0` when the scan could not trust the timestamp.
@@ -87,7 +87,7 @@ pub(crate) fn matches_index(stamp: IndexedStamp<'_>, file: &Path, bytes: &[u8]) 
 }
 
 /// An indexed file as it is on disk now.
-pub(crate) struct Live {
+pub struct Live {
     pub bytes: Vec<u8>,
     /// Whether `bytes` are the content the index describes. Indexed offsets apply only then.
     pub fresh: bool,
@@ -95,7 +95,7 @@ pub(crate) struct Live {
 
 /// Why an indexed file's content could not be loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Unloadable {
+pub enum Unloadable {
     /// Deleted, or no longer readable, since the scan.
     Gone,
     /// Grown past `scan.max_file_bytes` since the scan.

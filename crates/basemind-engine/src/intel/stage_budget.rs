@@ -30,7 +30,7 @@ const STAGE_BUDGET_BYTES: u64 = 8 * 1024 * 1024;
 /// The writer is opened lazily and re-opened after every commit, so a caller only ever sees a live
 /// batch. Its ledger contribution is released on commit *and* on drop, so an unwind cannot leak
 /// budget and permanently shrink the shared ceiling.
-pub(crate) struct BudgetedWriter<'a> {
+pub struct BudgetedWriter<'a> {
     index_db: &'a IndexDb,
     writer: Option<IndexWriter>,
     staged: usize,

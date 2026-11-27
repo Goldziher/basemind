@@ -378,9 +378,9 @@ pub(crate) fn finalize_bm25_stats_if_any(_store: &Store, _config: &Config, _swee
 
 /// A full pass's BM25 tally, opened before the drive (see `index::bm25_pass`).
 #[cfg(feature = "code-search")]
-pub(crate) type Bm25PassOpt = Option<crate::index::bm25_pass::Bm25Pass>;
+pub type Bm25PassOpt = Option<crate::index::bm25_pass::Bm25Pass>;
 #[cfg(not(feature = "code-search"))]
-pub(crate) type Bm25PassOpt = Option<()>;
+pub type Bm25PassOpt = Option<()>;
 
 /// Open the full pass's BM25 tally, so the pass can retire the postings it orphaned and update the
 /// stats from what it changed instead of walking both keyspaces at the end. `None` (the lanes then

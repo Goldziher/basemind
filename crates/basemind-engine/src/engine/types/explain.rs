@@ -34,7 +34,7 @@ pub struct ExplainParams {
 
 /// The definition a symbol briefing is about.
 #[derive(Debug, Serialize)]
-pub(crate) struct ExplainDefinition {
+pub struct ExplainDefinition {
     pub path: RelPath,
     pub name: String,
     pub kind: &'static str,
@@ -53,7 +53,7 @@ pub(crate) struct ExplainDefinition {
 
 /// One top-level definition of a file briefing.
 #[derive(Debug, Serialize)]
-pub(crate) struct ExplainOutlineRow {
+pub struct ExplainOutlineRow {
     pub name: String,
     pub kind: &'static str,
     pub line: u32,
@@ -61,7 +61,7 @@ pub(crate) struct ExplainOutlineRow {
 
 /// One commit of a briefing's history.
 #[derive(Debug, Serialize)]
-pub(crate) struct ExplainCommit {
+pub struct ExplainCommit {
     pub sha: String,
     pub author: String,
     /// Unix seconds.
@@ -71,14 +71,14 @@ pub(crate) struct ExplainCommit {
 
 /// An author of the recent commits touching a file, with how many of them they wrote.
 #[derive(Debug, Serialize)]
-pub(crate) struct ExplainOwner {
+pub struct ExplainOwner {
     pub author: String,
     pub commits: u32,
 }
 
 /// A caller found past the first hop: the call site, and the definition it calls.
 #[derive(Debug, Serialize)]
-pub(crate) struct ExplainIndirectCaller {
+pub struct ExplainIndirectCaller {
     /// Hops from the briefed definition: 2 or 3.
     pub depth: u32,
     pub path: RelPath,
@@ -91,7 +91,7 @@ pub(crate) struct ExplainIndirectCaller {
 
 /// The calls between a file briefing's file and one other file.
 #[derive(Debug, Default, Serialize)]
-pub(crate) struct ExplainFileCalls {
+pub struct ExplainFileCalls {
     pub path: RelPath,
     /// Call sites.
     pub calls: u32,
@@ -104,7 +104,7 @@ pub(crate) struct ExplainFileCalls {
 
 /// A section the answer cut, and the call that returns the rest of it.
 #[derive(Debug, Serialize)]
-pub(crate) struct TruncatedSection {
+pub struct TruncatedSection {
     pub section: &'static str,
     /// Rows listed, and rows there are when known.
     pub shown: usize,
@@ -120,7 +120,7 @@ pub(crate) struct TruncatedSection {
 /// Answer of `code explain`. A section is absent when it was not asked for or does not apply to
 /// the target kind.
 #[derive(Debug, Default, Serialize)]
-pub(crate) struct ExplainResponse {
+pub struct ExplainResponse {
     /// `symbol` or `file`.
     pub target: &'static str,
     /// Symbol: the definition.

@@ -78,7 +78,7 @@ pub(crate) fn check_note(key: &str, value: &str, tags: &[String]) -> Result<(), 
 /// A fjall-side memory operation failed. Kept small and stringly so it maps cleanly onto an
 /// [`EngineError`].
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum MemoryOpError {
+pub enum MemoryOpError {
     /// The group memory store is owned by another process (the daemon), so this handle holds no
     /// memory; the operation must go through that process.
     #[error("memory store is held by another process; use the basemind daemon for memory operations")]
@@ -413,7 +413,7 @@ pub(crate) fn carries_any(tags: &[String], wanted: &[String]) -> bool {
 /// Range-scan parameters for [`list_core`]. Bundled into one struct so the core stays under the
 /// clippy argument-count cap and the two callers (local serve + daemon dispatch) construct it
 /// identically.
-pub(crate) struct ListQuery<'a> {
+pub struct ListQuery<'a> {
     /// Visibility byte resolved by the caller.
     pub vis_byte: u8,
     /// Owner segment (`""` for group).
@@ -429,7 +429,7 @@ pub(crate) struct ListQuery<'a> {
 }
 
 /// The result of a `List` core scan, mirroring the MCP `memory_list` response fields.
-pub(crate) struct ListResult {
+pub struct ListResult {
     /// The page of preview-truncated entries.
     pub entries: Vec<WireMemoryEntry>,
     /// Total matching records seen this scan.

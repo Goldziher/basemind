@@ -54,7 +54,7 @@ const INITS: [&str; 2] = ["__init__.py", "__init__.pyi"];
 const TYPESHED: &str = "/.basemind-ty-typeshed";
 
 /// ty's module resolver over the indexed Python files, for one stitch.
-pub(crate) struct TyResolver {
+pub struct TyResolver {
     db: ResolverDb,
     search_paths: SearchPaths,
     /// The first-party roots, in search order: `/src` when it holds Python files, then `/`.

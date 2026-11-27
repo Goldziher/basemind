@@ -78,7 +78,7 @@ pub struct WorkspaceGrepParams {
 /// One `code_grep` hit. Written under its file and the symbol enclosing it ([`serialize_rows`]), as
 /// the line `git grep -n` prints: `"<line>: <text>"`.
 #[derive(Debug, schemars::JsonSchema)]
-pub(crate) struct GrepHit {
+pub struct GrepHit {
     /// The file the hit is in: the key the hit is listed under, not a field of its own.
     pub path: RelPath,
     /// 1-based line number of the match.
@@ -269,7 +269,7 @@ impl Serialize for GroupMap<'_> {
 
 /// The hits of a `code_grep` page, one row per matching line, written by [`serialize_rows`].
 #[derive(Debug)]
-pub(crate) struct GrepHits(pub(crate) Vec<GrepHit>);
+pub struct GrepHits(pub(crate) Vec<GrepHit>);
 
 impl GrepHits {
     /// The files edited since the scan whose rows were read from disk, in the order listed.
@@ -294,7 +294,7 @@ impl Serialize for GrepHits {
 /// returned every match carries no reason, so an agent can tell a complete zero from a bounded one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum GrepTruncation {
+pub enum GrepTruncation {
     /// The corpus was larger than one call may read. Narrow with `path` / `language`, or
     /// page with `next_cursor`. Only reachable on workspaces of multiple gigabytes of source.
     ByteBudget,
@@ -306,7 +306,7 @@ pub(crate) enum GrepTruncation {
 /// Why `code_grep` could not search the files it counts in `skipped_files`. A reason with no file
 /// is absent.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
-pub(crate) struct SkippedBreakdown {
+pub struct SkippedBreakdown {
     /// Gone since the scan, or now leading out of the repository.
     #[serde(skip_serializing_if = "is_zero")]
     pub unavailable: usize,
@@ -338,7 +338,7 @@ impl std::ops::AddAssign for SkippedBreakdown {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct WorkspaceGrepResponse {
+pub struct WorkspaceGrepResponse {
     /// Hit count from the cursor position on, not just the returned page: exact over the scanned
     /// corpus, or the count over the files read so far when `total_is_partial`. Written only beside
     /// a `next_cursor`: a page without one lists every hit.

@@ -13,7 +13,7 @@ use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
 
 /// A hit listed from the index at its indexed position, which [`flag_listed`] can mark `stale`.
-pub(crate) trait Listed {
+pub trait Listed {
     fn path(&self) -> &RelPath;
     fn set_stale(&mut self, stale: bool);
 }
@@ -52,7 +52,7 @@ pub(crate) fn flag_listed<H: Listed>(ws: &Workspace, cache: &MapCache, hits: &mu
 }
 
 /// A listed file as it is on disk now.
-pub(crate) enum Disk {
+pub enum Disk {
     /// Holds the content the index describes.
     Fresh,
     /// Edited since the scan; the bytes it holds now.

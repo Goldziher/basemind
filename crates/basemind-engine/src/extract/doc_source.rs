@@ -21,7 +21,7 @@ use super::DocChunk;
 
 /// How a source's lines group, which decides where a chunk may end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Shape {
+pub enum Shape {
     /// Paragraphs and log lines.
     Prose,
     /// One record per line; `header` when the first line names the columns, `quoted` when a field
@@ -260,7 +260,7 @@ pub(crate) fn chunks(
 }
 
 /// A document's chunks, the text they were cut from and their embedding inputs.
-pub(crate) struct Chunked {
+pub struct Chunked {
     pub content: String,
     pub chunks: Vec<DocChunk>,
     pub dense: Vec<String>,

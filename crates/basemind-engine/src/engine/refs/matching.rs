@@ -12,7 +12,7 @@ use crate::engine::error::EngineError;
 
 /// How `code_refs` compares the requested name with an indexed identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Matching {
+pub enum Matching {
     Exact,
     Substring,
 }

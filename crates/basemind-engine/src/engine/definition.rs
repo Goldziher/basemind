@@ -34,7 +34,7 @@ pub(crate) fn definition_of_use(
 /// What following a use through the index found: the definition, or that one was found and refused
 /// because it may not belong to the content this session reads.
 #[derive(Default)]
-pub(crate) struct Hop {
+pub struct Hop {
     pub(crate) found: Option<(RelPath, u32)>,
     pub(crate) refused: bool,
 }

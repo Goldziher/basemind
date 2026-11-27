@@ -306,7 +306,7 @@ pub struct EvictReport {
 }
 
 /// What, besides the budget, decides what a budget pass may evict.
-pub(crate) struct EvictionRules<'a> {
+pub struct EvictionRules<'a> {
     /// Workspaces used more recently than this are evicted only after every colder one.
     pub(crate) hot_floor: Duration,
     /// A workspace with a view built more recently than this is never evicted.

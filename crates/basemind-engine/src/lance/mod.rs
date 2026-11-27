@@ -189,7 +189,7 @@ pub fn code_store_dir(root: &Path, model: &str, dim: u16) -> PathBuf {
 /// file map that names it, or after the sweep is done. Other processes cannot write the store: a
 /// writer holds the group lock (ADR-0028) for as long as it holds the group's index.
 #[cfg(any(feature = "documents", feature = "code-search"))]
-pub(crate) type SweepGate = Arc<parking_lot::RwLock<()>>;
+pub type SweepGate = Arc<parking_lot::RwLock<()>>;
 
 /// The gate of the store at `dir`: one per directory for the life of the process, so a handle
 /// opened again after the directory was removed orders against the old one.

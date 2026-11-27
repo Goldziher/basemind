@@ -69,7 +69,7 @@ const MEMORY_SEARCH_MEANWHILE: Option<&str> =
 
 /// Where one namespace's rows stand against its notes in this process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Backfill {
+pub enum Backfill {
     /// A search is embedding the namespace's notes now.
     Running,
     /// Every note had a current row and no row lacked a note when last looked, which is believed
@@ -296,7 +296,7 @@ pub(crate) fn delete_vector_row(ws: &Workspace, visibility: Visibility, owner: &
 
 /// How many of the repo group's vector stores a purge reached.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PurgeOutcome {
+pub struct PurgeOutcome {
     /// Stores the purge completed on.
     pub purged: usize,
     /// Stores that could not be opened or purged; their rows may remain, and the purge can be run again.
@@ -559,7 +559,7 @@ pub(crate) mod test_hooks {
 
     use crate::engine::Workspace;
 
-    pub(crate) type Hook = Box<dyn FnOnce(&Workspace) + Send + Sync>;
+    pub type Hook = Box<dyn FnOnce(&Workspace) + Send + Sync>;
 
     static WHILE_EMBEDDING: Mutex<Option<(String, Hook)>> = Mutex::new(None);
 
@@ -626,7 +626,7 @@ fn embed_notes(ws: &Workspace, notes: Vec<WireMemoryEntry>) -> Vec<(WireMemoryEn
 }
 
 /// The hits a search serves, and how many rows the join refused.
-pub(crate) struct Joined {
+pub struct Joined {
     pub hits: Vec<MemorySearchHit>,
     /// Rows whose note is gone or rewritten, and second rows of a key. Rows the `tags` filter
     /// excluded are not counted: they are current.

@@ -97,7 +97,7 @@ impl IndexedFilter {
 
 /// `find_files` without a `query`: the listing's own arguments.
 #[derive(Debug)]
-pub(crate) struct ListFilesParams {
+pub struct ListFilesParams {
     /// Optional `path` filter: a prefix, or a glob when it holds `*`.
     pub path: Option<PathFilter>,
     /// Filter by language (e.g. "rust", "python").
@@ -117,7 +117,7 @@ pub(crate) struct ListFilesParams {
 
 /// `find_files` with a `query`: the fuzzy search's own arguments.
 #[derive(Debug)]
-pub(crate) struct FindFilesParams {
+pub struct FindFilesParams {
     /// Fuzzy query matched as a subsequence against each indexed path (fzf/fd-style — letters
     /// of `query` must appear in order in the path, not necessarily contiguous). Case-insensitive.
     pub query: String,
@@ -141,7 +141,7 @@ pub(crate) struct FindFilesParams {
 
 /// Response of `find_files`: a fuzzy search ranked best first, or a listing in path order.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct FilesResponse {
+pub struct FilesResponse {
     /// Files that match, from this page on. Written only beside a `next_cursor`, which continues
     /// past this page: a page without one lists every match.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -177,7 +177,7 @@ pub(crate) struct FilesResponse {
 /// A `find_files` page: a list of paths, or with `min_lines` (`sized`) a map from each path to its
 /// line count, the way `wc -l` pairs them, empty or not.
 #[derive(Debug)]
-pub(crate) struct FileList {
+pub struct FileList {
     pub rows: Vec<FileHit>,
     pub sized: bool,
 }
@@ -211,7 +211,7 @@ impl Serialize for FileList {
 /// One `find_files` row: a path, or with `min_lines` the path and its size.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
-pub(crate) enum FileHit {
+pub enum FileHit {
     Path(RelPath),
     Sized(SizedFile),
     Listed(ListedFile),
@@ -219,7 +219,7 @@ pub(crate) enum FileHit {
 
 /// A list-only file in a `find_files` page: known to exist, contents never read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
-pub(crate) struct ListedFile {
+pub struct ListedFile {
     pub path: RelPath,
     /// Always `false`: the file is listed, not indexed.
     pub indexed: bool,
@@ -241,7 +241,7 @@ impl ListedFile {
 /// A code file and its size as indexed: a `find_files` row under `min_lines`, and a row of
 /// `index_status`'s `large_files`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
-pub(crate) struct SizedFile {
+pub struct SizedFile {
     pub path: RelPath,
     /// Lines as scanned: every `\n` ends one, and a final unterminated line counts.
     pub lines: u32,

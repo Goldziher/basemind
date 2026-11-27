@@ -33,7 +33,7 @@ const NOTES: [(&str, &str); 2] = [
 ];
 
 /// The arguments of a graph relation that pages.
-pub(crate) struct GraphPage {
+pub struct GraphPage {
     pub(crate) limit: Option<u32>,
     pub(crate) cursor: Option<Cursor>,
     pub(crate) max_tokens: Option<u32>,

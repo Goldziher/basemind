@@ -24,7 +24,7 @@ type Key = (gix::ObjectId, LangId);
 
 /// Outlines by blob, least recently used first. Bounded by an entry count and a byte budget; the
 /// entry just stored is never the one evicted, so a file larger than the budget is still answered.
-pub(crate) struct OutlineCache {
+pub struct OutlineCache {
     inner: Mutex<Held>,
 }
 
@@ -90,7 +90,7 @@ fn cost(entry: &OutlineEntry) -> u64 {
 }
 
 /// A parsed outline and the source it was parsed from.
-pub(crate) struct OutlineEntry {
+pub struct OutlineEntry {
     pub map: Arc<FileMapL1>,
     pub source: Arc<Vec<u8>>,
 }

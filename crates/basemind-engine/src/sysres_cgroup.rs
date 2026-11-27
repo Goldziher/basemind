@@ -39,7 +39,7 @@ pub(crate) const V1_NO_LIMIT_FLOOR: u64 = 1 << 62;
 
 /// A memory reading taken from one cgroup, already reduced to a working set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CgroupReading {
+pub struct CgroupReading {
     /// Charged memory minus reclaimable page cache — see [`working_set`].
     pub used_bytes: u64,
     /// The effective ceiling, or `None` when nothing in the hierarchy imposes one.

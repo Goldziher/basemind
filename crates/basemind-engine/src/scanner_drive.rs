@@ -55,15 +55,15 @@ use crate::store::Store;
 /// Alias that's `PendingDocBatch` under the `documents` feature and `()` otherwise. Lets the drive
 /// loop keep one signature while still carrying real values when the feature is on.
 #[cfg(feature = "documents")]
-pub(crate) type PendingDocBatchOpt = crate::scan_retrieval::PendingDocBatch;
+pub type PendingDocBatchOpt = crate::scan_retrieval::PendingDocBatch;
 #[cfg(not(feature = "documents"))]
-pub(crate) type PendingDocBatchOpt = ();
+pub type PendingDocBatchOpt = ();
 
 /// Alias that's `PendingCodeBatch` under the `code-search` feature and `()` otherwise.
 #[cfg(feature = "code-search")]
-pub(crate) type PendingCodeBatchOpt = crate::scanner_code::PendingCodeBatch;
+pub type PendingCodeBatchOpt = crate::scanner_code::PendingCodeBatch;
 #[cfg(not(feature = "code-search"))]
-pub(crate) type PendingCodeBatchOpt = ();
+pub type PendingCodeBatchOpt = ();
 
 /// Where a scan's per-file outcomes go.
 ///
@@ -131,7 +131,7 @@ impl ScanObserver for CollectObserver {
 
 /// Forwards to `inner` and, at each chunk, records the files extracted so far in the pass's
 /// breadcrumb: the count `index_status` and the statusline report as the scan's progress.
-pub(crate) struct ProgressObserver<'a> {
+pub struct ProgressObserver<'a> {
     inner: &'a mut dyn ScanObserver,
     breadcrumb: Option<&'a mut ScanBreadcrumb>,
     embed: Option<EmbedReporter<'a>>,
@@ -230,7 +230,7 @@ fn base_chunk_items(workers: usize) -> usize {
 
 /// How the next chunk should be shaped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DrivePlan {
+pub struct DrivePlan {
     /// Maximum candidates in the chunk.
     pub(crate) items: usize,
     /// Effective worker ceiling for the chunk. Equal to the pool size when unthrottled.
@@ -241,7 +241,7 @@ pub(crate) struct DrivePlan {
 /// sustained overshoot into a narrower chunk and fewer concurrent workers.
 ///
 /// Generic over the gate's sampler so tests drive the over/under transition deterministically.
-pub(crate) struct DriveGovernor<S = fn() -> Option<u64>>
+pub struct DriveGovernor<S = fn() -> Option<u64>>
 where
     S: Fn() -> Option<u64>,
 {
@@ -322,7 +322,7 @@ where
 }
 
 /// The parts of a scan invocation the drive loop needs but never mutates.
-pub(crate) struct ScanDrive<'a> {
+pub struct ScanDrive<'a> {
     pub(crate) root: &'a Path,
     pub(crate) filters: &'a Filters,
     pub(crate) source: &'a ScanSource<'a>,
@@ -336,7 +336,7 @@ pub(crate) struct ScanDrive<'a> {
 /// purge derives from. Every field is a *projection* of the per-file results — no field can hold a
 /// `FileResult`, which is what keeps the O(corpus) part unrepresentable past a chunk boundary.
 #[derive(Default)]
-pub(crate) struct DriveOutcome {
+pub struct DriveOutcome {
     pub(crate) doc_batches: Vec<PendingDocBatchOpt>,
     pub(crate) code_batches: Vec<PendingCodeBatchOpt>,
     /// Paths this pass indexed or confirmed unchanged; anything in the file map and not here is

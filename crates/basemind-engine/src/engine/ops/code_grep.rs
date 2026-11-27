@@ -583,7 +583,7 @@ const LONE_CR_STAND_IN: u8 = 0x0B;
 
 /// A grep's compiled pattern, and whether a lone `\r` in a file is masked before matching it:
 /// decided once per call from the parsed pattern, not once per file.
-pub(crate) struct LineRegex {
+pub struct LineRegex {
     regex: Regex,
     masks_lone_cr: bool,
 }

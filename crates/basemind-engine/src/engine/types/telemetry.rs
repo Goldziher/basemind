@@ -15,7 +15,7 @@ pub struct TelemetrySummaryParams {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct TelemetrySummaryResponse {
+pub struct TelemetrySummaryResponse {
     pub window: String,
     pub total_calls: usize,
     pub total_resp_bytes: u64,
@@ -32,21 +32,21 @@ pub(crate) struct TelemetrySummaryResponse {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct ToolCallCount {
+pub struct ToolCallCount {
     pub tool: String,
     pub calls: usize,
     pub est_tokens_saved: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct BaselineCount {
+pub struct BaselineCount {
     pub baseline: String,
     pub calls: usize,
     pub est_tokens_saved: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct RecentCallView {
+pub struct RecentCallView {
     pub ts_micros: i64,
     pub tool: String,
     pub resp_bytes: u64,

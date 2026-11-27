@@ -34,7 +34,7 @@ pub(crate) const DEFAULT_CONTEXT: u32 = 5;
 
 /// A 1-based, inclusive span of lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct LineSpan {
+pub struct LineSpan {
     pub(crate) start: u32,
     pub(crate) end: u32,
 }
@@ -48,14 +48,14 @@ impl LineSpan {
 
 /// One merged span and the number of hits it covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ReadRange {
+pub struct ReadRange {
     pub(crate) span: LineSpan,
     pub(crate) hits: u32,
 }
 
 /// The ranges of one file, sorted by line.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FileRanges {
+pub struct FileRanges {
     pub(crate) path: RelPath,
     pub(crate) ranges: Vec<ReadRange>,
 }
@@ -69,7 +69,7 @@ impl FileRanges {
 
 /// How hits widen into ranges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RangeOptions {
+pub struct RangeOptions {
     /// Lines of context each side of a hit.
     pub(crate) context: u32,
     /// The most lines all ranges together may cover; `None` is no limit.
@@ -87,7 +87,7 @@ impl Default for RangeOptions {
 
 /// The merged ranges of a hit list.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct MergedRanges {
+pub struct MergedRanges {
     /// Files with at least one range, in the order of their first hit.
     pub(crate) files: Vec<FileRanges>,
     /// Lines all ranges cover together.

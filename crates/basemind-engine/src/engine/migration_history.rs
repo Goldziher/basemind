@@ -18,7 +18,7 @@ const TAIL_BYTES: u64 = 64 * 1024;
 
 /// What was recorded before a run.
 #[derive(Debug, Default, PartialEq)]
-pub(crate) struct Recorded {
+pub struct Recorded {
     /// Runs in the file, counted by its newlines.
     pub(crate) runs: u32,
     pub(crate) first: Option<RunPoint>,

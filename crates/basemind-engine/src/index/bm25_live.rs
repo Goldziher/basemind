@@ -63,7 +63,7 @@ impl Bm25Live {
 
 /// [`Bm25Live`] of one view, shared by every handle on it. See the module docs.
 #[derive(Default)]
-pub(crate) struct Bm25LiveCache {
+pub struct Bm25LiveCache {
     /// Bumped after every commit that changed the view's forward rows.
     generation: AtomicU64,
     built: parking_lot::Mutex<Option<(u64, Arc<Bm25Live>)>>,
@@ -104,14 +104,14 @@ impl Bm25LiveCache {
 /// holder row. A writer registers a key while holding the gate shared, so a sweep holding it
 /// exclusively sees every registration made before it.
 #[derive(Default)]
-pub(crate) struct Bm25GateState {
+pub struct Bm25GateState {
     lock: parking_lot::RwLock<()>,
     #[cfg(feature = "code-search")]
     in_flight: parking_lot::Mutex<AHashMap<Bm25Key, u32>>,
 }
 
 /// One per group: see [`Bm25GateState`].
-pub(crate) type Bm25Gate = Arc<Bm25GateState>;
+pub type Bm25Gate = Arc<Bm25GateState>;
 
 impl Bm25GateState {
     pub(crate) fn read(&self) -> parking_lot::RwLockReadGuard<'_, ()> {
@@ -147,7 +147,7 @@ impl Bm25GateState {
 /// The BM25 keys one writer registered in flight; released when the writer commits or drops.
 #[cfg(feature = "code-search")]
 #[derive(Default)]
-pub(crate) struct InFlight {
+pub struct InFlight {
     gate: Option<Bm25Gate>,
     keys: Vec<Bm25Key>,
 }
@@ -337,7 +337,7 @@ const DROP_RETIRE_POSTINGS: usize = 4096;
 
 /// A test's check, run after each commit of [`super::IndexDb::drop_view_bm25`].
 #[cfg(test)]
-pub(crate) type DropCommitHook = Box<dyn FnMut(&super::IndexDb)>;
+pub type DropCommitHook = Box<dyn FnMut(&super::IndexDb)>;
 
 #[cfg(test)]
 thread_local! {
@@ -458,7 +458,7 @@ impl<'a> ViewBm25Drop<'a> {
 /// Posting keys of the chunks a pass is about to replace or drop, by their [`Bm25Key`].
 #[cfg(feature = "code-search")]
 #[derive(Debug, Default)]
-pub(crate) struct Bm25Candidates(pub(super) AHashMap<Bm25Key, Vec<Vec<u8>>>);
+pub struct Bm25Candidates(pub(super) AHashMap<Bm25Key, Vec<Vec<u8>>>);
 
 #[cfg(test)]
 mod tests {

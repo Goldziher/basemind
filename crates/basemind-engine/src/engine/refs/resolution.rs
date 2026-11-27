@@ -17,7 +17,7 @@ use crate::path::RelPath;
 const EXTERNAL_PROBES_MAX: usize = 256;
 
 /// The indexed bytes of the files a page checks bindings in, each read once.
-pub(crate) struct UseSources<'a> {
+pub struct UseSources<'a> {
     files: IndexedFiles<'a>,
     cache: &'a MapCache,
     read: ahash::AHashMap<RelPath, Option<Vec<u8>>>,
@@ -136,7 +136,7 @@ pub(crate) fn confirm_elsewhere(
 
 /// A call-scan page as it is answered: filtered by `resolution`, budgeted, and with the page's
 /// `resolution_default` and `resolution_counts`.
-pub(crate) struct FinishedPage {
+pub struct FinishedPage {
     pub(crate) page: BudgetedCallPage,
     pub(crate) default: Option<Resolution>,
     pub(crate) counts: Option<ResolutionCounts>,

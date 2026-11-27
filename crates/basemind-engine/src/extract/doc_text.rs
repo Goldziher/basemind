@@ -449,7 +449,7 @@ fn is_distinctive(line: &str) -> bool {
 const SOURCE_LINES_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 /// What a chunk of a document becomes, given what xberg reported for it.
-pub(crate) struct ChunkInput<'a> {
+pub struct ChunkInput<'a> {
     pub text: String,
     pub byte_start: usize,
     pub byte_end: usize,

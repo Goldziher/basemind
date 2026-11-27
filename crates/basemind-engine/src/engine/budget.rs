@@ -26,7 +26,7 @@ pub(crate) fn budget(max_tokens: Option<u32>) -> Option<u32> {
 }
 
 /// Outcome of applying a token budget to an already-ranked result list.
-pub(crate) struct Budgeted<T> {
+pub struct Budgeted<T> {
     /// The kept leading prefix of items whose cumulative token cost fits the budget.
     pub items: Vec<T>,
     /// True when at least one trailing item was dropped to fit the budget. The number
@@ -76,7 +76,7 @@ pub(crate) fn apply_budget_grep_rows(
 
 /// The files and (file, symbol) groups a `code_grep` block has written a header for so far.
 #[derive(Default)]
-pub(crate) struct GrepSeen {
+pub struct GrepSeen {
     files: ahash::AHashSet<crate::path::RelPath>,
     groups: ahash::AHashSet<(crate::path::RelPath, String)>,
 }
