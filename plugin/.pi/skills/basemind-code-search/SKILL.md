@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:59436436572014dca2f168876594b98004cb4f3c74836eefc16b89992aab5a0a
-Source-Hash: blake3:371884a0eb1b3befe0b8912d3df9b94c1e0dcf7bfcf52f371dfc56a35f80c02c
+Content-Hash: blake3:2ff09ec9ae3975e69deb23f8a26004fbb82862bee997ae2834d5c23f4053261d
+Source-Hash: blake3:32944bd1211bc8d6db6c70559389f8d62d108a0ce3287c83ae4a562c04824862
 Schema-Version: v1
 -->
 
@@ -191,32 +191,31 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 - **Defaults.** `code_symbols`, `code_grep` and `code_refs` list 100 rows, `find_files` 200,
   `code_outline` 500 symbols, `code_search` and `docs_search` 10 hits, `git_log` 20 commits (at
   most 100), `git_blame` 100 hunks. `limit: 0` is refused.
-- **Token budget.** A list is trimmed to `max_tokens` (default 6000) and then sets `budgeted`:
-  raise `max_tokens` or follow `next_cursor`.
+- **Token budget.** A list is trimmed to `max_tokens` (default 6000), then sets `budgeted`: raise
+  `max_tokens` or follow `next_cursor`.
 - **Three words for a cut.** A page that ended at `limit` returns only `next_cursor`. `budgeted`
   means the token budget trimmed it. `truncated` with `truncated_reason` marks a cut you did not
-  ask for (`omitted` counts what was left out where known); see "Truncation reasons" below.
-- **Limit cap.** A `limit` above its maximum is capped (`git_log` 100; the tools below 1000 rows,
-  `find_files` 5000) and the answer
-  sets `limit_clamped: true` (absent when `limit` was kept; `code_outline`, `code_symbols`,
-  `code_grep`, `code_refs`, `find_files` and a `memory_search` listing report it): ask at or
-  below the maximum and follow `next_cursor`.
-- **Cursors are bound to their query.** A cursor continues only the call that returned it. Passed
-  to another query, or used after a rescan or HEAD move, it is an error, or for `code_symbols` an
-  empty page with `cursor_invalidated: true`, never a finished list: repeat the call without `cursor`.
-- **Notices.** An empty or partial answer carrying a `notice` (`empty_index`, `warming_up`,
+  ask for (`omitted` counts what was left out where known; reasons below).
+- **Limit cap.** `git_log` silently caps `limit` at 100. `code_outline`, `code_symbols`,
+  `code_grep`, `code_refs` (paginated relations; `definition` takes no `limit`), `find_files` and a
+  `memory_search` listing cap at 1000 rows (`find_files` 5000) and set `limit_clamped: true` (absent
+  when `limit` was kept). Ask at or below the maximum and follow `next_cursor`.
+- **Cursors are bound to their query.** A cursor continues only the call that returned it: never
+  reuse one across queries (`code_symbols` cannot detect it and skips results). After a rescan or
+  HEAD move a tool returns an error or an empty page with `cursor_invalidated: true` (`code_symbols`,
+  `code_grep`, `find_files`, `git_log`), never a finished list: repeat the call without `cursor`.
+- **Notices.** An empty or partial answer with a `notice` (`empty_index`, `warming_up`,
   `building_index`, `rescanning`) means retry shortly, not "no matches".
-- **Text answers.** Text is written per tool in the form that measured fewest tokens (ADR-0053).
-  `code_grep` writes its other fields as `key: value` lines, then each file as
-  `# <path>` and each enclosing symbol as `## <symbol>` over its rows; rows before any symbol
-  header, or under a bare `##`, are outside every symbol. `code_outline`, `git_diff` and a
-  `find_files` list are [TOON](https://toonformat.dev): `key: value` lines, and a list of objects
-  as one table, `symbols[N]{name,kind,...}:` and a comma-separated row per object, a value quoted
-  only where it would be misread. Every other tool answers in compact JSON. A header naming a path
-  or symbol that starts with `"`, has leading or trailing whitespace or holds a control character
-  is a JSON string. MCP `structuredContent` is JSON for every tool.
-- **CLI output.** Human output prints bodies and diffs in full and cuts only table cells, with a
-  note on stderr. `--json` prints the response as JSON, as MCP `structuredContent` carries it.
+- **Text answers.** Each tool uses the form that measured fewest tokens (ADR-0053).
+  `code_grep` writes other fields as `key: value` lines, then each file as `# <path>` and each
+  enclosing symbol as `## <symbol>` over its rows; rows before a symbol header or under a bare
+  `##` are outside every symbol. `code_outline`, `git_diff` and a `find_files` list are
+  [TOON](https://toonformat.dev): `key: value` lines, and a list of objects as one table,
+  `symbols[N]{name,kind,...}:` plus a comma-separated row per object. Every other tool answers in
+  compact JSON. A header path or symbol that starts with `"`, has edge whitespace or holds a
+  control character is a JSON string. MCP `structuredContent` is always JSON.
+- **CLI output.** Human output prints bodies and diffs in full and cuts only table cells (note on
+  stderr). `--json` prints the MCP `structuredContent` JSON.
 
 ### Truncation reasons
 
@@ -229,9 +228,9 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 - `liveness_depth`, `docs_search`: Narrow with `path`, `keywords` or `format`.
 - `stale_chunks`, `code_search`: Hits in files edited since indexing were dropped (`omitted`): `index_rescan` them.
 - `imports`, `code_outline`: Import list cut at 200: `code_grep` for the import.
-- `size_cap`, `code_read`: Read a span with `line` and `end_line`.
+- `size_cap`, `code_read`: read a span with `line` and `end_line`.
 - `too_large`, `git_blame`: Blame a span or one `symbol`.
-- `hunk_cap`, `byte_cap`, `git_diff`: Stopped at 200 hunks or 128 KiB, no cursor: narrow `from` and `to`.
+- `hunk_cap`, `byte_cap`, `git_diff`: stopped at 200 hunks or 128 KiB, no cursor: narrow `from`/`to`.
 - `path_cap`, `git_diff`: Status list cut (`omitted`): pass a directory `path` ending in `/`.
 - `span_limit`, `git_log`: Follow `next_cursor`, an empty page included, until it is absent.
 - `unindexed_scan`, `git_log`: No history index, newest commits only: wait for it (`index_status`), repeat.
