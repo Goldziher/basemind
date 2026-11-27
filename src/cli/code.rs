@@ -49,8 +49,8 @@ pub enum CodeCmd {
         path: Option<String>,
         #[arg(long)]
         language: Option<String>,
-        /// Files by role: `include`, `exclude`, `only`, role names (`infra,test`), or `-role` names.
-        #[arg(long)]
+        /// Roles: `only`, `exclude`, or `test,-infra`.
+        #[arg(long, allow_hyphen_values = true)]
         roles: Option<String>,
         /// Also match the name as a fuzzy subsequence, ranked last.
         #[arg(long)]
@@ -101,8 +101,8 @@ pub enum CodeCmd {
         path: Option<String>,
         #[arg(long)]
         language: Option<String>,
-        /// Files by role: `include`, `exclude`, `only`, role names (`infra,test`), or `-role` names.
-        #[arg(long)]
+        /// Roles: `only`, `exclude`, or `test,-infra`.
+        #[arg(long, allow_hyphen_values = true)]
         roles: Option<String>,
         /// Lines to show before and after each match (0-10).
         #[arg(long, value_name = "N")]
@@ -133,8 +133,8 @@ pub enum CodeCmd {
         path: Option<String>,
         #[arg(long)]
         language: Option<String>,
-        /// Files by role: `include`, `exclude`, `only`, role names (`infra,test`), or `-role` names.
-        #[arg(long)]
+        /// Roles: `only`, `exclude`, or `test,-infra`.
+        #[arg(long, allow_hyphen_values = true)]
         roles: Option<String>,
         #[arg(long)]
         limit: Option<u32>,

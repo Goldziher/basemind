@@ -49,7 +49,7 @@ pub struct MemorySearchToolParams {
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub visibility: Option<Visibility>,
-    /// Max notes: for `query` default 10, max 100; for a listing default 100, max 1000. Not with `key`.
+    /// Max notes (default 10 for `query`, 100 for a listing; max 100, 1000). Not with `key`.
     #[serde(default)]
     pub limit: Option<u32>,
     /// A prior listing's `next_cursor`. Not with `query` or `key`.
