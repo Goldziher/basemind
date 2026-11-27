@@ -118,10 +118,15 @@ fn auto_embed_threads(cores: usize) -> usize {
 }
 
 /// Drop every resident embedding engine so its ONNX session, weights and arena are freed. The next
-/// embedding reloads the model. Returns how many engines were dropped.
+/// embedding reloads the model. Returns how many engines were dropped. The freed weights and arena
+/// are handed back to the OS at once, so an idle process does not keep the engine's high-water mark.
 pub fn release_engines() -> usize {
     ENGINE_RELEASES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    xberg::clear_engine_caches()
+    let dropped = xberg::clear_engine_caches();
+    if dropped > 0 {
+        crate::allocator::release_unused_memory();
+    }
+    dropped
 }
 
 static ENGINE_RELEASES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -600,6 +605,17 @@ mod load_failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn releasing_with_no_resident_engine_is_counted_and_drops_nothing() {
+        let before = engine_releases();
+        let dropped = release_engines();
+        assert!(engine_releases() > before, "the release was not counted");
+        assert_eq!(
+            dropped, 0,
+            "no test in this module loads a model, so nothing is resident"
+        );
+    }
 
     #[test]
     fn a_pass_that_embedded_nothing_keeps_the_engine_a_request_loaded() {

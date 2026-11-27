@@ -675,6 +675,9 @@ impl Broker {
             Ok(result) => result,
             Err(join) => Err(crate::store_gc::GcError::Join(join.to_string())),
         };
+        // The sweep reads every workspace's index to count references; hand those transient pages
+        // back so an idle daemon does not sit at the sweep's high-water mark until the next one.
+        crate::allocator::release_unused_memory();
         if let Err(error) = &result {
             crate::store_gc::persist_gc_error(&crate::data_root::DataRoot::current(), error);
         }
