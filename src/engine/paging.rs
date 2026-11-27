@@ -41,6 +41,10 @@ pub(crate) trait Paged: ToolArgs + Serialize {
     /// bind a cursor alike. Each entry mirrors the default applied in the tool's body.
     const DEFAULTS: &'static [(&'static str, &'static str)] = &[];
 
+    /// Arguments where `false` selects a different list from omitting the argument, so it binds a
+    /// cursor of its own instead of being read as absent.
+    const FALSE_SELECTS: &'static [&'static str] = &[];
+
     /// The `cursor` argument.
     fn cursor_mut(&mut self) -> &mut Option<Cursor>;
 
@@ -49,9 +53,10 @@ pub(crate) trait Paged: ToolArgs + Serialize {
 }
 
 macro_rules! paged {
-    ($($params:ty $(=> [$(($field:literal, $default:literal)),+ $(,)?])?),+ $(,)?) => {
+    ($($params:ty $(=> [$(($field:literal, $default:literal)),+ $(,)?])? $(; false_selects [$($selects:literal),+ $(,)?])?),+ $(,)?) => {
         $(impl Paged for $params {
             $(const DEFAULTS: &'static [(&'static str, &'static str)] = &[$(($field, $default)),+];)?
+            $(const FALSE_SELECTS: &'static [&'static str] = &[$($selects),+];)?
 
             fn cursor_mut(&mut self) -> &mut Option<Cursor> {
                 &mut self.cursor
@@ -70,7 +75,7 @@ paged!(
     super::types::grep::CodeGrepParams,
     super::types::search::CodeSearchParams => [("lane", "hybrid")],
     super::types::refs::CodeRefsParams => [("relation", "callers"), ("match", "exact")],
-    super::types::files::FindFilesToolParams,
+    super::types::files::FindFilesToolParams => [("indexed", "any")]; false_selects ["indexed"],
     super::types::search::DocsSearchParams,
     super::types::git::GitLogParams,
     super::types::git::GitBlameParams => [("rev", "HEAD")],
@@ -97,7 +102,8 @@ fn fnv1a(mut hash: u32, bytes: &[u8]) -> u32 {
 
 /// Identity of the list a call pages through: the tool and every argument that selects it. An
 /// absent, `null` or `false` argument, or one holding its default ([`Paged::DEFAULTS`]), is the
-/// same query as one that omits it.
+/// same query as one that omits it, except an argument in [`Paged::FALSE_SELECTS`], where `false`
+/// is its own selection.
 fn query_id<T: Paged>(params: &T) -> u32 {
     let mut hash = fnv1a(0x811c_9dc5, T::TOOL.as_bytes());
     let Ok(Value::Object(arguments)) = serde_json::to_value(params) else {
@@ -109,7 +115,8 @@ fn query_id<T: Paged>(params: &T) -> u32 {
                 .iter()
                 .any(|(field, default)| field == key && value.as_str() == Some(default))
         };
-        if PAGING_KEYS.contains(&key.as_str()) || value.is_null() || *value == Value::Bool(false) || is_default() {
+        let is_omitted_false = || *value == Value::Bool(false) && !T::FALSE_SELECTS.contains(&key.as_str());
+        if PAGING_KEYS.contains(&key.as_str()) || value.is_null() || is_omitted_false() || is_default() {
             continue;
         }
         hash = fnv1a(hash, &[0]);

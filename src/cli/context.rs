@@ -1,6 +1,6 @@
 //! The engine a CLI command runs on.
 //!
-//! [`CliContext`] opens a one-shot [`LocalEngine`] with every background facility disabled, so a
+//! [`CliContext`] opens a one-shot `LocalEngine` with every background facility disabled, so a
 //! single command runs the engine operation an MCP client would reach, then the process exits. The
 //! store is opened read-only so the CLI never contends for the `.basemind/.lock` flock a running
 //! `basemind serve` may already hold.
@@ -114,7 +114,7 @@ pub async fn build_tools(
 /// a CLI process issues a single query and exits, so a big LRU never pays off.
 const CLI_GIT_CACHE_MEM: usize = 256;
 
-/// Construct a one-shot [`LocalEngine`] for the given repo `root` and `view`.
+/// Construct a one-shot `LocalEngine` for the given repo `root` and `view`.
 ///
 /// Mirrors the construction `cmd_serve` performs (config load, repo discover,
 /// git cache open) but opens the store read-only and disables all background

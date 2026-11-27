@@ -1,7 +1,7 @@
 //! In-process CLI over the same tool bodies the MCP server runs.
 //!
 //! Every MCP tool has a subcommand that builds the tool's `*Params` struct, opens a one-shot
-//! [`crate::dispatch::LocalEngine`] (no background facilities), and runs the engine operation the
+//! `crate::dispatch::LocalEngine` (no background facilities), and runs the engine operation the
 //! `#[tool]` shim runs, then renders the returned [`rmcp::model::CallToolResult`]. Parity is by
 //! construction: the CLI runs the same engine operation, not a re-implementation. The CLI additionally
 //! has shorthands and administrative commands with no MCP tool (ADR-0018).

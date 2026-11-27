@@ -109,6 +109,21 @@ fn an_omitted_argument_and_its_explicit_default_are_the_same_query() {
 }
 
 #[test]
+fn find_files_binds_omitted_false_true_and_any_apart_correctly() {
+    use crate::engine::types::files::FindFilesToolParams;
+
+    let id = |arguments: Value| {
+        query_id(&serde_json::from_value::<FindFilesToolParams>(arguments).expect("valid arguments"))
+    };
+
+    let omitted = id(json!({}));
+    assert_eq!(omitted, id(json!({ "indexed": "any" })));
+    assert_ne!(omitted, id(json!({ "indexed": false })));
+    assert_ne!(omitted, id(json!({ "indexed": true })));
+    assert_ne!(id(json!({ "indexed": false })), id(json!({ "indexed": true })));
+}
+
+#[test]
 fn a_ranked_search_under_another_filter_is_another_query() {
     use crate::engine::types::search::DocsSearchParams;
     let id = |arguments: Value| query_id(&serde_json::from_value::<DocsSearchParams>(arguments).expect("arguments"));

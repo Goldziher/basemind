@@ -5,7 +5,7 @@
 //! one on a blocking thread, binds its cursor to the query, records its telemetry row, words its
 //! error as MCP words errors and encodes its answer as the tool's wire form. The server's `#[tool]`
 //! shims and the commands reach an operation through the same functions here, so the two answer from
-//! the same body. [`LocalEngine`] is the in-process handle a command runs them on.
+//! the same body. `LocalEngine` is the in-process handle a command runs them on.
 
 pub(crate) mod history_sync;
 #[cfg(feature = "memory")]

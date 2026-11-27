@@ -10,7 +10,7 @@ For each task, `run.sh`:
 1. Runs the `baseline` command (a literal shell command) and captures its stdout.
 2. Runs the equivalent `basemind` command and captures its stdout.
 3. Pipes **both** captured outputs through `basemind admin tokens --stdin`, which counts
-   tokens with the real o200k tokenizer (`src/mcp/tokens.rs::count_tokens`) — the same
+   tokens with the real o200k tokenizer (`src/engine/tokens.rs::count_tokens`) — the same
    vocabulary a model actually pays for. This is deliberately *not* the `bytes / 4`
    heuristic that `src/engine/savings.rs` falls back to when the `tokenizer` feature isn't
    compiled in: a benchmark that used the heuristic for one side and the real tokenizer for
