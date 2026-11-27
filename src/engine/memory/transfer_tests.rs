@@ -207,8 +207,8 @@ fn a_scan_over_an_unreadable_record_fails() {
 fn an_export_the_import_would_refuse_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let ws = workspace(dir.path(), "fake", offline);
-    // A quote escapes to two bytes, so the raw bytes stay under the cap while the file passes it.
-    let quotes = TRANSFER_MAX_BYTES * 3 / 8;
+    // A quote escapes to two bytes, so 60% of the cap in raw bytes renders to 120%.
+    let quotes = TRANSFER_MAX_BYTES * 6 / 10;
     put(&ws, "a", &"\"".repeat(quotes / 2), &[], Visibility::Group);
     put(&ws, "b", &"\"".repeat(quotes / 2), &[], Visibility::Group);
     let error = ws
