@@ -3,7 +3,7 @@
 #
 # Runs each task's `basemind` command and `baseline` command, counts the real
 # token cost of each side's stdout with `basemind admin tokens --stdin` (the
-# actual o200k tokenizer, not the `bytes/4` heuristic in src/mcp/savings.rs),
+# actual o200k tokenizer, not the `bytes/4` heuristic in src/engine/savings.rs),
 # times both, and prints a report table. See benchmarks/README.md for the task
 # file format and prerequisites.
 set -uo pipefail

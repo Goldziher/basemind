@@ -50,7 +50,7 @@ IS_WINDOWS = sys.platform == "win32"
 BINARY_NAMES = ("basemind", "basemind.exe")
 MIB = 1024 * 1024
 MAX_SOCKET_PATH = 100
-# The MCP per-call log and its one rotated generation (src/mcp/telemetry.rs).
+# The MCP per-call log and its one rotated generation (src/engine/telemetry.rs).
 TELEMETRY_FILES = ("telemetry.jsonl", "telemetry.jsonl.1")
 
 

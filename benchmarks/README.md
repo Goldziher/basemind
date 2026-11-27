@@ -12,7 +12,7 @@ For each task, `run.sh`:
 3. Pipes **both** captured outputs through `basemind admin tokens --stdin`, which counts
    tokens with the real o200k tokenizer (`src/mcp/tokens.rs::count_tokens`) — the same
    vocabulary a model actually pays for. This is deliberately *not* the `bytes / 4`
-   heuristic that `src/mcp/savings.rs` falls back to when the `tokenizer` feature isn't
+   heuristic that `src/engine/savings.rs` falls back to when the `tokenizer` feature isn't
    compiled in: a benchmark that used the heuristic for one side and the real tokenizer for
    the other (or the heuristic for both) would not be measuring anything real.
 4. Times both commands with `date +%s%N` deltas (wall-clock, millisecond resolution).
@@ -182,7 +182,7 @@ basemind admin eval --tasks tasks.jsonl --report new.json --baseline report.json
 
 Task files are generated per repository by the stdlib-only scripts in
 [`benchmarks/eval/`](eval/README.md), which also documents the task format, the metrics, and the
-comparison with the fixed multipliers in `src/mcp/savings.rs`.
+comparison with the fixed multipliers in `src/engine/savings.rs`.
 
 ### Measured results
 
@@ -206,7 +206,7 @@ baseline is a targeted `git grep` plus up to three whole-file reads.
 | `docs` | 60 | 106 ms | 260 ms | 0.18 | 0.63 | hit@1 0.48, hit@5 0.63, MRR 0.54 | 0.15x (p90 5.67x) | 38 / 22 | 2.5x |
 
 How to read it: the ratio only compares answer size with the baseline's. A definition lookup
-(`symbols`) replaces a grep plus file reads and is close to the 25x that `src/mcp/savings.rs` credits it; a
+(`symbols`) replaces a grep plus file reads and is close to the 25x that `src/engine/savings.rs` credits it; a
 single narrow hit (`outline` of a small file, `references`, `callers`, `dependents`, `find`) can be
 *cheaper* with `grep`, because basemind's structured response carries per-call overhead. That is why
 `savings.rs` claimed no saving (1x) for `callers`, `dependents`, `find`, `files`, `grep` and `git_search`,
