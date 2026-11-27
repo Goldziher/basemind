@@ -370,6 +370,7 @@ impl GroupSweep<'_> {
     }
 
     /// Delete the symbol and call rows of every content `is_live` rejects and no writer has pending.
+    #[cfg(test)]
     pub(crate) fn sweep_contents(&mut self, is_live: impl Fn(&ContentKey) -> bool) -> Result<(), IndexError> {
         self.sweep_contents_retaining(is_live, |_| AHashSet::new())
     }
