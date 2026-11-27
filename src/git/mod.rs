@@ -634,7 +634,8 @@ impl Repo {
 
     /// The current HEAD as 40-char hex.
     fn head_hex(&self) -> Result<String, GitError> {
-        let id = self.local().head_id().map_err(|e| GitError::Read {
+        let local = self.local();
+        let id = local.head_id().map_err(|e| GitError::Read {
             what: "HEAD".to_string(),
             msg: e.to_string(),
         })?;
