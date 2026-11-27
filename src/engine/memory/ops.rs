@@ -132,6 +132,12 @@ pub(crate) enum MemoryOpError {
     /// Serializing a [`MemoryRecord`] to msgpack failed.
     #[error("serialize memory record: {0}")]
     Serialize(rmp_serde::encode::Error),
+    /// A stored note an export must carry cannot be read back, so the export would omit it.
+    #[error("memory export: a stored note is unreadable ({problem}); the export would omit it")]
+    Unreadable {
+        /// What could not be read.
+        problem: String,
+    },
 }
 
 /// A note too long to save is the caller's to fix; every other failure is internal.
@@ -461,7 +467,8 @@ pub(crate) fn merge_core(
 
 /// Every note of one namespace whose key starts with `key_prefix` and that carries any of `tags`
 /// (none: every note), whole and ordered by key, for an export. A namespace whose notes take more
-/// than `max_bytes` of key, text and tags is refused rather than cut.
+/// than `max_bytes` of key, text and tags is refused rather than cut, and so is one holding a record
+/// or key that cannot be read, which an export would otherwise drop without a word.
 pub(crate) fn scan_core(
     idx: &IndexDb,
     scope: &str,
@@ -487,11 +494,13 @@ pub(crate) fn scan_core(
             .into_inner()
             .map_err(|source| MemoryOpError::Fjall { op: "iter", source })?;
         let Some(key) = crate::index::keys::parse_memory_key_only(&raw_key) else {
-            continue;
+            return Err(MemoryOpError::Unreadable {
+                problem: format!("a key of {} bytes does not parse", raw_key.len()),
+            });
         };
-        let Ok(record): Result<MemoryRecord, _> = rmp_serde::from_slice(&raw_val) else {
-            continue;
-        };
+        let record: MemoryRecord = rmp_serde::from_slice(&raw_val).map_err(|error| MemoryOpError::Unreadable {
+            problem: format!("key `{key}`: {error}"),
+        })?;
         if !key.starts_with(key_prefix) || !carries_any(&record.tags, tags) {
             continue;
         }

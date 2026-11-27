@@ -221,10 +221,15 @@ impl Workspace {
             )?
         };
         let notes = entries.len();
-        Ok(MemoryExportResponse {
-            content: render(entries, params.visibility)?,
-            notes,
-        })
+        let content = render(entries, params.visibility)?;
+        if content.len() > TRANSFER_MAX_BYTES {
+            return Err(EngineError::invalid_argument(format!(
+                "memory export: the file would have {} bytes and an import reads at most {TRANSFER_MAX_BYTES}; \
+                 split it with `--prefix` or `--tag`",
+                content.len()
+            )));
+        }
+        Ok(MemoryExportResponse { content, notes })
     }
 
     /// Merge an export file into one tier of the current scope by the request's policy. The file is

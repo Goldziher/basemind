@@ -183,6 +183,40 @@ fn a_scan_past_the_byte_cap_is_refused() {
     );
 }
 
+/// A record that cannot be read fails the scan instead of silently missing from the export.
+#[test]
+fn a_scan_over_an_unreadable_record_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let idx = IndexDb::open(dir.path()).unwrap();
+    ops::put_core(&idx, "s", 0, "", "good", "v", &[]).unwrap();
+    let raw_key = crate::index::keys::memory_by_key("s", 0, "", "bad");
+    idx.memory()
+        .unwrap()
+        .notes_for_write()
+        .unwrap()
+        .insert(raw_key, b"not msgpack".to_vec())
+        .unwrap();
+    let error = ops::scan_core(&idx, "s", 0, "", "", &[], TRANSFER_MAX_BYTES).unwrap_err();
+    assert!(matches!(error, ops::MemoryOpError::Unreadable { .. }), "{error}");
+    assert!(error.to_string().contains("bad"), "{error}");
+}
+
+/// A store whose raw bytes fit the cap but whose rendered file does not is refused by the export
+/// (an import would refuse the file).
+#[test]
+fn an_export_the_import_would_refuse_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workspace(dir.path(), "fake", offline);
+    // A quote escapes to two bytes, so the raw bytes stay under the cap while the file passes it.
+    let quotes = TRANSFER_MAX_BYTES * 3 / 8;
+    put(&ws, "a", &"\"".repeat(quotes / 2), &[], Visibility::Group);
+    put(&ws, "b", &"\"".repeat(quotes / 2), &[], Visibility::Group);
+    let error = ws
+        .memory_export(MemoryExportParams::default())
+        .expect_err("the rendered file is over the cap");
+    assert!(error.to_string().contains("import reads at most"), "{error}");
+}
+
 /// Under each policy, an existing note of `existing` and an imported one of `incoming` resolve as
 /// named, and the stored note is the expected one.
 #[test]
