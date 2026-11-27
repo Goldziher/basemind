@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use fjall::PersistMode;
 
 use super::group::{GroupDb, SHARED_PARTS, view_record};
@@ -371,6 +371,18 @@ impl GroupSweep<'_> {
 
     /// Delete the symbol and call rows of every content `is_live` rejects and no writer has pending.
     pub(crate) fn sweep_contents(&mut self, is_live: impl Fn(&ContentKey) -> bool) -> Result<(), IndexError> {
+        self.sweep_contents_retaining(is_live, |_| AHashSet::new())
+    }
+
+    /// [`Self::sweep_contents`], except that the contents `retained` names out of the dead ones stay.
+    /// A build that shares the group with another of the same release minor keys its rows by its own
+    /// extract epoch, so a content no file map names under this build's keys may still be one the
+    /// other build's file map names (ADR-0036 rule 9); the caller says which dead keys those are.
+    pub(crate) fn sweep_contents_retaining(
+        &mut self,
+        is_live: impl Fn(&ContentKey) -> bool,
+        retained: impl FnOnce(&[ContentKey]) -> AHashSet<ContentKey>,
+    ) -> Result<(), IndexError> {
         let mut dead: Vec<ContentKey> = Vec::new();
         for rows in [&self.db.symbols_by_path, &self.db.calls_by_path] {
             for content in distinct_contents(rows) {
@@ -382,6 +394,10 @@ impl GroupSweep<'_> {
         }
         dead.sort_unstable();
         dead.dedup();
+        if !dead.is_empty() {
+            let kept = retained(&dead);
+            dead.retain(|content| !kept.contains(content));
+        }
         for batch in dead.chunks(SWEEP_BATCH_CONTENTS) {
             let _exclusive = self.db.bm25_gate.write();
             let pending = self.group.pending();

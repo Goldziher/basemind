@@ -4,7 +4,10 @@
 //!
 //! It runs at the end of a full pass, never on a read. A view is gone when its view directory is:
 //! the workspace reaper removes the workspace of a deleted worktree, and the cache budget a cold
-//! one's views. A content is live while any view's file map names it under its recorded key.
+//! one's views. A content is live while any view's file map names it under its recorded key, and a
+//! dead content stays while a file map names the same file content under another extract epoch: a
+//! build of the same release minor that extracts under that epoch shares the group and the blobs
+//! ([`Store::group_other_epoch_keys`]).
 
 use crate::index::IndexError;
 use crate::index::group_sweep::GroupSweepReport;
@@ -35,7 +38,15 @@ impl Store {
         }
         match self.group_live_content_keys() {
             Ok(live) => {
-                sweep.sweep_contents(|content| live.contains(content))?;
+                sweep.sweep_contents_retaining(
+                    |content| live.contains(content),
+                    |dead| {
+                        self.group_other_epoch_keys(dead).unwrap_or_else(|error| {
+                            tracing::warn!(%error, "group sweep could not tell other builds' rows apart; it keeps every dead content");
+                            dead.iter().copied().collect()
+                        })
+                    },
+                )?;
                 sweep.finish(true).map(Some)
             }
             Err(error) => {

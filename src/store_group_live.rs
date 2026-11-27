@@ -71,6 +71,9 @@ struct ViewHolds {
     contents: HashRefs,
     doc_keys: AHashSet<String>,
     content_keys: AHashSet<ContentKey>,
+    /// The distinct `(content hash, language)` of every file, to tell the rows of another extract
+    /// epoch ([`Store::group_other_epoch_keys`]).
+    content_inputs: Vec<(Box<str>, Box<str>)>,
 }
 
 impl ViewHolds {
@@ -88,8 +91,26 @@ impl ViewHolds {
             contents,
             doc_keys: doc_keys_of(index).collect(),
             content_keys: index.files.values().filter_map(|entry| entry.content_key).collect(),
+            content_inputs: content_inputs_of(index),
         }
     }
+}
+
+/// How many extract epochs above this build's a content's rows are kept for. A newer build of the
+/// same release minor keys its rows by a higher epoch, which an older build's sweep cannot know.
+pub(crate) const RETAINED_EPOCHS_AHEAD: u16 = 8;
+
+/// The distinct `(content hash, language)` of the files of `index`.
+fn content_inputs_of(index: &Index) -> Vec<(Box<str>, Box<str>)> {
+    let distinct: AHashSet<(&str, &str)> = index
+        .files
+        .values()
+        .map(|entry| (entry.hash_hex.as_str(), entry.language.as_str()))
+        .collect();
+    distinct
+        .into_iter()
+        .map(|(hash, language)| (hash.into(), language.into()))
+        .collect()
 }
 
 /// The most views the process-wide cache keeps before it starts over: a bound, not a working set.
@@ -280,6 +301,39 @@ impl Store {
             keys.extend(view.content_keys.iter().copied());
         }
         Ok(keys)
+    }
+
+    /// The members of `dead`, content keys no file map of the group names under its recorded key,
+    /// that name a file content some file map holds under another extract epoch. Two builds of one
+    /// release minor share the group index and the blobs; a build that extracts under a newer (or
+    /// older) epoch writes its rows under other keys, and sweeping them as dead would leave the
+    /// other build's file map naming rows that are gone, with nothing to rewrite them since it
+    /// finds its files unchanged. The rows go once no file map holds the content at all, so the
+    /// retained rows are bounded by the epochs tried per held content. Fails when a sibling's file
+    /// map cannot be read; the caller then keeps every dead content.
+    pub(crate) fn group_other_epoch_keys(&self, dead: &[ContentKey]) -> Result<AHashSet<ContentKey>, LivenessUnknown> {
+        let mut kept = AHashSet::new();
+        if dead.is_empty() {
+            return Ok(kept);
+        }
+        let dead: AHashSet<ContentKey> = dead.iter().copied().collect();
+        let mut retain_epochs_of = |hash: &str, language: &str| {
+            for epoch in 0..=crate::extract::EXTRACT_EPOCH.saturating_add(RETAINED_EPOCHS_AHEAD) {
+                let key = crate::index::keys::content_key(hash, language, epoch);
+                if dead.contains(&key) {
+                    kept.insert(key);
+                }
+            }
+        };
+        for entry in self.index.files.values() {
+            retain_epochs_of(&entry.hash_hex, &entry.language);
+        }
+        for view in holds_of_all(self.sibling_view_dirs()?)? {
+            for (hash, language) in &view.content_inputs {
+                retain_epochs_of(hash, language);
+            }
+        }
+        Ok(kept)
     }
 
     /// Publish the live keys of the file map just written, so the view's reads follow it.
