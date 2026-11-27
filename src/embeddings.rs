@@ -621,8 +621,17 @@ mod load_failure {
 mod tests {
     use super::*;
 
+    /// Serializes the tests that move or read the process-wide release counter, which `cargo test`
+    /// would otherwise run on parallel threads of one process.
+    static RELEASE_COUNTER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_release_counter() -> std::sync::MutexGuard<'static, ()> {
+        RELEASE_COUNTER.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn releasing_with_no_resident_engine_is_counted_and_drops_nothing() {
+        let _serial = lock_release_counter();
         let before = engine_releases();
         let dropped = release_engines();
         assert!(engine_releases() > before, "the release was not counted");
@@ -634,6 +643,7 @@ mod tests {
 
     #[test]
     fn a_pass_that_embedded_nothing_keeps_the_engine_a_request_loaded() {
+        let _serial = lock_release_counter();
         // With INFO enabled, as in the daemon: the release must not depend on a log level.
         let subscriber = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
@@ -655,6 +665,7 @@ mod tests {
 
     #[test]
     fn embed_pass_guards_nest_and_count_down() {
+        let _serial = lock_release_counter();
         let base = embed_passes_in_flight();
         let first = begin_embed_pass();
         let second = begin_embed_pass();
