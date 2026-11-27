@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:f8e5287a44463cfb2d0547f4468ed2525b7800600ac7002c5d05fffda418ea78
-Source-Hash: blake3:ec253b914a70b78a38c1cb72c8bb7ed1e1d2d4368e58abeca87d85b96c033147
+Content-Hash: blake3:496d44af047384888f65b731237bb4561044503e9048d5d64a6e9564535e3e4c
+Source-Hash: blake3:23994ec90785d1b7e213e9bd8e1fcb2532d397957226dc113a2ab23eb3469062
 Schema-Version: v1
 -->
 
@@ -80,15 +80,16 @@ The tools are always loaded: call them directly. Drop to raw shell only when no 
   `index_rescan` for a file that is not indexed, `find_files` for a missing one.
 - `path` is repo-relative; `line`, `end_line` and `column` are 1-based.
 - `code_read` takes `symbol` (add `kind` when several share the name) or `line` with `end_line`,
-  not both. A body over 128 KiB is cut at a line end and flagged `truncated` (`omitted_bytes` is what was
-  left out): read on from `end_line + 1`. `stale: true` (also on `code_outline`) means the file
+  not both. A `code_read` body over 128 KiB is cut at a line end and flagged `truncated`
+  (`omitted_bytes` is what was left out): read on from `end_line + 1`. `stale: true` (also on `code_outline`) means the file
   changed since it was indexed and was read as it is now; a deleted file is an error naming
   `index_rescan`.
 - `code_grep`: `pattern` is literal text unless `"regex":true`, and a regex anchors `^` / `$` at
   every line. `path` is a substring of the repo-relative path, never a glob; a `path` or `language`
   that no indexed code or text file has is an error (it names `docs_search` when only PDFs, Office
   files or other binary documents match).
-  `skipped_files` counts files that could not be searched. The answer is `key: value` lines, then
+  `skipped_files` counts files that could not be searched; `skipped_reasons` splits them into
+  `unavailable`, `too_large` and `unreadable`. The answer is `key: value` lines, then
   each file as `# <path>` and each innermost enclosing symbol as `## <symbol>` over its rows
   `<line>: <text>` (rows before any symbol header are outside every symbol); matches sharing a
   line are one row `<line>:<col>,<col>: <text>`, and a clipped line (over 400 bytes) writes its
@@ -158,6 +159,11 @@ the rows per grade, before any filter.
   when you need completeness.
 - **Coverage.** JavaScript and TypeScript (oxc), Python and Java (stack-graphs rules) resolve
   across files through imports; every other language gets tree-sitter scope binding.
+- **JS/TS workspaces.** A bare import of a workspace package (`@acme/ui`, `@acme/ui/button`)
+  resolves to its source with no `node_modules`. Packages come from the root `pnpm-workspace.yaml`
+  `packages:` globs and the root `package.json` `workspaces` field, each match with a named
+  `package.json`. A symlink into the repository resolves to its real path, and a literal
+  `require('./x')` is a file edge.
 - **From a reference to its definition.** `relation: "definition"` returns the definition the
   reference at `path` / `line` binds to, or a `resolution_note` when there is none.
 - **HTTP routes.** A route is a `route` symbol named `METHOD /path`, parameters written `:param`;
@@ -191,8 +197,7 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
   `budgeted` means the token budget trimmed it. `truncated` with `truncated_reason` marks a cut you
   did not ask for, with `omitted` counting what was left out where it is known; the codes and
   what to do about each are listed under "Truncation reasons" below.
-- **Limits are stated, not silent.** Each `limit` argument's description gives its default and
-  maximum; a larger value is capped to the maximum. `find_files` also sets `limit_clamped`.
+- A `limit` above its maximum is capped; each argument's description states both. `find_files` sets `limit_clamped`.
 - **Cursors are bound to their query.** A cursor continues only the call that returned it. Passed
   to another query, or used after a rescan or a HEAD move, the call is an error: repeat it without
   `cursor`. No tool answers a stale cursor with an empty page.
@@ -212,24 +217,22 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 
 ### Truncation reasons
 
-`truncated_reason` says why an answer is incomplete; the next step is what to do about it.
+`truncated_reason` says why an answer is incomplete.
 
-| Reason | Tool | Meaning and next step |
-| --- | --- | --- |
-| `scan_cap` | `code_symbols`, `code_refs`, `memory_search`, `impact` | Scan stopped early, `total` is a lower bound: follow `next_cursor`, else narrow with `path` or `language`. |
-| `byte_budget` | `code_grep` | Corpus larger than one call reads: narrow with `path` or `language`, or follow `next_cursor`. |
-| `depth` | `code_search`, `docs_search`, `impact` | Ranking past 100 hits, or an import walk at its depth: refine the query or start nearer the target. |
-| `liveness_depth` | `docs_search` | A lane hit its candidate depth before enough live documents: narrow with `path`, `keywords` or `format`. |
-| `stale_chunks` | `code_search` | Hits in files edited since indexing were dropped (`omitted`): `index_rescan` them, or repeat. |
-| `imports` | `code_outline` | Import list cut at 200: `code_grep` for the import. |
-| `size_cap` | `code_read` | Body cut at the read cap: read a span with `line` and `end_line`. |
-| `too_large` | `git_blame` | File too large to blame whole, answer empty: blame a span or one `symbol`. |
-| `hunk_cap`, `byte_cap` | `git_diff` | Stopped at 200 hunks or 128 KiB, no cursor: narrow `from` and `to`. |
-| `path_cap` | `git_diff` (no `from`/`to`) | Status list cut (`omitted`): pass a directory `path` ending in `/`. |
-| `span_limit` | `git_log`, directory or symbol `path` | Page used its span of commits before filling: follow `next_cursor`, an empty page included, until it is absent; `commits_reached` (and `total_commits` when indexed) shows how far back it got. |
-| `commit_cap` | `basemind git hotspots` (CLI) | Walk stopped at its cap (20,000 indexed, 1,000 live): shorten `since`. |
-| `unindexed_scan` | `git_log` with `query` or `author` | No git-history index, only the newest commits scanned: wait for it (`index_status`), repeat. |
-| `shallow_clone` | `git_log`, `git_blame` | Shallow clone, an absent commit is inconclusive: `git fetch --unshallow`. |
+- `scan_cap`, `code_symbols`, `code_refs`, `memory_search`, `impact`: `total` is a lower bound: follow `next_cursor`, else narrow with `path` or `language`.
+- `byte_budget`, `code_grep`: Follow `next_cursor`, or narrow with `path` or `language`.
+- `time_budget`, `code_grep`: Sweep stopped at 10 s (see `notice`): follow `next_cursor`, or narrow.
+- `depth`, `code_search`, `docs_search`, `impact`: Past 100 hits, or an import walk at its depth: refine the query.
+- `liveness_depth`, `docs_search`: Narrow with `path`, `keywords` or `format`.
+- `stale_chunks`, `code_search`: Hits in files edited since indexing were dropped (`omitted`): `index_rescan` them.
+- `imports`, `code_outline`: Import list cut at 200: `code_grep` for the import.
+- `size_cap`, `code_read`: Read a span with `line` and `end_line`.
+- `too_large`, `git_blame`: Blame a span or one `symbol`.
+- `hunk_cap`, `byte_cap`, `git_diff`: Stopped at 200 hunks or 128 KiB, no cursor: narrow `from` and `to`.
+- `path_cap`, `git_diff`: Status list cut (`omitted`): pass a directory `path` ending in `/`.
+- `span_limit`, `git_log`: Follow `next_cursor`, an empty page included, until it is absent.
+- `unindexed_scan`, `git_log`: No history index, newest commits only: wait for it (`index_status`), repeat.
+- `shallow_clone`, `git_log`, `git_blame`: An absent commit is inconclusive: `git fetch --unshallow`.
 <!-- /manual:paging -->
 
 For git history, blame and diffs see `basemind-git-history`; for document search see
