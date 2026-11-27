@@ -469,7 +469,10 @@ mod tests {
         assert_eq!(kept_after_exclusions(&report, &[]), kept);
         assert_eq!(kept_after_exclusions(&report, &["legacy/**".to_string()]), kept - 10);
         let text = render_counts(&report, &["legacy/**".to_string()]);
-        assert!(text.contains(&format!("in scope after exclusions: {}", kept - 10)), "{text}");
+        assert!(
+            text.contains(&format!("in scope after exclusions: {}", kept - 10)),
+            "{text}"
+        );
     }
 
     #[test]

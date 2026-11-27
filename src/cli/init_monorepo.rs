@@ -7,7 +7,7 @@
 //! extra `exclude` globs and `[documents] embed = false`. It prints the expected file count and a
 //! rough scan time first, so the numbers are visible before anything is written.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{BufRead, Write};
 use std::path::Path;
 
@@ -98,6 +98,8 @@ pub(crate) struct DataDir {
     /// Repo-relative, forward-slash.
     pub dir: String,
     pub files: usize,
+    /// Of `files`, those the document tier counts.
+    pub docs: usize,
     pub bytes: u64,
 }
 
@@ -106,7 +108,10 @@ pub(crate) struct DataDir {
 pub(crate) struct StateHit {
     pub glob: &'static str,
     pub what: &'static str,
+    /// Matching files outside every data directory and not already claimed by an earlier glob.
     pub files: usize,
+    /// Of `files`, those the document tier counts.
+    pub docs: usize,
     pub bytes: u64,
 }
 
@@ -129,7 +134,15 @@ pub(crate) struct MonorepoReport {
 struct DirTally {
     files: usize,
     data_files: usize,
+    doc_files: usize,
     bytes: u64,
+}
+
+/// A file matched by one of [`GENERATED_STATE_GLOBS`].
+struct StateFile {
+    rel: String,
+    bytes: u64,
+    is_doc: bool,
 }
 
 /// Walk `root` (honouring `.gitignore`) and report the monorepo findings with the default thresholds.
@@ -148,7 +161,7 @@ pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds) -> Result<Monore
     let mut report = MonorepoReport::default();
     let mut floor: BTreeMap<String, (usize, u64)> = BTreeMap::new();
     let mut dirs: BTreeMap<String, DirTally> = BTreeMap::new();
-    let mut state: Vec<(usize, u64)> = vec![(0, 0); GENERATED_STATE_GLOBS.len()];
+    let mut state: Vec<Vec<StateFile>> = GENERATED_STATE_GLOBS.iter().map(|_| Vec::new()).collect();
 
     let walker = scanner_filter::ignore_walk_builder(root, true, false)
         .filter_entry(|entry| {
@@ -187,7 +200,8 @@ pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds) -> Result<Monore
         }
         let ext = file_name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
         report.scan_files += 1;
-        if ext.as_deref().is_some_and(|e| COUNTED_EXTENSIONS.contains(&e)) {
+        let is_doc = ext.as_deref().is_some_and(|e| COUNTED_EXTENSIONS.contains(&e));
+        if is_doc {
             report.document_files += 1;
         }
         if ext.as_deref() == Some("tf") {
@@ -199,8 +213,11 @@ pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds) -> Result<Monore
         }
         for (slot, rules) in state.iter_mut().zip(&state_rules) {
             if rules.is_match(&rel) {
-                slot.0 += 1;
-                slot.1 += bytes;
+                slot.push(StateFile {
+                    rel: rel.clone(),
+                    bytes,
+                    is_doc,
+                });
             }
         }
         let is_data = ext.as_deref().is_some_and(|e| DATA_EXTENSIONS.contains(&e));
@@ -214,6 +231,7 @@ pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds) -> Result<Monore
             tally.files += 1;
             tally.bytes += bytes;
             tally.data_files += usize::from(is_data);
+            tally.doc_files += usize::from(is_doc);
         }
     }
 
@@ -222,18 +240,37 @@ pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds) -> Result<Monore
         .map(|(name, (files, bytes))| FloorDir { name, files, bytes })
         .collect();
     report.data_dirs = outermost_data_dirs(&dirs, thresholds);
-    report.state_hits = GENERATED_STATE_GLOBS
-        .iter()
-        .zip(state)
-        .filter(|(_, (files, _))| *files > 0)
-        .map(|(&(glob, what), (files, bytes))| StateHit {
+    report.state_hits = state_hits(state, &report.data_dirs);
+    Ok(report)
+}
+
+/// The state hits that remain once files inside a data directory, or matched by an earlier glob,
+/// are left to the exclusion that already counts them.
+fn state_hits(state: Vec<Vec<StateFile>>, data_dirs: &[DataDir]) -> Vec<StateHit> {
+    let mut claimed: HashSet<String> = HashSet::new();
+    let mut hits = Vec::new();
+    for (&(glob, what), matched) in GENERATED_STATE_GLOBS.iter().zip(state) {
+        let mut hit = StateHit {
             glob,
             what,
-            files,
-            bytes,
-        })
-        .collect();
-    Ok(report)
+            files: 0,
+            docs: 0,
+            bytes: 0,
+        };
+        for file in matched {
+            let in_data_dir = data_dirs.iter().any(|d| file.rel.starts_with(&format!("{}/", d.dir)));
+            if in_data_dir || !claimed.insert(file.rel) {
+                continue;
+            }
+            hit.files += 1;
+            hit.docs += usize::from(file.is_doc);
+            hit.bytes += file.bytes;
+        }
+        if hit.files > 0 {
+            hits.push(hit);
+        }
+    }
+    hits
 }
 
 /// True when the floor pattern name (`build`, `bazel-*`) names the path segment.
@@ -255,6 +292,7 @@ fn outermost_data_dirs(dirs: &BTreeMap<String, DirTally>, thresholds: &Threshold
             found.push(DataDir {
                 dir: dir.clone(),
                 files: tally.files,
+                docs: tally.doc_files,
                 bytes: tally.bytes,
             });
         }
@@ -281,11 +319,14 @@ pub(crate) struct Proposal {
     pub describe: String,
     /// Files the change removes from the scan (`ScanExclude`) or adds back to it (`FloorAllow`).
     pub files: usize,
+    /// Of `files`, those the document tier counts (`ScanExclude` only).
+    pub docs: usize,
     /// Applied under `--yes`; otherwise only printed as a comment.
     pub confident: bool,
 }
 
-/// The proposals for `report`; `kept_docs` is the document count the default scope keeps.
+/// The proposals for `report`; `kept_docs` is the document count the default scope keeps, before the
+/// data and state exclusions proposed here take their own documents out.
 pub(crate) fn propose(report: &MonorepoReport, kept_docs: usize, thresholds: &Thresholds) -> Vec<Proposal> {
     let mut out = Vec::new();
     for dir in &report.floor_dirs {
@@ -299,6 +340,7 @@ pub(crate) fn propose(report: &MonorepoReport, kept_docs: usize, thresholds: &Th
                 human_bytes(dir.bytes)
             ),
             files: dir.files,
+            docs: 0,
             confident: AUTO_FLOOR_DIRS.contains(&dir.name.as_str()) && dir.files >= thresholds.floor_auto_min_files,
         });
     }
@@ -313,6 +355,7 @@ pub(crate) fn propose(report: &MonorepoReport, kept_docs: usize, thresholds: &Th
                 human_bytes(dir.bytes)
             ),
             files: dir.files,
+            docs: dir.docs,
             confident: true,
         });
     }
@@ -322,15 +365,16 @@ pub(crate) fn propose(report: &MonorepoReport, kept_docs: usize, thresholds: &Th
             entry: hit.glob.to_string(),
             describe: format!("{} ({} files, {})", hit.what, hit.files, human_bytes(hit.bytes)),
             files: hit.files,
+            docs: hit.docs,
             confident: true,
         });
     }
-    let excluded_files: usize = out
+    let (excluded_files, excluded_docs) = out
         .iter()
         .filter(|p| p.setting == Setting::ScanExclude && p.confident)
-        .map(|p| p.files)
-        .sum();
+        .fold((0, 0), |(files, docs), p| (files + p.files, docs + p.docs));
     let scope_files = report.scan_files.saturating_sub(excluded_files);
+    let kept_docs = kept_docs.saturating_sub(excluded_docs);
     let dominated =
         kept_docs >= EMBED_OFF_MIN_DOCS || (kept_docs >= EMBED_OFF_MIN_SHARE_DOCS && kept_docs * 2 > scope_files);
     if dominated {
@@ -341,6 +385,7 @@ pub(crate) fn propose(report: &MonorepoReport, kept_docs: usize, thresholds: &Th
                 "{kept_docs} documents are in scope, so embedding them would dominate the scan; keyword search still works"
             ),
             files: 0,
+            docs: 0,
             confident: true,
         });
     }
@@ -411,17 +456,22 @@ fn ask(proposal: &Proposal, input: &mut dyn BufRead, output: &mut dyn Write) -> 
 }
 
 /// Files the scan is expected to index once `preset` is applied. Documents count as the
-/// `kept_docs` the scope keeps, not as every document-like file found.
+/// `kept_docs` the scope keeps (before the applied exclusions), not as every document-like file found.
 pub(crate) fn expected_files(report: &MonorepoReport, preset: &Preset, kept_docs: usize) -> usize {
     let mut files = report.scan_files;
+    let mut excluded_docs = 0;
     for proposal in &preset.applied {
         match proposal.setting {
             Setting::FloorAllow => files += proposal.files,
-            Setting::ScanExclude => files = files.saturating_sub(proposal.files),
+            Setting::ScanExclude => {
+                files = files.saturating_sub(proposal.files);
+                excluded_docs += proposal.docs;
+            }
             Setting::EmbedOff => {}
         }
     }
-    files.saturating_sub(report.document_files) + kept_docs
+    let remaining_docs = report.document_files.saturating_sub(excluded_docs);
+    files.saturating_sub(remaining_docs) + kept_docs.saturating_sub(excluded_docs)
 }
 
 fn estimate(files: usize) -> String {
@@ -594,6 +644,7 @@ mod tests {
             [DataDir {
                 dir: "demo/data".into(),
                 files: 4,
+                docs: 4,
                 bytes: 1600
             }],
             "demo is only 80% data (its README), demo/data qualifies"
@@ -604,6 +655,7 @@ mod tests {
                 glob: "**/*.tfstate",
                 what: "Terraform state",
                 files: 1,
+                docs: 0,
                 bytes: 10
             }]
         );
@@ -695,12 +747,54 @@ mod tests {
             data_dirs: vec![DataDir {
                 dir: "data".into(),
                 files: 2400,
+                docs: 0,
                 bytes: 1,
             }],
             ..MonorepoReport::default()
         };
         let proposals = propose(&report, 600, &SMALL);
-        assert!(proposals.iter().any(|p| p.setting == Setting::EmbedOff), "{proposals:?}");
+        assert!(
+            proposals.iter().any(|p| p.setting == Setting::EmbedOff),
+            "{proposals:?}"
+        );
+    }
+
+    #[test]
+    fn documents_in_excluded_data_directories_do_not_count_toward_embedding() {
+        let report = MonorepoReport {
+            scan_files: 1000,
+            document_files: 600,
+            data_dirs: vec![DataDir {
+                dir: "data".into(),
+                files: 700,
+                docs: 550,
+                bytes: 1,
+            }],
+            ..MonorepoReport::default()
+        };
+        assert!(
+            propose(&report, 600, &SMALL)
+                .iter()
+                .all(|p| p.setting != Setting::EmbedOff)
+        );
+        let preset = apply_all(&report, 600);
+        assert_eq!(expected_files(&report, &preset, 600), 300);
+    }
+
+    #[test]
+    fn a_state_file_inside_a_data_directory_is_counted_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        for i in 0..40 {
+            touch(tmp.path(), &format!("data/rows{i}.csv"), 400);
+        }
+        touch(tmp.path(), "data/terraform.tfstate", 10);
+        touch(tmp.path(), "infra/terraform.tfstate", 10);
+        let report = detect_with(tmp.path(), &SMALL).expect("detect");
+        assert_eq!(report.data_dirs.len(), 1);
+        assert_eq!(report.data_dirs[0].files, 41);
+        assert_eq!(report.state_hits.len(), 1);
+        assert_eq!(report.state_hits[0].files, 1, "only the file outside data/");
     }
 
     #[test]
@@ -736,15 +830,15 @@ mod tests {
     fn expected_files_account_for_each_applied_change() {
         let tmp = monorepo();
         let report = detect_with(tmp.path(), &SMALL).expect("detect");
-        let preset = apply_all(&report, 2);
-        // 12 walked + 3 build files - 4 data files - 1 state file - 6 document-like + 2 kept documents
-        assert_eq!(expected_files(&report, &preset, 2), 6);
-        let summary = render_summary(&report, &preset, 2);
+        let preset = apply_all(&report, 6);
+        // 12 walked + 3 build files - 4 data files - 1 state file = 10; its 2 documents are all kept
+        assert_eq!(expected_files(&report, &preset, 6), 10);
+        let summary = render_summary(&report, &preset, 6);
         assert!(
             summary.contains("monorepo layout: Bazel, Terraform (1 .tf files)"),
             "{summary}"
         );
-        assert!(summary.contains("about 6 files, first scan roughly 1 s"), "{summary}");
+        assert!(summary.contains("about 10 files, first scan roughly 1 s"), "{summary}");
         assert!(summary.contains("applied: build"), "{summary}");
     }
 
