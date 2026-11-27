@@ -198,3 +198,29 @@ fn rows_of_another_extract_epoch_survive_while_a_file_map_holds_the_content() {
     );
     assert!(!holds_key(&store, &older) && !holds_key(&store, &newer));
 }
+
+#[test]
+fn a_failed_retention_lookup_keeps_every_dead_content_and_the_debt() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (store, _staged) = group_of_two(tmp.path());
+    write_dead_content(&store, "dead");
+    let unreadable = |_: &[ContentKey]| {
+        Err(crate::store_group_live::LivenessUnknown::NoGroup {
+            view_dir: PathBuf::from("gone"),
+        })
+    };
+
+    let report = store
+        .sweep_group_retaining(unreadable)
+        .expect("sweep")
+        .expect("a group sweep");
+
+    assert_eq!(report.contents_removed, 0, "what other builds retain is unknown");
+    assert!(holds_content(&store, "dead"));
+    let db = store.index_db.as_ref().expect("index");
+    assert!(db.content_sweep_owed_for_test(), "the debt waits for a readable lookup");
+
+    let report = store.sweep_group().expect("sweep").expect("a group sweep");
+    assert_eq!(report.contents_removed, 1, "the next full pass pays the debt");
+    assert!(!holds_content(&store, "dead"));
+}
