@@ -1,4 +1,6 @@
 #![allow(missing_docs)]
+// Test modules behind an extra feature gate are not recognised by `allow-unwrap-in-tests`.
+#![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod alloc_tag;
 pub mod allocator;
