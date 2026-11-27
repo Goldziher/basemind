@@ -88,9 +88,10 @@ impl StrPool {
     }
 }
 
-/// What a file's terms are a function of: the content hash and the extract epoch it was decoded
-/// under, which is also what keys the outline cache.
-pub(crate) type TermKey = (Arc<str>, u16);
+/// What a file's terms are a function of: the content hash, the language the outline was extracted
+/// as (one blob per hash is rewritten when the language differs) and the extract epoch it was
+/// decoded under, which is also what keys the outline cache.
+pub(crate) type TermKey = (Arc<str>, Arc<str>, u16);
 
 /// Interns [`FileTerms`] by [`TermKey`], holding them weakly.
 pub(crate) struct TermPool {

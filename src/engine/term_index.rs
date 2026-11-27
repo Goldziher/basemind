@@ -131,7 +131,7 @@ pub(crate) struct Interning<'a> {
 
 impl<'a> Interning<'a> {
     /// Share projections through `pool`, a file's key being `hash_of(path)` with the outline's own
-    /// extract epoch; a path with no hash is projected afresh.
+    /// language and extract epoch; a path with no hash is projected afresh.
     pub(crate) fn new(pool: &'a TermPool, hash_of: impl Fn(&RelPath) -> Option<Arc<str>> + 'a) -> Self {
         Self {
             pool,
@@ -141,7 +141,11 @@ impl<'a> Interning<'a> {
 
     fn terms(&self, path: &RelPath, l1: &FileMapL1) -> Arc<FileTerms> {
         match (self.hash_of)(path) {
-            Some(hash) => self.pool.intern((hash, l1.extract_epoch), || FileTerms::from_l1(l1)),
+            Some(hash) => self
+                .pool
+                .intern((hash, l1.language.as_str().into(), l1.extract_epoch), || {
+                    FileTerms::from_l1(l1)
+                }),
             None => Arc::new(FileTerms::from_l1(l1)),
         }
     }

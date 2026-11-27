@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::{GraphKey, GraphPool, KeyedFile, StrPool, TermPool, graph_key};
+use super::{GraphKey, GraphPool, KeyedFile, StrPool, TermKey, TermPool, graph_key};
 use crate::engine::MapCache;
 use crate::engine::import_graph::ImportGraph;
 use crate::engine::l1_shared::{Outlines, SharedOutlines};
@@ -33,8 +33,12 @@ fn empty_outline() -> FileMapL1 {
     }
 }
 
-fn key(hash: &str, epoch: u16) -> (Arc<str>, u16) {
-    (Arc::from(hash), epoch)
+fn key(hash: &str, epoch: u16) -> TermKey {
+    key_in(hash, "rust", epoch)
+}
+
+fn key_in(hash: &str, language: &str, epoch: u16) -> TermKey {
+    (Arc::from(hash), Arc::from(language), epoch)
 }
 
 fn terms() -> FileTerms {
@@ -107,6 +111,7 @@ fn one_content_key_is_one_projection_and_every_other_key_is_its_own() {
     let again = pool.intern(key("aa", 3), make);
     let other_hash = pool.intern(key("bb", 3), make);
     let other_epoch = pool.intern(key("aa", 4), make);
+    let other_language = pool.intern(key_in("aa", "python", 3), make);
 
     assert!(Arc::ptr_eq(&first, &again), "equal content shares one projection");
     assert!(!Arc::ptr_eq(&first, &other_hash), "another hash is another projection");
@@ -114,7 +119,11 @@ fn one_content_key_is_one_projection_and_every_other_key_is_its_own() {
         !Arc::ptr_eq(&first, &other_epoch),
         "another epoch is another projection"
     );
-    assert_eq!(built.get(), 3, "the shared key projected once");
+    assert!(
+        !Arc::ptr_eq(&first, &other_language),
+        "another language is another projection"
+    );
+    assert_eq!(built.get(), 4, "the shared key projected once");
 }
 
 #[test]
