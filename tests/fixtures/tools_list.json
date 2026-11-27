@@ -22,7 +22,7 @@
           "type": "string"
         },
         "roles": {
-          "description": "Roles: `only`, `exclude`, or `test,-infra`.",
+          "description": "Roles: `only`, `exclude`, or a list like `test,infra` or `-test,-infra`.",
           "type": "string"
         },
         "context": {
@@ -208,7 +208,7 @@
           "type": "string"
         },
         "changed": {
-          "description": "`callers` only: changed since a rev (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
+          "description": "`callers` only: changed since a rev's merge base (empty: HEAD), A..B or A...B; main...HEAD+importers adds importers.",
           "type": "string"
         }
       }
@@ -251,7 +251,7 @@
           "type": "string"
         },
         "roles": {
-          "description": "Roles: `only`, `exclude`, or `test,-infra`.",
+          "description": "Roles: `only`, `exclude`, or a list like `test,infra` or `-test,-infra`.",
           "type": "string"
         },
         "limit": {
@@ -310,7 +310,7 @@
           "type": "string"
         },
         "roles": {
-          "description": "Roles: `only`, `exclude`, or `test,-infra`.",
+          "description": "Roles: `only`, `exclude`, or a list like `test,infra` or `-test,-infra`.",
           "type": "string"
         },
         "fuzzy": {

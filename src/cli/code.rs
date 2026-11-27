@@ -49,7 +49,7 @@ pub enum CodeCmd {
         path: Option<String>,
         #[arg(long)]
         language: Option<String>,
-        /// Roles: `only`, `exclude`, or `test,-infra`.
+        /// Roles: `only`, `exclude`, or a list like `test,infra` or `-test,-infra`.
         #[arg(long, allow_hyphen_values = true)]
         roles: Option<String>,
         /// Also match the name as a fuzzy subsequence, ranked last.
@@ -101,7 +101,7 @@ pub enum CodeCmd {
         path: Option<String>,
         #[arg(long)]
         language: Option<String>,
-        /// Roles: `only`, `exclude`, or `test,-infra`.
+        /// Roles: `only`, `exclude`, or a list like `test,infra` or `-test,-infra`.
         #[arg(long, allow_hyphen_values = true)]
         roles: Option<String>,
         /// Lines to show before and after each match (0-10).
@@ -133,7 +133,7 @@ pub enum CodeCmd {
         path: Option<String>,
         #[arg(long)]
         language: Option<String>,
-        /// Roles: `only`, `exclude`, or `test,-infra`.
+        /// Roles: `only`, `exclude`, or a list like `test,infra` or `-test,-infra`.
         #[arg(long, allow_hyphen_values = true)]
         roles: Option<String>,
         #[arg(long)]

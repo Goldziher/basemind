@@ -262,7 +262,7 @@ pub struct CodeSymbolsParams {
     /// Language, e.g. `rust`.
     #[serde(default)]
     pub language: Option<String>,
-    /// Roles: `only`, `exclude`, or `test,-infra`.
+    /// Roles: `only`, `exclude`, or a list like `test,infra` or `-test,-infra`.
     #[serde(default)]
     pub roles: Option<String>,
     /// Also match the name as a fuzzy subsequence, ranked last.
