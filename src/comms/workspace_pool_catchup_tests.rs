@@ -20,6 +20,7 @@ async fn symbols(shared: &crate::mcp::ServedWorkspace, name: &str) -> serde_json
             kind: None,
             path: None,
             language: None,
+            roles: None,
             fuzzy: None,
             limit: None,
             cursor: None,

@@ -13,7 +13,7 @@ use crate::engine::budget::{apply_budget_grep_rows, budget};
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
 use crate::engine::files::{IndexedFiles, Sweep};
-use crate::engine::filters::{Filters, parse_path};
+use crate::engine::filters::{Filters, RoleScope, parse_path};
 use crate::engine::grep_text::{LINE_TEXT_MAX, annotate_symbols, clip_line, line_text};
 use crate::engine::types::LifecycleNotice;
 use crate::engine::types::grep::{
@@ -87,6 +87,7 @@ impl Workspace {
                 pattern: p.pattern,
                 language: p.language,
                 path: p.path,
+                roles: p.roles,
                 limit: p.limit,
                 max_tokens: budget(p.max_tokens),
                 context,
@@ -170,18 +171,18 @@ fn workspace_grep(
         .then(|| Finder::new(params.pattern.as_bytes()).into_owned());
 
     let path = parse_path("code_grep", params.path.as_deref())?;
+    let roles = RoleScope::resolve(ws, "code_grep", params.roles.as_deref())?;
     let filters = Filters {
         tool: "code_grep",
         path: path.as_ref(),
         language: params.language.as_deref(),
+        roles: roles.as_ref(),
     };
 
     let cache = ws.cache.load_full();
 
     let selected = |path: &RelPath, language: &str| {
-        filters.path.as_ref().is_none_or(|f| f.matches(path.as_bytes()))
-            && filters.language.is_none_or(|l| language == l)
-            && crate::engine::changed::admits(scope, path)
+        filters.passes(path.as_bytes(), language) && crate::engine::changed::admits(scope, path)
     };
     let documents = crate::engine::grep_text::text_documents(ws, &cache, &selected);
     // Grep needs only path, language and indexed size — every one of them in the symbol-free file

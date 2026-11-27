@@ -24,6 +24,9 @@ pub struct CodeGrepParams {
     /// Language filter, e.g. `rust`.
     #[serde(default)]
     pub language: Option<String>,
+    /// Files by role: `include`, `exclude`, `only`, role names (`infra,test`) or `-role` names.
+    #[serde(default)]
+    pub roles: Option<String>,
     /// Lines before and after each hit, 0-10.
     #[serde(default)]
     pub context: Option<u32>,
@@ -53,6 +56,9 @@ pub struct WorkspaceGrepParams {
     /// ([`PathFilter`](crate::path_filter::PathFilter)). Same convention as `find_files`.
     #[serde(default)]
     pub path: Option<String>,
+    /// Optional `roles` filter ([`RoleFilter`](crate::config::RoleFilter)).
+    #[serde(default)]
+    pub roles: Option<String>,
     /// Max number of HITS returned. Default 100, max 1000. It bounds the files read only once more
     /// than this many matches are found: until then grep sweeps the indexed corpus (after the
     /// `language` / `path` filters), so a rare token is found wherever it lives.

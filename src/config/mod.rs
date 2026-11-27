@@ -34,7 +34,7 @@ pub use documents::{
 pub(crate) use documents_validate::MAX_ABANDONED_EXTRACTIONS;
 pub use layered::{ConfigLayers, LoadedConfig, NoOverrides, OverrideLayer, defaults_only, merge_layers};
 pub use resources::{DocumentModelProfile, FootprintKeyword, MaxFootprint, OnnxProvider, ResourcesConfig};
-pub use roles::{PathRoles, Role, RolesConfig};
+pub use roles::{PathRoles, Role, RoleFilter, RolesConfig};
 pub use secrets::{ApiKey, SecretString};
 pub use source::{ConfigSource, ProvenanceMap};
 pub use v1::{CodeIntelConfig, ConfigV1, DeprecatedSection, LanguageConfig, Visibility};

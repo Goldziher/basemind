@@ -190,6 +190,7 @@ mod tests {
             kind: None,
             path: None,
             language: None,
+            roles: None,
             fuzzy,
             limit: None,
             cursor: None,

@@ -49,6 +49,9 @@ pub enum CodeCmd {
         path: Option<String>,
         #[arg(long)]
         language: Option<String>,
+        /// Files by role: `include`, `exclude`, `only`, role names (`infra,test`), or `-role` names.
+        #[arg(long)]
+        roles: Option<String>,
         /// Also match the name as a fuzzy subsequence, ranked last.
         #[arg(long)]
         fuzzy: bool,
@@ -98,6 +101,9 @@ pub enum CodeCmd {
         path: Option<String>,
         #[arg(long)]
         language: Option<String>,
+        /// Files by role: `include`, `exclude`, `only`, role names (`infra,test`), or `-role` names.
+        #[arg(long)]
+        roles: Option<String>,
         /// Lines to show before and after each match (0-10).
         #[arg(long, value_name = "N")]
         context: Option<u32>,
@@ -127,6 +133,9 @@ pub enum CodeCmd {
         path: Option<String>,
         #[arg(long)]
         language: Option<String>,
+        /// Files by role: `include`, `exclude`, `only`, role names (`infra,test`), or `-role` names.
+        #[arg(long)]
+        roles: Option<String>,
         #[arg(long)]
         limit: Option<u32>,
         /// Resume token: pass the previous page's `next_cursor`.
@@ -340,6 +349,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             kind,
             path,
             language,
+            roles,
             fuzzy,
             limit,
             cursor,
@@ -355,6 +365,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         kind,
                         path,
                         language,
+                        roles,
                         fuzzy: fuzzy.then_some(true),
                         limit,
                         cursor: cursor.map(Cursor),
@@ -392,6 +403,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             regex,
             path,
             language,
+            roles,
             context,
             limit,
             cursor,
@@ -407,6 +419,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         regex: regex.then_some(true),
                         path,
                         language,
+                        roles,
                         context,
                         limit,
                         cursor: cursor.map(Cursor),
@@ -422,6 +435,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
             lane,
             path,
             language,
+            roles,
             limit,
             cursor,
             max_tokens,
@@ -436,6 +450,7 @@ pub async fn run(tools: &Tools, cmd: CodeCmd, opts: &Emit, out: &mut impl Write)
                         lane: lane.map(|lane| lane.as_str().to_string()),
                         path,
                         language,
+                        roles,
                         limit,
                         cursor: cursor.map(Cursor),
                         max_tokens,

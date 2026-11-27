@@ -9,6 +9,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::config::{PathRoles, RoleFilter};
 use crate::engine::MapCache;
 use crate::engine::error::EngineError;
 use crate::engine::types::LifecycleNotice;
@@ -26,11 +27,46 @@ pub(crate) fn parse_path(tool: &str, value: Option<&str>) -> Result<Option<PathF
         .transpose()
 }
 
+/// A call's `roles` argument resolved against the workspace's path roles.
+pub(crate) struct RoleScope {
+    filter: RoleFilter,
+    roles: PathRoles,
+}
+
+impl RoleScope {
+    /// Resolve `tool`'s `roles` argument; `None` when it is absent or admits every file. A value
+    /// that is no role filter is an invalid argument.
+    pub(crate) fn resolve(ws: &Workspace, tool: &str, value: Option<&str>) -> Result<Option<Self>, EngineError> {
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let filter =
+            RoleFilter::parse(value).map_err(|why| EngineError::invalid_argument(format!("`{tool}`: {why}.")))?;
+        if filter == RoleFilter::Include {
+            return Ok(None);
+        }
+        Ok(Some(Self::new(filter, PathRoles::from_scan(&ws.config.scan))))
+    }
+
+    fn new(filter: RoleFilter, roles: PathRoles) -> Self {
+        Self { filter, roles }
+    }
+
+    /// Whether the file at `path` passes; a path that is not UTF-8 carries no role.
+    pub(crate) fn admits(&self, path: &[u8]) -> bool {
+        let roles = std::str::from_utf8(path)
+            .map(|path| self.roles.roles_of(path))
+            .unwrap_or_default();
+        self.filter.admits(&roles)
+    }
+}
+
 /// The filters of one call.
 pub(crate) struct Filters<'a> {
     pub tool: &'a str,
     pub path: Option<&'a PathFilter>,
     pub language: Option<&'a str>,
+    pub roles: Option<&'a RoleScope>,
 }
 
 /// What a set of files looked like to a call's filters.
@@ -51,29 +87,32 @@ impl Tally {
         self.any = true;
         let path_ok = filters.path.as_ref().is_none_or(|filter| filter.matches(path));
         let language_ok = filters.language.is_none_or(|wanted| wanted == language);
+        let roles_ok = filters.roles.is_none_or(|roles| roles.admits(path));
         self.path_seen |= path_ok;
         self.language_seen |= language_ok;
         if !self.languages.contains(language) {
             self.languages.insert(language.to_string());
         }
-        if path_ok && language_ok {
+        if path_ok && language_ok && roles_ok {
             if self.first.is_none() {
                 self.first = Some(String::from_utf8_lossy(path).into_owned());
             }
             self.passed += 1;
         }
-        path_ok && language_ok
+        path_ok && language_ok && roles_ok
     }
 }
 
 impl Filters<'_> {
     pub(crate) fn is_empty(&self) -> bool {
-        self.path.is_none() && self.language.is_none()
+        self.path.is_none() && self.language.is_none() && self.roles.is_none()
     }
 
     /// Whether a file at `path` in `language` passes every filter.
     pub(crate) fn passes(&self, path: &[u8], language: &str) -> bool {
-        self.path.is_none_or(|filter| filter.matches(path)) && self.language.is_none_or(|wanted| wanted == language)
+        self.path.is_none_or(|filter| filter.matches(path))
+            && self.language.is_none_or(|wanted| wanted == language)
+            && self.roles.is_none_or(|roles| roles.admits(path))
     }
 
     /// The refusal for filters that none of the files the tool lists passes, or `None` when one
@@ -131,6 +170,10 @@ impl Filters<'_> {
                     )
                 }
             }
+            (_, _) if self.roles.is_some() => format!(
+                "`{tool}`: no indexed file passes the `roles` filter together with the other filters. Check \
+                 the roles with `index_status`, or drop `roles`."
+            ),
             (Some(filter), Some(wanted)) => {
                 let participle = if filter.is_glob() { "matching" } else { "starting with" };
                 format!(
@@ -227,6 +270,49 @@ mod tests {
     }
 
     #[test]
+    fn a_roles_filter_narrows_what_a_call_passes() {
+        let defaults = || PathRoles::from_scan(&crate::config::Config::with_defaults().scan);
+        let files = ["src/a.rs", "tests/a.rs", "deploy/main.tf", "api/x.pb.go"];
+        let passing = |value: &str| -> Vec<&str> {
+            let scope = RoleScope::new(RoleFilter::parse(value).expect("valid"), defaults());
+            let filters = Filters {
+                tool: "code_grep",
+                path: None,
+                language: None,
+                roles: Some(&scope),
+            };
+            files
+                .into_iter()
+                .filter(|path| filters.passes(path.as_bytes(), "any"))
+                .collect()
+        };
+        assert_eq!(passing("exclude"), ["src/a.rs"]);
+        assert_eq!(passing("only"), ["tests/a.rs", "deploy/main.tf", "api/x.pb.go"]);
+        assert_eq!(passing("infra"), ["deploy/main.tf"]);
+        assert_eq!(passing("-test,-generated"), ["src/a.rs", "deploy/main.tf"]);
+    }
+
+    #[test]
+    fn a_roles_filter_counts_as_a_filter_and_tallies_only_passing_files() {
+        let scope = RoleScope::new(
+            RoleFilter::parse("infra").expect("valid"),
+            PathRoles::from_scan(&crate::config::Config::with_defaults().scan),
+        );
+        let filters = Filters {
+            tool: "code_grep",
+            path: None,
+            language: None,
+            roles: Some(&scope),
+        };
+        assert!(!filters.is_empty());
+        let mut tally = Tally::default();
+        assert!(!tally.see(&filters, b"src/a.rs", "rust"));
+        assert!(tally.see(&filters, b"deploy/main.tf", "hcl"));
+        assert_eq!(tally.passed, 1);
+        assert_eq!(tally.first.as_deref(), Some("deploy/main.tf"));
+    }
+
+    #[test]
     fn doc_language_labels() {
         assert_eq!(doc_language("docs/README.md"), "markdown");
         assert_eq!(doc_language("a/b.pdf"), "pdf");
@@ -242,6 +328,7 @@ mod tests {
             tool: "code_grep",
             path,
             language,
+            roles: None,
         }
     }
 

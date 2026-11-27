@@ -160,6 +160,76 @@ impl RolesConfig {
     }
 }
 
+impl std::str::FromStr for Role {
+    type Err = String;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        Role::ALL.into_iter().find(|role| role.as_str() == name).ok_or_else(|| {
+            let known: Vec<&str> = Role::ALL.iter().map(|role| role.as_str()).collect();
+            format!("unknown role `{name}`; the roles are {}", known.join(", "))
+        })
+    }
+}
+
+/// A tool's `roles` argument: which files a call may see by the roles they carry.
+///
+/// The value is `include` (every file), `exclude` (files with no role), `only` (files with some
+/// role), a comma-separated list of role names (files carrying one of them), or the same list with
+/// each name prefixed by `-` (files carrying none of them).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoleFilter {
+    /// Every file passes.
+    Include,
+    /// A file passes when it carries none of these roles.
+    Exclude(Vec<Role>),
+    /// A file passes when it carries at least one of these roles.
+    Only(Vec<Role>),
+}
+
+impl RoleFilter {
+    /// Parse a `roles` argument; an unknown name or a list mixing `-name` with plain names is an
+    /// error saying what the argument accepts.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let value = value.trim();
+        match value {
+            "include" => return Ok(Self::Include),
+            "exclude" => return Ok(Self::Exclude(Role::ALL.to_vec())),
+            "only" => return Ok(Self::Only(Role::ALL.to_vec())),
+            _ => {}
+        }
+        let names: Vec<&str> = value
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .collect();
+        if names.is_empty() {
+            return Err("`roles` is empty; pass `include`, `exclude`, `only` or role names".to_string());
+        }
+        let negated = names.iter().filter(|name| name.starts_with('-')).count();
+        if negated != 0 && negated != names.len() {
+            return Err("`roles` mixes `-role` with plain role names; use one form".to_string());
+        }
+        let roles = names
+            .iter()
+            .map(|name| name.trim_start_matches('-').parse::<Role>())
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(if negated == 0 {
+            Self::Only(roles)
+        } else {
+            Self::Exclude(roles)
+        })
+    }
+
+    /// Does a file carrying `roles` pass?
+    pub fn admits(&self, roles: &[Role]) -> bool {
+        match self {
+            Self::Include => true,
+            Self::Exclude(drop) => !roles.iter().any(|role| drop.contains(role)),
+            Self::Only(keep) => roles.iter().any(|role| keep.contains(role)),
+        }
+    }
+}
+
 /// The built-in globs of `role`; `[scan] test_globs` is the `test` role's.
 fn builtin(role: Role, scan: &ScanConfig) -> Vec<&str> {
     match role {
@@ -367,5 +437,54 @@ mod tests {
             }
             .is_empty()
         );
+    }
+
+    #[test]
+    fn a_roles_argument_parses_into_a_filter() {
+        for (value, expected) in [
+            ("include", RoleFilter::Include),
+            ("exclude", RoleFilter::Exclude(Role::ALL.to_vec())),
+            ("only", RoleFilter::Only(Role::ALL.to_vec())),
+            ("infra", RoleFilter::Only(vec![Role::Infra])),
+            (" test , infra ", RoleFilter::Only(vec![Role::Test, Role::Infra])),
+            (
+                "-test,-generated",
+                RoleFilter::Exclude(vec![Role::Test, Role::Generated]),
+            ),
+        ] {
+            assert_eq!(RoleFilter::parse(value), Ok(expected), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_bad_roles_argument_is_refused_with_what_it_accepts() {
+        for value in ["", " , ", "tests", "-infra,test", "only,infra"] {
+            assert!(RoleFilter::parse(value).is_err(), "{value:?} is refused");
+        }
+        let err = RoleFilter::parse("tests").expect_err("unknown role");
+        assert!(err.contains("unknown role `tests`") && err.contains("infra"), "{err}");
+    }
+
+    #[test]
+    fn a_filter_admits_files_by_the_roles_they_carry() {
+        let plain: [Role; 0] = [];
+        let both = [Role::Test, Role::Infra];
+        let cases = [
+            ("include", &plain[..], true),
+            ("include", &both[..], true),
+            ("exclude", &plain[..], true),
+            ("exclude", &both[..], false),
+            ("only", &plain[..], false),
+            ("only", &both[..], true),
+            ("infra", &both[..], true),
+            ("generated", &both[..], false),
+            ("-test", &both[..], false),
+            ("-generated", &both[..], true),
+            ("-generated", &plain[..], true),
+        ];
+        for (value, roles, admitted) in cases {
+            let filter = RoleFilter::parse(value).expect("valid");
+            assert_eq!(filter.admits(roles), admitted, "{value} over {roles:?}");
+        }
     }
 }

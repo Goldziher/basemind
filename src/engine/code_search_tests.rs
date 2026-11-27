@@ -31,6 +31,7 @@ const UNFILTERED: Filters<'static> = Filters {
     tool: "code_search",
     path: None,
     language: None,
+    roles: None,
 };
 
 fn keyword_seeds(store: &Store, query: &str) -> Vec<CodeSearchHit> {
@@ -132,6 +133,7 @@ fn a_filtered_search_cites_the_copies_the_filters_pass() {
             tool: "code_search",
             path: Some(&path),
             language,
+            roles: None,
         };
         let hydrated = hydrate_hits(
             &store,

@@ -30,7 +30,7 @@ mod enabled {
 
     use crate::engine::budget::budget;
     use crate::engine::error::EngineError;
-    use crate::engine::filters::{Filters, grep_selects_no_file, parse_path};
+    use crate::engine::filters::{Filters, RoleScope, grep_selects_no_file, parse_path};
     use crate::engine::ranked::{
         RANKED_DEPTH, RANKED_FETCH, RANKED_LIMIT_DEFAULT, page_ranked, ranked_offset, ranked_retrieval,
     };
@@ -54,10 +54,12 @@ mod enabled {
             let offset = ranked_offset("code_search", p.cursor.as_ref(), generation)?;
             let limit = p.limit.unwrap_or(RANKED_LIMIT_DEFAULT);
             let path = parse_path("code_search", p.path.as_deref())?;
+            let roles = RoleScope::resolve(self, "code_search", p.roles.as_deref())?;
             let filters = Filters {
                 tool: "code_search",
                 path: path.as_ref(),
                 language: p.language.as_deref(),
+                roles: roles.as_ref(),
             };
             let scope = crate::engine::changed::resolve(self, "code_search", p.changed.as_deref())?;
             let mut arguments = serde_json::json!({
@@ -65,6 +67,7 @@ mod enabled {
                 "lane": &p.lane,
                 "path": &p.path,
                 "language": &p.language,
+                "roles": &p.roles,
             });
             if let Some(scope) = &scope {
                 arguments["scope"] = scope_digest(scope).into();

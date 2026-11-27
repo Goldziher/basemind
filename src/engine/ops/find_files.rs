@@ -247,6 +247,7 @@ fn run_list_files(
             tool: "find_files",
             path: path_filter,
             language: lang_filter,
+            roles: None,
         };
         let listed = || {
             let mut tally = Tally::default();
@@ -392,6 +393,7 @@ fn run_find_files(
             tool: "find_files",
             path: path_filter,
             language: lang_filter,
+            roles: None,
         };
         let listed = || {
             let mut tally = Tally::default();
@@ -475,6 +477,7 @@ fn run_large_files(
             tool: "find_files",
             path: path_filter,
             language: lang_filter,
+            roles: None,
         };
         if let Some(refusal) = grep_selects_no_file(ws, &cache, &filters) {
             return Err(refusal);
