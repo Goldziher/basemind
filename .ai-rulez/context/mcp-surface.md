@@ -107,7 +107,7 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
   (`basemind://outline/{path}` is TOON, `text/toon`).
 - **Byte ceiling.** The verb tools serialize to at most 20,000 bytes in `tools/list`, the server
   instructions to 4,096 characters (`tests/mcp_schema_wire.rs`); never raise either.
-- **Telemetry keys are the tool names;** `src/mcp/savings.rs` maps older keys onto them.
+- **Telemetry keys are the tool names;** `src/engine/savings.rs` maps older keys onto them.
 
 ## Layout
 
