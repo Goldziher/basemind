@@ -24,7 +24,7 @@ arguments, paging, cuts, cursors, text encodings) are in the `mcp-surface` conte
 | `index_status` | none | index health and repository identity (files per language and per path role, scan state, `cache_dir` for this workspace, `grammar_dir`, branch, HEAD) |
 | `index_rescan` | `paths?` | re-index the given files or directories (a directory's deleted files are pruned), or with none the whole workspace (unchanged files are skipped); a path neither on disk nor indexed, or outside the repository, is an error |
 
-`code_outline`, `code_symbols`, `code_grep`, `code_refs` (every relation) and `memory_search` (a
+`code_outline`, `code_symbols`, `code_grep`, `code_refs` (the paginated relations; `definition` takes no `limit`) and `memory_search` (a
 listing) apply at most 1000 rows to a page, `find_files` at most 5000. A larger `limit` is lowered to
 that maximum and the answer sets `limit_clamped: true`; the field is absent otherwise.
 

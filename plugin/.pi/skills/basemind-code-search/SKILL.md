@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:437a48aef0e94dcd49e229fcbf214468b2d9350fd364024061e77d26b2b6b948
-Source-Hash: blake3:ba8fe55f567db239b8f8fde9a0253e335c3b8762f84dca187d6a6f8dfc98a896
+Content-Hash: blake3:59436436572014dca2f168876594b98004cb4f3c74836eefc16b89992aab5a0a
+Source-Hash: blake3:371884a0eb1b3befe0b8912d3df9b94c1e0dcf7bfcf52f371dfc56a35f80c02c
 Schema-Version: v1
 -->
 
@@ -196,13 +196,14 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 - **Three words for a cut.** A page that ended at `limit` returns only `next_cursor`. `budgeted`
   means the token budget trimmed it. `truncated` with `truncated_reason` marks a cut you did not
   ask for (`omitted` counts what was left out where known); see "Truncation reasons" below.
-- **Limit cap.** A `limit` above its maximum (1000 rows; `find_files` 5000) is capped and the
-  answer sets `limit_clamped: true` (absent when `limit` was kept; `code_outline`, `code_symbols`,
+- **Limit cap.** A `limit` above its maximum is capped (`git_log` 100; the tools below 1000 rows,
+  `find_files` 5000) and the answer
+  sets `limit_clamped: true` (absent when `limit` was kept; `code_outline`, `code_symbols`,
   `code_grep`, `code_refs`, `find_files` and a `memory_search` listing report it): ask at or
   below the maximum and follow `next_cursor`.
 - **Cursors are bound to their query.** A cursor continues only the call that returned it. Passed
-  to another query, or used after a rescan or HEAD move, it is an error, never an empty page:
-  repeat the call without `cursor`.
+  to another query, or used after a rescan or HEAD move, it is an error, or for `code_symbols` an
+  empty page with `cursor_invalidated: true`, never a finished list: repeat the call without `cursor`.
 - **Notices.** An empty or partial answer carrying a `notice` (`empty_index`, `warming_up`,
   `building_index`, `rescanning`) means retry shortly, not "no matches".
 - **Text answers.** Text is written per tool in the form that measured fewest tokens (ADR-0053).
@@ -234,7 +235,7 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 - `path_cap`, `git_diff`: Status list cut (`omitted`): pass a directory `path` ending in `/`.
 - `span_limit`, `git_log`: Follow `next_cursor`, an empty page included, until it is absent.
 - `unindexed_scan`, `git_log`: No history index, newest commits only: wait for it (`index_status`), repeat.
-- `commit_cap`, `git_hotspots`: The window holds more commits than the walk reads: narrow `since`.
+- `commit_cap`, `basemind git hotspots`: The window holds more commits than the walk reads: narrow `since`.
 - `shallow_clone`, `git_log`, `git_blame`: An absent commit is inconclusive: `git fetch --unshallow`.
 <!-- /manual:paging -->
 
