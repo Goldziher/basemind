@@ -45,6 +45,8 @@ categories = ["command-line-utilities", "development-tools"]
 cargo-args = ["--config", 'env.TSLP_OFFLINE="1"']
 
 [workspace]
+# ~keep The embed check is a downstream crate of its own workspace (its CI job builds it apart).
+exclude = ["crates/engine-embed"]
 members = [
   "crates/basemind-agents",
   "crates/basemind-engine",

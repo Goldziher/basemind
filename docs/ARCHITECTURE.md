@@ -56,6 +56,15 @@ code-intelligence tier (see [Code intelligence](#code-intelligence-precise-resol
 
 ## Source layout
 
+The code is two crates (ADR-0039). `crates/basemind-engine` holds the stores, the scan pipeline, the
+retrieval stack and `src/engine/` (the synchronous `Workspace` operations); it names neither rmcp nor
+clap. The root `basemind` crate holds the CLI (`cli/`), the MCP adapter (`mcp/`), the daemon
+(`comms/`), the agent-launch host (`lead/`), `eval/`, `render.rs`, `sessions/`, `watcher.rs` and the
+binary, and re-exports the engine's modules at their old paths (`basemind::store`,
+`basemind::engine`). The tree below is the union of both `src/` directories; every module not
+named above lives in `crates/basemind-engine/src/`. `tests/layering.rs` enforces the layers inside the
+engine crate.
+
 ```text
 src/
 ├── lib.rs                  — public re-exports

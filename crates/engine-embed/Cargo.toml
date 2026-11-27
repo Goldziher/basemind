@@ -1,0 +1,24 @@
+[package]
+name = "basemind-engine-embed"
+version = "0.0.0"
+authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
+edition = "2024"
+rust-version.workspace = true
+description = "CI check that a program can embed basemind-engine alone; never published"
+license = "MIT"
+repository = "https://github.com/Goldziher/basemind"
+publish = false
+
+# A workspace of its own: the embedder resolves the engine as a downstream crate does, with the
+# engine's default features and no feature of the `basemind` crate unified into it.
+[workspace]
+
+[dependencies]
+basemind-engine = { path = "../basemind-engine" }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+
+[lints]
+workspace = true

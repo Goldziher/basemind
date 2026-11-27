@@ -2,6 +2,7 @@
 include = [
   "/Cargo.toml",
   "/src/**",
+  "/build.rs",
   "/schema/basemind-config-v1.schema.json",
   "/README.md",
   "/LICENSE",

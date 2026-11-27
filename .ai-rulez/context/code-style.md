@@ -34,8 +34,8 @@ Project-specific conventions baked into context so they ship into every AI tool'
 
 #### Codegen
 
-- `build.rs` + `schema/*.json` are the codegen surface. Hand-editing generated files is forbidden.
-- Rust config types in `src/config/` drive the JSON Schema via `schemars` derives; the snapshot at `schema/basemind-config-v1.schema.json` is asserted byte-equal by `tests/config_schema.rs`. Regenerate with `cargo test --test config_schema -- --ignored regenerate_schema`.
+- `build.rs` + `crates/basemind-engine/schema/*.json` are the codegen surface. Hand-editing generated files is forbidden.
+- Rust config types in `crates/basemind-engine/src/config/` drive the JSON Schema via `schemars` derives; the snapshot at `crates/basemind-engine/schema/basemind-config-v1.schema.json` is asserted byte-equal by `tests/config_schema.rs`. Regenerate with `cargo test --test config_schema -- --ignored regenerate_schema`.
 
 #### Commits
 
