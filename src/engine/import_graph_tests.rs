@@ -836,7 +836,7 @@ fn a_scanned_proto_and_starlark_tree_links_importers_to_their_files() {
 
     let money = id(&graph, "api/common/money.proto");
     assert_eq!(
-        names(&graph, graph.dependents(money, Tiers::ALL).map(|edge| edge.node)),
+        names(&graph, graph.importers(money, Tiers::ALL).map(|edge| edge.node)),
         ["api/billing.proto"]
     );
     let coverage = graph.coverage();
