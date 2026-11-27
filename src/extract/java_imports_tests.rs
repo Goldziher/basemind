@@ -39,6 +39,15 @@ fn plain_static_and_wildcard_imports_are_extracted() {
 }
 
 #[test]
+fn a_single_segment_wildcard_import_is_extracted() {
+    let src = "package app;\n\nimport p.*;\n\nclass A {}\n";
+    assert_eq!(modules(src), [Some("p".to_string())]);
+    let map = extract_l1("java", src.as_bytes()).expect("extract l1");
+    let index = [("A.java", map.imports)];
+    assert_eq!(dependents_of("p", &index).len(), 1);
+}
+
+#[test]
 fn the_import_range_covers_the_whole_declaration() {
     let map = extract_l1("java", SRC.as_bytes()).expect("extract l1");
     let raws: Vec<&str> = map.imports.iter().map(|import| import.raw.as_str()).collect();

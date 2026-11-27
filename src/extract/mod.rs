@@ -139,7 +139,8 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 ///   variables, rule targets and `load()` imports.
 /// - 12: Java `static final` fields are constants; items inside Rust item-position macro bodies
 ///   (`macro_rules!`-style `cfg_*! { .. }` wrappers) are symbols.
-pub const EXTRACT_EPOCH: u16 = 12;
+/// - 13: Java files gain `import` edges (plain, static and wildcard imports).
+pub const EXTRACT_EPOCH: u16 = 13;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {
