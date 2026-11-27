@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:60734c8b746ff3ee862211ab7febcba3d91360cdb5fbda8ecae0343a4cb01608
-Source-Hash: blake3:23994ec90785d1b7e213e9bd8e1fcb2532d397957226dc113a2ab23eb3469062
+Content-Hash: blake3:f89e7f39aa81ca4f2d64805dc374ca4170bafe340c8431cda787cb9085a196e8
+Source-Hash: blake3:eae55b5660df79ccb35563d12aabc8ef1ede337307fe5b9ed886c7aeb6b44a33
 Schema-Version: v1
 -->
 
@@ -139,7 +139,7 @@ This walks the tree, parses with tree-sitter, and writes a content-addressed blo
 inverted index into the machine-global cache. A few seconds for small repos, ~22 s for an ~80k-file
 TypeScript monorepo.
 
-The MCP server is launched by the host (`basemind serve`, wired up in `.claude-plugin/plugin.json`
+The MCP server is launched by the host (`basemind serve`, wired up in the plugin manifest
 for you). You do not start it manually.
 
 The server watches the workspace and keeps the index fresh as you edit. A tool that reports an empty

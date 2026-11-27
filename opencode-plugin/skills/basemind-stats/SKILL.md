@@ -1,5 +1,5 @@
 ---
-description: 'Show a quick dashboard of basemind activity in this session: how many code-map tool calls have run, the per-tool histogram, and the estimated tokens saved vs a hypothetical grep+Read baseline. Use when the user asks "what has basemind done?", "how much is basemind helping?", "show me basemind stats", or invokes `/bm-stats` directly.'
+description: 'Show a quick dashboard of basemind activity today: how many code-map tool calls have run, the per-tool histogram, and the estimated tokens saved vs a hypothetical grep+Read baseline. Use when the user asks "what has basemind done?", "how much is basemind helping?", "show me basemind stats", or invokes `/bm-stats` directly.'
 name: basemind-stats
 license: MIT
 metadata:
@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:b905b3219fdcef28a70eadb00998025895c89c0ea380dd77cc4a3d67de8917de
-Source-Hash: blake3:23994ec90785d1b7e213e9bd8e1fcb2532d397957226dc113a2ab23eb3469062
+Content-Hash: blake3:91a4d2aedc85cf9ea9f3818ac484052ffeea1404c0438ec229d26d7122d6a64d
+Source-Hash: blake3:eae55b5660df79ccb35563d12aabc8ef1ede337307fe5b9ed886c7aeb6b44a33
 Schema-Version: v1
 -->
 
@@ -19,7 +19,7 @@ Schema-Version: v1
 Run `basemind admin telemetry --json` and render the result as a markdown report. The usage summary
 is a CLI command, not an MCP tool; it reads the same telemetry log the server writes, with or
 without a running server. Launch it through the plugin's version-matched binary,
-`${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh admin telemetry --json` (bare `basemind` from `PATH`
+`${CLAUDE_PLUGIN_ROOT:-$CURSOR_PLUGIN_ROOT}/scripts/mcp-launch.sh admin telemetry --json` (bare `basemind` from `PATH`
 when no plugin launcher exists).
 
 ## When to use

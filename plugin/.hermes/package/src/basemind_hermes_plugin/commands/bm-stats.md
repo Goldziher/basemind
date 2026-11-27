@@ -7,8 +7,8 @@ name: bm-stats
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:647686ffcb7a122d5f75c01acd89868c2a88a87a879d99d70086031abd79259b
-Source-Hash: blake3:23994ec90785d1b7e213e9bd8e1fcb2532d397957226dc113a2ab23eb3469062
+Content-Hash: blake3:57593d82d5885c61e94d29b45b84fb38fd8609554a5a2f6690eac074ed919f86
+Source-Hash: blake3:eae55b5660df79ccb35563d12aabc8ef1ede337307fe5b9ed886c7aeb6b44a33
 Schema-Version: v1
 -->
 
@@ -39,7 +39,7 @@ Invoke `/bm-stats` (default window `today`) or `/bm-stats <today|1h|24h|all>`. W
 ## Notes
 
 - Both are CLI commands with no MCP tool; they read the same data with or without a running
-  server. Run them through the plugin launcher, `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>`
+  server. Run them through the plugin launcher, `${CLAUDE_PLUGIN_ROOT:-$CURSOR_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>`
   (bare `basemind` from `PATH` when no plugin launcher exists).
 - If the CLI is not reachable, say so plainly and point at `/bm-doctor`.
 - Always end with a one-sentence disclosure that the savings number is heuristic: tools without a

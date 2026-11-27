@@ -142,7 +142,7 @@ This walks the tree, parses with tree-sitter, and writes a content-addressed blo
 inverted index into the machine-global cache. A few seconds for small repos, ~22 s for an ~80k-file
 TypeScript monorepo.
 
-The MCP server is launched by the host (`basemind serve`, wired up in `.claude-plugin/plugin.json`
+The MCP server is launched by the host (`basemind serve`, wired up in the plugin manifest
 for you). You do not start it manually.
 
 The server watches the workspace and keeps the index fresh as you edit. A tool that reports an empty

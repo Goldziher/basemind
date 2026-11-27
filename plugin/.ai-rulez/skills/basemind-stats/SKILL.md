@@ -1,7 +1,7 @@
 ---
 type: Playbook
 title: basemind stats
-description: 'Show a quick dashboard of basemind activity in this session: how many
+description: 'Show a quick dashboard of basemind activity today: how many
   code-map tool calls have run, the per-tool histogram, and the estimated tokens saved
   vs a hypothetical grep+Read baseline. Use when the user asks "what has basemind
   done?", "how much is basemind helping?", "show me basemind stats", or invokes `/bm-stats`
@@ -22,7 +22,7 @@ x-ai-rulez:
 Run `basemind admin telemetry --json` and render the result as a markdown report. The usage summary
 is a CLI command, not an MCP tool; it reads the same telemetry log the server writes, with or
 without a running server. Launch it through the plugin's version-matched binary,
-`${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh admin telemetry --json` (bare `basemind` from `PATH`
+`${CLAUDE_PLUGIN_ROOT:-$CURSOR_PLUGIN_ROOT}/scripts/mcp-launch.sh admin telemetry --json` (bare `basemind` from `PATH`
 when no plugin launcher exists).
 
 ## When to use
