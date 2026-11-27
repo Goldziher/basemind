@@ -196,7 +196,7 @@ Rolling out to a team: [`basemind manual setup`](docs/manual/setup.md#rolling-ou
 
 `basemind.toml` at the repository root, committed. `basemind init` writes a commented scaffold of
 every option; `.config/basemind.toml` and `.config/basemind/config.toml` are read too, and the root
-file wins. The schema is [`schema/basemind-config-v1.schema.json`](schema/basemind-config-v1.schema.json).
+file wins. The schema is [`crates/basemind-engine/schema/basemind-config-v1.schema.json`](crates/basemind-engine/schema/basemind-config-v1.schema.json).
 
 Operator settings are environment variables a repository cannot set: `basemind manual environment`.
 Every key: the [configuration reference](https://basemind.ai/reference/configuration/).

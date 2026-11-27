@@ -1,4 +1,4 @@
-//! No `src/**/*.rs` code mutates the process environment outside the places that do it before
+//! No `src/**/*.rs` code (of the `basemind` crate or `crates/basemind-engine`) mutates the process environment outside the places that do it before
 //! any other thread exists. libtest runs a binary's `#[test]` functions on parallel threads, and
 //! `std::env::set_var` racing a `getenv` is undefined behaviour on glibc, so a lib test that sets a
 //! variable corrupts every test running beside it. Pass the value as a parameter instead, or move
@@ -22,7 +22,10 @@ fn calls(code: &str, mutator: &str) -> bool {
 /// A file that may mutate the environment, and the top-level function it may do so in (`None`:
 /// anywhere in the file).
 const ALLOWED: [(&str, Option<&str>); 3] = [
-    ("src/store_layout.rs", Some("pub fn init_isolated_cache(")),
+    (
+        "crates/basemind-engine/src/store_layout.rs",
+        Some("pub fn init_isolated_cache("),
+    ),
     ("src/cli/env_config.rs", Some("pub unsafe fn export_model_hub_offline(")),
     ("src/cli/comms_daemon.rs", None),
 ];
@@ -74,10 +77,15 @@ fn offending_lines(rel: &str, contents: &str) -> Vec<usize> {
 #[test]
 fn no_source_file_mutates_the_process_environment() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src = manifest_dir.join("src");
     let mut files = Vec::new();
-    collect_rs_files(&src, &mut files);
-    assert!(!files.is_empty(), "found no .rs files under {}", src.display());
+    for src in [
+        manifest_dir.join("src"),
+        manifest_dir.join("crates/basemind-engine/src"),
+    ] {
+        let before = files.len();
+        collect_rs_files(&src, &mut files);
+        assert!(files.len() > before, "found no .rs files under {}", src.display());
+    }
 
     let mut report = Vec::new();
     for file in &files {
@@ -114,7 +122,10 @@ fn a_mutation_outside_an_allowance_is_reported_and_a_comment_is_not() {
 fn only_the_allowed_function_of_an_allowed_file_may_mutate() {
     let contents = "pub fn init_isolated_cache() {\n    unsafe { std::env::set_var(\"K\", \"v\") };\n}\n\nfn \
                     after() {\n    unsafe { std::env::set_var(\"K\", \"v\") };\n}\n";
-    assert_eq!(offending_lines("src/store_layout.rs", contents), vec![6]);
+    assert_eq!(
+        offending_lines("crates/basemind-engine/src/store_layout.rs", contents),
+        vec![6]
+    );
     assert_eq!(
         offending_lines("src/cli/comms_daemon.rs", contents),
         Vec::<usize>::new()

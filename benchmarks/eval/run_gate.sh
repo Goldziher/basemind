@@ -55,7 +55,7 @@ trap stop_daemon EXIT
 
 # `admin tokens` fails outright without the `tokenizer` feature rather than falling back to bytes/4,
 # but with it the count silently becomes a word estimate when the tokenizer cannot load (offline).
-# The probe has a known o200k count (src/engine/tokens.rs `O200K_PROBE`) that the estimate misses.
+# The probe has a known o200k count (crates/basemind-engine/src/engine/tokens.rs `O200K_PROBE`) that the estimate misses.
 if ! probe_count="$(printf '%s' 'Hello, world!' | "${bin}" admin tokens --stdin 2>/dev/null)"; then
   echo "refusing to run: ${bin} does not count o200k tokens (build it with --features tokenizer)" >&2
   exit 2

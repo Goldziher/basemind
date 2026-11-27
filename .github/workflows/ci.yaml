@@ -725,7 +725,7 @@ jobs:
           rest="${current#*.}"
           next="${major}.$((${rest%%.*} + 1)).0"
           AI_RULEZ=ai-rulez scripts/release-bump.sh "$next"
-          grep -n 'pub const RELEASE_MINOR' src/version.rs
+          grep -n 'pub const RELEASE_MINOR' crates/basemind-engine/src/version.rs
       - name: Fetch the releases to upgrade from
         shell: bash
         run: |

@@ -35,7 +35,7 @@ exclude = [
   "website/dist/**",
   "website/node_modules/**",
   "website/.astro/**",
-  "schema/basemind-config-v1.schema.json",
+  "crates/basemind-engine/schema/basemind-config-v1.schema.json",
   # The tools/list snapshot `tests/mcp_schema_wire.rs` compares byte for byte.
   "tests/fixtures/tools_list.json",
   # The lead tools' snapshot `tests/lead_tools_surface.rs` compares byte for byte.
@@ -246,7 +246,7 @@ fmt = { exclude = [
   "node_modules/**",
   "target/**",
   "vendor/**",
-  "schema/basemind-config-v1.schema.json",
+  "crates/basemind-engine/schema/basemind-config-v1.schema.json",
   "tests/fixtures/tools_list.json",
   "tests/fixtures/lead_tools_list.json",
   "licenses/**",
@@ -291,7 +291,7 @@ glob = [
   ".claude-plugin/statusline.sh",
   "plugin/.ai-rulez/scripts/statusline.sh",
   "src/comms_cli.rs",
-  "src/store_layout.rs",
+  "crates/basemind-engine/src/store_layout.rs",
   "tests/statusline_smoke.sh",
 ]
 serial = "cargo"

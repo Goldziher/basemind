@@ -50,7 +50,6 @@ EXCLUDES=(
   "/npm-package/"
   "/opencode-plugin/"
   "/pip-package/"
-  "/schema/"
   "/scripts/*"
   "/src/"
   "/target/"

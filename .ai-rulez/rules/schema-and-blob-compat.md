@@ -12,7 +12,7 @@ x-ai-rulez:
 
 basemind persists state in two serialized forms: msgpack blobs under `<data dir>/cache/blobs/v<schema>/<hash>.{fm,chunk,rref,doc}.msgpack` (content-addressed, one namespace per blob schema) and the Fjall keyspace under `<data dir>/cache/groups/<group>/index.fjall/`, one per repository group, shared by every worktree and view of it (ADR-0028, ADR-0036). Both have explicit schema versions. An older index is wiped and rebuilt, a newer one is refused; blobs of another schema live in another namespace and are never read. The policy is ADR-0025.
 
-- Single source of truth: `RELEASE_MINOR` in `src/version.rs`. Both `INDEX_SCHEMA_VER` (`src/index/mod.rs`) and the blob `SCHEMA_VER` (`src/extract/mod.rs`) read from it. Bump = bump the constant in one file.
+- Single source of truth: `RELEASE_MINOR` in `crates/basemind-engine/src/version.rs`. Both `INDEX_SCHEMA_VER` (`src/index/mod.rs`) and the blob `SCHEMA_VER` (`src/extract/mod.rs`) read from it. Bump = bump the constant in one file.
 - Bump cadence is bound to release versions, not commits:
   - `0.X.y` → `RELEASE_MINOR = X` (e.g. `0.1.0` → `1`, `0.2.0` → `2`).
   - `M.X.y` once `1.0` ships → `RELEASE_MINOR = M * 100 + X`.

@@ -15,13 +15,10 @@ use clap::Args;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::documents::SummarizationStrategy;
 use super::engine::bool_var;
-use super::layered::OverrideLayer;
-use super::secrets::ApiKey;
-use super::source::{ConfigSource, ProvenanceMap};
-use super::v1::ConfigV1;
-use super::{ConfigError, LoadedConfig};
+use super::{
+    ApiKey, ConfigError, ConfigSource, ConfigV1, LoadedConfig, OverrideLayer, ProvenanceMap, SummarizationStrategy,
+};
 
 /// Optional per-call overrides for the document tier. Backs `#[command(flatten)]`
 /// on `ScanArgs` / `ServeArgs`. Never flattened into an MCP request type: every

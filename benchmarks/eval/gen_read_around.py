@@ -2,7 +2,7 @@
 
 The tool answer is one call, `code_grep {pattern, context: 5, language}`: each hit's line and the 5
 lines on either side, a line two windows share written once. The gold ranges are built the same way
-(and the way `src/engine/ranges.rs` merges read ranges): each hit line `l` widens to `[l - 5, l + 5]`,
+(and the way `crates/basemind-engine/src/engine/ranges.rs` merges read ranges): each hit line `l` widens to `[l - 5, l + 5]`,
 clipped to the file, and overlapping or adjacent ranges merge. The gold is every
 `path:line` of every range. A pattern is a word (case-sensitive substring) in 1 to `--max-files`
 files with at most `--max-hits` hits, the size of a look-around an agent does by hand.

@@ -4,9 +4,9 @@
 //! This file is the only part of the benchmark that knows the layout; the corpus, the queries and
 //! the reporting are those the per-worktree baseline ran, so the numbers remain comparable.
 //!
-//! The scan loops the MCP tools run (`scan_calls_by_name` in `src/engine/refs/calls_scan.rs`,
-//! `scan_impls_fjall` in `src/engine/refs/impls.rs`, `resolved_callers` in
-//! `src/engine/refs/calls.rs`) are crate-private, so each operation below repeats that loop over
+//! The scan loops the MCP tools run (`scan_calls_by_name` in `crates/basemind-engine/src/engine/refs/calls_scan.rs`,
+//! `scan_impls_fjall` in `crates/basemind-engine/src/engine/refs/impls.rs`, `resolved_callers` in
+//! `crates/basemind-engine/src/engine/refs/calls.rs`) are crate-private, so each operation below repeats that loop over
 //! the public `IndexView` methods the loop itself calls, with the same caps.
 
 use std::ops::Bound;
@@ -23,7 +23,7 @@ use basemind::scanner::{EmbedMode, ScanSource, scan};
 use basemind::store::{Store, VIEW_WORKING};
 use memchr::memmem::Finder;
 
-/// `SCAN_KEYS_EXAMINED_MAX` in `src/engine/refs/calls_scan.rs`.
+/// `SCAN_KEYS_EXAMINED_MAX` in `crates/basemind-engine/src/engine/refs/calls_scan.rs`.
 const SCAN_KEYS_EXAMINED_MAX: usize = 200_000;
 /// The floor of `scan_cap = limit * 8` in the same file.
 const SCAN_CAP_FLOOR: usize = 2_000;
@@ -55,7 +55,7 @@ pub struct Worktree {
     grep_entries: Vec<GrepEntry>,
 }
 
-/// `identifier_is` in `src/engine/refs/matching.rs`: exact matching of a possibly qualified name.
+/// `identifier_is` in `crates/basemind-engine/src/engine/refs/matching.rs`: exact matching of a possibly qualified name.
 fn identifier_is(identifier: &str, name: &str) -> bool {
     identifier
         .strip_suffix(name)

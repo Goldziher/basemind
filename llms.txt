@@ -63,7 +63,7 @@ shell/grep/git fallback.**
 - [crates.io](https://crates.io/crates/basemind): Install the Rust binary with `cargo install basemind`.
 - [npm](https://www.npmjs.com/package/basemind): Node wrapper that downloads the prebuilt binary.
 - [PyPI](https://pypi.org/project/basemind/): Python wrapper that downloads the prebuilt binary.
-- [Config schema](https://github.com/Goldziher/basemind/blob/main/schema/basemind-config-v1.schema.json): JSON Schema for `basemind.toml`.
+- [Config schema](https://github.com/Goldziher/basemind/blob/main/crates/basemind-engine/schema/basemind-config-v1.schema.json): JSON Schema for `basemind.toml`.
 - [.ai-rulez](https://github.com/Goldziher/basemind/tree/main/.ai-rulez): Project rules and skills for agents working in the repo.
 - [Architecture](https://github.com/Goldziher/basemind/blob/main/docs/ARCHITECTURE.md): How the scanner, index, daemon and MCP surface fit together; [upgrading](https://github.com/Goldziher/basemind/blob/main/docs/UPGRADING.md) and the [ADRs](https://github.com/Goldziher/basemind/tree/main/docs/adr).
 - [Benchmarks](https://github.com/Goldziher/basemind/blob/main/benchmarks/README.md): `basemind admin eval`, the retrieval-quality and token-savings harness, with measured results.
