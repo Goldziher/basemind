@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:c0df36d9efc65afb7b5a00e1c21c760fd4f4666660e7f8a7139eb71416f4e6c9
-Source-Hash: blake3:ffe026e05964df3350ec00ab67f3af7dfb1a5b20a97d191fda4a1b5eee3f4e32
+Content-Hash: blake3:437a48aef0e94dcd49e229fcbf214468b2d9350fd364024061e77d26b2b6b948
+Source-Hash: blake3:ba8fe55f567db239b8f8fde9a0253e335c3b8762f84dca187d6a6f8dfc98a896
 Schema-Version: v1
 -->
 
@@ -193,18 +193,20 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
   most 100), `git_blame` 100 hunks. `limit: 0` is refused.
 - **Token budget.** A list is trimmed to `max_tokens` (default 6000) and then sets `budgeted`:
   raise `max_tokens` or follow `next_cursor`.
-- **Three words for a cut.** A page that ended at `limit` returns `next_cursor` and nothing else.
-  `budgeted` means the token budget trimmed it. `truncated` with `truncated_reason` marks a cut you
-  did not ask for, with `omitted` counting what was left out where it is known; the codes and
-  what to do about each are listed under "Truncation reasons" below.
-- A `limit` above its maximum is capped (1000 rows; `find_files` 5000) and the answer sets `limit_clamped: true`, so a page shorter than asked is never a silent cap: ask for `limit` at or below the maximum and follow `next_cursor`. `code_outline`, `code_symbols`, `code_grep`, `code_refs` and a `memory_search` listing report it as `find_files` does; the field is absent when the `limit` was kept.
+- **Three words for a cut.** A page that ended at `limit` returns only `next_cursor`. `budgeted`
+  means the token budget trimmed it. `truncated` with `truncated_reason` marks a cut you did not
+  ask for (`omitted` counts what was left out where known); see "Truncation reasons" below.
+- **Limit cap.** A `limit` above its maximum (1000 rows; `find_files` 5000) is capped and the
+  answer sets `limit_clamped: true` (absent when `limit` was kept; `code_outline`, `code_symbols`,
+  `code_grep`, `code_refs`, `find_files` and a `memory_search` listing report it): ask at or
+  below the maximum and follow `next_cursor`.
 - **Cursors are bound to their query.** A cursor continues only the call that returned it. Passed
-  to another query, or used after a rescan or a HEAD move, the call is an error: repeat it without
-  `cursor`. No tool answers a stale cursor with an empty page.
+  to another query, or used after a rescan or HEAD move, it is an error, never an empty page:
+  repeat the call without `cursor`.
 - **Notices.** An empty or partial answer carrying a `notice` (`empty_index`, `warming_up`,
-  `building_index`, `rescanning`) means "retry shortly", not "no matches".
-- **Text answers.** The text a model reads is written per tool, in the form that measured fewest
-  tokens (ADR-0053). `code_grep` writes its other fields as `key: value` lines, then each file as
+  `building_index`, `rescanning`) means retry shortly, not "no matches".
+- **Text answers.** Text is written per tool in the form that measured fewest tokens (ADR-0053).
+  `code_grep` writes its other fields as `key: value` lines, then each file as
   `# <path>` and each enclosing symbol as `## <symbol>` over its rows; rows before any symbol
   header, or under a bare `##`, are outside every symbol. `code_outline`, `git_diff` and a
   `find_files` list are [TOON](https://toonformat.dev): `key: value` lines, and a list of objects

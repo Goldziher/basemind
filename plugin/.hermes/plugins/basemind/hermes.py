@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
 # Content-Hash: blake3:2cee82f24cca8b44ef7e243352dce4f895ca3ffbb35c62a5f8087713c7a23320
-# Source-Hash: blake3:ffe026e05964df3350ec00ab67f3af7dfb1a5b20a97d191fda4a1b5eee3f4e32
+# Source-Hash: blake3:ba8fe55f567db239b8f8fde9a0253e335c3b8762f84dca187d6a6f8dfc98a896
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
