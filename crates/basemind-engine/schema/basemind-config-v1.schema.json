@@ -1901,7 +1901,7 @@
           "default": true
         },
         "agent_id": {
-          "description": "Stable identity this process presents to the broker. When unset, the identity resolver\nfalls back to `BASEMIND_AGENT_ID`, then a generated-and-persisted per-workspace id, then a\nprocess-unique generated id. It never falls back to a shared constant: two agents that\ncollapse onto one id also share one inbox, and each then sees the other's messages as its\nown. Validated through [`crate::comms::ids::AgentId`] at resolution time.",
+          "description": "Stable identity this process presents to the broker. When unset, the identity resolver\nfalls back to `BASEMIND_AGENT_ID`, then a generated-and-persisted per-workspace id, then a\nprocess-unique generated id. It never falls back to a shared constant: two agents that\ncollapse onto one id also share one inbox, and each then sees the other's messages as its\nown. Validated through `comms::ids::AgentId` at resolution time.",
           "type": [
             "string",
             "null"

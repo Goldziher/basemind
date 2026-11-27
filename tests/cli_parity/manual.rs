@@ -207,7 +207,7 @@ fn every_top_level_command_has_a_manual_mention() {
 }
 
 /// Shipped Rust sources, where a variable is read through a string literal naming it whole.
-const RUST_SOURCES: &[&str] = &["src", "crates/basemind-agents/src"];
+const RUST_SOURCES: &[&str] = &["src", "crates/basemind-agents/src", "crates/basemind-engine/src"];
 /// The plugin's script and hook sources and the npm and pip wrappers, where any mention counts.
 const SCRIPT_SOURCES: &[&str] = &[
     "plugin/.ai-rulez/scripts",
