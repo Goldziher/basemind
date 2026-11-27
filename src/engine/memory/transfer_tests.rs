@@ -217,6 +217,20 @@ fn an_export_the_import_would_refuse_is_refused() {
     assert!(error.to_string().contains("import reads at most"), "{error}");
 }
 
+/// A note an import would refuse by its tag count, or a count past the file cap, is refused by the
+/// export, never dropped.
+#[test]
+fn an_export_refuses_notes_and_counts_the_import_would_refuse() {
+    let mut many_tags = entry("a", "v", 1, 1);
+    many_tags.tags = (0..=NOTE_MAX_TAGS).map(|n| format!("t{n}")).collect();
+    let error = check_exportable(&[many_tags]).unwrap_err();
+    assert!(error.to_string().contains("tags"), "{error}");
+    let too_many: Vec<_> = (0..=TRANSFER_MAX_NOTES).map(|n| entry(&format!("k{n}"), "v", 1, 1)).collect();
+    let error = check_exportable(&too_many).unwrap_err();
+    assert!(error.to_string().contains("an import reads at most"), "{error}");
+    check_exportable(&[entry("ok", "v", 1, 1)]).unwrap();
+}
+
 /// Under each policy, an existing note of `existing` and an imported one of `incoming` resolve as
 /// named, and the stored note is the expected one.
 #[test]

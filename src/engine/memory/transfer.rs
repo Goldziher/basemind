@@ -188,6 +188,23 @@ fn check_entry(entry: &WireMemoryEntry) -> Result<(), String> {
     ops::check_note(&entry.key, &entry.value, &entry.tags).map_err(|error| error.to_string())
 }
 
+/// Refuses `entries` an import would refuse by count or by a note's limits, so an export never
+/// succeeds with a file that cannot be restored.
+fn check_exportable(entries: &[WireMemoryEntry]) -> Result<(), EngineError> {
+    if entries.len() > TRANSFER_MAX_NOTES {
+        return Err(EngineError::invalid_argument(format!(
+            "memory export: {} notes and an import reads at most {TRANSFER_MAX_NOTES}; split it with `--prefix` \
+             or `--tag`",
+            entries.len()
+        )));
+    }
+    entries.iter().try_for_each(|entry| {
+        check_entry(entry).map_err(|problem| {
+            EngineError::invalid_argument(format!("memory export: an import would refuse the file: {problem}"))
+        })
+    })
+}
+
 /// The label recorded as the provenance of imported notes.
 fn source_label(source: Option<&str>) -> Result<String, EngineError> {
     let label = source
@@ -220,6 +237,7 @@ impl Workspace {
                 TRANSFER_MAX_BYTES,
             )?
         };
+        check_exportable(&entries)?;
         let notes = entries.len();
         let content = render(entries, params.visibility)?;
         if content.len() > TRANSFER_MAX_BYTES {
@@ -250,20 +268,30 @@ impl Workspace {
             ..MemoryImportResponse::default()
         };
         let mut replaced = Vec::new();
-        {
+        let mut failure = None;
+        for entry in &entries {
+            // The key lock comes before the store read, as in a save: a store read held while waiting
+            // for a key lock could deadlock against a save and a queued store write.
+            let key_lock = super::memory_put_lock(&self.scope, vis_byte, owner, &entry.key);
+            let _guard = key_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let store = self.store_read();
-            let idx = self.memory_index(&store)?;
-            for entry in &entries {
-                let key_lock = super::memory_put_lock(&self.scope, vis_byte, owner, &entry.key);
-                let _guard = key_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                match ops::merge_core(&idx, &self.scope, vis_byte, owner, entry, params.policy, &source)? {
-                    Merged::Added => report.added += 1,
-                    Merged::Replaced => {
-                        report.replaced += 1;
-                        replaced.push(entry.key.as_str());
-                    }
-                    Merged::Kept => report.kept += 1,
-                    Merged::Unchanged => report.unchanged += 1,
+            let merged = self
+                .memory_index(&store)
+                .and_then(|idx| {
+                    ops::merge_core(&idx, &self.scope, vis_byte, owner, entry, params.policy, &source)
+                        .map_err(EngineError::from)
+                });
+            match merged {
+                Ok(Merged::Added) => report.added += 1,
+                Ok(Merged::Replaced) => {
+                    report.replaced += 1;
+                    replaced.push(entry.key.as_str());
+                }
+                Ok(Merged::Kept) => report.kept += 1,
+                Ok(Merged::Unchanged) => report.unchanged += 1,
+                Err(error) => {
+                    failure = Some(error);
+                    break;
                 }
             }
         }
@@ -276,7 +304,7 @@ impl Workspace {
             vectors::not_level(self, vis_byte, owner);
             vectors::owe_rows(&self.root);
         }
-        Ok(report)
+        failure.map_or(Ok(report), Err)
     }
 }
 
