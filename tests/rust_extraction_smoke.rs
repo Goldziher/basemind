@@ -144,7 +144,10 @@ mod inner {
     let body = &src[sym.start_byte as usize..sym.end_byte as usize];
     assert!(body.starts_with("#[track_caller]"), "{body}");
     assert!(body.ends_with("{ 0 }"), "{body}");
-    assert_eq!(sym.signature.as_deref(), Some("pub(crate) fn caller_location() -> u32"));
+    assert_eq!(
+        sym.signature.as_deref(),
+        Some("#[track_caller] pub(crate) fn caller_location() -> u32")
+    );
 
     let names: Vec<&str> = map.symbols.iter().map(|s| s.name.as_str()).collect();
     for want in ["Sleep", "inner", "deep"] {
