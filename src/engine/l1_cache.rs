@@ -40,6 +40,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use lru::LruCache;
 
+use crate::engine::content_pools::{ContentPools, StrPool};
 use crate::engine::paged_map::PagedMap;
 use crate::extract::FileMapL1;
 use crate::path::RelPath;
@@ -59,8 +60,8 @@ const STREAM_CHUNK: usize = 256;
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct FileMeta {
     /// Content hash of the source file — the [`L1Cache`] key and the blob name to read on a miss.
-    pub(crate) hash_hex: Box<str>,
-    pub(crate) language: Box<str>,
+    pub(crate) hash_hex: Arc<str>,
+    pub(crate) language: Arc<str>,
     pub(crate) size_bytes: u64,
     /// File mtime in nanoseconds as indexed (0 = unknown); with `size_bytes` the stamp grep holds the
     /// live file to before trusting the content's bloom.
@@ -91,13 +92,13 @@ impl FileIndexView {
     /// Project the store's index into the view. The file map is trusted: no blob is probed, so a
     /// build over the whole index costs no filesystem call per file. A blob found missing when an
     /// outline is faulted in (see [`L1Cache`]) is served as absent and logged as a hint to rescan.
-    pub(crate) fn build(store: &crate::store::Store) -> Self {
+    pub(crate) fn build(store: &crate::store::Store, strings: &StrPool) -> Self {
         use rayon::prelude::*;
         let files: Vec<(RelPath, FileMeta)> = store
             .index
             .files
             .par_iter()
-            .map(|(path, entry)| (path.clone(), FileMeta::from(entry)))
+            .map(|(path, entry)| (path.clone(), FileMeta::interned(entry, strings)))
             .collect();
         Self {
             files: PagedMap::from_unsorted(files),
@@ -164,10 +165,20 @@ impl FileIndexView {
 
     /// Derive the next view from this one for a scoped (watcher) rescan: drop `removed`, re-project
     /// `updated` from the reopened store, and share every other entry with this view.
-    pub(crate) fn with_delta(&self, store: &crate::store::Store, updated: &[RelPath], removed: &[RelPath]) -> Self {
+    pub(crate) fn with_delta(
+        &self,
+        store: &crate::store::Store,
+        strings: &StrPool,
+        updated: &[RelPath],
+        removed: &[RelPath],
+    ) -> Self {
         let removals = removed.iter().map(|path| (path.clone(), None));
         let updates = updated.iter().map(|path| {
-            let meta = store.index.files.get(path).map(FileMeta::from);
+            let meta = store
+                .index
+                .files
+                .get(path)
+                .map(|entry| FileMeta::interned(entry, strings));
             (path.clone(), meta)
         });
         Self {
@@ -177,6 +188,20 @@ impl FileIndexView {
 }
 
 impl FileMeta {
+    /// The meta of `entry` with its content hash and language taken from `strings`, so the file
+    /// maps of every stack over one pool hold one allocation per distinct string.
+    pub(crate) fn interned(entry: &crate::store::FileEntry, strings: &StrPool) -> Self {
+        Self {
+            hash_hex: strings.intern(&entry.hash_hex),
+            language: strings.intern(&entry.language),
+            size_bytes: entry.size_bytes,
+            mtime_ns: entry.mtime,
+            extract_epoch: entry.extract_epoch,
+            content_key: entry.content_key,
+            lines: entry.lines,
+        }
+    }
+
     /// Whether `entry` projects to this meta. Field by field, so no meta is built to compare.
     fn projects(&self, entry: &crate::store::FileEntry) -> bool {
         *self.hash_hex == *entry.hash_hex
@@ -246,6 +271,9 @@ pub(crate) struct L1Cache {
     /// Cumulative miss count. Diagnostic only — a test asserts a small budget really does force
     /// misses, so an "equivalent output" claim is not silently vacuous.
     misses: AtomicU64,
+    /// What the stacks over this cache derive from the same content and share
+    /// ([`crate::engine::content_pools`]): the file maps' strings and the term projections.
+    pools: ContentPools,
 }
 
 impl L1Cache {
@@ -259,7 +287,13 @@ impl L1Cache {
             }),
             forgets_superseded: true,
             misses: AtomicU64::new(0),
+            pools: ContentPools::default(),
         }
+    }
+
+    /// The pools of content-keyed values every map over this cache shares.
+    pub(crate) fn pools(&self) -> &ContentPools {
+        &self.pools
     }
 
     /// A cache for several read stacks to share: superseded content is left to the LRU.

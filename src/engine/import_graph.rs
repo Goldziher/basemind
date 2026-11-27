@@ -23,6 +23,7 @@ use std::sync::{Arc, OnceLock};
 use ahash::AHashMap;
 use parking_lot::Mutex;
 
+use crate::engine::content_pools::{GraphKey, GraphPool, KeyedFile, graph_key};
 use crate::engine::error::EngineError;
 use crate::engine::workspace::Workspace;
 use crate::index::keys::{EdgeKinds, FileEdge, FileEdges};
@@ -645,10 +646,10 @@ impl GraphCache {
     /// generation's graph is kept already.
     ///
     /// The caller must not hold a lock `build` takes: it may wait for another caller's `build`.
-    pub(crate) fn get_or_build<E>(
+    pub(crate) fn get_or_build<G: Into<Arc<ImportGraph>>, E>(
         &self,
         generation: u32,
-        build: impl FnOnce() -> Result<ImportGraph, E>,
+        build: impl FnOnce() -> Result<G, E>,
     ) -> Result<Arc<ImportGraph>, E> {
         // The kept graph is looked up under the flights lock: a finished build keeps its graph
         // before it retires its flight, so a caller arriving in between finds one or the other.
@@ -693,10 +694,10 @@ impl GraphCache {
 
     /// [`Self::get_or_build`] that never waits for another caller's build, for a caller holding a
     /// lock that build takes (`index_status` holds the store read lock): it builds itself instead.
-    pub(crate) fn get_or_build_alone<E>(
+    pub(crate) fn get_or_build_alone<G: Into<Arc<ImportGraph>>, E>(
         &self,
         generation: u32,
-        build: impl FnOnce() -> Result<ImportGraph, E>,
+        build: impl FnOnce() -> Result<G, E>,
     ) -> Result<Arc<ImportGraph>, E> {
         match self.kept(generation) {
             Some(graph) => Ok(graph),
@@ -714,14 +715,14 @@ impl GraphCache {
 
     /// Run `build` and keep its graph when it fits and is not older than the kept one. No lock is
     /// held while `build` runs.
-    fn build_and_keep<E>(
+    fn build_and_keep<G: Into<Arc<ImportGraph>>, E>(
         &self,
         generation: u32,
-        build: impl FnOnce() -> Result<ImportGraph, E>,
+        build: impl FnOnce() -> Result<G, E>,
     ) -> Result<Arc<ImportGraph>, E> {
         #[cfg(test)]
         self.builds.fetch_add(1, Ordering::Relaxed);
-        let graph = Arc::new(build()?);
+        let graph: Arc<ImportGraph> = build()?.into();
         if graph.approx_bytes() <= CACHE_BYTES_MAX {
             let mut slot = self.slot.lock();
             if slot.as_ref().is_none_or(|(kept, _)| *kept <= generation) {
@@ -744,7 +745,7 @@ impl GraphCache {
 pub(crate) fn import_graph(ws: &Workspace) -> Result<Arc<ImportGraph>, EngineError> {
     let generation = ws.cache_generation.load(Ordering::Acquire);
     ws.import_graph
-        .get_or_build(generation, || build_from(&ws.store_read()))
+        .get_or_build(generation, || build_from(&ws.store_read(), ws.shared_graphs()))
 }
 
 /// [`import_graph`] for a caller that already holds the store read lock (`index_status`), which
@@ -752,22 +753,42 @@ pub(crate) fn import_graph(ws: &Workspace) -> Result<Arc<ImportGraph>, EngineErr
 /// would hold that build back until this caller lets go.
 pub(crate) fn import_graph_held(ws: &Workspace, store: &crate::store::Store) -> Result<Arc<ImportGraph>, EngineError> {
     let generation = ws.cache_generation.load(Ordering::Acquire);
-    ws.import_graph.get_or_build_alone(generation, || build_from(store))
+    ws.import_graph
+        .get_or_build_alone(generation, || build_from(store, ws.shared_graphs()))
 }
 
-fn build_from(store: &crate::store::Store) -> Result<ImportGraph, EngineError> {
+/// The graph of `store`'s view: the one `shared` holds for the same content when a host shares
+/// graphs between its workspaces, else a fresh build.
+fn build_from(store: &crate::store::Store, shared: Option<&GraphPool>) -> Result<Arc<ImportGraph>, EngineError> {
     let view = index_view(store)?;
-    let files = store
+    let probes_complete = view.import_probes_complete();
+    let build = || {
+        let files = store
+            .index
+            .files
+            .iter()
+            .map(|(path, entry)| (path, entry.language.as_str()));
+        ImportGraph::build(view.file_edge_rows(), files, has_resolver, probes_complete)
+    };
+    match shared {
+        Some(pool) => pool.get_or_build(graph_key_of(store, probes_complete), || Ok(build())),
+        None => Ok(Arc::new(build())),
+    }
+}
+
+/// The [`graph_key`] of the content `store` indexes.
+fn graph_key_of(store: &crate::store::Store, probes_complete: bool) -> GraphKey {
+    let files = store.index.files.iter().map(|(path, entry)| KeyedFile {
+        path,
+        hash_hex: &entry.hash_hex,
+        extract_epoch: entry.extract_epoch,
+    });
+    let documents = store
         .index
-        .files
+        .doc_files
         .iter()
-        .map(|(path, entry)| (path, entry.language.as_str()));
-    Ok(ImportGraph::build(
-        view.file_edge_rows(),
-        files,
-        has_resolver,
-        view.import_probes_complete(),
-    ))
+        .map(|(path, entry)| (path, entry.hash_hex.as_str()));
+    graph_key(files, documents, probes_complete)
 }
 
 /// Whether a resolver that writes file-edge rows is compiled in for `language`.

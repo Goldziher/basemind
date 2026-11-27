@@ -414,6 +414,12 @@ fn outlines_of<'a>(
 }
 
 impl Workspace {
+    /// The pool this workspace's import graph is shared through with the host's other workspaces,
+    /// when the host shares any.
+    pub(crate) fn shared_graphs(&self) -> Option<&crate::engine::content_pools::GraphPool> {
+        self.shared_outlines.as_deref().map(|shared| shared.graphs())
+    }
+
     /// Where this workspace's next map takes its outline cache from: the host's shared one, else a
     /// cache of its own.
     pub(crate) fn outlines(&self) -> crate::engine::l1_shared::Outlines<'_> {
