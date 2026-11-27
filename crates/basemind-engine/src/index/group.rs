@@ -94,7 +94,7 @@ pub struct GroupDb {
 /// One view of a group database: the handle that keeps it open and the view's id.
 #[derive(Clone)]
 pub struct GroupView {
-    pub(crate) group: Arc<GroupDb>,
+    pub group: Arc<GroupDb>,
     pub(crate) view_id: u32,
 }
 

@@ -528,7 +528,7 @@ pub struct IndexDb {
     wiped_on_open: bool,
     /// The group index this handle is one view of, kept alive as long as the handle; `None` for a
     /// database of the view's own.
-    pub(crate) group: Option<group::GroupView>,
+    pub group: Option<group::GroupView>,
 }
 
 /// Why an [`IndexDb`] holds no memory notes. Memory operations on such a handle are refused with

@@ -78,7 +78,7 @@ pub struct Workspace {
     /// the lazy build). Lists that never come from the empty boot placeholder stamp their cursors
     /// with it — `code_search` / `docs_search` rank out of LanceDB, `code_outline` reads the map or
     /// the one blob alike — so that publish landing between two pages is not a changed index.
-    pub(crate) index_generation: AtomicU32,
+    pub index_generation: AtomicU32,
     /// Ranked lists of recent `code_search` / `docs_search` retrievals, keyed by query and
     /// `cache_generation`, so a later page does not rank the whole retrieval again.
     #[cfg_attr(
@@ -274,8 +274,8 @@ pub fn boot_plan(store: &Store, options: &OpenOptions) -> BootPlan {
 /// What [`boot_plan`] decided.
 #[derive(Debug, Clone, Copy)]
 pub struct BootPlan {
-    pub(crate) scan: BootScan,
-    pub(crate) defer_warm: bool,
+    pub scan: BootScan,
+    pub defer_warm: bool,
 }
 
 /// One background rescan in flight on a [`Workspace`], counted in its lifecycle until dropped.
@@ -540,7 +540,7 @@ impl Workspace {
     }
 
     /// Current [`Lifecycle`] derived from the boot/rescan atomics, applying the documented precedence.
-    pub(crate) fn lifecycle(&self) -> Lifecycle {
+    pub fn lifecycle(&self) -> Lifecycle {
         Lifecycle::from_flags(
             self.initial_scan_active.load(Ordering::Relaxed),
             self.cache_warming.load(Ordering::Relaxed),

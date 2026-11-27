@@ -227,19 +227,19 @@ mod tests {
         ];
         for (error, code) in cases {
             let message = error.to_string();
-            let mapped = McpError::from(error);
+            let mapped = crate::dispatch::mcp_error(error);
             assert_eq!(mapped.code, code, "{message}");
             assert_eq!(mapped.message, message);
             assert!(mapped.data.is_none());
         }
-        let unreadable = McpError::from(EngineError::index_unavailable("the index is empty"));
+        let unreadable = crate::dispatch::mcp_error(EngineError::index_unavailable("the index is empty"));
         assert_eq!(unreadable.code, ErrorCode::INVALID_REQUEST);
         assert_eq!(unreadable.message, "the index is empty");
         assert_eq!(
             unreadable.data,
             Some(serde_json::json!({ "error": "index_unavailable" }))
         );
-        let busy = McpError::from(EngineError::busy("held"));
+        let busy = crate::dispatch::mcp_error(EngineError::busy("held"));
         assert_eq!(busy.code, ErrorCode::INVALID_REQUEST);
         assert_eq!(busy.message, "held");
         assert_eq!(
@@ -247,10 +247,10 @@ mod tests {
             Some(&serde_json::Value::Bool(true)),
             "busy, so the CLI exits 3"
         );
-        let cancelled = McpError::from(EngineError::Cancelled);
+        let cancelled = crate::dispatch::mcp_error(EngineError::Cancelled);
         assert_eq!(cancelled.code, ErrorCode(-32800));
         assert_eq!(cancelled.message, "request_cancelled");
-        let io = McpError::from(EngineError::from(std::io::Error::other("disk gone")));
+        let io = crate::dispatch::mcp_error(EngineError::from(std::io::Error::other("disk gone")));
         assert_eq!(io.code, ErrorCode::INTERNAL_ERROR);
         assert_eq!(io.message, "disk gone");
     }

@@ -9,45 +9,39 @@
 //! The field docs are the schema descriptions an agent reads on every session, so they are kept to
 //! a clause: the whole `tools/list` has a byte ceiling.
 
-use super::strict::ToolArgs;
+pub use crate::engine::tool_args::VERB_TOOLS;
 
-macro_rules! tool_args {
-    ($($params:ident => $tool:literal),+ $(,)?) => {
-        $(impl ToolArgs for $params {
-            const TOOL: &'static str = $tool;
-        })+
-
-        /// Every verb tool's MCP name, in declaration order.
-        pub const VERB_TOOLS: &[&str] = &[$($tool),+];
-
-        /// Run `tool`'s own argument parse on `arguments`: `Some(Err(message))` is the rejection an
-        /// agent would be shown, `None` a name that is not a verb tool.
-        #[cfg(feature = "test-support")]
-        pub fn check_arguments(tool: &str, arguments: serde_json::Value) -> Option<Result<(), String>> {
+/// Run `tool`'s own argument parse on `arguments`: `Some(Err(message))` is the rejection an agent
+/// would be shown, `None` a name that is not a verb tool.
+#[cfg(feature = "test-support")]
+pub fn check_arguments(tool: &str, arguments: serde_json::Value) -> Option<Result<(), String>> {
+    macro_rules! parse_as {
+        ($($params:ident),+ $(,)?) => {
             match tool {
-                $($tool => Some(super::strict::parse::<$params>(arguments).map(drop)),)+
+                $(<$params as super::strict::ToolArgs>::TOOL => {
+                    Some(super::strict::parse::<$params>(arguments).map(drop))
+                })+
                 _ => None,
             }
-        }
-    };
-}
-
-tool_args! {
-    CodeOutlineParams => "code_outline",
-    CodeSymbolsParams => "code_symbols",
-    CodeReadParams => "code_read",
-    CodeGrepParams => "code_grep",
-    CodeSearchParams => "code_search",
-    CodeRefsParams => "code_refs",
-    FindFilesToolParams => "find_files",
-    DocsSearchParams => "docs_search",
-    GitLogParams => "git_log",
-    GitBlameParams => "git_blame",
-    GitDiffParams => "git_diff",
-    MemorySaveParams => "memory_save",
-    MemorySearchToolParams => "memory_search",
-    IndexStatusParams => "index_status",
-    IndexRescanParams => "index_rescan",
+        };
+    }
+    parse_as!(
+        CodeOutlineParams,
+        CodeSymbolsParams,
+        CodeReadParams,
+        CodeGrepParams,
+        CodeSearchParams,
+        CodeRefsParams,
+        FindFilesToolParams,
+        DocsSearchParams,
+        GitLogParams,
+        GitBlameParams,
+        GitDiffParams,
+        MemorySaveParams,
+        MemorySearchToolParams,
+        IndexStatusParams,
+        IndexRescanParams,
+    )
 }
 
 pub use crate::engine::tool_names::RETIRED_TOOLS;

@@ -892,7 +892,7 @@ impl IndexFilter {
     /// `dir` and every directory beneath it that a full scan would descend into, walked with the
     /// same gitignore and exclude rules. The Linux watcher arms each one: a directory renamed or
     /// moved into the tree arrives with its subdirectories and no event names them.
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", test, feature = "test-support"))]
     pub fn subtree_dirs(&self, dir: &Path) -> Vec<PathBuf> {
         let pruner = self.filters.dir_pruner(Some(&self.root));
         ignore_walk_builder(dir, self.respect_gitignore, self.follow_links)

@@ -52,20 +52,16 @@ pub(crate) fn kind_data(kind: ErrorKind) -> Value {
 /// then each variant keeps its message, and the code is what the CLI turns into an exit status. An
 /// unavailable index shares its JSON-RPC code with an unavailable operation, so its `data` names its
 /// `ErrorKind`.
-impl From<EngineError> for McpError {
-    fn from(error: EngineError) -> Self {
-        match error.settled() {
-            EngineError::InvalidArgument(message) => McpError::invalid_params(message, None),
-            EngineError::Unavailable(message) => McpError::invalid_request(message, None),
-            EngineError::IndexUnavailable(message) => {
-                McpError::invalid_request(message, Some(kind_data(ErrorKind::IndexUnavailable)))
-            }
-            EngineError::Busy(message) => {
-                McpError::invalid_request(message, Some(serde_json::json!({ BUSY_DATA: true })))
-            }
-            EngineError::Cancelled => request_cancelled(),
-            other => McpError::internal_error(other.to_string(), None),
+pub(crate) fn mcp_error(error: EngineError) -> McpError {
+    match error.settled() {
+        EngineError::InvalidArgument(message) => McpError::invalid_params(message, None),
+        EngineError::Unavailable(message) => McpError::invalid_request(message, None),
+        EngineError::IndexUnavailable(message) => {
+            McpError::invalid_request(message, Some(kind_data(ErrorKind::IndexUnavailable)))
         }
+        EngineError::Busy(message) => McpError::invalid_request(message, Some(serde_json::json!({ BUSY_DATA: true }))),
+        EngineError::Cancelled => request_cancelled(),
+        other => McpError::internal_error(other.to_string(), None),
     }
 }
 
@@ -108,7 +104,7 @@ pub(crate) fn answer<P, R: Serialize>(
     p: P,
     op: impl FnOnce(&Workspace, P) -> Result<R, EngineError>,
 ) -> Result<CallToolResult, McpError> {
-    json_result(&op(ws, p)?)
+    json_result(&op(ws, p).map_err(mcp_error)?)
 }
 
 /// The telemetry row of one call, costed against the workspace's corpus.
@@ -150,7 +146,7 @@ where
     let params = serde_json::to_value(&p).unwrap_or(Value::Null);
     let result = bound_value(p, |p| op(ws, p))
         .map(|value| as_text(P::TOOL, CallToolResult::structured(value)))
-        .map_err(McpError::from);
+        .map_err(mcp_error);
     record_row(ws, telemetry, P::TOOL, &params, started, &result);
     result
 }

@@ -305,8 +305,8 @@ impl L1Cache {
         self.lock().charged
     }
 
-    #[cfg(test)]
-    pub(crate) fn misses(&self) -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn misses(&self) -> u64 {
         self.misses.load(Ordering::Relaxed)
     }
 

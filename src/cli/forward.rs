@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(super::super::exit::exit_code_for(&usage), super::super::exit::USAGE);
         assert_eq!(usage.to_string(), "code_outline: bad path");
 
-        let busy = rmcp::ErrorData::from(crate::engine::scan::rescan_error(&crate::scanner::ScanError::Store(
+        let busy = crate::dispatch::mcp_error(crate::engine::scan::rescan_error(&crate::scanner::ScanError::Store(
             crate::store::StoreError::Locked {
                 path: std::path::PathBuf::from(".lock"),
                 holder: None,

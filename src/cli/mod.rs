@@ -218,7 +218,7 @@ mod tests {
         });
         let error = run_tool(
             "rescan",
-            Err(rmcp::ErrorData::from(crate::engine::scan::rescan_error(&locked))),
+            Err(crate::dispatch::mcp_error(crate::engine::scan::rescan_error(&locked))),
         )
         .expect_err("refused");
         assert_eq!(exit::exit_code_for(&error), exit::BUSY);
@@ -226,7 +226,7 @@ mod tests {
         let failed = crate::scanner::ScanError::Store(crate::store::StoreError::BlobTooLarge);
         let error = run_tool(
             "rescan",
-            Err(rmcp::ErrorData::from(crate::engine::scan::rescan_error(&failed))),
+            Err(crate::dispatch::mcp_error(crate::engine::scan::rescan_error(&failed))),
         )
         .expect_err("failed");
         assert_eq!(
@@ -239,7 +239,8 @@ mod tests {
     /// The error code an MCP client reads from `data` is not printed to a terminal.
     #[test]
     fn a_failed_tool_prints_its_message_without_its_data() {
-        let unreadable = rmcp::ErrorData::from(crate::engine::EngineError::index_unavailable("the index is damaged"));
+        let unreadable =
+            crate::dispatch::mcp_error(crate::engine::EngineError::index_unavailable("the index is damaged"));
         let error = run_tool("code_outline", Err(unreadable)).expect_err("failed");
         assert_eq!(error.to_string(), "code_outline: -32600: the index is damaged");
         assert_eq!(exit::exit_code_for(&error), exit::ERROR);
@@ -251,7 +252,7 @@ mod tests {
     fn the_busy_exit_follows_the_error_kind_not_its_text() {
         let busy = run_tool(
             "code_refs",
-            Err(rmcp::ErrorData::from(crate::engine::EngineError::busy(
+            Err(crate::dispatch::mcp_error(crate::engine::EngineError::busy(
                 "held elsewhere",
             ))),
         )

@@ -559,7 +559,7 @@ async fn a_failure_is_reported_without_host_paths() {
     let corrupt_blob = blob.clone();
     let corrupt = server
         .answer(super::strict::Strict(Ok(outline("a.rs"))), |_| async move {
-            Err(McpError::from(crate::engine::EngineError::Store(
+            Err(crate::dispatch::mcp_error(crate::engine::EngineError::Store(
                 crate::store::StoreError::CorruptBlob { path: corrupt_blob },
             )))
         })

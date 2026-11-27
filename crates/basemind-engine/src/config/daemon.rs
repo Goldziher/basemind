@@ -82,7 +82,6 @@ const DEFAULT_QUEUE_WAIT_MS: u64 = 2_000;
 /// import graph (`code_grep`, the import-graph relations of `code_refs`, and the CLI's impact,
 /// cycles, deadcode and overview). Each class has its own slots, so a rescan never holds back a grep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct AdmissionLimits {
     /// Heavy calls run at once (`BASEMIND_DAEMON_HEAVY_CONCURRENCY`).
     pub heavy_concurrency: usize,

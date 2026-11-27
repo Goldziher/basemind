@@ -128,6 +128,11 @@ impl MapCache {
         self.files.len()
     }
 
+    /// Whether this map covers no file.
+    pub fn is_empty(&self) -> bool {
+        self.files.len() == 0
+    }
+
     /// Whether `path` is one of the indexed files. Answered from the symbol-free view, so it costs
     /// no blob read.
     pub fn contains(&self, path: &crate::path::RelPath) -> bool {
@@ -206,7 +211,7 @@ impl MapCache {
     }
 
     /// [`for_each_while`](Self::for_each_while) for a consumer that always runs to completion.
-    pub(crate) fn for_each<F>(&self, mut f: F)
+    pub fn for_each<F>(&self, mut f: F)
     where
         F: FnMut(&crate::path::RelPath, &FileMapL1),
     {
@@ -217,8 +222,8 @@ impl MapCache {
     }
 
     /// The L1 cache backing this map. The budget tests read its counters.
-    #[cfg(test)]
-    pub(crate) fn l1_cache(&self) -> &l1_cache::L1Cache {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn l1_cache(&self) -> &l1_cache::L1Cache {
         &self.l1
     }
 

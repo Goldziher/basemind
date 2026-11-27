@@ -171,7 +171,7 @@ const TELEMETRY_SUMMARY_RECENT_COUNT: usize = 10;
 /// aggregate per-tool + per-baseline counts, and return the dashboard payload.
 ///
 /// Reads the log synchronously (read cap: 10 000 rows); an adapter runs it on a blocking thread.
-pub(crate) fn summarize(
+pub fn summarize(
     path: &std::path::Path,
     params: super::types::telemetry::TelemetrySummaryParams,
 ) -> Result<super::types::telemetry::TelemetrySummaryResponse, EngineError> {

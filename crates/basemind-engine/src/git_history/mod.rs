@@ -428,8 +428,8 @@ impl GitHistoryIndex {
     }
 
     /// Hold this database's build lock, so a test can keep a sync waiting on it.
-    #[cfg(all(test, feature = "comms", any(unix, windows)))]
-    pub(crate) fn hold_build_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+    #[cfg(all(any(test, feature = "test-support"), feature = "comms", any(unix, windows)))]
+    pub fn hold_build_lock(&self) -> std::sync::MutexGuard<'_, ()> {
         self.db
             .build_lock
             .lock()

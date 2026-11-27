@@ -53,6 +53,7 @@ pub mod telemetry;
 pub mod term_index;
 pub mod timing;
 pub mod tokens;
+pub mod tool_args;
 pub mod tool_names;
 pub mod types;
 pub mod workspace;

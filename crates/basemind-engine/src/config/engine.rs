@@ -78,7 +78,6 @@ impl Default for EngineConfig {
 /// `None` is a cache this process does not know of; its packages are listed as not installed. Each
 /// is read only under [`TrustPolicy::dependency_roots`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct DependencyHomes {
     /// Cargo's home, holding `registry/src/*/<name>-<version>` (`CARGO_HOME`, else `~/.cargo`).
     pub cargo_home: Option<PathBuf>,

@@ -53,7 +53,7 @@ pub fn clear(basemind_dir: &Path) {
 }
 
 /// Record that the build begun at `started_unix_ms` has stored `done` of its `total` commits.
-pub(crate) fn report(basemind_dir: &Path, started_unix_ms: u64, done: usize, total: usize) {
+pub fn report(basemind_dir: &Path, started_unix_ms: u64, done: usize, total: usize) {
     write_record(
         &progress_path(basemind_dir),
         &record_of(total.max(done), done, Some(started_unix_ms)),

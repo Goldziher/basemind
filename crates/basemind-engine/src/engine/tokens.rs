@@ -28,7 +28,7 @@ pub fn count_tokens(text: &str) -> u64 {
 
 /// `true` when [`count_tokens`] uses a real tokenizer (the `tokenizer` feature),
 /// `false` when it uses the `bytes/4` heuristic.
-pub(crate) const TOKENS_ARE_COUNTED: bool = cfg!(feature = "tokenizer");
+pub const TOKENS_ARE_COUNTED: bool = cfg!(feature = "tokenizer");
 
 /// A string whose o200k count differs from the offline word estimate (2), so a count of it tells
 /// the real tokenizer from the fallback. `benchmarks/eval/run_gate.sh` checks the same pair.
@@ -41,7 +41,7 @@ pub(crate) const O200K_PROBE_TOKENS: u64 = 4;
 /// `true` when [`count_tokens`] really counts o200k: the `tokenizer` feature is on and the
 /// tokenizer loaded, which [`O200K_PROBE`] proves because the word-estimate fallback (an offline
 /// first use) counts it differently. Probed once.
-pub(crate) fn o200k_counted() -> bool {
+pub fn o200k_counted() -> bool {
     #[cfg(feature = "tokenizer")]
     {
         static COUNTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

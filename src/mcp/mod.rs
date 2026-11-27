@@ -19,6 +19,7 @@ pub(crate) mod background_pool;
 mod cli_only;
 mod completions;
 pub mod lead_tools;
+#[cfg(test)]
 pub(crate) use crate::engine::cursor;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;

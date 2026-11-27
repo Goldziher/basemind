@@ -128,7 +128,7 @@ impl LocalEngine {
     pub(crate) async fn telemetry_summary(&self, p: TelemetrySummaryParams) -> Result<CallToolResult, McpError> {
         let telemetry = Arc::clone(&self.telemetry);
         blocking(move || {
-            let summary = telemetry::summarize(telemetry.path(), p)?;
+            let summary = telemetry::summarize(telemetry.path(), p).map_err(super::mcp_error)?;
             json_result(&summary)
         })
         .await

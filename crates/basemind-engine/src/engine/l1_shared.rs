@@ -49,8 +49,8 @@ impl SharedOutlines {
     }
 
     /// How many shared caches are live.
-    #[cfg(test)]
-    pub(crate) fn live(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn live(&self) -> usize {
         let open = self.open.lock().unwrap_or_else(PoisonError::into_inner);
         open.iter().filter(|(_, cache)| cache.strong_count() > 0).count()
     }

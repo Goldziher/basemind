@@ -259,7 +259,7 @@ mod tests {
         ];
         for (error, code, retryable) in cases {
             let message = error.to_string();
-            let result = into_tool_result(Err(McpError::from(error)));
+            let result = into_tool_result(Err(crate::dispatch::mcp_error(error)));
             assert_eq!(result.is_error, Some(true), "{code}");
             assert_eq!(
                 result.structured_content,

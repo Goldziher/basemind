@@ -379,7 +379,7 @@ impl Store {
     }
 
     /// Own the effective read snapshot so indexed queries can release the store lock.
-    pub(crate) fn read_index_view(&self) -> Option<std::sync::Arc<dyn crate::index::view::IndexView>> {
+    pub fn read_index_view(&self) -> Option<std::sync::Arc<dyn crate::index::view::IndexView>> {
         self.index_handle()
             .map(|db| std::sync::Arc::new(crate::index::view::StandaloneView(db)) as _)
     }

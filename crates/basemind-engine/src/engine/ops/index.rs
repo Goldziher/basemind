@@ -26,7 +26,7 @@ pub struct RescanStats {
     pub removed: usize,
     pub skipped_unchanged: usize,
     pub skipped_no_lang: usize,
-    pub(crate) extract_failed: usize,
+    pub extract_failed: usize,
 }
 
 impl From<&ScanStats> for RescanStats {
