@@ -118,11 +118,14 @@ impl FileTerms {
     }
 }
 
+/// Names the pool key of a path's content, or none when the path has no stored content.
+type KeyOf<'a> = Box<dyn Fn(&RelPath) -> Option<TermKey> + 'a>;
+
 /// Where a term index takes its projections from: the host's pool, keyed by what `key_of` names
 /// for a path, or a fresh projection for every file.
 pub(crate) struct Interning<'a> {
     pool: &'a TermPool,
-    key_of: Box<dyn Fn(&RelPath) -> Option<TermKey> + 'a>,
+    key_of: KeyOf<'a>,
 }
 
 impl<'a> Interning<'a> {
@@ -150,13 +153,7 @@ pub(crate) struct TermIndex {
 }
 
 impl TermIndex {
-    /// Project every outline the stream yields.
-    #[cfg(test)]
-    pub(crate) fn build(stream: impl FnOnce(&mut dyn FnMut(&RelPath, &FileMapL1))) -> Self {
-        Self::build_interned(&Interning::new(&TermPool::default(), |_| None), stream)
-    }
-
-    /// [`build`](Self::build) sharing every projection `interning` has a key for.
+    /// Project every outline the stream yields, sharing every projection `interning` has a key for.
     pub(crate) fn build_interned(
         interning: &Interning<'_>,
         stream: impl FnOnce(&mut dyn FnMut(&RelPath, &FileMapL1)),

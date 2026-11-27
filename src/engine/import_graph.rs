@@ -781,6 +781,7 @@ fn graph_key_of(store: &crate::store::Store, probes_complete: bool) -> GraphKey 
     let files = store.index.files.iter().map(|(path, entry)| KeyedFile {
         path,
         hash_hex: &entry.hash_hex,
+        language: &entry.language,
         extract_epoch: entry.extract_epoch,
     });
     let documents = store

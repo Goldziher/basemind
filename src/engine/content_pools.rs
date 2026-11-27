@@ -156,11 +156,12 @@ pub(crate) type GraphKey = [u8; 32];
 pub(crate) struct KeyedFile<'a> {
     pub(crate) path: &'a RelPath,
     pub(crate) hash_hex: &'a str,
+    pub(crate) language: &'a str,
     pub(crate) extract_epoch: u16,
 }
 
-/// The digest of everything an import graph is built from: every indexed file's path, content hash
-/// and extract epoch, every document's path and content hash (resolvers read package and compiler
+/// The digest of everything an import graph is built from: every indexed file's path, content hash,
+/// language and extract epoch, every document's path and content hash (resolvers read package and compiler
 /// configuration from the tree), and whether the view's import probes were complete. Two workspaces
 /// with equal digests read the same tree through the same resolvers and so build the same graph.
 /// The digest does not depend on the order of the inputs.
@@ -180,6 +181,7 @@ pub(crate) fn graph_key<'a>(
     for file in &files {
         update_field(&mut hasher, file.path.as_bytes());
         update_field(&mut hasher, file.hash_hex.as_bytes());
+        update_field(&mut hasher, file.language.as_bytes());
         hasher.update(&file.extract_epoch.to_le_bytes());
     }
     hasher.update(&(documents.len() as u64).to_le_bytes());

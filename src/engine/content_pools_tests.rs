@@ -211,6 +211,7 @@ fn digest(files: &[(&str, &str, u16)], documents: &[(&str, &str)], probes_comple
             .map(|((_, hash_hex, extract_epoch), path)| KeyedFile {
                 path,
                 hash_hex,
+                language: "rust",
                 extract_epoch: *extract_epoch,
             }),
         documents.iter().zip(&doc_paths).map(|((_, hash), path)| (path, *hash)),
@@ -308,4 +309,24 @@ fn a_graph_lives_only_while_a_workspace_holds_it_and_a_failed_build_is_not_kept(
     let failed = pool.get_or_build(key, || Err::<ImportGraph, _>("no index"));
     assert_eq!(failed.unwrap_err(), "no index");
     assert_eq!(pool.live_stats().0, 0);
+}
+
+#[test]
+fn the_graph_key_tells_apart_two_languages_assigned_to_the_same_content() {
+    let path = RelPath::from("a.foo");
+    let key_for = |language: &str| {
+        graph_key(
+            [KeyedFile {
+                path: &path,
+                hash_hex: "h1",
+                language,
+                extract_epoch: 1,
+            }],
+            [],
+            true,
+        )
+    };
+
+    assert_eq!(key_for("python"), key_for("python"));
+    assert_ne!(key_for("python"), key_for("rust"));
 }
