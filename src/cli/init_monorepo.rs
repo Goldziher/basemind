@@ -157,7 +157,8 @@ pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds) -> Result<Monore
                 || !SKIPPED_DIRS.iter().any(|d| entry.file_name() == *d)
         })
         .build();
-    for entry in walker.flatten() {
+    for entry in walker {
+        let entry = entry.context("walk the repository")?;
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
@@ -165,7 +166,10 @@ pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds) -> Result<Monore
             continue;
         };
         let rel = rel.to_string_lossy().replace('\\', "/");
-        let bytes = entry.metadata().map_or(0, |m| m.len());
+        let bytes = entry
+            .metadata()
+            .with_context(|| format!("read the metadata of {}", entry.path().display()))?
+            .len();
         let segments: Vec<&str> = rel.split('/').collect();
         let Some((file_name, dir_segments)) = segments.split_last() else {
             continue;
@@ -321,8 +325,14 @@ pub(crate) fn propose(report: &MonorepoReport, kept_docs: usize, thresholds: &Th
             confident: true,
         });
     }
+    let excluded_files: usize = out
+        .iter()
+        .filter(|p| p.setting == Setting::ScanExclude && p.confident)
+        .map(|p| p.files)
+        .sum();
+    let scope_files = report.scan_files.saturating_sub(excluded_files);
     let dominated =
-        kept_docs >= EMBED_OFF_MIN_DOCS || (kept_docs >= EMBED_OFF_MIN_SHARE_DOCS && kept_docs * 2 > report.scan_files);
+        kept_docs >= EMBED_OFF_MIN_DOCS || (kept_docs >= EMBED_OFF_MIN_SHARE_DOCS && kept_docs * 2 > scope_files);
     if dominated {
         out.push(Proposal {
             setting: Setting::EmbedOff,
@@ -487,7 +497,12 @@ pub(crate) fn apply_to_scaffold(scaffold: &str, preset: &Preset) -> String {
         );
     }
     if !preset.commented.is_empty() {
-        let lines: String = preset.commented.iter().map(|l| format!("#   {l}\n")).collect();
+        let lines: String = preset
+            .commented
+            .iter()
+            .flat_map(|suggestion| suggestion.lines())
+            .map(|line| format!("#   {line}\n"))
+            .collect();
         out = out.replacen(
             "[scan]\n",
             &format!("[scan]\n# Suggested by `basemind init`, not applied; add an entry to the key it names to use it:\n{lines}"),
@@ -671,6 +686,32 @@ mod tests {
         };
         assert_eq!(propose(&docs_heavy, 500, &SMALL).len(), 1, "more than half of the tree");
         assert!(propose(&docs_heavy, 400, &SMALL).is_empty());
+    }
+
+    #[test]
+    fn document_share_is_measured_against_the_scope_after_data_exclusions() {
+        let report = MonorepoReport {
+            scan_files: 3000,
+            data_dirs: vec![DataDir {
+                dir: "data".into(),
+                files: 2400,
+                bytes: 1,
+            }],
+            ..MonorepoReport::default()
+        };
+        let proposals = propose(&report, 600, &SMALL);
+        assert!(proposals.iter().any(|p| p.setting == Setting::EmbedOff), "{proposals:?}");
+    }
+
+    #[test]
+    fn a_multi_line_suggestion_is_commented_on_every_line() {
+        let preset = Preset {
+            commented: vec!["data\nmax_file_bytes = 1\n#  # note".to_string()],
+            ..Preset::default()
+        };
+        let scaffold = apply_to_scaffold(crate::cli::init::INIT_SCAFFOLD_TOML, &preset);
+        crate::config::parse_str(&scaffold).expect("every physical line stays a comment");
+        assert!(scaffold.contains("#   max_file_bytes = 1\n"), "{scaffold}");
     }
 
     #[test]

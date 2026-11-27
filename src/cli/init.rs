@@ -529,7 +529,7 @@ fn plan_config(root: &Path, args: &InitArgs) -> Result<Vec<Change>> {
     let (excluded, commented) =
         init_scope::resolve(&report, mode, &mut std::io::stdin().lock(), &mut std::io::stdout())?;
     let lists = init_scope::render_lists(&excluded, &commented);
-    let kept_docs = report.totals().kept;
+    let kept_docs = init_scope::kept_after_exclusions(&report, &excluded);
     let layout = init_monorepo::detect(root).context("detect the monorepo layout")?;
     let preset = init_monorepo::resolve(
         init_monorepo::propose(&layout, kept_docs, &init_monorepo::Thresholds::default()),

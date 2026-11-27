@@ -251,6 +251,17 @@ pub(crate) fn human_bytes(bytes: u64) -> String {
     }
 }
 
+/// Documents still in scope once the `excluded` globs drop their scratch directories.
+pub(crate) fn kept_after_exclusions(report: &ScopeReport, excluded: &[String]) -> usize {
+    let dropped: usize = report
+        .scratch
+        .iter()
+        .filter(|dir| excluded.contains(&dir.glob()))
+        .map(|dir| dir.files)
+        .sum();
+    report.totals().kept.saturating_sub(dropped)
+}
+
 /// The counts init prints before it writes: documents per extension, and in scope before and
 /// after the proposed scope (`kept`), plus the exclusions chosen.
 pub(crate) fn render_counts(report: &ScopeReport, excluded: &[String]) -> String {
@@ -265,6 +276,12 @@ pub(crate) fn render_counts(report: &ScopeReport, excluded: &[String]) -> String
     ));
     for glob in excluded {
         out.push_str(&format!("\n  also excluded: {glob}"));
+    }
+    if !excluded.is_empty() {
+        out.push_str(&format!(
+            "\n  in scope after exclusions: {}",
+            kept_after_exclusions(report, excluded)
+        ));
     }
     out
 }
@@ -286,7 +303,7 @@ pub(crate) fn render_lists(excluded: &[String], commented: &[String]) -> String 
     out.push_str(&list("exclude", &exclude));
     if !commented.is_empty() {
         out.push_str("# Suggested, not applied; add any of these to `exclude` to drop it:\n");
-        for line in commented {
+        for line in commented.iter().flat_map(|suggestion| suggestion.lines()) {
             out.push_str(&format!("#   {line}\n"));
         }
     }
@@ -442,6 +459,17 @@ mod tests {
         assert_eq!(cfg.documents.exclude, expected);
         assert_eq!(cfg.documents.include, proposed_include());
         assert!(lists.contains("#   sandbox/**"));
+    }
+
+    #[test]
+    fn in_scope_count_drops_the_excluded_directories() {
+        let tmp = repo();
+        let report = detect(tmp.path()).expect("detect");
+        let kept = report.totals().kept;
+        assert_eq!(kept_after_exclusions(&report, &[]), kept);
+        assert_eq!(kept_after_exclusions(&report, &["legacy/**".to_string()]), kept - 10);
+        let text = render_counts(&report, &["legacy/**".to_string()]);
+        assert!(text.contains(&format!("in scope after exclusions: {}", kept - 10)), "{text}");
     }
 
     #[test]
