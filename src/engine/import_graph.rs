@@ -771,13 +771,13 @@ fn build_from(store: &crate::store::Store, shared: Option<&GraphPool>) -> Result
         ImportGraph::build(view.file_edge_rows(), files, has_resolver, probes_complete)
     };
     match shared {
-        Some(pool) => pool.get_or_build(graph_key_of(store, probes_complete), || Ok(build())),
+        Some(pool) => pool.get_or_build(graph_key_of(store, &*view, probes_complete), || Ok(build())),
         None => Ok(Arc::new(build())),
     }
 }
 
-/// The [`graph_key`] of the content `store` indexes.
-fn graph_key_of(store: &crate::store::Store, probes_complete: bool) -> GraphKey {
+/// The [`graph_key`] of the content `store` indexes and the edge rows `view` holds.
+fn graph_key_of(store: &crate::store::Store, view: &dyn IndexView, probes_complete: bool) -> GraphKey {
     let files = store.index.files.iter().map(|(path, entry)| KeyedFile {
         path,
         hash_hex: &entry.hash_hex,
@@ -789,7 +789,7 @@ fn graph_key_of(store: &crate::store::Store, probes_complete: bool) -> GraphKey 
         .doc_files
         .iter()
         .map(|(path, entry)| (path, entry.hash_hex.as_str()));
-    graph_key(files, documents, probes_complete)
+    graph_key(files, documents, view.file_edge_rows(), probes_complete)
 }
 
 /// Whether a resolver that writes file-edge rows is compiled in for `language`.

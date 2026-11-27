@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use crate::engine::content_pools::{TermKey, TermPool};
+use crate::engine::content_pools::TermPool;
 use crate::engine::paged_map::PagedMap;
 use crate::extract::{FileMapL1, SymbolKind};
 use crate::path::RelPath;
@@ -118,29 +118,30 @@ impl FileTerms {
     }
 }
 
-/// Names the pool key of a path's content, or none when the path has no stored content.
-type KeyOf<'a> = Box<dyn Fn(&RelPath) -> Option<TermKey> + 'a>;
+/// Names the content hash of a path, or none when the path has no stored content.
+type HashOf<'a> = Box<dyn Fn(&RelPath) -> Option<Arc<str>> + 'a>;
 
-/// Where a term index takes its projections from: the host's pool, keyed by what `key_of` names
-/// for a path, or a fresh projection for every file.
+/// Where a term index takes its projections from: the host's pool, keyed by the content hash
+/// `hash_of` names for a path and the epoch of the outline being projected, or a fresh projection
+/// for every file.
 pub(crate) struct Interning<'a> {
     pool: &'a TermPool,
-    key_of: KeyOf<'a>,
+    hash_of: HashOf<'a>,
 }
 
 impl<'a> Interning<'a> {
-    /// Share projections through `pool`, a file's key being `key_of(path)`; a path with no key is
-    /// projected afresh.
-    pub(crate) fn new(pool: &'a TermPool, key_of: impl Fn(&RelPath) -> Option<TermKey> + 'a) -> Self {
+    /// Share projections through `pool`, a file's key being `hash_of(path)` with the outline's own
+    /// extract epoch; a path with no hash is projected afresh.
+    pub(crate) fn new(pool: &'a TermPool, hash_of: impl Fn(&RelPath) -> Option<Arc<str>> + 'a) -> Self {
         Self {
             pool,
-            key_of: Box::new(key_of),
+            hash_of: Box::new(hash_of),
         }
     }
 
     fn terms(&self, path: &RelPath, l1: &FileMapL1) -> Arc<FileTerms> {
-        match (self.key_of)(path) {
-            Some(key) => self.pool.intern(key, || FileTerms::from_l1(l1)),
+        match (self.hash_of)(path) {
+            Some(hash) => self.pool.intern((hash, l1.extract_epoch), || FileTerms::from_l1(l1)),
             None => Arc::new(FileTerms::from_l1(l1)),
         }
     }

@@ -19,7 +19,7 @@ mod status;
 mod status_cache;
 mod tracked;
 mod worktree;
-use commit::{build_commit_info, commit_files, commit_touches_path, decode_path};
+use commit::{build_commit_info, commit_files, decode_path};
 pub use diff::FileDiff;
 pub use remote::{normalize_remote_url, path_scope_key, scope_key};
 pub use tracked::TrackedFiles;
@@ -619,29 +619,7 @@ impl Repo {
 
     /// Recent commits across the repo, newest first.
     pub fn log_paths(&self, max_commits: usize, include_files: bool) -> Result<Vec<CommitInfo>, GitError> {
-        let local = self.local();
-        let head = local.head_id().map_err(|e| GitError::Read {
-            what: "HEAD".to_string(),
-            msg: e.to_string(),
-        })?;
-        let walk = local
-            .rev_walk([head])
-            .sorting(gix::revision::walk::Sorting::ByCommitTime(
-                gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
-            ))
-            .all()
-            .map_err(|e| GitError::Read {
-                what: "rev walk".to_string(),
-                msg: e.to_string(),
-            })?;
-        let mut out = Vec::with_capacity(max_commits.min(1024));
-        for info in walk.take(max_commits) {
-            let info = commit::walk_step(info)?;
-            if let Some(ci) = build_commit_info(&local, info.id, include_files) {
-                out.push(ci);
-            }
-        }
-        Ok(out)
+        self.log_paths_at(&self.head_hex()?, max_commits, include_files)
     }
 
     /// Recent commits that touch `rel`, newest first.
@@ -651,37 +629,16 @@ impl Repo {
     /// differs from [`Repo::blame_file`], which follows renames. Pass the pre-rename path
     /// explicitly to see the earlier history.
     pub fn log_for_path(&self, rel: impl AsRef<Path>, max_commits: usize) -> Result<Vec<CommitInfo>, GitError> {
-        let rel_bytes_buf: bstr::BString = bstr::BString::from(rel.as_ref().as_os_str().as_encoded_bytes());
-        let rel: &[u8] = rel_bytes_buf.as_slice();
-        let local = self.local();
-        let head = local.head_id().map_err(|e| GitError::Read {
+        self.log_for_path_at(&self.head_hex()?, rel, max_commits)
+    }
+
+    /// The current HEAD as 40-char hex.
+    fn head_hex(&self) -> Result<String, GitError> {
+        let id = self.local().head_id().map_err(|e| GitError::Read {
             what: "HEAD".to_string(),
             msg: e.to_string(),
         })?;
-        let walk = local
-            .rev_walk([head])
-            .sorting(gix::revision::walk::Sorting::ByCommitTime(
-                gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
-            ))
-            .all()
-            .map_err(|e| GitError::Read {
-                what: "rev walk".to_string(),
-                msg: e.to_string(),
-            })?;
-        let mut out = Vec::new();
-        for info in walk {
-            if out.len() >= max_commits {
-                break;
-            }
-            let info = commit::walk_step(info)?;
-            if !commit_touches_path(&local, info.id, rel) {
-                continue;
-            }
-            if let Some(ci) = build_commit_info(&local, info.id, false) {
-                out.push(ci);
-            }
-        }
-        Ok(out)
+        Ok(id.to_string())
     }
 
     /// Blame the given file at the given suspect rev, optionally clamped to a 1-based

@@ -26,6 +26,7 @@ use ahash::{AHashMap, AHashSet};
 use parking_lot::Mutex;
 
 use crate::engine::term_index::FileTerms;
+use crate::index::keys::FileEdges;
 use crate::path::RelPath;
 
 /// Entries a pool holds before its first sweep of dead ones.
@@ -161,13 +162,16 @@ pub(crate) struct KeyedFile<'a> {
 }
 
 /// The digest of everything an import graph is built from: every indexed file's path, content hash,
-/// language and extract epoch, every document's path and content hash (resolvers read package and compiler
-/// configuration from the tree), and whether the view's import probes were complete. Two workspaces
-/// with equal digests read the same tree through the same resolvers and so build the same graph.
-/// The digest does not depend on the order of the inputs.
+/// language and extract epoch, every document's path and content hash, whether the view's import
+/// probes were complete, and every import-edge row the graph reads. The rows are what the resolvers
+/// made of the tree, configuration files the index does not hold (`tsconfig.json`, `package.json`)
+/// included, so two workspaces with equal digests build the same graph. The digest does not depend
+/// on the order of the files and documents; `edge_rows` are taken in the order the index lists them
+/// (by importer).
 pub(crate) fn graph_key<'a>(
     files: impl IntoIterator<Item = KeyedFile<'a>>,
     documents: impl IntoIterator<Item = (&'a RelPath, &'a str)>,
+    edge_rows: impl IntoIterator<Item = (RelPath, FileEdges)>,
     probes_complete: bool,
 ) -> GraphKey {
     let mut files: Vec<KeyedFile<'a>> = files.into_iter().collect();
@@ -188,6 +192,17 @@ pub(crate) fn graph_key<'a>(
     for (path, hash_hex) in &documents {
         update_field(&mut hasher, path.as_bytes());
         update_field(&mut hasher, hash_hex.as_bytes());
+    }
+    for (importer, edges) in edge_rows {
+        update_field(&mut hasher, importer.as_bytes());
+        hasher.update(&edges.external.to_le_bytes());
+        hasher.update(&edges.unresolved.to_le_bytes());
+        hasher.update(&(edges.edges.len() as u64).to_le_bytes());
+        for edge in &edges.edges {
+            update_field(&mut hasher, edge.target.as_bytes());
+            hasher.update(&edge.local_start.to_le_bytes());
+            hasher.update(&[edge.kinds.bits()]);
+        }
     }
     *hasher.finalize().as_bytes()
 }

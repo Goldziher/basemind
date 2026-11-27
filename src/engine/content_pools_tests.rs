@@ -10,6 +10,7 @@ use crate::engine::import_graph::ImportGraph;
 use crate::engine::l1_shared::{Outlines, SharedOutlines};
 use crate::engine::term_index::FileTerms;
 use crate::extract::FileMapL1;
+use crate::index::keys::{EdgeKinds, FileEdge, FileEdges};
 use crate::path::RelPath;
 use crate::store::{Store, VIEW_WORKING};
 
@@ -215,6 +216,7 @@ fn digest(files: &[(&str, &str, u16)], documents: &[(&str, &str)], probes_comple
                 extract_epoch: *extract_epoch,
             }),
         documents.iter().zip(&doc_paths).map(|((_, hash), path)| (path, *hash)),
+        [],
         probes_complete,
     )
 }
@@ -323,10 +325,44 @@ fn the_graph_key_tells_apart_two_languages_assigned_to_the_same_content() {
                 extract_epoch: 1,
             }],
             [],
+            [],
             true,
         )
     };
 
     assert_eq!(key_for("python"), key_for("python"));
     assert_ne!(key_for("python"), key_for("rust"));
+}
+
+#[test]
+fn the_graph_key_tells_apart_two_views_whose_edge_rows_differ() {
+    let file = RelPath::from("a.ts");
+    let key_for = |edges: Vec<FileEdge>| {
+        graph_key(
+            [KeyedFile {
+                path: &file,
+                hash_hex: "h1",
+                language: "typescript",
+                extract_epoch: 1,
+            }],
+            [],
+            [(
+                file.clone(),
+                FileEdges {
+                    edges,
+                    ..FileEdges::default()
+                },
+            )],
+            true,
+        )
+    };
+    let edge = |target: &str| FileEdge {
+        target: RelPath::from(target),
+        local_start: 0,
+        kinds: EdgeKinds::IMPORT,
+    };
+
+    assert_eq!(key_for(vec![edge("b.ts")]), key_for(vec![edge("b.ts")]));
+    assert_ne!(key_for(vec![edge("b.ts")]), key_for(vec![]));
+    assert_ne!(key_for(vec![edge("b.ts")]), key_for(vec![edge("c.ts")]));
 }

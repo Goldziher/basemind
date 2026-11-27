@@ -187,12 +187,10 @@ impl MapCache {
     }
 
     /// Where this map's term index shares projections: the outline cache's pool, keyed by the
-    /// content hash and epoch `files` records for a path.
+    /// content hash `files` records for a path and the epoch of the outline loaded for it.
     fn interning<'a>(&'a self, files: &'a l1_cache::FileIndexView) -> crate::engine::term_index::Interning<'a> {
         crate::engine::term_index::Interning::new(&self.l1.pools().terms, move |path| {
-            files
-                .get(path)
-                .map(|meta| (Arc::clone(&meta.hash_hex), meta.extract_epoch))
+            files.get(path).map(|meta| Arc::clone(&meta.hash_hex))
         })
     }
 
