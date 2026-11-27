@@ -275,12 +275,10 @@ impl Workspace {
             let key_lock = super::memory_put_lock(&self.scope, vis_byte, owner, &entry.key);
             let _guard = key_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let store = self.store_read();
-            let merged = self
-                .memory_index(&store)
-                .and_then(|idx| {
-                    ops::merge_core(&idx, &self.scope, vis_byte, owner, entry, params.policy, &source)
-                        .map_err(EngineError::from)
-                });
+            let merged = self.memory_index(&store).and_then(|idx| {
+                ops::merge_core(&idx, &self.scope, vis_byte, owner, entry, params.policy, &source)
+                    .map_err(EngineError::from)
+            });
             match merged {
                 Ok(Merged::Added) => report.added += 1,
                 Ok(Merged::Replaced) => {
