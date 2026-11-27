@@ -361,7 +361,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   node @this.lexical_scope
 }
 
-(modifiers (_) @annotation) @this {
+(modifiers [(annotation) (marker_annotation)] @annotation) @this {
   edge @annotation.ref -> @this.lexical_scope
 }
 
@@ -428,7 +428,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
 }
 
 (method_declaration
-  (modifiers "static"?@is_static)?
+  (modifiers (modifier "static"?@is_static)?)?
   type: (_) @type
   name: (identifier) @name
   body: (block) @_block) @method
@@ -539,7 +539,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   edge @stmt.after_scope -> @stmt.before_scope
 }
 
-(assert_statement (expression) @expr) @stmt {
+(assert_statement (_) @expr) @stmt {
   edge @expr.lexical_scope -> @stmt.before_scope
 }
 
@@ -630,7 +630,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   edge @body.before_scope -> @this.before_scope
 }
 
-(for_statement init: (expression) @init condition: (_) @condition update: (_) @update body: (_) @body) @stmt {
+(for_statement init: (_) @init condition: (_) @condition update: (_) @update body: (_) @body) @stmt {
   edge @init.lexical_scope -> @stmt.before_scope
   edge @condition.lexical_scope -> @stmt.before_scope
   edge @update.lexical_scope -> @stmt.before_scope
@@ -793,7 +793,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   node @label.lexical_scope
 }
 
-(switch_label (expression) @expr) @label {
+(switch_label (_) @expr) @label {
   edge @expr.lexical_scope -> @label.lexical_scope
 }
 
@@ -938,7 +938,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
 ;;  Primary Expressions
 ;; =====================
 
-(array_access (primary_expression) @array (expression) @index) @this {
+(array_access (_) @array (_) @index) @this {
   edge @array.lexical_scope -> @this.lexical_scope
   edge @index.lexical_scope -> @this.lexical_scope
 }
@@ -1017,7 +1017,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   node @method_invocation.after_scope
 }
 
-(method_invocation arguments: (argument_list (expression) @expr)) @method_invocation {
+(method_invocation arguments: (argument_list (_) @expr)) @method_invocation {
   edge @expr.lexical_scope -> @method_invocation.lexical_scope
 }
 
@@ -1195,7 +1195,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   node @this.params
 }
 
-(lambda_expression body: (expression) @body) @this {
+(lambda_expression body: (_) @body) @this {
   edge @body.lexical_scope -> @this.lexical_scope
   edge @body.lexical_scope -> @this.params
 }
@@ -1250,7 +1250,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
     edge expr_ref__typeof -> expr_ref
 }
 
-(object_creation_expression (primary_expression) @child) @this {
+(object_creation_expression (_) @child) @this {
   edge @child.lexical_scope -> @this.lexical_scope
 }
 
@@ -1262,19 +1262,19 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   edge @type.lexical_scope -> @this.lexical_scope
 }
 
-(object_creation_expression arguments: (argument_list (expression) @expr)) @this {
+(object_creation_expression arguments: (argument_list (_) @expr)) @this {
   edge @expr.lexical_scope -> @this.lexical_scope
 }
 
-(ternary_expression (expression) @expr) @this {
+(ternary_expression (_) @expr) @this {
   edge @expr.lexical_scope -> @this.lexical_scope
 }
 
-(unary_expression (expression) @expr) @this {
+(unary_expression (_) @expr) @this {
   edge @expr.lexical_scope -> @this.lexical_scope
 }
 
-(update_expression (expression) @expr) @this {
+(update_expression (_) @expr) @this {
   edge @expr.lexical_scope -> @this.lexical_scope
 }
 
