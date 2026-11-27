@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Java files expose their imports: each `import` (including `static` and wildcard imports) is an import edge resolved against the standard source layouts, so `code_refs` importers and dependents work for Java (#514)
 - `code_grep` stops a sweep after 10 seconds and answers the matches it found with `truncated_reason: time_budget`, a `notice` and a `next_cursor` resuming at the first file it did not read; the manual documents `skipped_files` and `skipped_reasons` and why the first search after a start is slower (#477)
 - `scripts/changelog_section.py` fails a release whose changelog section is over 60000 characters (`RELEASE_NOTES_CEILING`) and uses a hand-written `docs/release-notes/<version>.md` as the release body when one exists, so the release page stays a summary and the long list stays in CHANGELOG.md (#450)
 - `[resources] hard_footprint_percent` is an opt-in hard memory ceiling: past that percentage of `max_footprint_mb` the running scan cancels itself between chunks, the daemon sheds its idle hosted read stacks, and the index is left consistent and marked partial (#214)
