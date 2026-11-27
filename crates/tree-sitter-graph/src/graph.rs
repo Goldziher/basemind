@@ -111,7 +111,7 @@ impl<'tree> Graph<'tree> {
     }
 
     pub fn display_json(&self, path: Option<&Path>) -> std::io::Result<()> {
-        let s = serde_json::to_string_pretty(self).expect("graph serializes to JSON");
+        let s = serde_json::to_string_pretty(self).unwrap();
         path.map_or(stdout().write_all(s.as_bytes()), |path| {
             File::create(path)?.write_all(s.as_bytes())
         })

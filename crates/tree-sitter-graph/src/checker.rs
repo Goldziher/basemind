@@ -122,7 +122,7 @@ impl ast::File {
                 )
                 .map_err(|_| CheckError::DuplicateGlobalVariable(global.name.as_str().to_string(), global.location))?;
         }
-        let file_query = self.query.as_ref().expect("query is parsed before checking");
+        let file_query = self.query.as_ref().unwrap();
         for (index, stanza) in self.stanzas.iter_mut().enumerate() {
             stanza.check(&globals, file_query, index)?;
         }

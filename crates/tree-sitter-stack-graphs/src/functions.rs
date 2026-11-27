@@ -93,7 +93,7 @@ pub mod path {
                 path = path.join(component.into_string()?);
             }
 
-            Ok(path.to_str().expect("path is valid UTF-8").into())
+            Ok(path.to_str().unwrap().into())
         }
     }
 
@@ -111,7 +111,7 @@ pub mod path {
 
             let components = path
                 .components()
-                .map(|c| c.as_os_str().to_str().expect("path component is valid UTF-8").into())
+                .map(|c| c.as_os_str().to_str().unwrap().into())
                 .collect::<Vec<_>>();
             Ok(components.into())
         }

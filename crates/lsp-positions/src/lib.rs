@@ -328,8 +328,8 @@ impl<'a> SpanCalculator<'a> {
         Position {
             line,
             column: *self.for_utf8_offset(column_utf8_offset),
-            containing_line: self.containing_line.as_ref().expect("line state is set before a span is built").utf8_bounds.clone(),
-            trimmed_line: self.trimmed_line.as_ref().expect("line state is set before a span is built").utf8_bounds.clone(),
+            containing_line: self.containing_line.as_ref().unwrap().utf8_bounds.clone(),
+            trimmed_line: self.trimmed_line.as_ref().unwrap().utf8_bounds.clone(),
         }
     }
 
@@ -361,8 +361,8 @@ impl<'a> SpanCalculator<'a> {
         Position {
             line,
             column: *self.for_grapheme_offset(column_grapheme_offset),
-            containing_line: self.containing_line.as_ref().expect("line state is set before a span is built").utf8_bounds.clone(),
-            trimmed_line: self.trimmed_line.as_ref().expect("line state is set before a span is built").utf8_bounds.clone(),
+            containing_line: self.containing_line.as_ref().unwrap().utf8_bounds.clone(),
+            trimmed_line: self.trimmed_line.as_ref().unwrap().utf8_bounds.clone(),
         }
     }
 
@@ -389,7 +389,7 @@ impl<'a> SpanCalculator<'a> {
         let index = self
             .columns
             .binary_search_by_key(&utf8_offset, |pos| pos.utf8_offset)
-            .expect("UTF-8 offset is a recorded column boundary");
+            .unwrap();
         &self.columns[index]
     }
 
@@ -399,7 +399,7 @@ impl<'a> SpanCalculator<'a> {
         let mut index = self
             .columns
             .binary_search_by_key(&grapheme_offset, |pos| pos.grapheme_offset)
-            .expect("grapheme offset is a recorded column boundary");
+            .unwrap();
         let mut offset = &self.columns[index];
         while index > 0 {
             index -= 1;
