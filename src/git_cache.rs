@@ -1059,7 +1059,11 @@ mod tests {
 
         category(&one.log).admit(key.clone(), commits("aaa", 4096));
 
-        let seen = category(&two.log).lru.get(&key).cloned().expect("the sibling sees the entry");
+        let seen = category(&two.log)
+            .lru
+            .get(&key)
+            .cloned()
+            .expect("the sibling sees the entry");
         assert_eq!(seen[0].sha, "aaa");
         assert_eq!(category(&two.log).charged, category(&one.log).charged);
         assert_eq!(category(&one.log).lru.len(), 1);
