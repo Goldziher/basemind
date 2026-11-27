@@ -3,7 +3,7 @@
 //! A large monorepo needs hand-tuned `[scan]` and `[documents]` settings before its first scan is
 //! useful. Init walks the tree once, detects Bazel, Terraform, large data directories and tracked
 //! directories the exclude floor would drop (a committed `build/`), turns each finding into a
-//! [`Proposal`], and writes the accepted ones into `basemind.toml` as plain values: `floor_allow`,
+//! `Proposal`, and writes the accepted ones into `basemind.toml` as plain values: `floor_allow`,
 //! extra `exclude` globs and `[documents] embed = false`. It prints the expected file count and a
 //! rough scan time first, so the numbers are visible before anything is written.
 
