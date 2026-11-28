@@ -789,3 +789,64 @@ fn measure_the_graph_of_a_repository() {
         &heads[..heads.len().min(40)]
     );
 }
+
+/// `import` paths of `.proto` files and `load()` labels of Starlark files become graph edges, so
+/// dependents of a proto or a `.bzl` file are found as they are for Go and Rust.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+#[test]
+fn a_scanned_proto_and_starlark_tree_links_importers_to_their_files() {
+    crate::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("api/common")).unwrap();
+    std::fs::create_dir_all(root.join("tools")).unwrap();
+    std::fs::write(root.join("basemind.toml"), "").unwrap();
+    std::fs::write(
+        root.join("api/common/money.proto"),
+        "syntax = \"proto3\";\npackage acme.common;\nmessage Money {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("api/billing.proto"),
+        "syntax = \"proto3\";\npackage acme.billing;\nimport \"api/common/money.proto\";\n\
+         import \"google/protobuf/timestamp.proto\";\nimport \"missing.proto\";\nmessage Invoice {}\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("tools/defs.bzl"), "def my_rule(name):\n    pass\n").unwrap();
+    std::fs::write(
+        root.join("api/BUILD"),
+        "load(\"//tools:defs.bzl\", \"my_rule\")\nload(\"@rules_python//python:defs.bzl\", \"py_library\")\n\
+         my_rule(name = \"billing\")\n",
+    )
+    .unwrap();
+    let ws = scanned_workspace(root);
+    let graph = import_graph(&ws).expect("graph");
+
+    let edges = edges_of(&graph);
+    for (from, to) in [
+        ("api/billing.proto", "api/common/money.proto"),
+        ("api/BUILD", "tools/defs.bzl"),
+    ] {
+        assert!(
+            edges.contains(&(from.to_string(), to.to_string())),
+            "{from} -> {to} in {edges:?}"
+        );
+    }
+    assert_eq!(edges.len(), 2, "external and missing imports add no edge: {edges:?}");
+
+    let money = id(&graph, "api/common/money.proto");
+    assert_eq!(
+        names(&graph, graph.importers(money, Tiers::ALL).map(|edge| edge.node)),
+        ["api/billing.proto"]
+    );
+    let coverage = graph.coverage();
+    for (language, external, unresolved) in [("proto", 1, 1), ("starlark", 1, 0)] {
+        let row = coverage
+            .languages
+            .iter()
+            .find(|row| row.language == language)
+            .unwrap_or_else(|| panic!("{language} coverage"));
+        assert!(row.resolver && row.edges == 1, "{row:?}");
+        assert_eq!((row.external, row.unresolved), (external, unresolved), "{row:?}");
+    }
+}
