@@ -195,30 +195,30 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
   `code_outline` 500 symbols, `code_search` and `docs_search` 10 hits, `git_log` 20 commits (at
   most 100), `git_blame` 100 hunks. `limit: 0` is refused.
 - **Token budget.** A list is trimmed to `max_tokens` (default 6000), then sets `budgeted`: raise
-  `max_tokens` or follow `next_cursor`.
-- **Three words for a cut.** A page that ended at `limit` returns only `next_cursor`. `budgeted`
-  means the token budget trimmed it. `truncated` with `truncated_reason` marks a cut you did not
-  ask for (`omitted` counts what was left out where known; reasons below).
+  `max_tokens` or follow `next_cursor`. A first result over `max_tokens` is still returned, and
+  `budgeted` stays unset when nothing was cut.
+- **Three words for a cut.** A page ended at `limit` returns only `next_cursor`; `budgeted` means
+  the token budget trimmed it; `truncated` with `truncated_reason` marks a cut you did not ask for
+  (`omitted` counts what was left out; reasons below).
 - **Limit cap.** `git_log` silently caps `limit` at 100. `code_outline`, `code_symbols`,
   `code_grep`, `code_refs` (paginated relations; `definition` takes no `limit`), `find_files` and a
-  `memory_search` listing cap at 1000 rows (`find_files` 5000) and set `limit_clamped: true` (absent
-  when `limit` was kept). Ask at or below the maximum and follow `next_cursor`.
+  `memory_search` listing cap at 1000 rows (`find_files` 5000) and set `limit_clamped: true`. Ask at
+  or below the maximum and follow `next_cursor`.
 - **Cursors are bound to their query.** A cursor continues only the call that returned it: never
-  reuse one across queries (`code_symbols` cannot detect it and skips results). After a rescan or
-  HEAD move a tool returns an error or an empty page with `cursor_invalidated: true` (`code_symbols`,
-  `code_grep`, `find_files`, `git_log`), never a finished list: repeat the call without `cursor`.
+  reuse one across queries (`code_symbols` cannot detect it and skips results). `code_symbols`,
+  `code_grep` and `find_files` cursors are keyed to the index generation (a rescan or index change
+  moves it, a HEAD move alone does not); `git_log` cursors to HEAD. On a mismatch the tool returns
+  an error or an empty page with `cursor_invalidated: true`: repeat without `cursor`.
 - **Notices.** An empty or partial answer with a `notice` (`empty_index`, `warming_up`,
   `building_index`, `rescanning`) means retry shortly, not "no matches".
-- **Text answers.** Each tool uses the form that measured fewest tokens (ADR-0053).
-  `code_grep` writes other fields as `key: value` lines, then each file as `# <path>` and each
+- **Text answers** (ADR-0053). `code_grep` writes other fields as `key: value` lines, then each file as `# <path>` and each
   enclosing symbol as `## <symbol>` over its rows; rows before a symbol header or under a bare
   `##` are outside every symbol. `code_outline`, `git_diff` and a `find_files` list are
   [TOON](https://toonformat.dev): `key: value` lines, and a list of objects as one table,
   `symbols[N]{name,kind,...}:` plus a comma-separated row per object. Every other tool answers in
-  compact JSON. A header path or symbol that starts with `"`, has edge whitespace or holds a
-  control character is a JSON string. MCP `structuredContent` is always JSON.
-- **CLI output.** Human output prints bodies and diffs in full and cuts only table cells (note on
-  stderr). `--json` prints the MCP `structuredContent` JSON.
+  compact JSON. MCP `structuredContent` is always JSON.
+- **CLI output.** Human output prints bodies and diffs in full and cuts only table cells.
+  `--json` prints the MCP `structuredContent` JSON.
 
 ### Truncation reasons
 
