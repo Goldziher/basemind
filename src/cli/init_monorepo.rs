@@ -13,7 +13,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use super::init_scope::{COUNTED_EXTENSIONS, Mode, escape_glob, human_bytes};
+use super::init_scope::{COUNTED_EXTENSIONS, DocumentScope, Mode, escape_glob, human_bytes};
 use crate::config::rules::{RuleSet, compile_rules};
 use crate::scanner_filter;
 
@@ -100,6 +100,8 @@ pub(crate) struct DataDir {
     pub files: usize,
     /// Of `files`, those the document tier counts.
     pub docs: usize,
+    /// Of `docs`, those the document scope keeps.
+    pub kept_docs: usize,
     pub bytes: u64,
 }
 
@@ -112,6 +114,8 @@ pub(crate) struct StateHit {
     pub files: usize,
     /// Of `files`, those the document tier counts.
     pub docs: usize,
+    /// Of `docs`, those the document scope keeps.
+    pub kept_docs: usize,
     pub bytes: u64,
 }
 
@@ -135,6 +139,7 @@ struct DirTally {
     files: usize,
     data_files: usize,
     doc_files: usize,
+    kept_doc_files: usize,
     bytes: u64,
 }
 
@@ -143,15 +148,17 @@ struct StateFile {
     rel: String,
     bytes: u64,
     is_doc: bool,
+    is_kept_doc: bool,
 }
 
 /// Walk `root` (honouring `.gitignore`) and report the monorepo findings with the default thresholds.
-pub(crate) fn detect(root: &Path) -> Result<MonorepoReport> {
-    detect_with(root, &Thresholds::default())
+/// `scope` decides which documents count as kept.
+pub(crate) fn detect(root: &Path, scope: &DocumentScope) -> Result<MonorepoReport> {
+    detect_with(root, &Thresholds::default(), scope)
 }
 
 /// [`detect`] with explicit thresholds.
-pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds) -> Result<MonorepoReport> {
+pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds, scope: &DocumentScope) -> Result<MonorepoReport> {
     let floor_names: Vec<&str> = scanner_filter::floor_dir_names().collect();
     let state_rules = GENERATED_STATE_GLOBS
         .iter()
@@ -204,6 +211,7 @@ pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds) -> Result<Monore
         if is_doc {
             report.document_files += 1;
         }
+        let is_kept_doc = is_doc && scope.keeps(&rel);
         if ext.as_deref() == Some("tf") {
             report.terraform_files += 1;
         }
@@ -217,6 +225,7 @@ pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds) -> Result<Monore
                     rel: rel.clone(),
                     bytes,
                     is_doc,
+                    is_kept_doc,
                 });
             }
         }
@@ -232,6 +241,7 @@ pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds) -> Result<Monore
             tally.bytes += bytes;
             tally.data_files += usize::from(is_data);
             tally.doc_files += usize::from(is_doc);
+            tally.kept_doc_files += usize::from(is_kept_doc);
         }
     }
 
@@ -255,6 +265,7 @@ fn state_hits(state: Vec<Vec<StateFile>>, data_dirs: &[DataDir]) -> Vec<StateHit
             what,
             files: 0,
             docs: 0,
+            kept_docs: 0,
             bytes: 0,
         };
         for file in matched {
@@ -264,6 +275,7 @@ fn state_hits(state: Vec<Vec<StateFile>>, data_dirs: &[DataDir]) -> Vec<StateHit
             }
             hit.files += 1;
             hit.docs += usize::from(file.is_doc);
+            hit.kept_docs += usize::from(file.is_kept_doc);
             hit.bytes += file.bytes;
         }
         if hit.files > 0 {
@@ -293,6 +305,7 @@ fn outermost_data_dirs(dirs: &BTreeMap<String, DirTally>, thresholds: &Threshold
                 dir: dir.clone(),
                 files: tally.files,
                 docs: tally.doc_files,
+                kept_docs: tally.kept_doc_files,
                 bytes: tally.bytes,
             });
         }
@@ -321,6 +334,8 @@ pub(crate) struct Proposal {
     pub files: usize,
     /// Of `files`, those the document tier counts (`ScanExclude` only).
     pub docs: usize,
+    /// Of `docs`, those the document scope keeps (`ScanExclude` only).
+    pub kept_docs: usize,
     /// Applied under `--yes`; otherwise only printed as a comment.
     pub confident: bool,
 }
@@ -341,6 +356,7 @@ pub(crate) fn propose(report: &MonorepoReport, kept_docs: usize, thresholds: &Th
             ),
             files: dir.files,
             docs: 0,
+            kept_docs: 0,
             confident: AUTO_FLOOR_DIRS.contains(&dir.name.as_str()) && dir.files >= thresholds.floor_auto_min_files,
         });
     }
@@ -356,6 +372,7 @@ pub(crate) fn propose(report: &MonorepoReport, kept_docs: usize, thresholds: &Th
             ),
             files: dir.files,
             docs: dir.docs,
+            kept_docs: dir.kept_docs,
             confident: true,
         });
     }
@@ -366,15 +383,16 @@ pub(crate) fn propose(report: &MonorepoReport, kept_docs: usize, thresholds: &Th
             describe: format!("{} ({} files, {})", hit.what, hit.files, human_bytes(hit.bytes)),
             files: hit.files,
             docs: hit.docs,
+            kept_docs: hit.kept_docs,
             confident: true,
         });
     }
-    let (excluded_files, excluded_docs) = out
+    let (excluded_files, excluded_kept_docs) = out
         .iter()
         .filter(|p| p.setting == Setting::ScanExclude && p.confident)
-        .fold((0, 0), |(files, docs), p| (files + p.files, docs + p.docs));
+        .fold((0, 0), |(files, kept), p| (files + p.files, kept + p.kept_docs));
     let scope_files = report.scan_files.saturating_sub(excluded_files);
-    let kept_docs = kept_docs.saturating_sub(excluded_docs);
+    let kept_docs = kept_docs.saturating_sub(excluded_kept_docs);
     let dominated =
         kept_docs >= EMBED_OFF_MIN_DOCS || (kept_docs >= EMBED_OFF_MIN_SHARE_DOCS && kept_docs * 2 > scope_files);
     if dominated {
@@ -386,6 +404,7 @@ pub(crate) fn propose(report: &MonorepoReport, kept_docs: usize, thresholds: &Th
             ),
             files: 0,
             docs: 0,
+            kept_docs: 0,
             confident: true,
         });
     }
@@ -460,18 +479,20 @@ fn ask(proposal: &Proposal, input: &mut dyn BufRead, output: &mut dyn Write) -> 
 pub(crate) fn expected_files(report: &MonorepoReport, preset: &Preset, kept_docs: usize) -> usize {
     let mut files = report.scan_files;
     let mut excluded_docs = 0;
+    let mut excluded_kept_docs = 0;
     for proposal in &preset.applied {
         match proposal.setting {
             Setting::FloorAllow => files += proposal.files,
             Setting::ScanExclude => {
                 files = files.saturating_sub(proposal.files);
                 excluded_docs += proposal.docs;
+                excluded_kept_docs += proposal.kept_docs;
             }
             Setting::EmbedOff => {}
         }
     }
     let remaining_docs = report.document_files.saturating_sub(excluded_docs);
-    files.saturating_sub(remaining_docs) + kept_docs.saturating_sub(excluded_docs)
+    files.saturating_sub(remaining_docs) + kept_docs.saturating_sub(excluded_kept_docs)
 }
 
 fn estimate(files: usize) -> String {
@@ -578,6 +599,10 @@ mod tests {
         floor_auto_min_files: 3,
     };
 
+    fn scope() -> DocumentScope {
+        DocumentScope::new(&[]).expect("scope")
+    }
+
     fn touch(root: &Path, rel: &str, bytes: usize) {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -620,7 +645,7 @@ mod tests {
     #[test]
     fn detect_finds_bazel_terraform_data_and_floor_directories() {
         let tmp = monorepo();
-        let report = detect_with(tmp.path(), &SMALL).expect("detect");
+        let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
         assert!(report.bazel);
         assert_eq!(report.terraform_files, 1);
         assert_eq!(
@@ -645,6 +670,7 @@ mod tests {
                 dir: "demo/data".into(),
                 files: 4,
                 docs: 4,
+                kept_docs: 0,
                 bytes: 1600
             }],
             "demo is only 80% data (its README), demo/data qualifies"
@@ -656,6 +682,7 @@ mod tests {
                 what: "Terraform state",
                 files: 1,
                 docs: 0,
+                kept_docs: 0,
                 bytes: 10
             }]
         );
@@ -669,7 +696,7 @@ mod tests {
         fs::create_dir_all(tmp.path().join(".git")).unwrap();
         touch(tmp.path(), "src/main.rs", 10);
         touch(tmp.path(), "README.md", 10);
-        let report = detect_with(tmp.path(), &SMALL).expect("detect");
+        let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
         assert!(!report.bazel);
         assert!(propose(&report, 1, &SMALL).is_empty());
         let preset = apply_all(&report, 1);
@@ -682,7 +709,7 @@ mod tests {
     #[test]
     fn yes_applies_confident_proposals_and_comments_the_rest() {
         let tmp = monorepo();
-        let report = detect_with(tmp.path(), &SMALL).expect("detect");
+        let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
         let preset = apply_all(&report, 2);
         let applied: Vec<(Setting, &str)> = preset.applied.iter().map(|p| (p.setting, p.entry.as_str())).collect();
         assert_eq!(
@@ -704,7 +731,7 @@ mod tests {
     #[test]
     fn preview_applies_nothing_and_interactive_follows_the_answers() {
         let tmp = monorepo();
-        let report = detect_with(tmp.path(), &SMALL).expect("detect");
+        let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
         let proposals = propose(&report, 2, &SMALL);
         let total = proposals.len();
         let preview = resolve(proposals.clone(), Mode::Preview, &mut std::io::empty(), &mut Vec::new()).unwrap();
@@ -748,6 +775,7 @@ mod tests {
                 dir: "data".into(),
                 files: 2400,
                 docs: 0,
+                kept_docs: 0,
                 bytes: 1,
             }],
             ..MonorepoReport::default()
@@ -768,6 +796,7 @@ mod tests {
                 dir: "data".into(),
                 files: 700,
                 docs: 550,
+                kept_docs: 550,
                 bytes: 1,
             }],
             ..MonorepoReport::default()
@@ -782,6 +811,54 @@ mod tests {
     }
 
     #[test]
+    fn excluded_csv_files_do_not_remove_kept_documents_from_the_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        for i in 0..40 {
+            touch(tmp.path(), &format!("data/rows{i}.csv"), 400);
+        }
+        for i in 0..5 {
+            touch(tmp.path(), &format!("guides/g{i}.md"), 10);
+        }
+        let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
+        assert_eq!(report.data_dirs.len(), 1);
+        assert_eq!(report.data_dirs[0].docs, 40, "csv files are document-like");
+        assert_eq!(
+            report.data_dirs[0].kept_docs, 0,
+            "csv is not in the document include list"
+        );
+        assert_eq!(report.document_files, 45);
+        let kept_docs = 5;
+        let preset = apply_all(&report, kept_docs);
+        assert_eq!(expected_files(&report, &preset, kept_docs), 5);
+    }
+
+    #[test]
+    fn documents_in_a_dropped_scratch_directory_are_not_removed_twice() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        for i in 0..150 {
+            touch(tmp.path(), &format!("data/rows{i}.csv"), 400);
+        }
+        for i in 0..3 {
+            touch(tmp.path(), &format!("data/legacy/n{i}.md"), 10);
+            touch(tmp.path(), &format!("data/live/n{i}.md"), 10);
+        }
+        let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
+        assert_eq!(report.data_dirs[0].kept_docs, 6);
+        let scratch = DocumentScope::new(&["data/legacy/**".to_string()]).unwrap();
+        let report = detect_with(tmp.path(), &SMALL, &scratch).expect("detect");
+        assert_eq!(
+            report.data_dirs[0].docs, 156,
+            "the broad count still includes every document-like file"
+        );
+        assert_eq!(
+            report.data_dirs[0].kept_docs, 3,
+            "legacy documents were already dropped by the scratch glob"
+        );
+    }
+
+    #[test]
     fn a_state_file_inside_a_data_directory_is_counted_once() {
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir_all(tmp.path().join(".git")).unwrap();
@@ -790,7 +867,7 @@ mod tests {
         }
         touch(tmp.path(), "data/terraform.tfstate", 10);
         touch(tmp.path(), "infra/terraform.tfstate", 10);
-        let report = detect_with(tmp.path(), &SMALL).expect("detect");
+        let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
         assert_eq!(report.data_dirs.len(), 1);
         assert_eq!(report.data_dirs[0].files, 41);
         assert_eq!(report.state_hits.len(), 1);
@@ -811,7 +888,7 @@ mod tests {
     #[test]
     fn applied_preset_parses_into_the_expected_config() {
         let tmp = monorepo();
-        let report = detect_with(tmp.path(), &SMALL).expect("detect");
+        let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
         let preset = apply_all(&report, 2500);
         let scaffold = apply_to_scaffold(crate::cli::init::INIT_SCAFFOLD_TOML, &preset);
         let cfg = crate::config::parse_str(&scaffold).expect("scaffold with the preset parses and validates");
@@ -829,7 +906,7 @@ mod tests {
     #[test]
     fn expected_files_account_for_each_applied_change() {
         let tmp = monorepo();
-        let report = detect_with(tmp.path(), &SMALL).expect("detect");
+        let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
         let preset = apply_all(&report, 6);
         // 12 walked + 3 build files - 4 data files - 1 state file = 10; its 2 documents are all kept
         assert_eq!(expected_files(&report, &preset, 6), 10);

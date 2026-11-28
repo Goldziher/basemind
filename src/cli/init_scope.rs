@@ -126,18 +126,36 @@ pub(crate) fn proposed_include() -> Vec<String> {
     DOCUMENTATION_EXTENSIONS.iter().map(|e| format!("**/*.{e}")).collect()
 }
 
-fn scope_rules() -> Result<(RuleSet, RuleSet)> {
-    let include = proposed_include();
-    let exclude = default_document_exclude();
-    Ok((
-        compile_rules(include.iter().map(String::as_str)).map_err(anyhow::Error::msg)?,
-        compile_rules(exclude.iter().map(String::as_str)).map_err(anyhow::Error::msg)?,
-    ))
+/// The documents the proposed `[documents]` lists keep: the include list, minus the default
+/// exclude list and any extra exclusions.
+pub(crate) struct DocumentScope {
+    include: RuleSet,
+    exclude: RuleSet,
+}
+
+impl DocumentScope {
+    /// The default scope with `excluded` globs (the scratch directories already dropped) removed too.
+    pub(crate) fn new(excluded: &[String]) -> Result<Self> {
+        let include = proposed_include();
+        let exclude: Vec<String> = default_document_exclude()
+            .into_iter()
+            .chain(excluded.iter().cloned())
+            .collect();
+        Ok(Self {
+            include: compile_rules(include.iter().map(String::as_str)).map_err(anyhow::Error::msg)?,
+            exclude: compile_rules(exclude.iter().map(String::as_str)).map_err(anyhow::Error::msg)?,
+        })
+    }
+
+    /// True when the repo-relative, forward-slash `rel` stays in scope.
+    pub(crate) fn keeps(&self, rel: &str) -> bool {
+        self.include.is_match(rel) && !self.exclude.is_match(rel)
+    }
 }
 
 /// Walk `root` (honouring `.gitignore`) and count document-like files against the default scope.
 pub(crate) fn detect(root: &Path) -> Result<ScopeReport> {
-    let (include, exclude) = scope_rules()?;
+    let scope = DocumentScope::new(&[])?;
     let mut report = ScopeReport::default();
     let mut scratch: BTreeMap<String, (usize, u64)> = BTreeMap::new();
     let walker = crate::scanner_filter::ignore_walk_builder(root, true, false)
@@ -163,7 +181,7 @@ pub(crate) fn detect(root: &Path) -> Result<ScopeReport> {
         }
         let counts = report.by_ext.entry(ext).or_default();
         counts.total += 1;
-        if !include.is_match(&rel) || exclude.is_match(&rel) {
+        if !scope.keeps(&rel) {
             continue;
         }
         counts.kept += 1;
