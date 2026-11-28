@@ -907,10 +907,10 @@ mod tests {
     fn expected_files_account_for_each_applied_change() {
         let tmp = monorepo();
         let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
-        let preset = apply_all(&report, 6);
+        let preset = apply_all(&report, 2);
         // 12 walked + 3 build files - 4 data files - 1 state file = 10; its 2 documents are all kept
-        assert_eq!(expected_files(&report, &preset, 6), 10);
-        let summary = render_summary(&report, &preset, 6);
+        assert_eq!(expected_files(&report, &preset, 2), 10);
+        let summary = render_summary(&report, &preset, 2);
         assert!(
             summary.contains("monorepo layout: Bazel, Terraform (1 .tf files)"),
             "{summary}"
