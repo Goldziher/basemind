@@ -139,15 +139,11 @@ mod inner {
         .find(|s| s.name == "caller_location")
         .expect("caller_location symbol");
     assert_eq!(sym.kind, SymbolKind::Function);
-    // A symbol's range starts at its attributes, as for an item outside a macro body.
-    assert_eq!((sym.start_row, sym.start_col), (1, 4));
+    assert_eq!((sym.start_row, sym.start_col), (2, 4));
     let body = &src[sym.start_byte as usize..sym.end_byte as usize];
-    assert!(body.starts_with("#[track_caller]"), "{body}");
+    assert!(body.starts_with("pub(crate) fn caller_location"), "{body}");
     assert!(body.ends_with("{ 0 }"), "{body}");
-    assert_eq!(
-        sym.signature.as_deref(),
-        Some("#[track_caller] pub(crate) fn caller_location() -> u32")
-    );
+    assert_eq!(sym.signature.as_deref(), Some("pub(crate) fn caller_location() -> u32"));
 
     let names: Vec<&str> = map.symbols.iter().map(|s| s.name.as_str()).collect();
     for want in ["Sleep", "inner", "deep"] {

@@ -874,3 +874,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "code-intel-stack"))]
+#[path = "stackgraph_import_tests.rs"]
+mod import_tests;
