@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:b905b3219fdcef28a70eadb00998025895c89c0ea380dd77cc4a3d67de8917de
-Source-Hash: blake3:1f14402d1840126cf7337c9a7a6a73d47e87cb3514a182fbf7b927a76a3322f9
+Content-Hash: blake3:db01093b4696d37a1e8a31ec669909f7c907f09394332f33bb7f8276402c0df0
+Source-Hash: blake3:cf13e28e976928ad07e04ec34e718a93ce3397449e6a6c38629c58faea0f9c4e
 Schema-Version: v1
 -->
 
@@ -57,7 +57,7 @@ stats", or invokes `/bm-stats` directly. This skill is strictly user-invoked —
 If they invoke `/bm-stats --explain` or ask how the savings number is
 derived, include the per-baseline breakdown from the `per_baseline` field of the
 response and call out which tools fall into which bucket. The estimator lives in
-`src/mcp/savings.rs` if they want to read the code.
+`crates/basemind-engine/src/engine/savings.rs` if they want to read the code.
 
 ## Notes
 

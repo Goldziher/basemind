@@ -7,7 +7,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::analysis_migration::{self, MigrationCmd};
-use super::context::Tools;
+use super::context::CliContext;
 
 #[path = "analysis_cycles.rs"]
 mod cycles;
@@ -45,7 +45,7 @@ pub enum AnalysisCmd {
 pub(super) type Gate = Box<dyn Fn(&CallToolResult) -> anyhow::Result<()>>;
 
 /// Run an analysis command, returning its tool name and result for `code::run` to render.
-pub(super) async fn call(tools: &Tools, cmd: AnalysisCmd) -> (&'static str, Result<CallToolResult, McpError>) {
+pub(super) async fn call(tools: &CliContext, cmd: AnalysisCmd) -> (&'static str, Result<CallToolResult, McpError>) {
     match cmd {
         AnalysisCmd::Impact(args) => ("code_impact", impact::call(tools, args).await),
         AnalysisCmd::Cycles(args) => ("code_cycles", cycles::call(tools, args).await),

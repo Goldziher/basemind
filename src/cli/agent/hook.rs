@@ -21,7 +21,7 @@ use clap::Subcommand;
 use serde_json::{Map, Value, json};
 
 use crate::comms::v2::identity::{HOST_ENV, hook_sub_name, host_part};
-use crate::mcp::agent_tools::AGENT_TOOLS;
+use crate::engine::tool_names::AGENT_TOOLS;
 
 /// The agent type the main session's name is built from.
 const MAIN_SESSION: &str = "session";

@@ -69,13 +69,13 @@ neither. Both files live in this workspace's directory under the machine-global 
 
 - If that `pid` is **alive** (`ps -p <pid>`) and is a `basemind serve`, use the MCP tools if this
   session has them attached (if not, reconnect the client: step 4); it keeps the index fresh as you
-  edit. For a file a result calls stale, run `index_rescan {"paths":["src/store.rs"]}` or
-  `basemind rescan src/store.rs`; for an empty, `degraded` or `rescan_needed` index, or changed
+  edit. For a file a result calls stale, run `index_rescan {"paths":["crates/basemind-engine/src/store.rs"]}` or
+  `basemind rescan crates/basemind-engine/src/store.rs`; for an empty, `degraded` or `rescan_needed` index, or changed
   files under an extra scan root, `index_rescan {}`. If the session cannot call the tools, stop that
   `basemind serve`, run `basemind scan`, then reconnect.
 - If it is a standalone `basemind watch`, there is no MCP server to take an `index_rescan`, and
   `basemind rescan` exits 3 on the lock. The watcher re-indexes edits itself; to rescan or rebuild,
-  stop it, run `basemind rescan src/store.rs` (or `basemind scan`), then restart `basemind watch`.
+  stop it, run `basemind rescan crates/basemind-engine/src/store.rs` (or `basemind scan`), then restart `basemind watch`.
 - Otherwise, let it finish, or stop it. While it holds the index and
   no daemon serves the workspace, index-backed MCP tools (`code_refs`, the keyword lane of
   `code_search`) answer with a busy error, and `basemind rescan` exits 3 the same way. Starting the

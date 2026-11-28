@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:83b5000579dd4c2aaba6771417eda7ec8b4b2950c8c35f8cb1a3a2d7ab626e57
-Source-Hash: blake3:1f14402d1840126cf7337c9a7a6a73d47e87cb3514a182fbf7b927a76a3322f9
+Content-Hash: blake3:2d3a29fe702d102e913f61b63a2a32a1c02a0e916d57f4ca4b9ef85230f6bfe8
+Source-Hash: blake3:cf13e28e976928ad07e04ec34e718a93ce3397449e6a6c38629c58faea0f9c4e
 Schema-Version: v1
 -->
 
@@ -67,13 +67,13 @@ neither. Both files live in this workspace's directory under the machine-global 
 
 - If that `pid` is **alive** (`ps -p <pid>`) and is a `basemind serve`, use the MCP tools if this
   session has them attached (if not, reconnect the client: step 4); it keeps the index fresh as you
-  edit. For a file a result calls stale, run `index_rescan {"paths":["src/store.rs"]}` or
-  `basemind rescan src/store.rs`; for an empty, `degraded` or `rescan_needed` index, or changed
+  edit. For a file a result calls stale, run `index_rescan {"paths":["crates/basemind-engine/src/store.rs"]}` or
+  `basemind rescan crates/basemind-engine/src/store.rs`; for an empty, `degraded` or `rescan_needed` index, or changed
   files under an extra scan root, `index_rescan {}`. If the session cannot call the tools, stop that
   `basemind serve`, run `basemind scan`, then reconnect.
 - If it is a standalone `basemind watch`, there is no MCP server to take an `index_rescan`, and
   `basemind rescan` exits 3 on the lock. The watcher re-indexes edits itself; to rescan or rebuild,
-  stop it, run `basemind rescan src/store.rs` (or `basemind scan`), then restart `basemind watch`.
+  stop it, run `basemind rescan crates/basemind-engine/src/store.rs` (or `basemind scan`), then restart `basemind watch`.
 - Otherwise, let it finish, or stop it. While it holds the index and
   no daemon serves the workspace, index-backed MCP tools (`code_refs`, the keyword lane of
   `code_search`) answer with a busy error, and `basemind rescan` exits 3 the same way. Starting the

@@ -1,4 +1,4 @@
-//! Enforces basemind's module-size cap: every `src/**/*.rs` file stays at or under
+//! Enforces basemind's module-size cap: every `src/**/*.rs` file of the `basemind` and `basemind-engine` crates stays at or under
 //! [`MAX_LINES`] lines. Small modules stay reviewable; when a file approaches the cap,
 //! split it into submodules (see the `module-size-cap` rule) rather than raising the cap.
 //!
@@ -27,10 +27,15 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 #[test]
 fn no_source_file_exceeds_the_module_line_cap() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = Path::new(manifest_dir).join("src");
     let mut files = Vec::new();
-    collect_rs_files(&src, &mut files);
-    assert!(!files.is_empty(), "found no .rs files under {}", src.display());
+    for src in [
+        Path::new(manifest_dir).join("src"),
+        Path::new(manifest_dir).join("crates/basemind-engine/src"),
+    ] {
+        let before = files.len();
+        collect_rs_files(&src, &mut files);
+        assert!(files.len() > before, "found no .rs files under {}", src.display());
+    }
 
     let mut offenders: Vec<(PathBuf, usize)> = Vec::new();
     for file in &files {

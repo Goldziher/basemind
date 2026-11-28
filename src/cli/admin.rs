@@ -13,10 +13,10 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
-use crate::mcp::BasemindServer;
-
-use super::context::Tools;
-use crate::mcp::params::*;
+use super::context::CliContext;
+use crate::dispatch::LocalEngine;
+use crate::engine::types::index::IndexStatusParams;
+use crate::engine::types::telemetry::TelemetrySummaryParams;
 use crate::store_gc::{self, CacheComponent};
 
 use super::choices::TelemetryWindow;
@@ -58,11 +58,11 @@ pub enum AdminCmd {
 }
 
 /// Count tokens in stdin and print just the integer, so a shell script can pipe straight into it.
-/// Bypasses the tool dispatch entirely: it is a CLI-only convenience over [`crate::mcp::tokens::count_tokens`], not an agent-facing operation.
+/// Bypasses the tool dispatch entirely: it is a CLI-only convenience over [`crate::engine::tokens::count_tokens`], not an agent-facing operation.
 #[cfg(feature = "tokenizer")]
 fn run_tokens(out: &mut impl Write) -> Result<()> {
     let text = read_stdin()?;
-    let count = crate::mcp::tokens::count_tokens(&text);
+    let count = crate::engine::tokens::count_tokens(&text);
     writeln!(out, "{count}").context("write token count")?;
     Ok(())
 }
@@ -90,20 +90,20 @@ fn read_stdin() -> Result<String> {
 }
 
 /// Dispatch an `admin` subcommand through the in-process server.
-pub async fn run(tools: &Tools, cmd: AdminCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
+pub async fn run(tools: &CliContext, cmd: AdminCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     let (tool, result) = match cmd {
         AdminCmd::Repo => (
             "index_status",
             tools
                 .call("index_status", IndexStatusParams {}, async |s, p| {
-                    s.index_status_call(p).await
+                    s.index_status(p).await
                 })
                 .await,
         ),
         AdminCmd::Telemetry { window, tool } => (
             "telemetry",
             in_process(tools)?
-                .telemetry_call(TelemetrySummaryParams {
+                .telemetry_summary(TelemetrySummaryParams {
                     window: window.map(|w| w.as_str().to_string()),
                     tool,
                 })
@@ -154,7 +154,7 @@ pub enum CacheCmd {
 }
 
 /// The in-process server a command that is not a tool call runs on ([`runs_in_process`]).
-fn in_process(tools: &Tools) -> Result<&BasemindServer> {
+fn in_process(tools: &CliContext) -> Result<&LocalEngine> {
     tools
         .local()
         .context("this admin command runs in this process, not in the daemon")
@@ -166,12 +166,12 @@ pub(crate) fn runs_in_process(cmd: &AdminCmd) -> bool {
 }
 
 /// `basemind status`: index health plus repository identity, the body of the `index_status` tool.
-pub async fn run_status(tools: &Tools, opts: &Emit, out: &mut impl Write) -> Result<()> {
+pub async fn run_status(tools: &CliContext, opts: &Emit, out: &mut impl Write) -> Result<()> {
     let r = run_tool(
         "index_status",
         tools
             .call("index_status", IndexStatusParams {}, async |s, p| {
-                s.index_status_call(p).await
+                s.index_status(p).await
             })
             .await,
     )?;

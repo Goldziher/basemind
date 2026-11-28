@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:60734c8b746ff3ee862211ab7febcba3d91360cdb5fbda8ecae0343a4cb01608
-Source-Hash: blake3:1f14402d1840126cf7337c9a7a6a73d47e87cb3514a182fbf7b927a76a3322f9
+Content-Hash: blake3:26e83f799f766ce0a2e203222a59d7ec4380981f0028a10ade93e7f6ff87b3a6
+Source-Hash: blake3:cf13e28e976928ad07e04ec34e718a93ce3397449e6a6c38629c58faea0f9c4e
 Schema-Version: v1
 -->
 
@@ -75,7 +75,7 @@ structural answer costs a fraction of the tokens of reading source.
 - **`code_grep` instead of shelling out to ripgrep.** The pattern is literal text unless you pass
   `"regex":true`; every hit carries its line and the enclosing symbol.
 - **The index follows your edits**: no rescan and no server reconnect after each one. If a result
-  says `stale` or a new file is missing, run `index_rescan {"paths":["src/store.rs"]}` for the files
+  says `stale` or a new file is missing, run `index_rescan {"paths":["crates/basemind-engine/src/store.rs"]}` for the files
   you touched; run `index_rescan {}` only when `index_status` reports an empty index, `degraded` or
   `rescan_needed`. Files under `scan.extra_roots` are the exception: the watcher does not track them
   and a path-scoped rescan skips them, so a new, changed or deleted file there needs a full pass:
@@ -88,37 +88,37 @@ Drop to raw shell, grep, or git only when no basemind tool covers the question.
 
 | Question | Call |
 |---|---|
-| "What's the shape of file F?" | `code_outline {"path":"src/store.rs"}` |
+| "What's the shape of file F?" | `code_outline {"path":"crates/basemind-engine/src/store.rs"}` |
 | "Where is X defined?" | `code_symbols {"name":"parse_config","kind":"function"}` |
 | "I only half remember the name" | `code_symbols {"name":"prsconf","fuzzy":true}` |
-| "Show me this one symbol's body" | `code_read {"path":"src/store.rs","symbol":"open"}` |
-| "Show me these lines" | `code_read {"path":"src/store.rs","line":120,"end_line":160}` |
+| "Show me this one symbol's body" | `code_read {"path":"crates/basemind-engine/src/store.rs","symbol":"open"}` |
+| "Show me these lines" | `code_read {"path":"crates/basemind-engine/src/store.rs","line":120,"end_line":160}` |
 | "Where does this string appear?" | `code_grep {"pattern":"cache_root(","path":"src/"}` |
 | "Regex over code?" | `code_grep {"pattern":"fn \\w+_call","regex":true}` |
 | "Find code by meaning, not spelling" | `code_search {"query":"retry a failed upload with backoff"}` |
 | "What calls X?" (any definition of the name) | `code_refs {"name":"open_store"}` |
 | "What calls anything named like X?" | `code_refs {"name":"open_","match":"substring"}` |
-| "What calls this specific definition?" | `code_refs {"name":"open_store","path":"src/store.rs"}` |
+| "What calls this specific definition?" | `code_refs {"name":"open_store","path":"crates/basemind-engine/src/store.rs"}` |
 | "What implements / extends X?" | `code_refs {"name":"Drawable","relation":"implementations"}` |
 | "What imports module M?" | `code_refs {"name":"tokio::sync","relation":"importers"}` |
 | "Which definition does this reference bind to?" | `code_refs {"name":"open_store","relation":"definition","path":"src/main.rs","line":42}` |
 | "Which file is named like X?" | `find_files {"query":"readme"}` |
 | "What files are indexed under a directory?" | `find_files {"path":"src/mcp/"}` |
 | "What changed recently?" | `git_log {}` |
-| "Which commits touched file F?" | `git_log {"path":"src/store.rs","limit":5}` |
+| "Which commits touched file F?" | `git_log {"path":"crates/basemind-engine/src/store.rs","limit":5}` |
 | "Which commit mentions X?" | `git_log {"query":"fix race"}` |
-| "When did symbol X change?" | `git_log {"path":"src/store.rs","symbol":"open"}` |
+| "When did symbol X change?" | `git_log {"path":"crates/basemind-engine/src/store.rs","symbol":"open"}` |
 | "Show one commit" | `git_log {"rev":"HEAD~1"}` |
-| "Who wrote this symbol?" | `git_blame {"path":"src/store.rs","symbol":"open"}` |
+| "Who wrote this symbol?" | `git_blame {"path":"crates/basemind-engine/src/store.rs","symbol":"open"}` |
 | "What's dirty in the working tree?" | `git_diff {}` |
-| "What did I change in file F?" | `git_diff {"path":"src/store.rs"}` |
-| "Diff file F between revisions" | `git_diff {"path":"src/store.rs","from":"HEAD~1","to":"HEAD"}` |
+| "What did I change in file F?" | `git_diff {"path":"crates/basemind-engine/src/store.rs"}` |
+| "Diff file F between revisions" | `git_diff {"path":"crates/basemind-engine/src/store.rs","from":"HEAD~1","to":"HEAD"}` |
 | "Where is this key in a config, markdown or data file?" | `code_grep {"pattern":"timeout:"}` |
 | "Where is a topic discussed? Search PDFs / Office / HTML / email" | `docs_search {"query":"how releases are versioned"}` |
 | "Remember this for future sessions" | `memory_save {"key":"decision/auth-tokens","value":"Tokens rotate every 24h.","tags":["auth"]}` |
 | "Recall something stored earlier" | `memory_search {"query":"token rotation"}` |
 | "What's indexed? What's HEAD / branch?" | `index_status {}` |
-| "A result says stale, or a new file is missing" | `index_rescan {"paths":["src/store.rs"]}` |
+| "A result says stale, or a new file is missing" | `index_rescan {"paths":["crates/basemind-engine/src/store.rs"]}` |
 | "Fetch the next page" | pass the response's `next_cursor` back as `cursor` |
 
 Churn ranking, regex path filters over history, deleting a note, cache administration and the usage
@@ -151,8 +151,8 @@ index says so in its result: run `index_rescan {}` or `basemind scan`.
 
 ```text
 code_symbols {"name":"MapCache"}
-→ {"results":["src/engine/map_cache.rs:10: pub(crate) struct MapCache",
-              "src/engine/map_cache.rs:39: impl MapCache"], …}
+→ {"results":["crates/basemind-engine/src/engine/map_cache.rs:10: pub(crate) struct MapCache",
+              "crates/basemind-engine/src/engine/map_cache.rs:39: impl MapCache"], …}
 ```
 
 A row is `"<path>:<line>: <signature>"`, as `git grep -n` prints it.
@@ -161,7 +161,7 @@ A row is `"<path>:<line>: <signature>"`, as `git grep -n` prints it.
 
 ```text
 code_refs {"name":"process_file"}
-→ {"total":1,"hits":{"src/scanner_file.rs":[{"line":113}]}, …}
+→ {"total":1,"hits":{"crates/basemind-engine/src/scanner_file.rs":[{"line":113}]}, …}
 ```
 
 `hits` maps each file to its call sites; a row adds `callee` when the name called differs, and
@@ -170,8 +170,8 @@ code_refs {"name":"process_file"}
 ### Outline a file, then read one body
 
 ```text
-code_outline {"path":"src/wire.rs"}
-→ path: src/wire.rs
+code_outline {"path":"crates/basemind-engine/src/wire.rs"}
+→ path: crates/basemind-engine/src/wire.rs
   language: rust
   …
   symbols[…]{name,kind,line,end_line,signature}:
@@ -179,7 +179,7 @@ code_outline {"path":"src/wire.rs"}
     toon,function,42,…
     …
 
-code_read {"path":"src/wire.rs","symbol":"toon"}
+code_read {"path":"crates/basemind-engine/src/wire.rs","symbol":"toon"}
 ```
 
 The outline is a TOON table, one row per symbol.

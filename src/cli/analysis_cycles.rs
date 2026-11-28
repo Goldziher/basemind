@@ -9,7 +9,7 @@ use rmcp::model::CallToolResult;
 use crate::engine::Workspace;
 use crate::engine::types::graph::{CyclesParams, RUST_CYCLE_NOTE};
 
-use super::super::context::Tools;
+use super::super::context::CliContext;
 use super::super::exit::{CliExit, ERROR};
 use super::super::resolve_path;
 
@@ -41,7 +41,7 @@ pub struct CyclesArgs {
     pub(super) strict: bool,
 }
 
-pub(super) async fn call(tools: &Tools, args: CyclesArgs) -> Result<CallToolResult, McpError> {
+pub(super) async fn call(tools: &CliContext, args: CyclesArgs) -> Result<CallToolResult, McpError> {
     let (check_from, check_to) = match args.check.as_deref() {
         Some([from, to]) => (Some(resolve_path(tools, from)), Some(resolve_path(tools, to))),
         _ => (None, None),

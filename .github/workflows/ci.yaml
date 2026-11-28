@@ -354,9 +354,61 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: |
           set -euo pipefail
-          mapfile -t args < <(cargo metadata --no-deps --format-version 1 --offline |
-            jq -r '.packages[] | select(.name == "basemind") | .metadata.docs.rs["cargo-args"] // [] | .[]')
-          unshare --net --map-current-user -- cargo doc --no-deps --locked --offline "${args[@]}"
+          for package in basemind basemind-engine; do
+            mapfile -t args < <(cargo metadata --no-deps --format-version 1 --offline |
+              jq -r --arg package "$package" '.packages[] | select(.name == $package) | .metadata.docs.rs["cargo-args"] // [] | .[]')
+            unshare --net --map-current-user -- cargo doc --no-deps --locked --offline --package "$package" "${args[@]}"
+          done
+
+  # ~keep The engine crate is published on its own, so a program may embed it without the CLI, the MCP
+  # ~keep adapter or the daemon. `crates/engine-embed` is such a program (a workspace of its own, never
+  # ~keep published): it scans a fixture repository and runs an outline and a references query on the
+  # ~keep engine crate alone, on every platform the binaries ship for.
+  engine-embed:
+    name: engine embed / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+        exclude:
+          - os: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'macos-26' || 'none' }}
+          - os: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'windows-latest' || 'none' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Move temp to the work drive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      - uses: ./.github/actions/setup-rust
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/engine-embed
+          key: engine-embed
+          cache-on-failure: true
+      - name: The engine's dependency tree names no rmcp, clap or hyper
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tree="$(cargo tree -p basemind-engine --prefix none)"
+          # Proof the filter sees what it is meant to: the CLI crate's own tree names clap.
+          cargo tree -p basemind --prefix none | grep -Eq '^clap v'
+          if grep -E '^(rmcp|clap|hyper) v' <<<"$tree"; then
+            echo "::error::basemind-engine depends on a CLI, MCP or HTTP crate"
+            exit 1
+          fi
+      - name: Scan, outline and query a repository through the engine crate alone
+        run: cargo test --manifest-path crates/engine-embed/Cargo.toml
 
   # ~keep The release renders THIRD_PARTY_LICENSES from Cargo.lock; rendering it here fails a change
   # ~keep that adds a licence about.toml does not accept before a release does. The native-notice
@@ -725,7 +777,7 @@ jobs:
           rest="${current#*.}"
           next="${major}.$((${rest%%.*} + 1)).0"
           AI_RULEZ=ai-rulez scripts/release-bump.sh "$next"
-          grep -n 'pub const RELEASE_MINOR' src/version.rs
+          grep -n 'pub const RELEASE_MINOR' crates/basemind-engine/src/version.rs
       - name: Fetch the releases to upgrade from
         shell: bash
         run: |

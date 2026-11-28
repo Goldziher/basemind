@@ -408,6 +408,13 @@ mod tests {
         assert_eq!(admission.status().heavy.in_use, 0);
     }
 
+    /// A command that serves nobody else reports the lanes an idle controller reports.
+    #[test]
+    fn the_idle_status_is_what_a_fresh_controller_reports() {
+        let limits = crate::config::engine::with(|engine| engine.admission);
+        assert_eq!(AdmissionStatus::idle(limits), HeavyAdmission::default().status());
+    }
+
     #[tokio::test]
     async fn a_waiting_call_is_reported_queued_until_it_is_admitted() {
         let admission = Arc::new(HeavyAdmission::new(1, 1, Duration::from_secs(5)));

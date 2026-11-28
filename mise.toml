@@ -48,6 +48,7 @@ run = "cargo test --workspace --no-fail-fast -- --nocapture"
 description = "Clippy every feature alone (lib and bins) and the documented combinations (all targets)"
 run = [
   "cargo hack clippy --each-feature --no-dev-deps --keep-going -- -D warnings",
+  "cargo hack clippy -p basemind-engine --each-feature --no-dev-deps --keep-going -- -D warnings",
   'cargo clippy --all-targets --features "comms memory" -- -D warnings',
   'cargo clippy --all-targets --features "comms documents memory" -- -D warnings',
   'cargo clippy --all-targets --features "documents documents-ocr documents-ner" -- -D warnings',

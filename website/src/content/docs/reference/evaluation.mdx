@@ -112,7 +112,7 @@ wrong answer is not a saving.
 
 Per mode the report gives the credited distribution (median and p90 of the ratio and of tokens saved)
 and compares the median ratio with the fixed multiplier the dashboard assumes for the same response
-in `src/mcp/savings.rs`. A mode whose measured median deviates by more than 25 % is flagged
+in `src/engine/savings.rs`. A mode whose measured median deviates by more than 25 % is flagged
 `DEVIATES`. The harness only reports; it never changes `savings.rs`.
 
 The ratio depends on how heavy the baseline is. The generated baselines model a reasonable agent (a

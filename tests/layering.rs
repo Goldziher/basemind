@@ -1,14 +1,17 @@
-//! Import-graph test for the library crate layering of ADR-0023.
+//! Import-graph test for the library layering of ADR-0023 and ADR-0039.
 //!
-//! Every module of the library is assigned to the crate it moves to (`basemind-core`,
-//! `basemind-retrieval`, `basemind-engine` or the root `basemind`). Dependencies may only point
-//! down that list: a module may name a module of its own layer or a lower one, never a higher one.
+//! The engine crate (`crates/basemind-engine`) holds three layers: core, retrieval and the engine
+//! proper. Every module of that crate is assigned to its layer. Dependencies may only point down
+//! that list: a module may name a module of its own layer or a lower one, never a higher one. The
+//! root `basemind` crate (CLI, MCP adapter, daemon) sits above the engine crate and cannot be named
+//! from it: Cargo refuses the cycle, so the `Root` entries of `LAYERS` name the layer of a path only
+//! for the analyzer's fixture crate.
 //! A layer may also not name the external crates ADR-0023 forbids it (core: tokio, rmcp, clap,
 //! jsonschema, xberg, lancedb; retrieval: rmcp, clap; engine: rmcp, clap and, by ADR-0039, tokio).
 //! Test-only code may use them, since they stay available as dev-dependencies; it may not reach a
 //! higher layer, because that module will not exist in the lower crate's test build.
 //!
-//! The module tree is walked from `src/lib.rs` following `mod` declarations (including
+//! The module tree is walked from a crate's `src/lib.rs` following `mod` declarations (including
 //! `#[path]`), so a `*_tests.rs` file belongs to the module that declares it. Every `#[cfg]` arm is
 //! read: a feature-gated reference is still a reference. Paths are collected from `use` trees
 //! (grouped, renamed, glob, `pub use`), from paths in types and expressions, from macro bodies and
@@ -59,6 +62,7 @@ const LAYERS: &[(&str, Layer)] = &[
     ("daemon_lock", Core),
     ("data_root", Core),
     ("deps_docs", Core),
+    ("dispatch", Root),
     ("disk_space", Core),
     ("embed_progress", Core),
     ("embeddings", Retrieval),
@@ -164,9 +168,9 @@ const FORBIDDEN_CRATES: &[(Layer, &[&str])] = &[
 /// The `src/engine` edges are the interim ones of ADR-0039, each removed by the engine-unification
 /// step named beside it.
 const KNOWN_VIOLATIONS: &[&str] = &[
-    "src/config/validate.rs -> extern jsonschema",
-    "src/store.rs -> lance",
-    "src/store_vector_tests.rs -> lance [test]",
+    "crates/basemind-engine/src/config/validate.rs -> extern jsonschema",
+    "crates/basemind-engine/src/store.rs -> lance",
+    "crates/basemind-engine/src/store_vector_tests.rs -> lance [test]",
 ];
 
 /// One module of the library: its path, the file holding it, whether it is test-only or a test hook
@@ -574,7 +578,15 @@ fn forbidden_for(layer: Layer) -> &'static [&'static str] {
         .map_or(&[], |(_, crates)| crates)
 }
 
-/// The library's module tree, walked from `<root>/src/lib.rs`, plus every file it reached.
+/// The repository path of the engine crate, which holds every layer of `LAYERS` but `Root`.
+const ENGINE_CRATE: &str = "crates/basemind-engine";
+
+/// The directory of the engine crate.
+fn engine_dir(root: &Path) -> PathBuf {
+    root.join(ENGINE_CRATE)
+}
+
+/// A crate's module tree, walked from `<crate_dir>/src/lib.rs`, plus every file it reached.
 fn load_modules(root: &Path) -> (Vec<Module>, BTreeSet<PathBuf>) {
     let mut modules = Vec::new();
     let mut files = BTreeSet::new();
@@ -822,12 +834,13 @@ fn repo_relative_writes_windows_separators_as_slashes() {
 }
 
 #[test]
-fn every_module_is_assigned_to_a_crate_and_every_file_is_reached() {
+fn every_module_is_assigned_to_a_layer_and_every_file_is_reached() {
     let root = manifest_dir();
-    let (modules, mut reached) = load_modules(&root);
+    let engine = engine_dir(&root);
+    let (modules, reached) = load_modules(&engine);
     assert!(
         modules.len() > 300,
-        "walked only {} modules from src/lib.rs",
+        "walked only {} modules from {ENGINE_CRATE}/src/lib.rs",
         modules.len()
     );
 
@@ -838,31 +851,38 @@ fn every_module_is_assigned_to_a_crate_and_every_file_is_reached() {
         .collect();
     assert!(
         unassigned.is_empty(),
-        "modules with no crate in LAYERS (ADR-0023):\n  {}",
+        "modules with no layer in LAYERS (ADR-0023):\n  {}",
         unassigned.join("\n  ")
     );
 
     let paths: BTreeSet<String> = modules.iter().map(|m| m.path.join("::")).collect();
-    let stale: Vec<&str> = LAYERS.iter().map(|(p, _)| *p).filter(|p| !paths.contains(*p)).collect();
+    let stale: Vec<&str> = LAYERS
+        .iter()
+        .filter(|(_, layer)| *layer != Root)
+        .map(|(p, _)| *p)
+        .filter(|p| !paths.contains(*p))
+        .collect();
     assert!(stale.is_empty(), "LAYERS entries naming no module: {stale:?}");
 
-    let src = root.join("src");
-    walk_crate(&src.join("main.rs"), &mut Vec::new(), &mut reached);
-
-    let mut all = BTreeSet::new();
-    collect_rs_files(&src, &mut all);
-    let orphans: Vec<String> = all.difference(&reached).map(|p| p.display().to_string()).collect();
-    assert!(
-        orphans.is_empty(),
-        "src files reached from neither lib.rs nor main.rs:\n  {}",
-        orphans.join("\n  ")
-    );
+    let (_, mut root_reached) = load_modules(&root);
+    walk_crate(&root.join("src").join("main.rs"), &mut Vec::new(), &mut root_reached);
+    for (crate_dir, reached) in [(&engine, &reached), (&root, &root_reached)] {
+        let mut all = BTreeSet::new();
+        collect_rs_files(&crate_dir.join("src"), &mut all);
+        let orphans: Vec<String> = all.difference(reached).map(|p| p.display().to_string()).collect();
+        assert!(
+            orphans.is_empty(),
+            "src files of {} reached from neither lib.rs nor main.rs:\n  {}",
+            crate_dir.display(),
+            orphans.join("\n  ")
+        );
+    }
 }
 
 #[test]
 fn no_module_reaches_a_higher_layer() {
     let root = manifest_dir();
-    let (modules, _) = load_modules(&root);
+    let (modules, _) = load_modules(&engine_dir(&root));
     let found = violations(&root, &modules);
     let known: BTreeSet<String> = KNOWN_VIOLATIONS.iter().map(|s| (*s).to_string()).collect();
 
@@ -878,6 +898,60 @@ fn no_module_reaches_a_higher_layer() {
         "layering violations differ from KNOWN_VIOLATIONS.\nnew (cut them, ADR-0023): {new:#?}\n\
          no longer found (remove from KNOWN_VIOLATIONS): {cut:#?}\nall {} found:\n{listing}",
         found.len(),
+    );
+}
+
+/// Files under `src/cli` still naming `src/mcp`, as `"<file> -> mcp"`: the CLI is an adapter of the
+/// engine beside the MCP server and must not import it (issue #160, the crate split of ADR-0023).
+/// A command runs the engine on `dispatch::LocalEngine`, which the server's `#[tool]` shims share.
+/// Add an entry only for an edge that cannot be cut yet.
+const CLI_MCP_EDGES: &[&str] = &[];
+
+/// The files under `src/cli` that name a path through `src/mcp`, with re-exports followed.
+fn cli_mcp_edges(root: &Path, modules: &[Module]) -> BTreeSet<String> {
+    let known: BTreeSet<Vec<String>> = modules.iter().map(|m| m.path.clone()).collect();
+    let exports = exports(modules);
+    let mut found = BTreeSet::new();
+    for module in modules
+        .iter()
+        .filter(|m| m.path.first().map(String::as_str) == Some("cli"))
+    {
+        let mut collector = Collector {
+            test: module.test,
+            refs: Vec::new(),
+        };
+        for item in &module.items {
+            collector.visit_item(item);
+        }
+        let file = repo_relative(root, &module.file);
+        for raw in collector.refs {
+            let Some(absolute) = absolutize(module, &raw.segments) else {
+                continue;
+            };
+            let through_mcp = modules_passed(&known, &exports, absolute)
+                .iter()
+                .any(|target| target.first().map(String::as_str) == Some("mcp"));
+            if through_mcp {
+                found.insert(format!("{file} -> mcp"));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn the_cli_does_not_import_the_mcp_adapter() {
+    let root = manifest_dir();
+    let (modules, _) = load_modules(&root);
+    let found = cli_mcp_edges(&root, &modules);
+    let known: BTreeSet<String> = CLI_MCP_EDGES.iter().map(|s| (*s).to_string()).collect();
+
+    let new: Vec<&String> = found.difference(&known).collect();
+    let cut: Vec<&String> = known.difference(&found).collect();
+    assert!(
+        new.is_empty() && cut.is_empty(),
+        "src/cli names src/mcp differently from CLI_MCP_EDGES.\nnew (go through src/engine, #160): {new:#?}\n\
+         no longer found (remove from CLI_MCP_EDGES): {cut:#?}",
     );
 }
 
@@ -1087,7 +1161,7 @@ fn engine_api_findings(items: &[syn::Item], test: bool) -> BTreeSet<String> {
 #[test]
 fn engine_api_is_sync_and_adapter_free() {
     let root = manifest_dir();
-    let (modules, _) = load_modules(&root);
+    let (modules, _) = load_modules(&engine_dir(&root));
     let mut checked = 0;
     let mut offences = Vec::new();
     for module in modules.iter().filter(|m| layer_of(&m.path) == Some(Engine)) {
@@ -1141,7 +1215,7 @@ fn the_engine_api_check_flags_each_shape() {
 /// `(rmcp_files, helper_lines)`: the non-test files under `src/mcp` that name rmcp, `McpError` or
 /// `CallToolResult`, and the lines of the non-test `src/mcp/helpers*.rs` files. Each engine step
 /// moves tool bodies out of the adapter, so neither may rise; lower them here when they fall.
-const ADAPTER_RATCHET: (usize, usize) = (30, 92);
+const ADAPTER_RATCHET: (usize, usize) = (25, 0);
 
 /// A test file under `src/mcp`: every test module there lives in a `*_tests.rs` file.
 fn is_test_file(path: &Path) -> bool {
@@ -1222,6 +1296,7 @@ fn retired_symbols_stay_gone() {
     let root = manifest_dir();
     let mut files = BTreeSet::new();
     collect_rs_files(&root.join("src"), &mut files);
+    collect_rs_files(&engine_dir(&root).join("src"), &mut files);
     assert!(files.len() > 300, "scanned only {} files under src", files.len());
     let mut found = Vec::new();
     for file in &files {
@@ -1243,9 +1318,15 @@ fn retired_symbols_stay_gone() {
 /// that installed none, the user-level agents policy) from `HOME` / `XDG_*`, which is their
 /// definition; an embedder overrides both in code.
 const ALLOWED_ENV_READS: &[(&str, usize)] = &[
-    ("src/config/agents_policy.rs -> directories::ProjectDirs::from", 1),
-    ("src/config/secrets.rs -> std::env::var", 1),
-    ("src/data_root.rs -> directories::ProjectDirs::from", 1),
+    (
+        "crates/basemind-engine/src/config/agents_policy.rs -> directories::ProjectDirs::from",
+        1,
+    ),
+    ("crates/basemind-engine/src/config/secrets.rs -> std::env::var", 1),
+    (
+        "crates/basemind-engine/src/data_root.rs -> directories::ProjectDirs::from",
+        1,
+    ),
 ];
 
 const ENV_READS: &[&str] = &["var", "var_os", "vars", "vars_os"];
@@ -1527,7 +1608,7 @@ fn test_var_literals(items: &[syn::Item], hook: bool) -> Vec<(String, Gate)> {
 #[test]
 fn no_env_reads_below_root() {
     let root = manifest_dir();
-    let (modules, _) = load_modules(&root);
+    let (modules, _) = load_modules(&engine_dir(&root));
     let mut checked = 0;
     let mut found: BTreeMap<String, usize> = BTreeMap::new();
     for module in modules
@@ -1586,7 +1667,12 @@ fn the_env_read_check_flags_each_shape() {
 }
 
 /// The crate roots whose code the `basemind` binary is built from and so may read a test variable.
-const BINARY_CRATE_ROOTS: &[&str] = &["src/lib.rs", "src/main.rs", "crates/basemind-agents/src/lib.rs"];
+const BINARY_CRATE_ROOTS: &[&str] = &[
+    "src/lib.rs",
+    "src/main.rs",
+    "crates/basemind-engine/src/lib.rs",
+    "crates/basemind-agents/src/lib.rs",
+];
 
 /// The release-archive smoke, which sets every variable a `test-support` binary reads.
 const RELEASE_SMOKE: &str = "scripts/smoke_release_archive.py";
@@ -1851,7 +1937,7 @@ impl<'ast> Visit<'ast> for RuntimeBuilds {
 #[test]
 fn runtime_builders() {
     let root = manifest_dir();
-    let (modules, _) = load_modules(&root);
+    let (modules, _) = load_modules(&engine_dir(&root));
     let mut files = BTreeSet::new();
     for module in modules
         .iter()
@@ -1865,7 +1951,7 @@ fn runtime_builders() {
             files.insert(repo_relative(&root, &module.file));
         }
     }
-    let expected: BTreeSet<String> = ["src/lance/runtime.rs".to_string()].into();
+    let expected: BTreeSet<String> = ["crates/basemind-engine/src/lance/runtime.rs".to_string()].into();
     assert_eq!(
         files, expected,
         "tokio runtimes are built outside the retrieval runtime module"

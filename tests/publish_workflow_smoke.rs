@@ -132,6 +132,42 @@ fn basemind_agents_is_published_before_basemind_and_bumped_with_it() {
     assert!(vendored.contains("\"basemind-agents\""), "and its drift from crates.io");
 }
 
+/// basemind depends on basemind-engine by path and version (ADR-0039): crates.io resolves it by
+/// version, so it is published after the forks it depends on and before basemind, and moves with
+/// basemind's version.
+#[test]
+fn basemind_engine_is_published_between_the_forks_and_basemind_and_bumped_with_it() {
+    let workflow = workflow();
+    let publish = job_block(&workflow, "publish_crates");
+    let position = |command: &str| {
+        publish
+            .find(command)
+            .unwrap_or_else(|| panic!("{command} is published"))
+    };
+    let forks = position("publish basemind-tree-sitter-stack-graphs");
+    let engine = position("publish basemind-engine");
+    let basemind = position("publish basemind --features full");
+    assert!(forks < engine, "the forks the engine depends on are published first");
+    assert!(
+        engine < basemind,
+        "basemind-engine must be on crates.io before basemind"
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let bump = std::fs::read_to_string(root.join("scripts/release-bump.sh")).expect("release-bump.sh");
+    assert!(
+        bump.contains("crates/basemind-engine/Cargo.toml"),
+        "the bump moves the crate's version"
+    );
+    assert!(bump.contains("basemind-engine = "), "and the root's requirement on it");
+    let check = std::fs::read_to_string(root.join("scripts/check_release_versions.py")).expect("checker");
+    assert!(
+        check.contains("crates/basemind-engine/Cargo.toml"),
+        "the release gate checks it"
+    );
+    let vendored = std::fs::read_to_string(root.join("scripts/check_vendored_crates.py")).expect("drift check");
+    assert!(vendored.contains("\"basemind-engine\""), "and its drift from crates.io");
+}
+
 /// Nothing publishes for a commit CI has not passed.
 #[test]
 fn publish_waits_for_a_green_ci_run() {

@@ -18,5 +18,5 @@ x-ai-rulez:
   - `cargo test --workspace`
   - `poly lint .` (catches typos, markdown line length, cargo-deny, cargo-machete, rustdoc-lint); the 1000-line cap is `tests/max_lines.rs`, run by `cargo test`
 - Clippy is strict (`-D warnings`); do not silence with `#[allow(...)]` unless the warning is genuinely incorrect — and write a one-line `//` comment explaining why when you do.
-- Code generation lives in `build.rs` and JSON schemas under `schema/`. Hand-editing generated files is forbidden; regenerate via the build.
+- Code generation lives in `build.rs` and JSON schemas under `crates/basemind-engine/schema/`. Hand-editing generated files is forbidden; regenerate via the build.
 - Commits use Conventional Commit prefixes (`feat:`, `fix:`, `perf:`, `chore:`, `refactor:`). Match the style in `git log`.

@@ -76,7 +76,7 @@ class RunGate(unittest.TestCase):
         self.assertIn("word estimate", proc.stderr)
 
     def test_the_probe_matches_the_one_the_binary_checks(self) -> None:
-        rust = (HERE.parents[1] / "src/engine/tokens.rs").read_text()
+        rust = (HERE.parents[1] / "crates/basemind-engine/src/engine/tokens.rs").read_text()
         text = re.search(r'O200K_PROBE: &str = "([^"]*)"', rust).group(1)
         count = re.search(r"O200K_PROBE_TOKENS: u64 = (\d+)", rust).group(1)
         script = (HERE / "run_gate.sh").read_text()

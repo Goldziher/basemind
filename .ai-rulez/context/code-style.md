@@ -14,7 +14,7 @@ Project-specific conventions baked into context so they ship into every AI tool'
 
 ## Module layout
 
-- One concern per file. A verb tool is a params struct in `src/mcp/types_tools.rs`, a thin shim in `src/mcp/tools*.rs`, and a body in `src/engine/ops/<tool>.rs` (git tools in `src/engine/git/`), its response types in `src/engine/types/<area>.rs` (ADR-0039).
+- One concern per file. A verb tool is a params struct in `src/mcp/types_tools.rs`, a thin shim in `src/mcp/tools*.rs`, and a body in `crates/basemind-engine/src/engine/ops/<tool>.rs` (git tools in `crates/basemind-engine/src/engine/git/`), its response types in `crates/basemind-engine/src/engine/types/<area>.rs` (ADR-0039).
 - 1000-line cap on `src/**/*.rs` enforced by `tests/max_lines.rs` under `cargo test`. Refactor by extracting helpers or types, never by lifting the cap.
 - Tests sit in `tests/<area>_smoke.rs` files (one per area) plus the integration harness at `tests/harden.rs`.
 
@@ -22,7 +22,7 @@ Project-specific conventions baked into context so they ship into every AI tool'
 
 - `ahash` for hash maps, never `std::collections::HashMap` on hot paths.
 - `memchr::memmem::Finder` for substring matching — built once and reused.
-- Zero-copy hex encoding via `src/store.rs`; do not introduce `String::from_utf8(hex::encode(...))` round-trips.
+- Zero-copy hex encoding via `crates/basemind-engine/src/store.rs`; do not introduce `String::from_utf8(hex::encode(...))` round-trips.
 - Cache MCP import lookups; never re-parse imports per query.
 - Rayon `par_iter` is the scanner parallelism unit; no `tokio::spawn` in the scanner.
 
@@ -34,8 +34,8 @@ Project-specific conventions baked into context so they ship into every AI tool'
 
 #### Codegen
 
-- `build.rs` + `schema/*.json` are the codegen surface. Hand-editing generated files is forbidden.
-- Rust config types in `src/config/` drive the JSON Schema via `schemars` derives; the snapshot at `schema/basemind-config-v1.schema.json` is asserted byte-equal by `tests/config_schema.rs`. Regenerate with `cargo test --test config_schema -- --ignored regenerate_schema`.
+- `build.rs` + `crates/basemind-engine/schema/*.json` are the codegen surface. Hand-editing generated files is forbidden.
+- Rust config types in `crates/basemind-engine/src/config/` drive the JSON Schema via `schemars` derives; the snapshot at `crates/basemind-engine/schema/basemind-config-v1.schema.json` is asserted byte-equal by `tests/config_schema.rs`. Regenerate with `cargo test --test config_schema -- --ignored regenerate_schema`.
 
 #### Commits
 

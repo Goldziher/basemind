@@ -48,7 +48,7 @@ The ten public skills, including `basemind-multi-agent-room`, are authored under
 |---|---|
 | `README.md` | The MCP tools table has one row per tool, with its arguments and one example call. |
 | `llms.txt` | Same; keep it machine-skimmable. |
-| `docs/ARCHITECTURE.md` | `types_tools.rs`, the `tools*.rs` shims, the engine operations in `src/engine/ops/` and `src/engine/git/`, and the CLI commands that run the same `<tool>_call`. |
+| `docs/ARCHITECTURE.md` | `types_tools.rs`, the `tools*.rs` shims, the engine operations in `crates/basemind-engine/src/engine/ops/` and `crates/basemind-engine/src/engine/git/`, and the CLI commands that run the same `<tool>_call`. |
 | `CHANGELOG.md` | An `Unreleased` entry mapping each removed tool + mode to its replacement call. |
 | the 10 skills (×4 trees) | Routing tables are complete calls: tool name plus JSON arguments. |
 | `.ai-rulez/context/mcp-surface.md` | The canonical tool contract. Rewrite, do not patch. |

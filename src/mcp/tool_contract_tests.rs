@@ -559,7 +559,7 @@ async fn a_failure_is_reported_without_host_paths() {
     let corrupt_blob = blob.clone();
     let corrupt = server
         .answer(super::strict::Strict(Ok(outline("a.rs"))), |_| async move {
-            Err(McpError::from(crate::engine::EngineError::Store(
+            Err(crate::dispatch::mcp_error(crate::engine::EngineError::Store(
                 crate::store::StoreError::CorruptBlob { path: corrupt_blob },
             )))
         })
@@ -601,7 +601,8 @@ mod error_mapping {
     use rmcp::model::ErrorCode;
     use serde_json::json;
 
-    use super::super::tool_contract::{kind_data, kind_of, kind_structured, scrub};
+    use super::super::tool_contract::{kind_of, kind_structured, scrub};
+    use crate::dispatch::kind_data;
     use crate::engine::error_kind::{ALL_KINDS, ERROR_KEY, ErrorKind};
     use crate::engine::redaction::Redaction;
 

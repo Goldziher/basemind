@@ -9,13 +9,7 @@ include = [
   "/LICENSE",
   "/ATTRIBUTIONS.md",
   "/build.rs",
-  "/schema/basemind-config-v1.schema.json",
-  "!/src/scanner_filter_tests.rs",
   "!/src/watcher_tests.rs",
-  "!/src/scanner_docs_security_tests.rs",
-  "!/src/scanner_docs_tests.rs",
-  "!/src/store_blob_tests.rs",
-  "!/src/store_gc_tier_tests.rs",
   "!/src/comms/client_tests.rs",
   "!/src/comms/workspace_pool_tests.rs",
   "!/src/comms/daemon_tests.rs",
@@ -25,17 +19,10 @@ include = [
   "!/src/comms/singleton_takeover_tests.rs",
   "!/src/comms/singleton_takeover_decision_tests.rs",
   "!/src/comms/singleton_endpoint_windows_tests.rs",
-  "!/src/daemon_lock_tests.rs",
   "!/src/stdio_relay_tests.rs",
   "!/src/stdio_relay_offline_tests.rs",
-  "!/src/lance/tests.rs",
-  "!/src/engine/refs/calls_scan_tests.rs",
   "!/src/mcp/lazy_cache_tests.rs",
   "!/src/mcp/find_files_tests.rs",
-  "!/src/engine/map_cache_budget_tests.rs",
-  "!/src/engine/term_index_tests.rs",
-  "!/src/registry/tests.rs",
-  "!/src/index/writer_tests.rs",
 ]
 name = "basemind"
 version = "0.34.0"
@@ -58,8 +45,11 @@ categories = ["command-line-utilities", "development-tools"]
 cargo-args = ["--config", 'env.TSLP_OFFLINE="1"']
 
 [workspace]
+# ~keep The embed check is a downstream crate of its own workspace (its CI job builds it apart).
+exclude = ["crates/engine-embed"]
 members = [
   "crates/basemind-agents",
+  "crates/basemind-engine",
   "crates/lsp-positions",
   "crates/stack-graphs",
   "crates/tree-sitter-graph",
@@ -88,58 +78,41 @@ path = "src/main.rs"
 [features]
 default = []
 
-intelligence = ["dep:xberg", "dep:lancedb", "dep:futures", "xberg/embeddings"]
+intelligence = ["basemind-engine/intelligence", "dep:xberg", "dep:lancedb", "dep:futures"]
 
 # Just the real o200k tokenizer (`xberg::chunking::count_tokens`), used by `basemind admin tokens`
-# and `src/mcp/savings.rs`. `xberg/chunking-tokenizers` is a pure-Rust `tokenizers` crate underneath
+# and `src/engine/savings.rs`. `xberg/chunking-tokenizers` is a pure-Rust `tokenizers` crate underneath
 # (no LanceDB/Arrow/OCR/ONNX), so this is deliberately its own feature rather than riding on
 # `intelligence` — it stays cheap enough to build without also pulling in the vector-store deps.
-tokenizer = ["dep:xberg", "xberg/chunking-tokenizers"]
+tokenizer = ["basemind-engine/tokenizer", "dep:xberg"]
 
 # Document RAG on local files: PDF text layers, Office, spreadsheets, email, HTML, XML (SVG text
 # included), Markdown/MDX and notebooks (`xberg/office` carries `notebook`). xberg's `formats` and
 # `analysis` umbrellas are deliberately not used: they also pull in archives, sqlite, svg
 # rasterisation, wordperfect, hwp, iwork and diff, none of which basemind reaches. HEIC is the
 # `documents-heic` tier.
-documents = [
-  "intelligence",
-  "tokenizer",
-  "xberg/pdf",
-  "xberg/office",
-  "xberg/excel",
-  "xberg/email",
-  "xberg/html",
-  "xberg/xml",
-  "xberg/mdx",
-  "xberg/language-detection",
-  "xberg/quality",
-  "xberg/markdown-footnotes",
-  "xberg/keywords-yake",
-  "xberg/keywords-rake",
-  "xberg/summarization",
-  "xberg/reranker",
-  "xberg/reranker-presets",
-]
+documents = ["basemind-engine/documents", "intelligence", "tokenizer"]
 
 # Tesseract OCR for images and PDFs with no text layer. Its own tier because it compiles leptonica
 # and tesseract from source through cmake.
-documents-ocr = ["documents", "xberg/ocr"]
+documents-ocr = ["basemind-engine/documents-ocr", "documents"]
 
 # PaddleOCR as an extra OCR stage. Opt-in for source builds, never part of `full`.
-documents-ocr-paddle = ["documents-ocr", "xberg/paddle-ocr"]
+documents-ocr-paddle = ["basemind-engine/documents-ocr-paddle", "documents-ocr"]
 
 # HEIC/HEIF photos, decoded through libheif (with libde265) and then OCR'd like any raster image.
 # Its own tier because it links the system libheif dynamically.
-documents-heic = ["documents-ocr", "xberg/heic"]
+documents-heic = ["basemind-engine/documents-heic", "documents-ocr"]
 
 # ONNX named-entity recognition: `[documents.ner]` and the `entity` filter of `docs_search`.
-documents-ner = ["documents", "xberg/ner-onnx"]
+documents-ner = ["basemind-engine/documents-ner", "documents"]
 
-code-search = ["intelligence", "xberg/reranker", "xberg/reranker-presets"]
+code-search = ["basemind-engine/code-search", "intelligence"]
 
-memory = ["intelligence"]
+memory = ["basemind-engine/memory", "intelligence"]
 
 comms = [
+  "basemind-engine/comms",
   "dep:basemind-agents",
   "dep:hyper",
   "dep:hyper-util",
@@ -151,28 +124,20 @@ comms = [
   "rmcp/transport-streamable-http-server",
 ]
 
-code-intel-js = [
-  "dep:oxc_allocator",
-  "dep:oxc_ast",
-  "dep:oxc_parser",
-  "dep:oxc_semantic",
-  "dep:oxc_span",
-  "dep:oxc_syntax",
-  "dep:oxc_resolver",
-]
+code-intel-js = ["basemind-engine/code-intel-js"]
 
-code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitter-stack-graphs"]
+code-intel-stack = ["basemind-engine/code-intel-stack"]
 
 # Python imports resolved by ty's module resolver (`src/intel/resolver_python_ty.rs`) before the
 # `code-intel-stack` path arithmetic, which stays the fallback. Default and `code-intel-stack`-only builds
 # omit it; `code-intel` and `full` include it. It adds salsa and ruff's parser and AST crates to the binary.
-code-intel-python = ["code-intel-stack", "dep:ruff_db", "dep:ruff_python_ast", "dep:salsa", "dep:ty_module_resolver"]
+code-intel-python = ["basemind-engine/code-intel-python", "code-intel-stack"]
 
 code-intel = ["code-intel-js", "code-intel-stack", "code-intel-python"]
 
 full = ["documents", "documents-ocr", "documents-heic", "documents-ner", "memory", "comms", "code-intel", "code-search"]
 
-test-support = []
+test-support = ["basemind-engine/test-support"]
 
 # The system allocator instead of mimalloc (`src/allocator.rs`), for leak checking only
 # (`scripts/hardening/leak_check.py`): macOS `leaks` scans the malloc zones, and mimalloc registers
@@ -185,18 +150,14 @@ ahash = "0.8"
 anstream = "1.0"
 anstyle = "1"
 anyhow = "1"
-arc-swap = "1.9.5"
+basemind-engine = { version = "0.34.0", path = "crates/basemind-engine" }
 blake3 = "1"
-bstr = { version = "1", features = ["serde"] }
 # Streamable-HTTP MCP front-end (comms daemon only): response bodies + query parsing + hyper server. ~keep
 bytes = { version = "1", optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 clap_mangen = "0.3"
 directories = "6"
-# Decodes an author name or email that is not UTF-8 by the commit's `encoding` header. Already in ~keep
-# the graph through gix-filter, so this adds no build cost. ~keep
-encoding_rs = "0.8.44"
 fjall = "3.1.13"
 form_urlencoded = { version = "1", optional = true }
 fs2 = "0.4"
@@ -205,7 +166,6 @@ futures = { version = "0.3", optional = true }
 # no build cost; a hand-rolled seed mix would be rolling our own crypto for a credential. ~keep
 getrandom = { version = "0.4", features = ["std"], optional = true }
 gix = { version = "0.91.0", features = ["status", "blob-diff", "revision", "max-performance"] }
-globset = "0.4"
 hex = "0.4"
 # Loopback-TCP hyper server hosting the streamable-HTTP MCP transport (comms daemon only). ~keep
 http = { version = "1", optional = true }
@@ -213,9 +173,6 @@ http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio"], optional = true }
 ignore = "0.4"
-# ~keep Every `$ref` in the bundled config schema is internal, so no HTTP or file resolver (and no
-# ~keep reqwest/rustls in the core's graph, ADR-0032); drafts are built in, and no `idn-*` format is used.
-jsonschema = { version = "0.63", default-features = false }
 # ~keep `remote` is enabled only because lancedb 0.38-0.41 do not compile without it: `error.rs`
 # ~keep gates `Error::Http` behind `#[cfg(feature = "remote")]` while `job.rs` uses it unconditionally.
 # ~keep It pulls tonic/arrow-flight/reqwest in but nothing is invoked; drop it once upstream fixes the gate.
@@ -223,41 +180,16 @@ jsonschema = { version = "0.63", default-features = false }
 # types always share LanceDB's identity. A separate Arrow major forks them and breaks `Scannable`/`Schema`. ~keep
 lancedb = { version = "0.41.0", features = ["remote"], optional = true }
 libc = "0.2"
-# ~keep The global allocator (`src/allocator.rs`). `extended` exposes `mi_option_set`, used by `alloc_tag` to
-# ~keep retag the heap off `VM_MEMORY_IOACCELERATOR`, and `mi_is_in_heap_region`, which proves the binary's allocator.
-libmimalloc-sys = { version = "0.1", features = ["extended"] }
-lru = "0.19.2"
 memchr = "2"
-memmap2 = "0.9"
 notify = "9"
 notify-debouncer-full = "0.8"
-nucleo-matcher = "0.3.1"
-oxc_allocator = { version = "0.160.0", optional = true }
-oxc_ast = { version = "0.160.0", optional = true }
-oxc_parser = { version = "0.160.0", optional = true }
-oxc_resolver = { version = "11.24.3", optional = true }
-oxc_semantic = { version = "0.160.0", optional = true }
-oxc_span = { version = "0.160.0", optional = true }
-oxc_syntax = { version = "0.160.0", optional = true }
-# ~keep The engine store lock: sync, task-fair, unpoisoned like the async lock it replaced, with
-# ~keep owned `Send` read guards for adapter calls that hold a read across an `.await` (ADR-0039).
-parking_lot = { version = "0.13", features = ["arc_lock", "send_guard"] }
 rayon = "1"
 regex = "1.13.2"
-regex-syntax = "0.8"
 rmcp = { version = "3.11", default-features = false, features = ["server", "macros", "schemars", "transport-async-rw"] }
 rmp-serde = "1"
-# ~keep ty's module resolver and the ruff crates its database is built from (feature `code-intel-python`).
-# ~keep Internal components of ruff with no stable API: pinned exactly, used only in `resolver_python_ty.rs`.
-ruff_db = { version = "=0.0.23", default-features = false, optional = true }
-ruff_python_ast = { version = "=0.0.23", default-features = false, optional = true }
-salsa = { version = "0.28.5", default-features = false, features = ["macros"], optional = true }
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-stack-graphs = { package = "basemind-stack-graphs", version = "0.14.2", path = "crates/stack-graphs", optional = true }
-streaming-iterator = "0.1"
-strsim = "0.11"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = [
@@ -274,25 +206,10 @@ tokio = { version = "1", features = [
 ] }
 tokio-util = { version = "0.7", features = ["codec"] }
 toml = "1.2"
-# ~keep TOON text answers (ADR-0053); `cli` (the default) pulls a TUI and a tokenizer.
-toon-format = { version = "0.7", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tree-sitter = "0.27"
-tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.2", path = "crates/tree-sitter-graph", optional = true }
-tree-sitter-language-pack = "1.25.2"
-tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.2", path = "crates/tree-sitter-stack-graphs", optional = true }
-ty_module_resolver = { version = "=0.0.23", optional = true }
 xberg = { version = "1.5.1", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 zstd = "0.14.4"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-mach2 = "0.7"
-
-# ~keep `src/store_file_map_log.rs` tells a replaced file map base from the original by file index, which
-# ~keep `std` exposes on Windows only unstably; already in the graph through `notify`.
-[target.'cfg(windows)'.dependencies]
-file-id = "0.2.3"
 
 # ~keep `basemind serve --lead` (ADR-0040) hosts the agent-launch supervisor; launching is Unix-only.
 [target.'cfg(unix)'.dependencies]
@@ -302,6 +219,7 @@ basemind-agents = { version = "0.34.0", path = "crates/basemind-agents", optiona
 basemind = { path = ".", features = ["test-support"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 dunce = "1"
+memmap2 = "0.9"
 proc-macro2 = "1"
 proptest = "1"
 rmcp = { version = "3.11", features = ["client", "transport-async-rw", "transport-child-process"] }

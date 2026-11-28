@@ -210,7 +210,7 @@ impl BasemindServer {
         op: impl FnOnce(&Workspace, P) -> Result<R, crate::engine::EngineError> + Send + 'static,
     ) -> Result<CallToolResult, McpError>
     where
-        P: super::cursor_bind::Paged + Send + 'static,
+        P: crate::engine::paging::Paged + Send + 'static,
         R: serde::Serialize + 'static,
     {
         adapter::call(&self.state, p, op).await

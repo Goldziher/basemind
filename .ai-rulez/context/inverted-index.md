@@ -13,7 +13,7 @@ x-ai-rulez:
 The Fjall LSM keyspace is the secondary index over the canonical msgpack blob store. One database
 per repository group (ADR-0028) at `<data dir>/cache/groups/<group>/index.fjall/`, shared by every
 view of every worktree of the group; a view's own rows sit under its 4-byte view id. Source:
-`src/index/{mod,keys,writer,group,scoped}.rs`.
+`crates/basemind-engine/src/index/{mod,keys,writer,group,scoped}.rs`.
 
 ## Keyspaces
 
@@ -32,25 +32,25 @@ view of every worktree of the group; a view's own rows sit under its 4-byte view
 ### Key shape
 
 All composite keys are length-prefixed (`u16:len ‖ bytes`). Length prefixes guarantee that a `Foo`
-prefix never spills into `Foobar`. Concrete shapes live in `src/index/keys.rs` with `*_prefix` +
+prefix never spills into `Foobar`. Concrete shapes live in `crates/basemind-engine/src/index/keys.rs` with `*_prefix` +
 `parse_*` companions for every encoder.
 
 The symbol and call rows are keyed by a 16-byte content key (content hash, language, extract
-epoch) in place of the path (`src/index/keys_content.rs`): `symbols_by_path` / `calls_by_path` are
+epoch) in place of the path (`crates/basemind-engine/src/index/keys_content.rs`): `symbols_by_path` / `calls_by_path` are
 `ckey ‖ start`, the name-led rows `u16:len(name) ‖ name ‖ [kind] ‖ ckey ‖ start`. A view reads them
-through its live keys (`src/index/live_keys.rs`), the content key each file map entry records with
+through its live keys (`crates/basemind-engine/src/index/live_keys.rs`), the content key each file map entry records with
 the paths holding it; a name scan's hit key is the row key followed by one holder's path.
 
 #### Operational invariants
 
-- **Schema version**: `INDEX_SCHEMA_VER` constant in `src/index/mod.rs`; persisted in the `meta` keyspace.
+- **Schema version**: `INDEX_SCHEMA_VER` constant in `crates/basemind-engine/src/index/mod.rs`; persisted in the `meta` keyspace.
   On mismatch, open wipes `index.fjall/` and the next scan rebuilds from the msgpack blobs.
 - **Read-before-write delete**: `IndexWriter::upsert_file` reads existing primary entries first to
   derive secondary-index keys, then stages all deletes + inserts in one atomic Fjall batch. The only
   correct way to update on re-scan.
 - **Per-file commit**: `IndexWriter::commit` runs at the end of each `process_file`. Fjall handles
   cross-thread locking across the rayon workers.
-- **Group sweep** (ADR-0041, `src/index/group_sweep.rs`): at the end of a full pass it retires views
+- **Group sweep** (ADR-0041, `crates/basemind-engine/src/index/group_sweep.rs`): at the end of a full pass it retires views
   whose view directory is gone and, when the group owes it, deletes the symbol and call rows of
   contents no file map names and no writer has pending. Shared rows are never deleted by a scan.
 - **`SymbolKind` ordinals are stable**: `symbol_kind_byte()` in `keys.rs` maps each variant to a

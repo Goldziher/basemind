@@ -48,11 +48,14 @@ YAML_VERSION = _line_version(r"""^version: ["']?([^"'\s]+)["']?""")
 
 # (path, reader, uses the PEP 440 form)
 AGENTS_REQUIREMENT = _line_version(r"""^basemind-agents = \{ version = ["']([^"']+)["']""")
+ENGINE_REQUIREMENT = _line_version(r"""^basemind-engine = \{ version = ["']([^"']+)["']""")
 
 SURFACES: list[tuple[str, Callable[[Path], str | None], bool]] = [
     ("Cargo.toml", TOML_VERSION, False),
     ("crates/basemind-agents/Cargo.toml", TOML_VERSION, False),
     ("Cargo.toml", AGENTS_REQUIREMENT, False),
+    ("crates/basemind-engine/Cargo.toml", TOML_VERSION, False),
+    ("Cargo.toml", ENGINE_REQUIREMENT, False),
     ("package.json", _json_version, False),
     ("npm-package/package.json", _json_version, False),
     ("opencode-plugin/package.json", _json_version, False),

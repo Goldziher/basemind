@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:439d48d0428b07e96e93af0a2b384652575fa82c960ff4f244cfa2c5aad95cc9
-Source-Hash: blake3:1f14402d1840126cf7337c9a7a6a73d47e87cb3514a182fbf7b927a76a3322f9
+Content-Hash: blake3:6829945e6bd5540cc3c3bf83224521d4e40c8f79a6e9f9ae2adbaa5fd721c1e5
+Source-Hash: blake3:cf13e28e976928ad07e04ec34e718a93ce3397449e6a6c38629c58faea0f9c4e
 Schema-Version: v1
 -->
 
@@ -214,8 +214,8 @@ Output:
 
 ```text
 results:
-  src/engine/map_cache.rs:10: pub(crate) struct MapCache
-  src/engine/map_cache.rs:39: impl MapCache
+  crates/basemind-engine/src/engine/map_cache.rs:10: pub(crate) struct MapCache
+  crates/basemind-engine/src/engine/map_cache.rs:39: impl MapCache
 ```
 
 ### Show a file's outline before opening it
@@ -233,7 +233,7 @@ basemind code refs "process_file"
 ### Find all callers of a specific definition
 
 ```bash
-basemind code callers src/scanner.rs "process_file" --json
+basemind code callers crates/basemind-engine/src/scanner.rs "process_file" --json
 ```
 
 ### Show recent commits with changed files
@@ -245,7 +245,7 @@ basemind git log --limit 5
 ### Blame a symbol to see when its body last changed
 
 ```bash
-basemind git blame src/scanner.rs --symbol "process_file"
+basemind git blame crates/basemind-engine/src/scanner.rs --symbol "process_file"
 ```
 
 ### Manage cache space

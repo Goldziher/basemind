@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.15.0'
 scope = 'all'
-tree = 'sha256:27a3ba10720a229d4d8caba214e26054d48af7175ad6ffbbb33ba098d6d9aef7'
+tree = 'sha256:aff050997c8444c42a22ed8aefa6c62dfa4e27dedc2d27e375e92c3dbbc8d6dd'
 
 [[served]]
 name = 'adr-workflow'
@@ -64,7 +64,7 @@ digest = 'sha256:b31111df0d7c3427e8ef3257fedeea76bc2430e4e132e7c986ab39d7c9b0d9c
 name = 'index-keyspace-evolution'
 source = '.ai-rulez/skills/index-keyspace-evolution/SKILL.md'
 commit = ''
-digest = 'sha256:de97ae1cbda4c8d1724f4b34a23dc1491220ee8d4a693ce23d692b38cd4c0c8b'
+digest = 'sha256:99fdd290155c7d771ed94c9a04e317cc38396677ef35b766dfc342cb0d759cdf'
 
 [[served]]
 name = 'iterate'
@@ -76,13 +76,13 @@ digest = 'sha256:5cb87728d1449fadda6d8557501fcc0823509c60a37058ce4d2dda123296f67
 name = 'language-support'
 source = '.ai-rulez/skills/language-support/SKILL.md'
 commit = ''
-digest = 'sha256:5bdcc7bfa81315e82624f76fe389ad5c706d78c731dc7191ccd9fbbfc219657d'
+digest = 'sha256:c784ae1dadd34e751c9acade720aff8af473707edbed8100db439b202e8a57ea'
 
 [[served]]
 name = 'mcp-tool-checklist'
 source = '.ai-rulez/skills/mcp-tool-checklist/SKILL.md'
 commit = ''
-digest = 'sha256:93e993711ced840c76cbb3ed608a3f9e69b24b9f333d0ef4cef0f0b06f172240'
+digest = 'sha256:2686d15a21cfd5657fc1b23461e99c50ba35780925f5da7f4cdca004aaae462b'
 
 [[served]]
 name = 'observability-standards'
@@ -160,25 +160,25 @@ digest = 'sha256:ada4405aa2cd8071ff0dcd12117493229d428f843925952483050a980084ff5
 kind = 'agent'
 id = 'mcp-tool-author'
 path = 'agents/mcp-tool-author.md'
-digest = 'sha256:a5b52e972618bc059bb4413a54e493034bd413485ffd6f4b3a027729d40f00cf'
+digest = 'sha256:9a833e10be9e91e0c270dc3e9675c3900da0becd89d53dec793080277312e376'
 
 [[item]]
 kind = 'agent'
 id = 'rust-perf-engineer'
 path = 'agents/rust-perf-engineer.md'
-digest = 'sha256:42c8a8a6dbe4254acb5bb1dc82294287b38d3774fcdd988fb4be707b5bf689d6'
+digest = 'sha256:1dbd83ec76345ab97615177b1b11be59ad986a83899f3108edad4a75fa726c6e'
 
 [[item]]
 kind = 'agent'
 id = 'scanner-extension'
 path = 'agents/scanner-extension.md'
-digest = 'sha256:76716e24bca7307696ea06a849b375540acab5527ff650e006af3e4e5887d485'
+digest = 'sha256:1d44299ec6b283a6276cdd487253cb5b8f40537230b46db7cd8ef6e7e6f611b9'
 
 [[item]]
 kind = 'agent'
 id = 'surface-docs-writer'
 path = 'agents/surface-docs-writer.md'
-digest = 'sha256:8861973cc4ca110e4a6bda86eabe09b884e95861df2ba8d14b3adb50504de4cb'
+digest = 'sha256:e772e57113952c552bfa6db011947478ccb3b3a7d74ba7b53c5bc04ad863310a'
 
 [[item]]
 kind = 'command'
@@ -208,13 +208,13 @@ digest = 'sha256:f9c602c11e7afc91e2e4a398c6920c7e8844dc7daac3cad7dc60b6eacfe3a98
 kind = 'context'
 id = 'code-style'
 path = 'context/code-style.md'
-digest = 'sha256:22d45349602ce68e3588264925ca68027d873afa6b2878b75d44055023a722be'
+digest = 'sha256:6f40b53a2c97b04753acc52788d0c4c439af5a9fa2065473a15053087855ac4c'
 
 [[item]]
 kind = 'context'
 id = 'crate-layout'
 path = 'context/crate-layout.md'
-digest = 'sha256:5b8d16f3ca3f1f625e15ed0ce6528545930512d5d972378118b8fa285748d10b'
+digest = 'sha256:8e770576c587654a4ecd0ba57d7f482fb91646c80c440db9c737ed9a9c29cdbd'
 
 [[item]]
 kind = 'context'
@@ -226,13 +226,13 @@ digest = 'sha256:93661c5648db214ed2720bb6a042d66cd7e781803824a44c2457f7294503de4
 kind = 'context'
 id = 'inverted-index'
 path = 'context/inverted-index.md'
-digest = 'sha256:a403f2754ff781dd8f5e8e80077ee141564fd59774194de0b4d78b15c89453c0'
+digest = 'sha256:c56f2040b16431b6bb0ee7a3f41c88566519060078e277aa80b435173283d0f4'
 
 [[item]]
 kind = 'context'
 id = 'mcp-surface'
 path = 'context/mcp-surface.md'
-digest = 'sha256:eb3aca3e869ce182ae371828406edd71d72726413f400d88d485adb414572d92'
+digest = 'sha256:e5a750107387b2e855dc11268cae8016dc1f4182fd141fe613783ee48870a37d'
 
 [[item]]
 kind = 'context'
@@ -244,7 +244,7 @@ digest = 'sha256:e9c6df79b2a88560e4f432fdaab739d857fad86e3a536603afdb6537ae90c90
 kind = 'context'
 id = 'scanner-pipeline'
 path = 'context/scanner-pipeline.md'
-digest = 'sha256:b8708c0e2cad3be814cc827a11e2d3482ecac5291928ea6603a15741c50e6c4a'
+digest = 'sha256:a87ff53a4bae04497ab6a45e12d341d267681284f1b93cb43a9487cff577486d'
 
 [[item]]
 kind = 'rule'
@@ -262,43 +262,43 @@ digest = 'sha256:b8da1161db03add998f47c6075bd00abfec39711c0cfedc6a1c976f32c2d662
 kind = 'rule'
 id = 'basemind-usage'
 path = 'rules/basemind-usage.md'
-digest = 'sha256:41835249bc755de55616932ddba0bba5a8a69176c86bb7b61be66aebd58a0580'
+digest = 'sha256:eff01ce233351efc4177bb37a670e81c61138a555e9bf69a42281faa9ff8cde1'
 
 [[item]]
 kind = 'rule'
 id = 'mcp-tool-conventions'
 path = 'rules/mcp-tool-conventions.md'
-digest = 'sha256:fcfcf58c4a4e33b24c0a29d100500c389daf52c869693f31f8e383995611c60e'
+digest = 'sha256:dd90cb03a45b25552da943366593673d7e614289e2ad349b00b4290f0390a7ab'
 
 [[item]]
 kind = 'rule'
 id = 'module-size-cap'
 path = 'rules/module-size-cap.md'
-digest = 'sha256:499bf354c2378f40b0acf956f71383872c0201d6bd04f42f25d392f0040fbfc4'
+digest = 'sha256:290841e57fd7695cb8d782ca456955cbcbcf124a4c9c0557322f875668cb7091'
 
 [[item]]
 kind = 'rule'
 id = 'perf-discipline'
 path = 'rules/perf-discipline.md'
-digest = 'sha256:dc49c7be746c9ff2ca5133d8d6ee548792955d27ecd91823b0c429ed05005f01'
+digest = 'sha256:9b08b2235ee349531da00c205b383679de8321bcbcc5d519ed527fdc0e13904a'
 
 [[item]]
 kind = 'rule'
 id = 'release-versioning'
 path = 'rules/release-versioning.md'
-digest = 'sha256:9457848bb3bc76060d9d2a70bdce5277eceaff67882da23eda8b44124d5b8012'
+digest = 'sha256:c8ec90750e1acd24215bb353f7a7aecbe07fdd43b66a573eb6a2455a575c2e49'
 
 [[item]]
 kind = 'rule'
 id = 'schema-and-blob-compat'
 path = 'rules/schema-and-blob-compat.md'
-digest = 'sha256:c83b0efa26bb93d94f0a4b0787e12e24b456b59371f1b3a24920cbbfe34a0392'
+digest = 'sha256:492b5ad318c635ba6c20f303a998f12e179d0f13aa8cc42c1e58cdef0240d37b'
 
 [[item]]
 kind = 'rule'
 id = 'tdd-and-poly'
 path = 'rules/tdd-and-poly.md'
-digest = 'sha256:1781c524456fe6f09e1cd4e111a6a0ff9c38708a84029797308a0f8f72618abf'
+digest = 'sha256:a23216fff32f67cecf687221b883e990c182c2664ac7d8eac7d6616bc03401fd'
 
 [[item]]
 kind = 'settings'
@@ -315,19 +315,19 @@ digest = 'sha256:93c4a3420429aacfe64a43a64719903c50e499b7f303d798187cc7a6f732644
 kind = 'skill'
 id = 'index-keyspace-evolution'
 path = 'skills/index-keyspace-evolution'
-digest = 'sha256:94e5d213b1332a3bf2532101973e682f15cedbe559f670964e76702fac436d71'
+digest = 'sha256:914f87f99360c1cdcc779015e6ea05399f65a349f186451cce125726c6e7190f'
 
 [[item]]
 kind = 'skill'
 id = 'language-support'
 path = 'skills/language-support'
-digest = 'sha256:554dd19dc3c34106abb9d1b3c458bcae6c96e575707d44684d88c8ab2da6b4d9'
+digest = 'sha256:a3b23fb5b178c1387657e95468248f7f0bd954bd7b103be8f9c2ba8f5bb9401d'
 
 [[item]]
 kind = 'skill'
 id = 'mcp-tool-checklist'
 path = 'skills/mcp-tool-checklist'
-digest = 'sha256:fa3dec8cc43ff0aeeb47ed6f8606bf8d6c71479da57b3a8a9a5863c8e70f90c9'
+digest = 'sha256:82720f984253dcae0ac31bcbcbf50195887b53e71f71d1ec523eeb231fbddac1'
 
 [[item]]
 kind = 'skill'

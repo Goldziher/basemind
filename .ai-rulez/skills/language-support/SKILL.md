@@ -21,12 +21,12 @@ Use this to add a new language to basemind's extraction. Supported languages tod
 ## Steps
 
 1. **Register the language**
-   - Add the lang ID + file extensions to `src/lang.rs`'s language registry.
-   - Add the extensions to the scanner's accepted-extension set in `src/scanner.rs` (or the central glob if one exists).
+   - Add the lang ID + file extensions to `crates/basemind-engine/src/lang.rs`'s language registry.
+   - Add the extensions to the scanner's accepted-extension set in `crates/basemind-engine/src/scanner.rs` (or the central glob if one exists).
 
 2. **L1 (outline) queries**
    - Adapt the upstream `tags.scm` to basemind's L1 capture shape: `@symbol.function`, `@symbol.method`, `@symbol.class`, etc. mapped to `extract::SymbolKind`.
-   - Place the query in `src/queries/<pack-name>.scm`, under its `;; section: symbols` header.
+   - Place the query in `crates/basemind-engine/src/queries/<pack-name>.scm`, under its `;; section: symbols` header.
    - Wire into `extract::l1::extract`'s language dispatch.
 
 3. **L2 (calls) queries**

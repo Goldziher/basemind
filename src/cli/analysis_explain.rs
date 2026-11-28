@@ -8,7 +8,7 @@ use rmcp::model::CallToolResult;
 use crate::engine::Workspace;
 use crate::engine::types::explain::ExplainParams;
 
-use super::super::context::Tools;
+use super::super::context::CliContext;
 
 #[derive(Args, Debug)]
 pub struct ExplainArgs {
@@ -34,7 +34,7 @@ pub struct ExplainArgs {
     max_tokens: Option<u32>,
 }
 
-pub(super) async fn call(tools: &Tools, args: ExplainArgs) -> Result<CallToolResult, McpError> {
+pub(super) async fn call(tools: &CliContext, args: ExplainArgs) -> Result<CallToolResult, McpError> {
     let p = ExplainParams {
         target: normalized(tools.root(), &args.target),
         sections: (!args.sections.is_empty()).then(|| args.sections.join(",")),

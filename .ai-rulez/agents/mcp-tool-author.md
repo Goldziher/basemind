@@ -51,7 +51,7 @@ The agent tools (`agent_post`, `agent_inbox`, `agent_threads`) are deferred verb
    with "Use …" and ends with exactly one `Example: {…}` call, and all four annotations set
    exactly. Beside it, `<tool>_call`: `self.op(p, Workspace::<tool>).await` (`op_unpaged` when
    it pages nothing), which binds the cursor and records telemetry keyed by the tool name.
-3. **`src/engine/ops/<tool>.rs`** (git tools: `src/engine/git/`) — the body, a synchronous
+3. **`crates/basemind-engine/src/engine/ops/<tool>.rs`** (git tools: `crates/basemind-engine/src/engine/git/`) — the body, a synchronous
    `impl Workspace` method returning `Result<Response, EngineError>` (ADR-0039). Return
    `EngineError::invalid_argument` naming the fix for any failure the caller can correct; `answer`
    reports it as an `isError` result. Validate argument shapes the schema cannot state and quote
@@ -75,7 +75,7 @@ logged (GH #50). Therefore: no nested struct in a params struct, and never `#[de
 on an enum with per-variant doc comments — the derive emits `oneOf: [{const, description}, …]`.
 A closed set of strings is `Option<String>` with `#[schemars(extend("enum" = [...]))]`, or a type
 with a hand-written `json_schema` and `inline_schema() -> true` (`Visibility` in
-`src/config/v1.rs`, re-exported by `src/engine/types/memory.rs`).
+`crates/basemind-engine/src/config/v1.rs`, re-exported by `crates/basemind-engine/src/engine/types/memory.rs`).
 
 No `output_schema` on any tool: nested response structs emit `$ref`, and inlining them breaks the
 byte ceiling. `tests/mcp_smoke.rs` asserts the absence.
@@ -107,7 +107,7 @@ elsewhere. Never claim success without pasting the outcomes.
 
 - A new tool where an argument on an existing tool would do, or one with no measured win.
 - A `mode` argument, or any argument that changes what the tool is.
-- Body logic in a `tools*.rs` shim — bodies belong in `src/engine/ops/`.
+- Body logic in a `tools*.rs` shim — bodies belong in `crates/basemind-engine/src/engine/ops/`.
 - An optional field the tool cannot run without, or an alias for an existing argument.
 - Ignoring an argument instead of rejecting it; returning a JSON-RPC error for a caller-fixable
   failure instead of an `McpError` that `answer` turns into an `isError` result.

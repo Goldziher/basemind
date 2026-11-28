@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(super::super::exit::exit_code_for(&usage), super::super::exit::USAGE);
         assert_eq!(usage.to_string(), "code_outline: bad path");
 
-        let busy = rmcp::ErrorData::from(crate::engine::scan::rescan_error(&crate::scanner::ScanError::Store(
+        let busy = crate::dispatch::mcp_error(crate::engine::scan::rescan_error(&crate::scanner::ScanError::Store(
             crate::store::StoreError::Locked {
                 path: std::path::PathBuf::from(".lock"),
                 holder: None,
@@ -251,7 +251,10 @@ mod tests {
         let busy = super::super::run_tool("rescan", Err(over_the_relay(busy))).expect_err("refused");
         assert_eq!(super::super::exit::exit_code_for(&busy), super::super::exit::BUSY);
 
-        let overloaded = crate::mcp::busy_for_cli();
+        let overloaded = rmcp::ErrorData::invalid_request(
+            "busy: basemind is running as many calls of this kind as it allows and this one was not started.",
+            Some(serde_json::json!({ crate::engine::BUSY_DATA: true })),
+        );
         let overloaded = super::super::run_tool("code_grep", Err(over_the_relay(overloaded))).expect_err("refused");
         assert_eq!(super::super::exit::exit_code_for(&overloaded), super::super::exit::BUSY);
     }

@@ -24,7 +24,7 @@ The three agent tools (`--features comms`) are verb tools too, but deferred and 
 `docs/comms-v2.md` (ADR-0021).
 
 Every file stays under the **1000-line cap** enforced by `tests/max_lines.rs` — split an operation
-into a submodule of `src/engine/` rather than raising it.
+into a submodule of `crates/basemind-engine/src/engine/` rather than raising it.
 
 ## Steps
 
@@ -59,7 +59,7 @@ into a submodule of `src/engine/` rather than raising it.
    #[tool(
        title = "Outline a file",
        description = "Use to see what a file contains before, or instead of, reading it: … \
-       Example: {\"path\":\"src/store.rs\"}",
+       Example: {\"path\":\"crates/basemind-engine/src/store.rs\"}",
        annotations(
            read_only_hint = true,
            destructive_hint = false,
@@ -85,9 +85,9 @@ into a submodule of `src/engine/` rather than raising it.
    `read_only_hint = false`. `finalize_router` adds `_meta["anthropic/alwaysLoad"]` to every tool,
    so do not set it per tool.
 
-3. **`src/engine/ops/<tool>.rs`** (git tools: `src/engine/git/`) — write the body as a synchronous
+3. **`crates/basemind-engine/src/engine/ops/<tool>.rs`** (git tools: `crates/basemind-engine/src/engine/git/`) — write the body as a synchronous
    `impl Workspace` method returning `Result<Response, EngineError>`; it names no rmcp type
-   (ADR-0039), and response types live in `src/engine/types/<area>.rs`. Return
+   (ADR-0039), and response types live in `crates/basemind-engine/src/engine/types/<area>.rs`. Return
    `EngineError::invalid_argument` with text that names the fix for anything the caller can
    correct; use `engine::files::not_indexed_in` (or `indexed_file`) for a path the code map cannot
    serve and `EngineError::feature_missing` for a compiled-out feature.
@@ -121,7 +121,7 @@ into a submodule of `src/engine/` rather than raising it.
 9. **`README.md`** — add the tool's row. One line, ≤ 120 chars.
 
 Also update `src/mcp/server_handler.rs` instructions when an agent needs to know the tool exists,
-`src/mcp/tasks.rs` `SLOW_CALLS` when it routinely runs for seconds, and `src/mcp/savings.rs` when
+`src/mcp/tasks.rs` `SLOW_CALLS` when it routinely runs for seconds, and `crates/basemind-engine/src/engine/savings.rs` when
 it has a measured shell baseline.
 
 ## Constraints not to "fix" locally

@@ -24,6 +24,7 @@ publish workflow both run it, and it fails on any surface that is missing or dis
 | Surface | Format | Notes |
 |---|---|---|
 | `Cargo.toml` `[package] version` | `X.Y.Z` or `X.Y.Z-rc.N` | Source of truth. |
+| `crates/basemind-engine/Cargo.toml` `[package] version`, and the root's `basemind-engine` requirement | `X.Y.Z` or `X.Y.Z-rc.N` | Published before `basemind`. |
 | `crates/basemind-agents/Cargo.toml` `[package] version`, and the root's `basemind-agents` requirement | `X.Y.Z` or `X.Y.Z-rc.N` | Published to crates.io before `basemind` (ADR-0040). |
 | `npm-package/package.json` `"version"` | `X.Y.Z` or `X.Y.Z-rc.N` | Same shape as Cargo. |
 | `pip-package/pyproject.toml` `version` | `X.Y.Z` or `X.Y.ZrcN` | PyPI canonical form (`basemind`, binary wrapper). |
@@ -35,7 +36,7 @@ publish workflow both run it, and it fails on any surface that is missing or dis
 | `plugin/.hermes/plugins/basemind/{__init__.py,plugin.yaml}` | Cargo form | Generated copy of the Hermes plugin. |
 | `plugin/{package.json,plugin.json,gemini-extension.json,kimi.plugin.json}` and `plugin/.{claude,codex,cursor,factory}-plugin/plugin.json` `version` | `X.Y.Z` or `X.Y.Z-rc.N` | Generated per-runtime manifests of the marketplace bundle. |
 | `kimi.plugin.json` `"version"` | `X.Y.Z` or `X.Y.Z-rc.N` | Root Kimi manifest. |
-| `src/version.rs` `RELEASE_MINOR` | `u16` | Bumped only when the MINOR component changes (or major-100 carry for `1.X` and beyond). |
+| `crates/basemind-engine/src/version.rs` `RELEASE_MINOR` | `u16` | Bumped only when the MINOR component changes (or major-100 carry for `1.X` and beyond). |
 | `package.json` `"version"` | `X.Y.Z` or `X.Y.Z-rc.N` | Workspace root marker (private). |
 | `opencode-plugin/package.json` `"version"` | `X.Y.Z` or `X.Y.Z-rc.N` | `basemind-opencode` npm package. |
 | `.claude-plugin/plugin.json` `"version"` | `X.Y.Z` or `X.Y.Z-rc.N` | Claude Code plugin manifest. |

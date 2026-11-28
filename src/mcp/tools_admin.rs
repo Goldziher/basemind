@@ -11,7 +11,6 @@ use rmcp::tool;
 
 use super::BasemindServer;
 use super::strict::Strict;
-use super::types::TelemetrySummaryParams;
 use super::types_tools::{IndexRescanParams, IndexStatusParams};
 use crate::engine::Workspace;
 use crate::engine::ops::index::RescanProgress;
@@ -115,11 +114,6 @@ impl BasemindServer {
             emit(&progress, event).await;
         }
         result
-    }
-
-    /// Usage and token-savings summary. No MCP tool: `basemind admin telemetry`.
-    pub(crate) async fn telemetry_call(&self, p: TelemetrySummaryParams) -> Result<CallToolResult, McpError> {
-        super::helpers::run_telemetry_summary(&self.state, p).await
     }
 }
 

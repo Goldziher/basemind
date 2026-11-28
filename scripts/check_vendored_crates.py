@@ -39,7 +39,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 # Vendored crates the published `basemind` crate depends on, in publish order.
-CRATES = ["lsp-positions", "tree-sitter-graph", "stack-graphs", "tree-sitter-stack-graphs", "basemind-agents"]
+CRATES = ["lsp-positions", "tree-sitter-graph", "stack-graphs", "tree-sitter-stack-graphs", "basemind-engine", "basemind-agents"]
 GENERATED = {"Cargo.toml", "Cargo.lock", ".cargo_vcs_info.json"}
 DESCRIPTIVE_PACKAGE_KEYS = {
     "authors",

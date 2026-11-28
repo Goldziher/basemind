@@ -10,7 +10,7 @@ x-ai-rulez:
 
 # Crate Layout
 
-basemind is a single Rust crate that builds a CLI binary (`basemind`) and exposes its internals as a library. Two binaries-in-one: `basemind scan` indexes a workspace into the machine-global cache (`~/.local/share/basemind/`, override `BASEMIND_DATA_HOME`); `basemind serve` runs the MCP stdio server.
+basemind is two Rust crates (ADR-0039): `crates/basemind-engine` (stores, scan, retrieval, `Workspace`; never rmcp or clap) and the root `basemind` crate (CLI, MCP adapter, daemon, agents, watcher, `eval/`), which re-exports the engine at its old module paths. `basemind scan` indexes a workspace into the machine-global cache (`~/.local/share/basemind/`, override `BASEMIND_DATA_HOME`); `basemind serve` runs the MCP stdio server.
 
 ## `src/`
 
@@ -62,8 +62,8 @@ basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
 
 #### Other
 
-- `schema/` — JSON Schemas (e.g. `basemind-config-v1.schema.json`), regenerated from the Rust types via `schemars` and asserted byte-equal by `tests/config_schema.rs`. Never hand-edit.
-- `build.rs` — code generation (tree-sitter query bundles; `rerun-if-changed` plumbing).
+- `crates/basemind-engine/schema/` — JSON Schemas (e.g. `basemind-config-v1.schema.json`), regenerated from the Rust types via `schemars` and asserted byte-equal by `tests/config_schema.rs`. Never hand-edit.
+- `build.rs` — links the macOS compiler runtime (the engine crate has its own).
 - `poly.toml` — poly checks: typos, markdown, cargo fmt/clippy/sort/machete/deny, rustdoc-lint. The 1000-line cap is `tests/max_lines.rs`.
 - `deny.toml` — cargo-deny license / source allow-list.
-- `Cargo.toml` — single-binary crate; key deps: `fjall`, `gix`, `ahash`, `memchr`, `rayon`, `rmcp`, `rmp-serde`, `tree-sitter*`.
+- `Cargo.toml` — the `basemind` crate depends on `basemind-engine`; carries `rmcp`, `clap`, `tokio`, daemon deps.

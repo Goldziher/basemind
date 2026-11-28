@@ -2,5 +2,5 @@ plugin/scripts/* text eol=lf
 plugin/hooks/* text eol=lf
 plugin/.ai-rulez/scripts/* text eol=lf
 plugin/.ai-rulez/hooks/* text eol=lf
-src/intel/tsg/*.tsg text eol=lf
-schema/*.json text eol=lf
+crates/basemind-engine/src/intel/tsg/*.tsg text eol=lf
+crates/basemind-engine/schema/*.json text eol=lf

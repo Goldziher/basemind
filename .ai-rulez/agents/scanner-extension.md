@@ -34,7 +34,7 @@ Tree-sitter capture names are language-specific. `function.definition` in one gr
 
 ## Pitfalls
 
-- Don't forget the file-extension glob in `src/scanner.rs`. Symptom of forgetting: tool returns 0 hits for a known symbol.
+- Don't forget the file-extension glob in `crates/basemind-engine/src/scanner.rs`. Symptom of forgetting: tool returns 0 hits for a known symbol.
 - Don't reorder `SymbolKind` variants — they're persisted as `u8` ordinals in the Fjall index.
 - Populate `start_row` / `start_col` on every `Call` extracted from L2; `code_refs` reports them.
 - Eager L2 is on by default; the harden canary must work with it on. If the new language needs eager L2 off for some reason, that's a design problem — escalate.

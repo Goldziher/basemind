@@ -1,0 +1,226 @@
+//! The traits through which the scan reaches the document and vector stack (ADR-0023 rule 1): an
+//! `Embedder` for code chunks, a `VectorStore` the chunk rows are written to, and a
+//! `DocumentSink` that extracts, embeds and stores documents. The scan names no LanceDB, embedding
+//! or extraction type; the implementations live in the retrieval modules and are bound once per
+//! [`Filters`](crate::scanner_filter::Filters), so a scan resolves them once, never per file.
+//!
+//! The traits are synchronous and carry no runtime type: whatever the retrieval side runs on (its
+//! own tokio runtime) stays behind them.
+//!
+//! The scan takes the implementations as a [`Retrieval`] argument: the engine layer binds this
+//! build's (`crate::retrieval_wiring::backend`), so no core module picks one. A build without
+//! `documents` or `code-search` has no retrieval stack, and its `Retrieval` carries nothing.
+
+#[cfg(feature = "documents")]
+use std::path::Path;
+
+#[cfg(any(feature = "documents", feature = "code-search"))]
+use crate::config::Config;
+#[cfg(feature = "documents")]
+use crate::config::DocumentsConfig;
+#[cfg(feature = "code-search")]
+use crate::config::OnnxProvider;
+#[cfg(feature = "documents")]
+use crate::scanner::{EmbedMode, FileResult};
+#[cfg(feature = "code-search")]
+use crate::scanner_code::PendingCodeBatch;
+#[cfg(feature = "documents")]
+use crate::scanner_filter::Filters;
+#[cfg(any(feature = "documents", feature = "code-search"))]
+use crate::store::Store;
+
+/// A failure of the retrieval side, as text: the scan only logs it. Built from an `anyhow` error
+/// with `{:#}`, so the text carries the whole cause chain; log it with `%`.
+#[cfg(any(feature = "documents", feature = "code-search"))]
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct RetrievalError(pub String);
+
+/// Which embedding model to run, and how.
+#[cfg(feature = "code-search")]
+#[derive(Debug, Clone, Copy)]
+pub struct EmbedderSpec<'a> {
+    /// The embedding preset (`[documents] embedding_preset`).
+    pub preset: &'a str,
+    /// Cap on the embedding pool's threads; `0` picks the default.
+    pub max_threads: usize,
+    /// Texts per model call.
+    pub batch_size: usize,
+    /// ONNX execution provider.
+    pub provider: OnnxProvider,
+}
+
+/// Turns chunk text into vectors.
+#[cfg(feature = "code-search")]
+pub trait Embedder: Sync {
+    /// Vector length of `spec`'s model. Fails for an unknown preset, exactly as loading it would.
+    fn dim(&self, spec: &EmbedderSpec<'_>) -> Result<u16, RetrievalError>;
+
+    /// One vector per text, in order.
+    fn embed_batch(&self, spec: &EmbedderSpec<'_>, texts: &[&str]) -> Result<Vec<Vec<f32>>, RetrievalError>;
+}
+
+/// The vector store a scan writes chunk rows to. Each method logs its own failures where the
+/// scan has nothing to do with them.
+#[cfg(any(feature = "documents", feature = "code-search"))]
+pub trait VectorStore: Sync {
+    /// Open the store for the configured preset (creating it when absent). An error means no row
+    /// can be written this scan.
+    fn open(&self, store: &mut Store, config: &Config) -> Result<(), RetrievalError>;
+
+    /// Whether the repository group still holds the vector store with this `id`: a store that was
+    /// wiped, removed or replaced since a view wrote its rows to it is told from the one that holds
+    /// them.
+    fn holds_store(&self, store: &Store, id: &str) -> bool;
+
+    /// Id of the vector store this `store` has open, if any.
+    fn open_store_id(&self, store: &Store) -> Option<String>;
+
+    /// Drop the handle `store` keeps, so the next write reopens.
+    fn close(&self, store: &mut Store);
+
+    /// Compact and prune the store after a scan's writes; no-op when the scan never opened it.
+    fn maintain(&self, store: &Store);
+
+    /// Write the rows of every embedded batch, one file at a time from its chunk sidecar. Returns
+    /// the number of files written.
+    #[cfg(feature = "code-search")]
+    fn write_code_rows(&self, store: &mut Store, batches: Vec<PendingCodeBatch>, model: &str) -> usize;
+
+    /// Delete the code rows `paths` leave behind, which left the scan set or stopped being
+    /// embed-eligible: the rows of every content no other file of the group still holds. `false`
+    /// only when rows that exist could not be deleted.
+    #[cfg(feature = "code-search")]
+    fn delete_code_rows(&self, store: &mut Store, config: &Config, paths: &[String]) -> bool;
+}
+
+/// Per-file deferred-LanceDB-write descriptor. Constructed inside `process_file`'s parallel
+/// worker; consumed in the single-threaded apply pass via [`DocumentSink::flush`].
+///
+/// Deliberately **metadata only** — it carries the content hash needed to re-read the persisted
+/// `.doc.msgpack` blob at flush time, NOT the chunk text or the embedding vectors. Accumulating the
+/// vectors here (one `Vec<f32>` per chunk, hundreds of chunks per document) across an entire corpus
+/// was the memory leak this shape fixes: the flush now rebuilds one file's rows at a time.
+#[cfg(feature = "documents")]
+#[derive(Debug, Clone)]
+pub struct PendingDocBatch {
+    /// Repository-relative path, forward-slash separated. Becomes the `path`
+    /// column in LanceDB.
+    pub rel_path: String,
+    /// Number of chunks indexed (zero is valid — xberg may yield no chunks
+    /// when the file body is empty or below the chunk threshold).
+    pub chunk_count: usize,
+    /// Length of each chunk's embedding vector. Zero when embeddings are off.
+    pub embedding_dim: u16,
+    /// Whether this file owes vector rows at flush time. False for the no-embed, empty, and
+    /// over-`max_chunks_per_document` cases, whose rows carry no vectors. Decided at construction,
+    /// where the document is in hand.
+    pub emit_rows: bool,
+    /// Whether the doc leaves this pass with its embedding requirement satisfied — persisted onto
+    /// the [`crate::store::DocEntry`] so the next pass's unchanged fast path can tell a fully
+    /// embedded doc from a tracked-but-vectorless one (issue #44). True when the pass didn't ask to
+    /// embed, when vectors are present, or when the doc has no chunks to embed.
+    pub embedded: bool,
+    /// Whether this pass actually ran an embedding attempt on the doc (embedding requested, freshly
+    /// extracted) — even if xberg returned no vectors. Persisted onto
+    /// [`crate::store::DocEntry::embed_attempted`] so the unchanged fast path stops re-extracting and
+    /// re-embedding a deterministically-unembeddable doc on every scan (issue #44 follow-up). See that
+    /// field for the full healing contract.
+    pub embed_attempted: bool,
+    /// True when this batch came from the cached-blob reuse branch of `extract_and_persist_doc`
+    /// rather than a fresh xberg extraction. Drives the `reused_doc_extraction` scan counter — the
+    /// observable proof that churn (renames, rewrites) does not re-run extraction or embedding.
+    pub reused: bool,
+    /// True when the document was chunked by the linear fallback instead of xberg's markdown splitter
+    /// (large text-like file; structured data is linear by design and does not count). Drives the `docs_degraded` scan counter.
+    pub degraded: bool,
+    /// True when structured extraction failed and the file was re-read as `text/plain` (implies
+    /// `degraded`). Drives the `docs_text_fallback` scan counter.
+    pub text_fallback: bool,
+    /// True when the document has more chunks than `[documents] max_chunks_per_document`, so it was
+    /// not embedded and is found by the lexical lane only. Drives the `docs_over_chunk_cap` counter.
+    pub over_chunk_cap: bool,
+}
+
+/// Where the scan hands a document: extraction, its blob, its chunk rows and their removal.
+#[cfg(feature = "documents")]
+pub trait DocumentSink: Sync {
+    /// Warn once per filter build about `[documents]` settings this build cannot honour.
+    fn warn_unavailable_settings(&self, cfg: &DocumentsConfig);
+
+    /// Process one file that has no code grammar: extract it as a document when `[documents]`
+    /// admits it. Always returns a result; a file that is not a document is `SkippedNoLang`.
+    // Called once per file on the rayon workers: these are the per-file inputs, and an argument
+    // struct would only be built and torn down around each call.
+    #[allow(clippy::too_many_arguments)]
+    fn process(
+        &self,
+        root: &Path,
+        rel: &str,
+        filters: &Filters,
+        store: &Store,
+        config: &Config,
+        scope: &str,
+        embed: EmbedMode,
+    ) -> FileResult;
+
+    /// Timed-out extraction threads still running.
+    fn abandoned_extractions(&self) -> usize;
+
+    /// Whether the document embedder embeds now (one probe text).
+    fn embedder_ready(&self, config: &Config) -> bool;
+
+    /// Queue up to `budget` batches for documents an earlier scan left owing rows.
+    fn requeue(
+        &self,
+        store: &mut Store,
+        config: &Config,
+        filters: &Filters,
+        scope: &str,
+        batches: &mut Vec<PendingDocBatch>,
+        budget: &mut usize,
+    );
+
+    /// Bring the document store in line with the view's document map: write this scan's documents
+    /// (`batches`) and up to `budget` others the store lacks. Returns the number of documents written.
+    fn flush(
+        &self,
+        store: &mut Store,
+        config: &Config,
+        filters: &Filters,
+        batches: Vec<PendingDocBatch>,
+        budget: usize,
+    ) -> usize;
+
+    /// Drop the entries and rows of documents removed since the last scan.
+    fn remove(&self, store: &mut Store, config: &Config, filters: &Filters, stale: &[String]);
+
+    /// Delete the vectors of documents that are no longer embed-eligible. `false` when rows that
+    /// exist could not be deleted.
+    fn purge_unembedded(&self, store: &mut Store, config: &Config, filters: &Filters, scope: &str) -> bool;
+}
+
+/// The retrieval implementations a scan runs with, passed to every scan entry point. The engine
+/// layer binds this build's (`crate::retrieval_wiring::backend`).
+#[derive(Clone, Copy)]
+pub struct Retrieval {
+    #[cfg(feature = "code-search")]
+    pub(crate) embedder: &'static dyn Embedder,
+    /// The identity of a preset's model that stored vectors carry.
+    #[cfg(feature = "code-search")]
+    pub(crate) model_key: fn(&str) -> String,
+    #[cfg(any(feature = "documents", feature = "code-search"))]
+    pub(crate) vectors: &'static dyn VectorStore,
+    #[cfg(feature = "documents")]
+    pub documents: &'static dyn DocumentSink,
+}
+
+impl std::fmt::Debug for Retrieval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Retrieval").finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+#[path = "scan_retrieval_inert.rs"]
+mod inert;

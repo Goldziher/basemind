@@ -2,7 +2,7 @@ use basemind::config::overrides::DocumentsCliOverrides;
 use basemind::config::{self, ConfigError, ConfigLayers, ConfigSource, ConfigV1, merge_layers};
 
 #[cfg(feature = "intelligence")]
-const SCHEMA_PATH: &str = "schema/basemind-config-v1.schema.json";
+const SCHEMA_PATH: &str = "crates/basemind-engine/schema/basemind-config-v1.schema.json";
 
 #[cfg(feature = "intelligence")]
 fn generate_schema_text() -> String {
@@ -33,7 +33,7 @@ fn schema_snapshot_matches_derived() {
             eprintln!("{line}");
         }
         panic!(
-            "schema/basemind-config-v1.schema.json is out of sync with `schemars::schema_for!(ConfigV1)`. \
+            "crates/basemind-engine/schema/basemind-config-v1.schema.json is out of sync with `schemars::schema_for!(ConfigV1)`. \
              Run `cargo test --test config_schema -- --ignored regenerate_schema` to update the snapshot."
         );
     }
