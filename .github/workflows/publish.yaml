@@ -901,9 +901,7 @@ jobs:
       - name: Package all supported plugin runtimes
         uses: xberg-io/actions/package-ai-rulez-plugin@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
         with:
-          # The Cursor plugin ships from the repository-root .cursor-plugin; the emitter needs a
-          # generated plugin/.cursor-plugin, which the plugin config deliberately omits.
-          cursor-marketplace: "false"
+          cursor-marketplace: "true"
           tag: ${{ needs.meta.outputs.tag }}
           config-directory: .ai-rulez
           version-sync-script: scripts/sync_plugin_version.py

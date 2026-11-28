@@ -7,8 +7,8 @@ name: bm-stats
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:647686ffcb7a122d5f75c01acd89868c2a88a87a879d99d70086031abd79259b
-Source-Hash: blake3:1f14402d1840126cf7337c9a7a6a73d47e87cb3514a182fbf7b927a76a3322f9
+Content-Hash: blake3:c181d5b5944f499bab5a56262cbae23ebd21cf573a6a73ddc41383224dddc31b
+Source-Hash: blake3:d118b1c7470f237f43e9e210d0386613ff4ce9eac9f642c99c769b049869702d
 Schema-Version: v1
 -->
 
@@ -39,8 +39,8 @@ Invoke `/bm-stats` (default window `today`) or `/bm-stats <today|1h|24h|all>`. W
 ## Notes
 
 - Both are CLI commands with no MCP tool; they read the same data with or without a running
-  server. Run them through the plugin launcher, `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>`
-  (bare `basemind` from `PATH` when no plugin launcher exists).
+  server. Run them through the plugin launcher, `"${CLAUDE_PLUGIN_ROOT:-$CURSOR_PLUGIN_ROOT}/scripts/mcp-launch.sh" <args>`
+  (bare `basemind` from `PATH` when neither plugin root variable is set).
 - If the CLI is not reachable, say so plainly and point at `/bm-doctor`.
 - Always end with a one-sentence disclosure that the savings number is heuristic: tools without a
   realistic baseline (memory, document search, git wrappers) report 0 saved.

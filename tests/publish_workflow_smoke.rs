@@ -607,3 +607,53 @@ fn every_job_has_a_name_the_ci_gate_can_ignore() {
         "the gate must derive the ignored names from publish.yaml, and the reusable build's jobs by prefix"
     );
 }
+
+/// The value of a step input (`key: "value"`) in a workflow, if the workflow sets it.
+fn step_input(workflow: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    workflow
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(|value| value.trim().trim_matches('"').to_string())
+}
+
+/// Whether the plugin config generates a runtime (`runtimes = [..]` in the `[plugin]` table).
+fn plugin_generates_runtime(runtime: &str) -> bool {
+    let config =
+        std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugin/.ai-rulez/config.plugins.toml"))
+            .expect("read plugin/.ai-rulez/config.plugins.toml");
+    let runtimes = config
+        .lines()
+        .find_map(|line| line.strip_prefix("runtimes = ["))
+        .expect("the plugin config lists its runtimes");
+    runtimes
+        .split(',')
+        .any(|entry| entry.trim().trim_end_matches(']').trim().trim_matches('"') == runtime)
+}
+
+/// The packaging step emits a Cursor team-marketplace index only for a plugin that has a generated
+/// `.cursor-plugin/plugin.json`. v0.34.0 asked for the index while the config omitted the runtime,
+/// and the publish failed on "plugin has no .cursor-plugin/plugin.json". Both workflows must ask for
+/// the emitter exactly when the config generates the runtime, and the generated manifest must exist.
+#[test]
+fn the_cursor_marketplace_emitter_matches_the_generated_runtimes() {
+    let generates_cursor = plugin_generates_runtime("cursor");
+    for name in ["publish.yaml", "plugin-artifacts.yaml"] {
+        let flag = step_input(&read_workflow(name), "cursor-marketplace");
+        assert_eq!(
+            flag.as_deref() == Some("true"),
+            generates_cursor,
+            "{name} sets cursor-marketplace to {flag:?} but the plugin config {} the cursor runtime",
+            if generates_cursor { "generates" } else { "omits" },
+        );
+    }
+    if generates_cursor {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugin/.cursor-plugin/plugin.json");
+        assert!(
+            manifest.is_file(),
+            "the config generates cursor but {} is missing; run `mise run plugin:generate`",
+            manifest.display()
+        );
+    }
+}

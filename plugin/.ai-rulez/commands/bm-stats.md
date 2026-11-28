@@ -38,8 +38,8 @@ Invoke `/bm-stats` (default window `today`) or `/bm-stats <today|1h|24h|all>`. W
 ## Notes
 
 - Both are CLI commands with no MCP tool; they read the same data with or without a running
-  server. Run them through the plugin launcher, `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>`
-  (bare `basemind` from `PATH` when no plugin launcher exists).
+  server. Run them through the plugin launcher, `"${CLAUDE_PLUGIN_ROOT:-$CURSOR_PLUGIN_ROOT}/scripts/mcp-launch.sh" <args>`
+  (bare `basemind` from `PATH` when neither plugin root variable is set).
 - If the CLI is not reachable, say so plainly and point at `/bm-doctor`.
 - Always end with a one-sentence disclosure that the savings number is heuristic: tools without a
   realistic baseline (memory, document search, git wrappers) report 0 saved.

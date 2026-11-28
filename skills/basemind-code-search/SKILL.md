@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:13e25596958c945a26d3a9b69ba83e36fa38efa7137b86285a17056d39b4951c
-Source-Hash: blake3:1f14402d1840126cf7337c9a7a6a73d47e87cb3514a182fbf7b927a76a3322f9
+Content-Hash: blake3:496d44af047384888f65b731237bb4561044503e9048d5d64a6e9564535e3e4c
+Source-Hash: blake3:d118b1c7470f237f43e9e210d0386613ff4ce9eac9f642c99c769b049869702d
 Schema-Version: v1
 -->
 
@@ -29,7 +29,7 @@ The tools are always loaded: call them directly. Drop to raw shell only when no 
 
 ## The discipline
 
-- **`code_outline` before you open a file.** A 1000-line file becomes a 30-line table of contents.
+- **`code_outline` before you open a file.** A 1000-line file becomes a 30-line outline.
   Then `code_read` the one symbol or line span you need, not the file.
 - **`code_symbols` instead of `grep` for a definition.** It matches indexed symbol names and skips
   the comment, string and test-name noise.
