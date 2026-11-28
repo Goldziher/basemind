@@ -124,7 +124,7 @@ jobs:
           key: hardening-${{ matrix.os }}-${{ env.FEATURES }}
           cache-directories: ${{ runner.os == 'Windows' && '~/AppData/Local/ort.pyke.io' || runner.os == 'macOS' && '~/Library/Caches/ort.pyke.io' || '~/.cache/ort.pyke.io' }}
 
-      - uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
+      - uses: xberg-io/actions/setup-mise@3debc44dfd6b6a1b2b691ba553d51f13dc78d738 # v1.52.0
         with:
           install-args: python
 
@@ -298,7 +298,7 @@ jobs:
           key: hardening-ubuntu-latest-${{ env.FEATURES }}
           cache-directories: ~/.cache/ort.pyke.io
 
-      - uses: xberg-io/actions/setup-mise@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
+      - uses: xberg-io/actions/setup-mise@3debc44dfd6b6a1b2b691ba553d51f13dc78d738 # v1.52.0
         with:
           install-args: python
 

@@ -23,7 +23,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install ai-rulez
-        uses: xberg-io/actions/setup-ai-rulez@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
+        uses: xberg-io/actions/setup-ai-rulez@3debc44dfd6b6a1b2b691ba553d51f13dc78d738 # v1.52.0
       - name: Verify the target release version matches the plugin
         env:
           PLUGIN_RELEASE_TAG: ${{ inputs.tag }}
@@ -31,7 +31,7 @@ jobs:
       - name: Verify public skill exports
         run: python3 scripts/sync_public_skills.py --check
       - name: Package all supported plugin runtimes
-        uses: xberg-io/actions/package-ai-rulez-plugin@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
+        uses: xberg-io/actions/package-ai-rulez-plugin@3debc44dfd6b6a1b2b691ba553d51f13dc78d738 # v1.52.0
         with:
           cursor-marketplace: "true"
           tag: ${{ github.sha }}
@@ -50,7 +50,7 @@ jobs:
             --owner=0 --group=0 --numeric-owner -cf - -C dist/plugin . | gzip -n > "$bundle"
           (cd dist && sha256sum "$(basename "$bundle")") > "$bundle.sha256"
       - name: Attach verified plugin archive and metadata
-        uses: xberg-io/actions/upload-release-assets@64bf4fc642ab473af9c6d49938173515a4adb48d # v1.51.0
+        uses: xberg-io/actions/upload-release-assets@3debc44dfd6b6a1b2b691ba553d51f13dc78d738 # v1.52.0
         with:
           tag: ${{ inputs.tag }}
           assets: |
