@@ -4,7 +4,7 @@
 version = 1
 ai_rulez_version = '5.15.0'
 scope = 'all'
-tree = 'sha256:aa9a5c6e88eb40a8a3096146699949dbda9d7fa10d18d81ceafa65747236e325'
+tree = 'sha256:b2e35f04d65dd261640ce905e09d15709c48df2f09955252468a87c2edcf5754'
 
 [[item]]
 kind = 'command'
@@ -34,7 +34,7 @@ digest = 'sha256:02cf34b99275c4a2bda2faa61788b307f95657219a122a77c41dbaf4235a255
 kind = 'command'
 id = 'bm-stats'
 path = 'commands/bm-stats.md'
-digest = 'sha256:4be937bc70951463ccffbe4017c8a1d283e860da99897f8ab481e030abbbf1b9'
+digest = 'sha256:8587b6eae1fc84f2cf267f930fd9e92e1535f4a7b94f6be58d04ff691f4501d9'
 
 [[item]]
 kind = 'command'
@@ -46,7 +46,7 @@ digest = 'sha256:97e4cf0bb225e72bab95c0e967264d9176013f89c8c8a7f98fae1ebe1cc6721
 kind = 'skill'
 id = 'basemind'
 path = 'skills/basemind'
-digest = 'sha256:df6987aa55bab198155817858eb9a3ea835d769ff1c86cb886619718ac159775'
+digest = 'sha256:d1ab1eba151eba063e962a6f5b5f374977adc1d80e31f39c749597b454f0f9bb'
 
 [[item]]
 kind = 'skill'
@@ -100,4 +100,4 @@ digest = 'sha256:3b4d1d0ea541723fa8157d27eb9978766024cfdd4b9d526e73b60a49d8a71fe
 kind = 'skill'
 id = 'basemind-stats'
 path = 'skills/basemind-stats'
-digest = 'sha256:e58c8213bfca0317fffc4b04bbeb05f3277d75401180bf4b9aa777bd0d67d5e1'
+digest = 'sha256:14f7ee0aabdca4eddc25084a526cf5da4711931ec7be3249c5a758e6517a3ea5'

@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:91a4d2aedc85cf9ea9f3818ac484052ffeea1404c0438ec229d26d7122d6a64d
-Source-Hash: blake3:eae55b5660df79ccb35563d12aabc8ef1ede337307fe5b9ed886c7aeb6b44a33
+Content-Hash: blake3:9a8f7cac360df4b562b728eb041497ef625e7c7eb80c99e132a29bf4b7df1423
+Source-Hash: blake3:16e6757f7e0dd42d72f061a9733cafce96d12a2fb3ee06821dd353883790f651
 Schema-Version: v1
 -->
 
@@ -19,7 +19,7 @@ Schema-Version: v1
 Run `basemind admin telemetry --json` and render the result as a markdown report. The usage summary
 is a CLI command, not an MCP tool; it reads the same telemetry log the server writes, with or
 without a running server. Launch it through the plugin's version-matched binary,
-`${CLAUDE_PLUGIN_ROOT:-$CURSOR_PLUGIN_ROOT}/scripts/mcp-launch.sh admin telemetry --json` (bare `basemind` from `PATH`
+`${CLAUDE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-$HOME/.cursor/plugins/local/basemind}}/scripts/mcp-launch.sh admin telemetry --json` (bare `basemind` from `PATH`
 when no plugin launcher exists).
 
 ## When to use
