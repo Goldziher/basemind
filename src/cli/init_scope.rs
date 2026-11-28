@@ -15,7 +15,7 @@ use crate::config::default_document_exclude;
 use crate::config::rules::{RuleSet, compile_rules};
 
 /// Extensions init counts: documentation, Office, markup, data and raster images.
-const COUNTED_EXTENSIONS: &[&str] = &[
+pub(crate) const COUNTED_EXTENSIONS: &[&str] = &[
     "md", "mdx", "rst", "adoc", "txt", "ipynb", "pdf", "doc", "docx", "pptx", "xlsx", "odt", "html", "htm", "csv",
     "tsv", "xml", "json", "yaml", "yml", "toml", "png", "jpg", "jpeg", "gif", "webp", "tiff", "bmp",
 ];
@@ -75,7 +75,7 @@ impl ScratchDir {
 
 /// `dir` as a literal glob: metacharacters become single-character classes, and a leading `!` is
 /// shielded with `./` (stripped when the glob expands) so the entry is not read as a re-include.
-fn escape_glob(dir: &str) -> String {
+pub(crate) fn escape_glob(dir: &str) -> String {
     let mut out = String::with_capacity(dir.len() + 2);
     if dir.starts_with('!') {
         out.push_str("./");
@@ -102,7 +102,7 @@ pub(crate) struct ScopeReport {
 }
 
 impl ScopeReport {
-    fn totals(&self) -> ExtCount {
+    pub(crate) fn totals(&self) -> ExtCount {
         self.by_ext.values().fold(ExtCount::default(), |acc, c| ExtCount {
             total: acc.total + c.total,
             kept: acc.kept + c.kept,
@@ -126,18 +126,36 @@ pub(crate) fn proposed_include() -> Vec<String> {
     DOCUMENTATION_EXTENSIONS.iter().map(|e| format!("**/*.{e}")).collect()
 }
 
-fn scope_rules() -> Result<(RuleSet, RuleSet)> {
-    let include = proposed_include();
-    let exclude = default_document_exclude();
-    Ok((
-        compile_rules(include.iter().map(String::as_str)).map_err(anyhow::Error::msg)?,
-        compile_rules(exclude.iter().map(String::as_str)).map_err(anyhow::Error::msg)?,
-    ))
+/// The documents the proposed `[documents]` lists keep: the include list, minus the default
+/// exclude list and any extra exclusions.
+pub(crate) struct DocumentScope {
+    include: RuleSet,
+    exclude: RuleSet,
+}
+
+impl DocumentScope {
+    /// The default scope with `excluded` globs (the scratch directories already dropped) removed too.
+    pub(crate) fn new(excluded: &[String]) -> Result<Self> {
+        let include = proposed_include();
+        let exclude: Vec<String> = default_document_exclude()
+            .into_iter()
+            .chain(excluded.iter().cloned())
+            .collect();
+        Ok(Self {
+            include: compile_rules(include.iter().map(String::as_str)).map_err(anyhow::Error::msg)?,
+            exclude: compile_rules(exclude.iter().map(String::as_str)).map_err(anyhow::Error::msg)?,
+        })
+    }
+
+    /// True when the repo-relative, forward-slash `rel` stays in scope.
+    pub(crate) fn keeps(&self, rel: &str) -> bool {
+        self.include.is_match(rel) && !self.exclude.is_match(rel)
+    }
 }
 
 /// Walk `root` (honouring `.gitignore`) and count document-like files against the default scope.
 pub(crate) fn detect(root: &Path) -> Result<ScopeReport> {
-    let (include, exclude) = scope_rules()?;
+    let scope = DocumentScope::new(&[])?;
     let mut report = ScopeReport::default();
     let mut scratch: BTreeMap<String, (usize, u64)> = BTreeMap::new();
     let walker = crate::scanner_filter::ignore_walk_builder(root, true, false)
@@ -163,7 +181,7 @@ pub(crate) fn detect(root: &Path) -> Result<ScopeReport> {
         }
         let counts = report.by_ext.entry(ext).or_default();
         counts.total += 1;
-        if !include.is_match(&rel) || exclude.is_match(&rel) {
+        if !scope.keeps(&rel) {
             continue;
         }
         counts.kept += 1;
@@ -241,7 +259,7 @@ fn ask(describe: &str, input: &mut dyn BufRead, output: &mut dyn Write) -> Resul
     })
 }
 
-fn human_bytes(bytes: u64) -> String {
+pub(crate) fn human_bytes(bytes: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = KIB * 1024;
     if bytes >= MIB {
@@ -249,6 +267,17 @@ fn human_bytes(bytes: u64) -> String {
     } else {
         format!("{} KiB", bytes.div_ceil(KIB))
     }
+}
+
+/// Documents still in scope once the `excluded` globs drop their scratch directories.
+pub(crate) fn kept_after_exclusions(report: &ScopeReport, excluded: &[String]) -> usize {
+    let dropped: usize = report
+        .scratch
+        .iter()
+        .filter(|dir| excluded.contains(&dir.glob()))
+        .map(|dir| dir.files)
+        .sum();
+    report.totals().kept.saturating_sub(dropped)
 }
 
 /// The counts init prints before it writes: documents per extension, and in scope before and
@@ -265,6 +294,12 @@ pub(crate) fn render_counts(report: &ScopeReport, excluded: &[String]) -> String
     ));
     for glob in excluded {
         out.push_str(&format!("\n  also excluded: {glob}"));
+    }
+    if !excluded.is_empty() {
+        out.push_str(&format!(
+            "\n  in scope after exclusions: {}",
+            kept_after_exclusions(report, excluded)
+        ));
     }
     out
 }
@@ -286,7 +321,7 @@ pub(crate) fn render_lists(excluded: &[String], commented: &[String]) -> String 
     out.push_str(&list("exclude", &exclude));
     if !commented.is_empty() {
         out.push_str("# Suggested, not applied; add any of these to `exclude` to drop it:\n");
-        for line in commented {
+        for line in commented.iter().flat_map(|suggestion| suggestion.lines()) {
             out.push_str(&format!("#   {line}\n"));
         }
     }
@@ -442,6 +477,20 @@ mod tests {
         assert_eq!(cfg.documents.exclude, expected);
         assert_eq!(cfg.documents.include, proposed_include());
         assert!(lists.contains("#   sandbox/**"));
+    }
+
+    #[test]
+    fn in_scope_count_drops_the_excluded_directories() {
+        let tmp = repo();
+        let report = detect(tmp.path()).expect("detect");
+        let kept = report.totals().kept;
+        assert_eq!(kept_after_exclusions(&report, &[]), kept);
+        assert_eq!(kept_after_exclusions(&report, &["legacy/**".to_string()]), kept - 10);
+        let text = render_counts(&report, &["legacy/**".to_string()]);
+        assert!(
+            text.contains(&format!("in scope after exclusions: {}", kept - 10)),
+            "{text}"
+        );
     }
 
     #[test]

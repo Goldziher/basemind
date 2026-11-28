@@ -23,6 +23,7 @@ use clap::{Args, ValueEnum};
 
 use super::init_capability_prompt::prompt_capabilities;
 use super::init_gitignore;
+use super::init_monorepo;
 use super::init_rules::{self, BlockSections, Capability};
 use super::init_scope;
 use super::init_settings;
@@ -528,15 +529,28 @@ fn plan_config(root: &Path, args: &InitArgs) -> Result<Vec<Change>> {
     let (excluded, commented) =
         init_scope::resolve(&report, mode, &mut std::io::stdin().lock(), &mut std::io::stdout())?;
     let lists = init_scope::render_lists(&excluded, &commented);
+    let layout = init_monorepo::detect(root, &init_scope::DocumentScope::new(&excluded)?)
+        .context("detect the monorepo layout")?;
+    let preset = init_monorepo::resolve(
+        init_monorepo::propose(&layout, &init_monorepo::Thresholds::default()),
+        mode,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stdout(),
+    )?;
+    let scaffold =
+        init_monorepo::apply_to_scaffold(&init_scope::apply_to_scaffold(INIT_SCAFFOLD_TOML, &lists), &preset);
     Ok(vec![
         Change::NoOp {
             note: init_scope::render_counts(&report, &excluded),
+        },
+        Change::NoOp {
+            note: init_monorepo::render_summary(&layout, &preset),
         },
         Change::Write {
             path,
             verb: Verb::Write,
             what: "basemind.toml scaffold",
-            contents: init_scope::apply_to_scaffold(INIT_SCAFFOLD_TOML, &lists),
+            contents: scaffold,
         },
     ])
 }
