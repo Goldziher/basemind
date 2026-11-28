@@ -262,6 +262,9 @@ pub struct CodeSymbolsParams {
     /// Language, e.g. `rust`.
     #[serde(default)]
     pub language: Option<String>,
+    /// Roles: `only`, `exclude`, or a list like `test,infra` or `-test,-infra`.
+    #[serde(default)]
+    pub roles: Option<String>,
     /// Also match the name as a fuzzy subsequence, ranked last.
     #[serde(default)]
     pub fuzzy: Option<bool>,
@@ -291,6 +294,8 @@ pub(crate) struct SearchSymbolsParams {
     pub path: Option<crate::path_filter::PathFilter>,
     /// Only definitions in files of this language.
     pub language: Option<String>,
+    /// Only definitions in files passing this `roles` filter ([`RoleFilter`](crate::config::RoleFilter)).
+    pub roles: Option<String>,
     /// Also match names the needle is a fuzzy subsequence of, ranked below every literal match.
     pub fuzzy: bool,
     /// Cap the number of results returned. Default 100, max 1000.

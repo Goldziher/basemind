@@ -159,11 +159,11 @@ impl BasemindServer {
     #[tool(
         title = "Find call sites, implementations and importers",
         description = "Use for what calls, implements or imports X, or which definition a use \
-        binds to (`relation`). Callers are call sites, not type uses or `use` lines. `hits` maps \
+        binds to (`relation`). `hits` maps \
         files to rows: `line`, `callee` if not `name`, `stale` if edited since. A row without \
         `resolution` has the page's `resolution_default`. Resolutions: \
         same_file, imported, scope_resolved, elsewhere (not the pinned one), name_only \
-        (unchecked; see `resolution_note`), external (not indexed), path_match (HTTP call by \
+        (unchecked), external (not indexed), path_match (HTTP call by \
         literal URL to route `name`, or a pinned handler; `ambiguous`: routes tie). \
         Example: {\"name\":\"open_store\",\"path\":\"src/store.rs\"}",
         annotations(

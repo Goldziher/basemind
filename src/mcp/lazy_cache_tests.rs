@@ -219,6 +219,7 @@ async fn corpus_tool_builds_the_map_on_demand_and_sees_every_file() {
         kind: None,
         path: None,
         language: None,
+        roles: None,
         fuzzy: None,
         limit: None,
         cursor: None,

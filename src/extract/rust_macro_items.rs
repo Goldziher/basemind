@@ -256,10 +256,13 @@ fn item_macro_bodies<'t>(root: Node<'t>, source: &[u8]) -> Vec<Node<'t>> {
     while let Some(container) = stack.pop() {
         for child in container.named_children(&mut cursor) {
             match child.kind() {
-                "macro_invocation" => {
+                // Newer grammars wrap an item-position invocation in `macro_invocation_item`; older
+                // ones put the `macro_invocation` straight into the container.
+                "macro_invocation" | "macro_invocation_item" => {
+                    let invocation = child.child_by_field_name("invocation").unwrap_or(child);
                     // The body is the invocation's last child; no field names it.
-                    if let Some(tt) = child
-                        .child(child.child_count().saturating_sub(1))
+                    if let Some(tt) = invocation
+                        .child(invocation.child_count().saturating_sub(1))
                         .filter(|n| n.kind() == "token_tree" && opens_like_items(*n, source))
                     {
                         found.push(tt);
@@ -350,5 +353,22 @@ mod tests {
             none.bodies.is_empty(),
             "no body to parse: a spent deadline cuts nothing"
         );
+    }
+
+    /// A body is found whether the invocation stands in a `mod` body or at file level, and with an
+    /// attribute in front of it.
+    #[test]
+    fn item_position_invocations_are_found_at_file_level_and_in_mod_bodies() {
+        let src =
+            b"cfg_a! { pub fn a() {} }\nmod m { cfg_b! { pub fn b() {} } }\n#[cfg(unix)]\ncfg_c! { pub fn c() {} }\n";
+        let tree = with_parser("rust", |p| p.parse(src, None))
+            .expect("rust grammar")
+            .expect("parse");
+        let bodies = item_macro_bodies(tree.root_node(), src);
+        let texts: Vec<&[u8]> = bodies.iter().map(|n| &src[n.start_byte()..n.end_byte()]).collect();
+        assert_eq!(texts.len(), 3);
+        for needle in [&b"pub fn a() {}"[..], b"pub fn b() {}", b"pub fn c() {}"] {
+            assert!(texts.iter().any(|t| t.windows(needle.len()).any(|w| w == needle)));
+        }
     }
 }

@@ -16,7 +16,7 @@ use crate::engine::budget::{apply_budget, budget};
 use crate::engine::changed::admits;
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
-use crate::engine::filters::{Filters, grep_selects_no_file, parse_path};
+use crate::engine::filters::{Filters, RoleScope, grep_selects_no_file, parse_path};
 use crate::engine::scope::ChangeScope;
 use crate::engine::types::SCAN_CAP;
 use crate::engine::types::code::{
@@ -73,6 +73,7 @@ impl Workspace {
                 kind: p.kind,
                 path,
                 language: p.language,
+                roles: p.roles,
                 fuzzy: p.fuzzy.unwrap_or(false),
                 limit: p.limit,
                 max_tokens: budget(p.max_tokens),
@@ -128,10 +129,12 @@ fn search_symbols(
     let finder = memchr::memmem::Finder::new(needle);
     let want = skip.saturating_add(limit);
     let cache = ws.cache.load_full();
+    let roles = RoleScope::resolve(ws, "code_symbols", params.roles.as_deref())?;
     let filters = Filters {
         tool: "code_symbols",
         path: params.path.as_ref(),
         language: params.language.as_deref(),
+        roles: roles.as_ref(),
     };
     let selected = |path: &RelPath| {
         admits(scope, path)

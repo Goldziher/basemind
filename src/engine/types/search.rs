@@ -24,6 +24,9 @@ pub struct CodeSearchParams {
     /// Language, e.g. `rust`.
     #[serde(default)]
     pub language: Option<String>,
+    /// Roles: `only`, `exclude`, or a list like `test,infra` or `-test,-infra`.
+    #[serde(default)]
+    pub roles: Option<String>,
     /// Default 10.
     #[serde(default)]
     pub limit: Option<u32>,

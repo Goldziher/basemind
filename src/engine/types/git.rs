@@ -12,10 +12,10 @@ use crate::path::RelPath;
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GitLogParams {
-    /// Only commits touching this file or directory (trailing `/`); narrows a `query`/`author` search.
+    /// Only commits touching this file or directory (trailing `/`).
     #[serde(default)]
     pub path: Option<RelPath>,
-    /// Words the commit message must all contain; typos, word parts and a last-word prefix match too, after exact ones.
+    /// Words the commit message must all contain (typos and word parts match too).
     #[serde(default)]
     pub query: Option<String>,
     /// Words the author name or email must all contain, matched like `query`.
@@ -27,13 +27,13 @@ pub struct GitLogParams {
     /// With `query`/`author`: only commits until then (same forms, day included).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
-    /// Commits that changed this symbol's body, ignoring comments and whitespace (`git log -L` counts them); needs `path`, combines only with `line`.
+    /// Commits that changed this symbol's body; needs `path`, combines only with `line`.
     #[serde(default)]
     pub symbol: Option<String>,
     /// With `symbol`: a 1-based line inside the definition meant.
     #[serde(default)]
     pub line: Option<u32>,
-    /// Show this one commit in full; combines with nothing.
+    /// Show this one commit in full.
     #[serde(default)]
     pub rev: Option<String>,
     /// Default 20, max 100 (500 for a directory `path`).

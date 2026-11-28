@@ -37,7 +37,7 @@ import-aware navigation for Python and Java.
   basemind. A `;;`-comment attribution header (source, commit, license, target grammar version) is
   prepended to each file.
 - The rules were written against `tree-sitter-python =0.23.5` / `tree-sitter-java =0.23.4`; basemind
-  parses via `tree-sitter-language-pack` 1.25.2. Grammar-drift adaptations for node types that do not
+  parses via `tree-sitter-language-pack` 1.28.0. Grammar-drift adaptations for node types that do not
   exist in the current grammar (e.g. Python's `except_group_clause`) are stripped at engine-build
   time in `src/intel/stackgraph.rs`.
 - Rule bug fixes for valid modern constructs are applied **directly to the rule files**. Each of the
@@ -341,13 +341,13 @@ licences. The line numbers below are in the crates.io sources of the versions na
 ### Tree-sitter grammars
 
 - **Source**: <https://github.com/xberg-io/tree-sitter-language-pack> (crates.io
-  `tree-sitter-language-pack` 1.25.2, MIT). It downloads prebuilt grammar shared libraries and loads
+  `tree-sitter-language-pack` 1.28.0, MIT). It downloads prebuilt grammar shared libraries and loads
   them into the basemind process with `dlopen`.
 - **When**: `ensure_grammars` (`src/lang_grammars.rs`) fetches the grammars basemind ships queries
   for (`OVERRIDE_LANGUAGES` in `src/lang.rs`) the first time a process needs them; any other grammar
   is fetched the first time a file of its language is parsed. `basemind lang install` fetches them
   ahead of time.
-- **Cache**: `<data home>/grammars/tree-sitter-language-pack/v1.25.2/libs`, or the same suffix under
+- **Cache**: `<data home>/grammars/tree-sitter-language-pack/v1.28.0/libs`, or the same suffix under
   `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR` (`DataRoot::grammars_dir` in `src/data_root.rs`,
   `cache_dir_from_base` in the pack's `src/download.rs`). `BASEMIND_GRAMMAR_OFFLINE` makes
   `ensure_grammars` and `ensure_extra_grammars` (`src/lang_grammars.rs`) report a missing grammar
@@ -356,7 +356,7 @@ licences. The line numbers below are in the crates.io sources of the versions na
 
 | Step | What is checked | Pack source |
 |---|---|---|
-| Manifest | `parsers.json` is fetched over HTTPS from the pack's `v1.25.2` GitHub release, trusting the OS certificate store (`TREE_SITTER_LANGUAGE_PACK_TLS_ROOTS=webpki` selects the WebPKI roots). It is not signed, and neither the pack nor basemind pins its hash. `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL` replaces the URL, `http://` and `file://` included. | `src/download.rs:22`, `src/download/transport.rs:14` (`resolve_manifest_url`), `:58` (`build_agent`) |
+| Manifest | `parsers.json` is fetched over HTTPS from the pack's `v1.28.0` GitHub release, trusting the OS certificate store (`TREE_SITTER_LANGUAGE_PACK_TLS_ROOTS=webpki` selects the WebPKI roots). It is not signed, and neither the pack nor basemind pins its hash. `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL` replaces the URL, `http://` and `file://` included. | `src/download.rs:22`, `src/download/transport.rs:14` (`resolve_manifest_url`), `:58` (`build_agent`) |
 | Bundle | The platform's `.tar.zst` is read up to the size the manifest gives (at most 2 GiB), and its SHA-256 must equal the manifest's before it is cached or unpacked. A cached bundle is hashed again before reuse and deleted on a mismatch. | `src/download.rs:39`, `:550`, `:573`, `:603` |
 | Unpack | Only the library file of each requested language is written, each atomically. | `src/download.rs:647` |
 | Cache directory | Before the cache becomes a library search path it must be owned by the current user or root and not be group- or other-writable (Unix); a directory the pack creates is mode `0700`. | `src/download/cache.rs:95`, `:133`; `src/lib.rs:428` |
@@ -369,22 +369,20 @@ the cache after it was unpacked; the cache directory check limits the last to th
 root.
 
 Each grammar keeps the licence of its upstream repository. The pack's `language_definitions.json`
-pins each grammar's repository and commit (`repo`, `rev`) or names a copy vendored in the pack
-(`local`). The grammars basemind pre-fetches, as pinned by the pack 1.25.2:
+pins each grammar's repository and commit (`repo`, `rev`). The grammars basemind pre-fetches, as pinned by the pack 1.28.0:
 
 | Grammar | Upstream | Commit | License |
 |---|---|---|---|
-| `rust` | [tree-sitter/tree-sitter-rust](https://github.com/tree-sitter/tree-sitter-rust), vendored at `grammars/rust` | `77a3747266f4d621d0757825e6b11edcbf991ca5` | MIT |
-| `python` | [tree-sitter/tree-sitter-python](https://github.com/tree-sitter/tree-sitter-python), vendored at `grammars/python` | `26855eabccb19c6abf499fbc5b8dc7cc9ab8bc64` | MIT |
-| `java` | [tree-sitter/tree-sitter-java](https://github.com/tree-sitter/tree-sitter-java), vendored at `grammars/java` | `e10607b45ff745f5f876bfa3e94fbcc6b44bdc11` | MIT |
+| `rust` | [grammar-orchard/tree-sitter-rust-orchard](https://github.com/grammar-orchard/tree-sitter-rust-orchard) | `7d8120b8fd67c88f7fe0a3d45acf70f3d8080a53` | MIT |
+| `python` | [grammar-orchard/tree-sitter-python-orchard](https://github.com/grammar-orchard/tree-sitter-python-orchard) | `f124a008fd961f1ec3cf19763802ab290abec99f` | MIT |
+| `java` | [grammar-orchard/tree-sitter-java-orchard](https://github.com/grammar-orchard/tree-sitter-java-orchard) | `9f1bf03ceb63be6dc1da6f5b594852932f1b46da` | MIT |
 | `typescript`, `tsx` | [tree-sitter/tree-sitter-typescript](https://github.com/tree-sitter/tree-sitter-typescript) | `75b3874edb2dc714fb1fd77a32013d0f8699989f` | MIT |
 | `javascript` | [grammar-orchard/tree-sitter-javascript-orchard](https://github.com/grammar-orchard/tree-sitter-javascript-orchard) | `c1cb25379be133c2ed7b34bf88680ee13136d09c` | MIT |
 | `go` | [tree-sitter/tree-sitter-go](https://github.com/tree-sitter/tree-sitter-go) | `2346a3ab1bb3857b48b29d779a1ef9799a248cd7` | MIT |
 | `markdown` | [tree-sitter-grammars/tree-sitter-markdown](https://github.com/tree-sitter-grammars/tree-sitter-markdown) | `41ff24a6c775492c543b09228aeb98d1cd2b3a0f` | MIT |
 
-The vendored grammars carry the upstream licence and commit in their `LICENSE` and
-`ATTRIBUTIONS.md` in the pack repository. A grammar fetched on demand carries the licence of the
-repository the pack pins for it; basemind has not reviewed those.
+Each grammar carries the licence of the repository the pack pins for it. A grammar fetched on demand
+is not one basemind has reviewed.
 
 ### Models
 
@@ -542,7 +540,7 @@ Tesseract 5.5.4 (commit `7e548e6eff172f38f97664afe7f7ce40db36c8d6`) and compiles
 library, without its optional image, archive, network and ICU dependencies.
 
 - **Source**: <https://github.com/tesseract-ocr/tesseract>
-- **Checked against**: `xberg-tesseract` 1.5.1
+- **Checked against**: `xberg-tesseract` 1.5.4
 - **License**: Apache-2.0
 - **Copyright**: Hewlett-Packard Ltd., Google Inc. and the Tesseract contributors
 - **Licence text**: `licenses/tesseract.txt` (the repository's `LICENSE` at that commit), shipped in
@@ -559,7 +557,7 @@ The image-processing library Tesseract is built on. `xberg-tesseract` downloads 
 zlib, PNG, JPEG, TIFF, WebP, OpenJPEG and GIF support all disabled.
 
 - **Source**: <https://github.com/DanBloomberg/leptonica>
-- **Checked against**: `xberg-tesseract` 1.5.1
+- **Checked against**: `xberg-tesseract` 1.5.4
 - **License**: BSD-2-Clause
 - **Copyright**: Leptonica
 - **Licence text**: `licenses/leptonica.txt` (the repository's `leptonica-license.txt` at that
