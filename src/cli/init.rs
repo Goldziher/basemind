@@ -529,11 +529,10 @@ fn plan_config(root: &Path, args: &InitArgs) -> Result<Vec<Change>> {
     let (excluded, commented) =
         init_scope::resolve(&report, mode, &mut std::io::stdin().lock(), &mut std::io::stdout())?;
     let lists = init_scope::render_lists(&excluded, &commented);
-    let kept_docs = init_scope::kept_after_exclusions(&report, &excluded);
     let layout = init_monorepo::detect(root, &init_scope::DocumentScope::new(&excluded)?)
         .context("detect the monorepo layout")?;
     let preset = init_monorepo::resolve(
-        init_monorepo::propose(&layout, kept_docs, &init_monorepo::Thresholds::default()),
+        init_monorepo::propose(&layout, &init_monorepo::Thresholds::default()),
         mode,
         &mut std::io::stdin().lock(),
         &mut std::io::stdout(),
@@ -545,7 +544,7 @@ fn plan_config(root: &Path, args: &InitArgs) -> Result<Vec<Change>> {
             note: init_scope::render_counts(&report, &excluded),
         },
         Change::NoOp {
-            note: init_monorepo::render_summary(&layout, &preset, kept_docs),
+            note: init_monorepo::render_summary(&layout, &preset),
         },
         Change::Write {
             path,

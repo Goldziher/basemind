@@ -13,7 +13,7 @@ found, the settings it applied and the expected file count with a rough first-sc
 detects:
 
 - Bazel (`WORKSPACE`, `MODULE.bazel`, `BUILD` files) and Terraform (`*.tf`); Terraform state and
-  plan files, Terragrunt caches and `MODULE.bazel.lock` are added to `[scan] exclude` when present.
+  plan files, and Terragrunt caches are added to `[scan] exclude` when present.
 - Data directories: a directory of at least 50 MB in which 95% of the files are data (csv, json,
   parquet, ...) goes into `[scan] exclude`.
 - Tracked directories the exclude floor drops: a committed `build/`, `out/` (applied under `--yes`

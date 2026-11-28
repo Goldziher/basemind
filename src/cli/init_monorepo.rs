@@ -44,7 +44,6 @@ const GENERATED_STATE_GLOBS: &[(&str, &str)] = &[
     ("**/*.tfstate.*", "Terraform state backup"),
     ("**/*.tfplan", "Terraform plan"),
     ("**/.terragrunt-cache/**", "Terragrunt cache"),
-    ("**/MODULE.bazel.lock", "Bazel module lockfile"),
 ];
 
 /// Directories the walk never enters.
@@ -120,7 +119,7 @@ pub(crate) struct StateHit {
 }
 
 /// What init found in the repository.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct MonorepoReport {
     pub bazel: bool,
     pub terraform_files: usize,
@@ -128,6 +127,8 @@ pub(crate) struct MonorepoReport {
     pub scan_files: usize,
     /// Of `scan_files`, those the document tier counts (see [`COUNTED_EXTENSIONS`]).
     pub document_files: usize,
+    /// Of `document_files`, those the document scope keeps (the population `scan_files` counts).
+    pub kept_documents: usize,
     pub floor_dirs: Vec<FloorDir>,
     pub data_dirs: Vec<DataDir>,
     pub state_hits: Vec<StateHit>,
@@ -212,6 +213,7 @@ pub(crate) fn detect_with(root: &Path, thresholds: &Thresholds, scope: &Document
             report.document_files += 1;
         }
         let is_kept_doc = is_doc && scope.keeps(&rel);
+        report.kept_documents += usize::from(is_kept_doc);
         if ext.as_deref() == Some("tf") {
             report.terraform_files += 1;
         }
@@ -340,9 +342,9 @@ pub(crate) struct Proposal {
     pub confident: bool,
 }
 
-/// The proposals for `report`; `kept_docs` is the document count the default scope keeps, before the
-/// data and state exclusions proposed here take their own documents out.
-pub(crate) fn propose(report: &MonorepoReport, kept_docs: usize, thresholds: &Thresholds) -> Vec<Proposal> {
+/// The proposals for `report`; `report.kept_documents` is the document count the scope keeps, before
+/// the data and state exclusions proposed here take their own documents out.
+pub(crate) fn propose(report: &MonorepoReport, thresholds: &Thresholds) -> Vec<Proposal> {
     let mut out = Vec::new();
     for dir in &report.floor_dirs {
         out.push(Proposal {
@@ -392,7 +394,7 @@ pub(crate) fn propose(report: &MonorepoReport, kept_docs: usize, thresholds: &Th
         .filter(|p| p.setting == Setting::ScanExclude && p.confident)
         .fold((0, 0), |(files, kept), p| (files + p.files, kept + p.kept_docs));
     let scope_files = report.scan_files.saturating_sub(excluded_files);
-    let kept_docs = kept_docs.saturating_sub(excluded_kept_docs);
+    let kept_docs = report.kept_documents.saturating_sub(excluded_kept_docs);
     let dominated =
         kept_docs >= EMBED_OFF_MIN_DOCS || (kept_docs >= EMBED_OFF_MIN_SHARE_DOCS && kept_docs * 2 > scope_files);
     if dominated {
@@ -475,8 +477,9 @@ fn ask(proposal: &Proposal, input: &mut dyn BufRead, output: &mut dyn Write) -> 
 }
 
 /// Files the scan is expected to index once `preset` is applied. Documents count as the
-/// `kept_docs` the scope keeps (before the applied exclusions), not as every document-like file found.
-pub(crate) fn expected_files(report: &MonorepoReport, preset: &Preset, kept_docs: usize) -> usize {
+/// `report.kept_documents` the scope keeps (before the applied exclusions), not as every
+/// document-like file found.
+pub(crate) fn expected_files(report: &MonorepoReport, preset: &Preset) -> usize {
     let mut files = report.scan_files;
     let mut excluded_docs = 0;
     let mut excluded_kept_docs = 0;
@@ -492,7 +495,7 @@ pub(crate) fn expected_files(report: &MonorepoReport, preset: &Preset, kept_docs
         }
     }
     let remaining_docs = report.document_files.saturating_sub(excluded_docs);
-    files.saturating_sub(remaining_docs) + kept_docs.saturating_sub(excluded_kept_docs)
+    files.saturating_sub(remaining_docs) + report.kept_documents.saturating_sub(excluded_kept_docs)
 }
 
 fn estimate(files: usize) -> String {
@@ -506,7 +509,7 @@ fn estimate(files: usize) -> String {
 
 /// What init prints before it writes: the layouts detected, the settings applied and the expected
 /// file count and scan time.
-pub(crate) fn render_summary(report: &MonorepoReport, preset: &Preset, kept_docs: usize) -> String {
+pub(crate) fn render_summary(report: &MonorepoReport, preset: &Preset) -> String {
     let mut detected = Vec::new();
     if report.bazel {
         detected.push("Bazel".to_string());
@@ -531,7 +534,7 @@ pub(crate) fn render_summary(report: &MonorepoReport, preset: &Preset, kept_docs
     for proposal in &preset.applied {
         out.push_str(&format!("\n  applied: {} ({})", proposal.entry, proposal.describe));
     }
-    let files = expected_files(report, preset, kept_docs);
+    let files = expected_files(report, preset);
     out.push_str(&format!(
         "\nexpected index: about {files} files, first scan roughly {} (rough, at {SCAN_FILES_PER_SECOND} files/s)",
         estimate(files)
@@ -632,9 +635,16 @@ mod tests {
         tmp
     }
 
+    fn with_kept(report: &MonorepoReport, kept_documents: usize) -> MonorepoReport {
+        MonorepoReport {
+            kept_documents,
+            ..report.clone()
+        }
+    }
+
     fn apply_all(report: &MonorepoReport, kept_docs: usize) -> Preset {
         resolve(
-            propose(report, kept_docs, &SMALL),
+            propose(&with_kept(report, kept_docs), &SMALL),
             Mode::Yes,
             &mut std::io::empty(),
             &mut Vec::new(),
@@ -688,6 +698,35 @@ mod tests {
         );
         assert_eq!(report.scan_files, 12, "floor and ignored files are not counted");
         assert_eq!(report.document_files, 2 + 4);
+        assert_eq!(report.kept_documents, 2, "the csv files are document-like but not kept");
+    }
+
+    #[test]
+    fn documents_under_floor_directories_do_not_count_as_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        touch(tmp.path(), "src/main.rs", 10);
+        touch(tmp.path(), "guides/a.md", 10);
+        for i in 0..5 {
+            touch(tmp.path(), &format!(".venv/lib/pkg/d{i}.md"), 10);
+        }
+        let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
+        assert_eq!(report.scan_files, 2);
+        assert_eq!(report.document_files, 1);
+        assert_eq!(report.kept_documents, 1, "the .venv documents are outside the scan");
+        let preset = apply_all(&report, report.kept_documents);
+        assert_eq!(expected_files(&report, &preset), 2);
+    }
+
+    #[test]
+    fn the_bazel_lockfile_is_not_proposed_for_exclusion() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        touch(tmp.path(), "MODULE.bazel", 10);
+        touch(tmp.path(), "MODULE.bazel.lock", 10);
+        let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
+        assert!(report.state_hits.is_empty(), "{:?}", report.state_hits);
+        assert!(propose(&report, &SMALL).is_empty());
     }
 
     #[test]
@@ -698,7 +737,7 @@ mod tests {
         touch(tmp.path(), "README.md", 10);
         let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
         assert!(!report.bazel);
-        assert!(propose(&report, 1, &SMALL).is_empty());
+        assert!(propose(&with_kept(&report, 1), &SMALL).is_empty());
         let preset = apply_all(&report, 1);
         assert_eq!(
             apply_to_scaffold(crate::cli::init::INIT_SCAFFOLD_TOML, &preset),
@@ -732,7 +771,7 @@ mod tests {
     fn preview_applies_nothing_and_interactive_follows_the_answers() {
         let tmp = monorepo();
         let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
-        let proposals = propose(&report, 2, &SMALL);
+        let proposals = propose(&with_kept(&report, 2), &SMALL);
         let total = proposals.len();
         let preview = resolve(proposals.clone(), Mode::Preview, &mut std::io::empty(), &mut Vec::new()).unwrap();
         assert!(preview.applied.is_empty());
@@ -757,14 +796,22 @@ mod tests {
             ..MonorepoReport::default()
         };
         for (kept, off) in [(0, false), (499, false), (2000, true)] {
-            assert_eq!(propose(&report, kept, &SMALL).is_empty(), !off, "{kept} documents");
+            assert_eq!(
+                propose(&with_kept(&report, kept), &SMALL).is_empty(),
+                !off,
+                "{kept} documents"
+            );
         }
         let docs_heavy = MonorepoReport {
             scan_files: 900,
             ..MonorepoReport::default()
         };
-        assert_eq!(propose(&docs_heavy, 500, &SMALL).len(), 1, "more than half of the tree");
-        assert!(propose(&docs_heavy, 400, &SMALL).is_empty());
+        assert_eq!(
+            propose(&with_kept(&docs_heavy, 500), &SMALL).len(),
+            1,
+            "more than half of the tree"
+        );
+        assert!(propose(&with_kept(&docs_heavy, 400), &SMALL).is_empty());
     }
 
     #[test]
@@ -780,7 +827,7 @@ mod tests {
             }],
             ..MonorepoReport::default()
         };
-        let proposals = propose(&report, 600, &SMALL);
+        let proposals = propose(&with_kept(&report, 600), &SMALL);
         assert!(
             proposals.iter().any(|p| p.setting == Setting::EmbedOff),
             "{proposals:?}"
@@ -802,12 +849,12 @@ mod tests {
             ..MonorepoReport::default()
         };
         assert!(
-            propose(&report, 600, &SMALL)
+            propose(&with_kept(&report, 600), &SMALL)
                 .iter()
                 .all(|p| p.setting != Setting::EmbedOff)
         );
         let preset = apply_all(&report, 600);
-        assert_eq!(expected_files(&report, &preset, 600), 300);
+        assert_eq!(expected_files(&with_kept(&report, 600), &preset), 300);
     }
 
     #[test]
@@ -830,7 +877,7 @@ mod tests {
         assert_eq!(report.document_files, 45);
         let kept_docs = 5;
         let preset = apply_all(&report, kept_docs);
-        assert_eq!(expected_files(&report, &preset, kept_docs), 5);
+        assert_eq!(expected_files(&with_kept(&report, kept_docs), &preset), 5);
     }
 
     #[test]
@@ -909,8 +956,8 @@ mod tests {
         let report = detect_with(tmp.path(), &SMALL, &scope()).expect("detect");
         let preset = apply_all(&report, 2);
         // 12 walked + 3 build files - 4 data files - 1 state file = 10; its 2 documents are all kept
-        assert_eq!(expected_files(&report, &preset, 2), 10);
-        let summary = render_summary(&report, &preset, 2);
+        assert_eq!(expected_files(&with_kept(&report, 2), &preset), 10);
+        let summary = render_summary(&with_kept(&report, 2), &preset);
         assert!(
             summary.contains("monorepo layout: Bazel, Terraform (1 .tf files)"),
             "{summary}"
