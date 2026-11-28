@@ -362,6 +362,9 @@ pub(crate) struct WorkspaceGrepResponse {
     /// True when a `max_tokens` budget dropped trailing hits. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// True when the requested `limit` exceeded the maximum of 1000 and was lowered to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_clamped: bool,
     /// The hits under the file and the symbol each is in, files in the order searched.
     #[schemars(with = "serde_json::Value")]
     pub hits: GrepHits,

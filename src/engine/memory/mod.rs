@@ -273,10 +273,7 @@ impl Workspace {
     /// One page of a namespace's notes, values preview-truncated.
     pub(crate) fn memory_list(&self, params: MemoryListParams) -> Result<MemoryListResponse, EngineError> {
         let started = std::time::Instant::now();
-        let limit = params
-            .limit
-            .unwrap_or(super::ops::SEARCH_LIMIT_DEFAULT)
-            .min(super::ops::SEARCH_LIMIT_MAX) as usize;
+        let (limit, limit_clamped) = super::ops::search_limit(params.limit, super::ops::SEARCH_LIMIT_DEFAULT);
         let (vis_byte, owner) = self.memory_namespace(params.visibility);
         let key_prefix_filter = params.prefix.clone().unwrap_or_default();
         let cursor_bytes = params.cursor.as_ref().map(Cursor::decode_fjall).transpose()?;
@@ -288,6 +285,7 @@ impl Workspace {
             total: page.total as usize,
             truncated,
             truncated_reason: truncated.then_some("scan_cap"),
+            limit_clamped,
             entries: page.entries.into_iter().map(wire_to_entry).collect(),
             next_cursor: page.next_cursor.as_deref().map(Cursor::encode_fjall),
             elapsed_us: elapsed_us(started),

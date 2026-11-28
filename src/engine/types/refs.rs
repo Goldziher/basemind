@@ -148,6 +148,9 @@ pub(crate) struct DependentsResponse {
     pub total: Option<usize>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// True when the requested `limit` exceeded the maximum of 1000 and was lowered to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_clamped: bool,
     pub paths: Vec<RelPath>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
@@ -165,6 +168,9 @@ pub(crate) struct GraphImportersResponse {
     pub total: Option<usize>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// True when the requested `limit` exceeded the maximum of 1000 and was lowered to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_clamped: bool,
     /// This page's importers by their import distance from the file (`"1"`: direct importers),
     /// each list in path order.
     pub by_depth: std::collections::BTreeMap<u8, Vec<RelPath>>,
@@ -212,6 +218,9 @@ pub(crate) struct CyclesResponse {
     pub total: usize,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// True when the requested `limit` exceeded the maximum of 1000 and was lowered to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_clamped: bool,
     pub cycles: Vec<ImportCycle>,
     /// What a cycle of a language means, for each language a listed cycle has.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -425,6 +434,9 @@ pub(crate) struct FindReferencesResponse {
     /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// True when the requested `limit` exceeded the maximum of 1000 and was lowered to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_clamped: bool,
     /// The call sites under the file each is in.
     #[serde(serialize_with = "crate::engine::by_path::serialize")]
     pub hits: Vec<ReferenceHit>,
@@ -470,6 +482,9 @@ pub(crate) struct FindCallersResponse {
     pub truncated_reason: Option<&'static str>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// True when the requested `limit` exceeded the maximum of 1000 and was lowered to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_clamped: bool,
     /// The call sites under the file each is in.
     #[serde(serialize_with = "crate::engine::by_path::serialize")]
     pub hits: Vec<ReferenceHit>,
@@ -572,6 +587,9 @@ pub struct FindImplementationsResponse {
     /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
+    /// True when the requested `limit` exceeded the maximum of 1000 and was lowered to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_clamped: bool,
     /// The implementations under the file each is in.
     #[serde(serialize_with = "crate::engine::by_path::serialize")]
     pub hits: Vec<ImplementationHit>,

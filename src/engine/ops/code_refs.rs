@@ -3,7 +3,7 @@
 //! importers (of a module name, or of a file through the import graph), the definition a reference
 //! binds to, or the import cycles.
 
-use super::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
+use super::{SEARCH_LIMIT_DEFAULT, search_limit};
 use crate::engine::budget::{apply_budget, budget};
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
@@ -331,7 +331,7 @@ fn run_dependents(
         }
         None => 0,
     };
-    let limit = limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
+    let (limit, limit_clamped) = search_limit(limit, SEARCH_LIMIT_DEFAULT);
     if module.is_empty() {
         return Err(EngineError::invalid_argument(
             "`code_refs`: `name` is empty; pass the module or import path to look for.",
@@ -365,6 +365,7 @@ fn run_dependents(
     Ok(DependentsResponse {
         total: next_cursor.is_some().then_some(total),
         budgeted: budgeted.budgeted,
+        limit_clamped,
         paths: budgeted.items,
         next_cursor,
         notice: ws.lifecycle_notice(),

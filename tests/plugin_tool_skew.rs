@@ -89,7 +89,7 @@ const RESULT_VOCABULARY: &[(&str, &str)] = &[
     ("hunk_cap", "git_diff `truncated_reason` (src/engine/git/file.rs)"),
     (
         "limit_clamped",
-        "find_files `truncated_reason` (src/engine/types/files.rs)",
+        "find_files, code_outline, code_symbols, code_grep, code_refs and memory_search lowering an over-large `limit` (src/engine/types/files.rs, refs.rs, code.rs, grep.rs, memory.rs)",
     ),
     (
         "liveness_depth",

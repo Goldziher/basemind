@@ -2,7 +2,7 @@
 
 use std::sync::atomic::Ordering;
 
-use super::SEARCH_LIMIT_MAX;
+use super::search_limit;
 use crate::engine::budget::{apply_budget_toon, budget};
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
@@ -67,7 +67,7 @@ impl Workspace {
             }
             None => 0,
         };
-        let limit = p.limit.unwrap_or(OUTLINE_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
+        let (limit, limit_clamped) = search_limit(p.limit, OUTLINE_LIMIT_DEFAULT);
 
         let l1 = if live.fresh {
             l1
@@ -121,6 +121,7 @@ impl Workspace {
             had_errors: l1.had_errors,
             total,
             budgeted: budgeted.budgeted,
+            limit_clamped,
             stale,
             symbols,
             truncated: imports_omitted > 0,

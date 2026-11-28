@@ -9,7 +9,7 @@ use super::{call, started_with};
 /// One crate: `a` and `b` import each other, `c` imports `a`, `d` imports `c`; `p`, `q` and `r` form
 /// a component whose shortest loop from `p` is `p -> q`, so it is listed with a `chain`. `lib.rs`
 /// only declares the modules, which the default tier does not follow.
-const CRATE: [(&str, &str); 9] = [
+pub(super) const CRATE: [(&str, &str); 9] = [
     (
         "g/Cargo.toml",
         "[package]\nname = \"g\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",

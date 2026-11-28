@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 
-use super::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
+use super::{SEARCH_LIMIT_DEFAULT, search_limit};
 use crate::engine::budget::{apply_budget, budget};
 use crate::engine::changed::admits;
 use crate::engine::cursor::Cursor;
@@ -93,7 +93,7 @@ fn search_symbols(
 ) -> Result<SearchResponse, EngineError> {
     ws.wait_map_ready();
     let kind = params.kind.as_deref().map(parse_kind).transpose()?;
-    let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
+    let (limit, limit_clamped) = search_limit(params.limit, SEARCH_LIMIT_DEFAULT);
     let generation = ws.cache_generation.load(Ordering::Relaxed);
 
     let empty = |cursor_invalidated: bool| SearchResponse {
@@ -101,6 +101,7 @@ fn search_symbols(
         truncated: false,
         truncated_reason: None,
         budgeted: false,
+        limit_clamped,
         results: Vec::new(),
         stale: Vec::new(),
         next_cursor: None,
@@ -243,6 +244,7 @@ fn search_symbols(
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(SCAN_CAP),
         budgeted: budget.budgeted,
+        limit_clamped,
         results,
         stale,
         next_cursor,

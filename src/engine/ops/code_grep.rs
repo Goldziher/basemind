@@ -8,7 +8,7 @@ use memchr::memmem::Finder;
 use rayon::prelude::*;
 use regex::Regex;
 
-use super::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
+use super::{SEARCH_LIMIT_DEFAULT, search_limit};
 use crate::engine::budget::{apply_budget_grep_rows, budget};
 use crate::engine::cursor::Cursor;
 use crate::engine::error::EngineError;
@@ -119,7 +119,7 @@ fn workspace_grep(
     cancelled: &(dyn Fn() -> bool + Sync),
     out_of_time: &dyn Fn() -> bool,
 ) -> Result<WorkspaceGrepResponse, EngineError> {
-    let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
+    let (limit, limit_clamped) = search_limit(params.limit, SEARCH_LIMIT_DEFAULT);
     let generation = ws.cache_generation.load(Ordering::Relaxed);
 
     let (skip_files, skip_hits) = match params.cursor.as_ref() {
@@ -132,6 +132,7 @@ fn workspace_grep(
                     truncated: false,
                     truncated_reason: None,
                     budgeted: false,
+                    limit_clamped,
                     hits: GrepHits(Vec::new()),
                     stale: Vec::new(),
                     next_cursor: None,
@@ -302,6 +303,7 @@ fn workspace_grep(
         truncated: truncated_reason.is_some(),
         truncated_reason,
         budgeted,
+        limit_clamped,
         stale: hits.stale_files(),
         hits,
         next_cursor,

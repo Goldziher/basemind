@@ -99,8 +99,8 @@ Every tool above follows the same rules.
   `omitted_bytes`), `depth` / `rerank_top_k` / `filter_depth` (`code_search`, `docs_search`),
   `path_cap` / `hunk_cap` / `byte_cap` (`git_diff`), `span_limit` / `shallow_clone` / `unindexed_scan`
   (`git_log`). Three fields say something else and keep their names: `skipped_files` (`code_grep`:
-  files that could not be searched), `limit_clamped` (`find_files`: an over-large `limit` was
-  lowered), `body_truncated` (one commit message in a `git_log` search hit) and `too_large`
+  files that could not be searched), `limit_clamped` (`find_files`, `code_outline`, `code_symbols`,
+  `code_grep`, `code_refs`, `memory_search`: an over-large `limit` was lowered), `body_truncated` (one commit message in a `git_log` search hit) and `too_large`
   (`git_diff`: a file over 4 MiB was not diffed).
 - **Lines.** A line ends at `\n`; a `\r` right before it is part of the ending and a `\r` on its
   own is text inside its line. `code_read`, `code_grep`, the outline and `git_blame` count lines

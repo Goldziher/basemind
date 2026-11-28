@@ -13,7 +13,7 @@ use crate::engine::cursor::{Cursor, stale_cursor};
 use crate::engine::error::EngineError;
 use crate::engine::files::{IndexedFiles, Unreadable, not_indexed_in, outside_repository};
 use crate::engine::freshness;
-use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
+use crate::engine::ops::{SEARCH_LIMIT_DEFAULT, search_limit};
 use crate::engine::types::code::{kind_to_str, parse_kind};
 use crate::engine::types::refs::{
     DefinitionView, FindCallersParams, FindCallersResponse, FindReferencesParams, FindReferencesResponse, ReferenceHit,
@@ -85,7 +85,7 @@ pub(crate) fn run_find_references(
     notice: impl FnOnce() -> Option<LifecycleNotice>,
     flag_stale: impl FnOnce(&mut [ReferenceHit]),
 ) -> Result<FindReferencesResponse, EngineError> {
-    let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
+    let (limit, limit_clamped) = search_limit(params.limit, SEARCH_LIMIT_DEFAULT);
     let (stamped, cursor_bytes) = unstamp(params.cursor.as_ref())?.unzip();
     let matching = Matching::from_substring(params.substring);
     let route = Some(matching)
@@ -118,6 +118,7 @@ pub(crate) fn run_find_references(
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(SCAN_CAP),
         budgeted: finished.page.budgeted,
+        limit_clamped,
         hits: finished.page.hits,
         scope_files: None,
         next_cursor: stamp(finished.page.next_cursor, generation),
@@ -165,7 +166,7 @@ pub(crate) fn run_find_callers(
     params: FindCallersParams,
     notice: impl FnOnce() -> Option<LifecycleNotice>,
 ) -> Result<FindCallersResponse, EngineError> {
-    let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
+    let (limit, limit_clamped) = search_limit(params.limit, SEARCH_LIMIT_DEFAULT);
     let kind_filter = params.kind.as_deref().map(parse_kind).transpose()?;
     // A pinned call that cannot be pinned is an error: answering with the unpinned name scan would
     // read as "these are the callers of the definition in that file".
@@ -272,6 +273,7 @@ pub(crate) fn run_find_callers(
         truncated: total_is_partial,
         truncated_reason: total_is_partial.then_some(SCAN_CAP),
         budgeted: finished.page.budgeted,
+        limit_clamped,
         hits: finished.page.hits,
         scope_files: None,
         next_cursor: stamp(finished.page.next_cursor, generation),
