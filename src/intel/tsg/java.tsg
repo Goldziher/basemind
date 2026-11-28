@@ -630,7 +630,41 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   edge @body.before_scope -> @this.before_scope
 }
 
-(for_statement init: (_) @init condition: (_) @condition update: (_) @update body: (_) @body) @stmt {
+(for_statement init: [
+  (array_initializer)
+  (assignment_expression)
+  (binary_expression)
+  (instanceof_expression)
+  (lambda_expression)
+  (ternary_expression)
+  (update_expression)
+  (decimal_integer_literal)
+  (hex_integer_literal)
+  (octal_integer_literal)
+  (binary_integer_literal)
+  (decimal_floating_point_literal)
+  (hex_floating_point_literal)
+  (true)
+  (false)
+  (character_literal)
+  (string_literal)
+  (null_literal)
+  (class_literal)
+  (this)
+  (parenthesized_expression)
+  (object_creation_expression)
+  (field_access)
+  (array_access)
+  (method_invocation)
+  (method_reference)
+  (array_creation_expression)
+  (unary_expression)
+  (cast_expression)
+  (switch_expression)
+  (super)
+  (identifier)
+  (template_expression)
+] @init condition: (_) @condition update: (_) @update body: (_) @body) @stmt {
   edge @init.lexical_scope -> @stmt.before_scope
   edge @condition.lexical_scope -> @stmt.before_scope
   edge @update.lexical_scope -> @stmt.before_scope
@@ -1195,7 +1229,39 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   node @this.params
 }
 
-(lambda_expression body: (_) @body) @this {
+(lambda_expression body: [
+  (assignment_expression)
+  (binary_expression)
+  (instanceof_expression)
+  (lambda_expression)
+  (ternary_expression)
+  (update_expression)
+  (decimal_integer_literal)
+  (hex_integer_literal)
+  (octal_integer_literal)
+  (binary_integer_literal)
+  (decimal_floating_point_literal)
+  (hex_floating_point_literal)
+  (true)
+  (false)
+  (character_literal)
+  (string_literal)
+  (null_literal)
+  (class_literal)
+  (this)
+  (parenthesized_expression)
+  (object_creation_expression)
+  (field_access)
+  (array_access)
+  (method_invocation)
+  (method_reference)
+  (array_creation_expression)
+  (unary_expression)
+  (cast_expression)
+  (switch_expression)
+  (identifier)
+  (template_expression)
+] @body) @this {
   edge @body.lexical_scope -> @this.lexical_scope
   edge @body.lexical_scope -> @this.params
 }
@@ -1250,7 +1316,30 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
     edge expr_ref__typeof -> expr_ref
 }
 
-(object_creation_expression (_) @child) @this {
+(object_creation_expression [
+  (decimal_integer_literal)
+  (hex_integer_literal)
+  (octal_integer_literal)
+  (binary_integer_literal)
+  (decimal_floating_point_literal)
+  (hex_floating_point_literal)
+  (true)
+  (false)
+  (character_literal)
+  (string_literal)
+  (null_literal)
+  (class_literal)
+  (this)
+  (parenthesized_expression)
+  (object_creation_expression)
+  (field_access)
+  (array_access)
+  (method_invocation)
+  (method_reference)
+  (array_creation_expression)
+  (identifier)
+  (template_expression)
+] @child) @this {
   edge @child.lexical_scope -> @this.lexical_scope
 }
 

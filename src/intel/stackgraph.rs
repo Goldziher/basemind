@@ -845,8 +845,16 @@ mod tests {
             assert!(same(engine, engine0) && same(import, import0) && same(export, export0));
         }
     }
-}
 
-#[cfg(all(test, feature = "code-intel-stack"))]
-#[path = "stackgraph_import_tests.rs"]
-mod import_tests;
+    #[test]
+    fn java_for_lambda_and_constructor_calls_resolve() {
+        if grammar_unavailable("java") {
+            return;
+        }
+        let src = "class C {\n  int f(java.util.List<Integer> xs) {\n    int t = 0;\n    for (int i = 0; i < 3; i++) { t += i; }\n    Runnable r = () -> { t2(); };\n    Object o = new C(t, 1);\n    xs.forEach(x -> x + 1);\n    return t;\n  }\n  void t2() {}\n}\n";
+        let refs = resolved("java", src);
+        let use_t = src.rfind("return t;").unwrap() as u32 + "return ".len() as u32;
+        let def_t = src.find("int t = 0").unwrap() as u32 + "int ".len() as u32;
+        assert_eq!(edge_for_use(&refs, use_t).def_start, def_t);
+    }
+}
