@@ -14,6 +14,8 @@ pub mod doc_guard;
 pub mod doc_tiers;
 pub(crate) mod http;
 #[cfg(test)]
+mod java_modifier_tests;
+#[cfg(test)]
 mod java_parity_tests;
 pub mod l1;
 pub mod l2;
@@ -133,7 +135,10 @@ pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 /// - 11: Protocol Buffers files gain an outline (package, messages, enums and values, services and rpcs,
 ///   oneofs, extends, file options) and `import` edges; Starlark files gain functions, top-level
 ///   variables, rule targets and `load()` imports.
-pub const EXTRACT_EPOCH: u16 = 11;
+/// - 12: Java `static final` fields are constants; items inside Rust item-position macro bodies
+///   (`macro_rules!`-style `cfg_*! { .. }` wrappers) are symbols; Rust outer doc comments are
+///   captured under the grammar's `line_outer_doc_comment` and `block_outer_doc_comment` kinds.
+pub const EXTRACT_EPOCH: u16 = 12;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {

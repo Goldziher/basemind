@@ -212,16 +212,18 @@ fn build_symbol(q: &Query, m: &QueryMatch, root: Node, source: &[u8], lang: Lang
                 return None;
             }
             kind = Some(match SymbolKind::from_capture_suffix(suffix) {
-                SymbolKind::Field if is_static_final(node) => SymbolKind::Const,
+                SymbolKind::Field if is_static_final(node, source) => SymbolKind::Const,
                 other => other,
             });
-            start_byte = node.start_byte() as u32;
+            let begin = after_attributes(node);
+            start_byte = begin.start_byte() as u32;
             end_byte = node.end_byte() as u32;
-            let p = node.start_position();
+            let p = begin.start_position();
             start_row = p.row as u32;
             start_col = p.column as u32;
             if let Ok(text) = node.utf8_text(source) {
-                signature = signature_slice(header_text(node, text));
+                let text = text.get(begin.start_byte() - node.start_byte()..).unwrap_or(text);
+                signature = signature_slice(header_text(node, begin.start_byte(), text));
                 if matches!(kind, Some(SymbolKind::Method))
                     && ACCESSOR_NODES.contains(&node.kind())
                     && let Some(promoted) = detect_accessor(text)
@@ -316,9 +318,9 @@ fn shared_spec_member_signature(keyword: &str, name_node: Node, spec: Node, sour
 }
 
 /// True when a field declaration's `modifiers` child holds both `static` and `final` (a Java
-/// constant), in either order. Read from the grammar's keyword nodes rather than a query: a
-/// separate `const` pattern would tie with the `field` one in [`dedupe_symbols`].
-fn is_static_final(node: Node) -> bool {
+/// constant), in either order. Read from the keyword nodes' text, not a query: a separate `const`
+/// pattern would tie with the `field` one in [`dedupe_symbols`].
+fn is_static_final(node: Node, source: &[u8]) -> bool {
     let mut cursor = node.walk();
     let Some(modifiers) = node.children(&mut cursor).find(|c| c.kind() == "modifiers") else {
         return false;
@@ -326,7 +328,7 @@ fn is_static_final(node: Node) -> bool {
     let mut cursor = modifiers.walk();
     let (mut is_static, mut is_final) = (false, false);
     for keyword in modifiers.children(&mut cursor) {
-        match keyword.kind() {
+        match keyword.utf8_text(source).unwrap_or_default() {
             "static" => is_static = true,
             "final" => is_final = true,
             _ => {}
@@ -477,9 +479,9 @@ fn detect_accessor(slice: &str) -> Option<SymbolKind> {
 /// languages: a Python `def` has no `{`, so its whole body (up to the first dict literal or `;`)
 /// became the "signature", several times larger than the declaration it summarises. A `body` field
 /// ends the header exactly where the grammar says the body begins.
-fn header_text<'a>(node: Node, text: &'a str) -> &'a str {
+fn header_text<'a>(node: Node, origin: usize, text: &'a str) -> &'a str {
     node.child_by_field_name("body")
-        .map(|body| body.start_byte().saturating_sub(node.start_byte()))
+        .map(|body| body.start_byte().saturating_sub(origin))
         .or_else(|| super::sql_header::header_len(node.kind(), text))
         .or_else(|| super::starlark_header::header_len(node.kind(), text))
         .and_then(|len| text.get(..len))
@@ -661,6 +663,14 @@ fn implementor_from_ancestor(node: Node, source: &[u8]) -> Option<String> {
         current = parent;
     }
     None
+}
+
+/// The node a definition's range starts at: the one after its leading `attributes` field, which
+/// Rust's grammar nests inside the item, so a symbol starts at `pub fn`, not at `#[test]`.
+fn after_attributes(node: Node<'_>) -> Node<'_> {
+    node.child_by_field_name("attributes")
+        .and_then(|attributes| attributes.next_sibling())
+        .unwrap_or(node)
 }
 
 fn build_import(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Import> {
