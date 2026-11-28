@@ -1,5 +1,4 @@
-//! `memory_save`, `memory_search`, and `basemind memory delete` and `basemind memory clear` (no MCP
-//! tool).
+//! `memory_save`, `memory_search`, and `basemind memory delete|clear|export|import` (no MCP tool).
 //!
 //! The tools are advertised in every build and gate here: an agent looking for "remember this" is
 //! better served a tool that answers "rebuild with `--features memory`" than a tool that is not
@@ -29,6 +28,22 @@ impl Workspace {
     /// `basemind memory clear` in a build without the memory store.
     pub(crate) fn memory_clear(&self, _p: MemoryClearParams) -> Result<(), EngineError> {
         Err(EngineError::feature_missing("memory clear", "memory"))
+    }
+
+    /// `basemind memory export` in a build without the memory store.
+    pub(crate) fn memory_export(
+        &self,
+        _p: crate::engine::types::memory::MemoryExportParams,
+    ) -> Result<(), EngineError> {
+        Err(EngineError::feature_missing("memory export", "memory"))
+    }
+
+    /// `basemind memory import` in a build without the memory store.
+    pub(crate) fn memory_import(
+        &self,
+        _p: crate::engine::types::memory::MemoryImportParams,
+    ) -> Result<(), EngineError> {
+        Err(EngineError::feature_missing("memory import", "memory"))
     }
 }
 

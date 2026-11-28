@@ -270,6 +270,8 @@ async fn streamable_http_serves_initialize_and_tools_list() {
     for (id, name) in [
         "memory_delete",
         "memory_clear",
+        "memory_export",
+        "memory_import",
         "git_churn",
         "git_by_path",
         "code_chunk",

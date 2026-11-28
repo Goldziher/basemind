@@ -11,6 +11,8 @@ agent working in the same repository should know. Notes are keyed, tagged and se
 | List by key prefix | `memory_search {"prefix":"decision/"}` | `basemind memory list --prefix decision/` |
 | Delete a note | none | `basemind memory delete decision/auth-tokens` |
 | Remove every note of the repository | none | `basemind memory clear --yes` |
+| Export the notes to a file | none | `basemind memory export --output notes.jsonl` |
+| Merge an export file into the repository | none | `basemind memory import notes.jsonl` |
 | Find where the notes are kept | none | `basemind cache stats` |
 
 ## Contracts
@@ -25,6 +27,22 @@ agent working in the same repository should know. Notes are keyed, tagged and se
 - `basemind memory delete` removes the note and its vector rows from the store of every embedding
   model the repository has used, and purges those stores, so no earlier version of them still holds
   the note.
+- `basemind memory export` writes the notes of one tier of the current scope as JSON lines, to stdout
+  or `--output`: a header line (`format`, `version`, `visibility`, `notes`) then one note per line
+  (`key`, `value`, `tags`, `created_at`, `updated_at`), ordered by key, so the same notes always
+  export to the same bytes. `--prefix` and `--tag` narrow it; `--individual` exports the per-agent
+  tier. An export holds at most 8 MiB of notes: past that it is refused, and a larger store is
+  exported in parts with `--prefix` or `--tag`.
+- `basemind memory import <file>` (`-` reads stdin) merges such a file into the same tier by key.
+  The note with the later `updated_at` wins and the existing note stays on a tie; `--overwrite`
+  takes the file's note, `--skip` keeps the existing one, and the two exclude each other. A replaced
+  note keeps the earlier `created_at` and takes the file's `updated_at`. The file is checked whole
+  before anything is written, and a bad one writes nothing: it must carry the header of a format and
+  version this binary reads, a note count that matches the header, no duplicate or empty key, no
+  negative timestamp, and notes within the limits of a save; it is at most 8 MiB and 100000 notes.
+  A file of one tier is refused by the other. Each note it writes records `memory import <file name>`
+  as its provenance, and its vector is rebuilt by the next search by meaning. Importing the same
+  file again changes nothing. Both commands run in the daemon when one is up.
 - `memory_search` takes at most one of `query`, `key` and `prefix`; with none it lists every note.
   `tags` filters a search or a listing: a note carrying any of them passes. A listing shows the first 200 characters of each value and
   pages with `next_cursor`; `key` reads a note whole.

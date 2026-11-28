@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::index::IndexDb;
 
 use crate::engine::EngineError;
-use crate::engine::types::memory::{MemoryRecord, Provenance, VerifyState};
+use crate::engine::types::memory::{ImportPolicy, MemoryRecord, Provenance, VerifyState};
 
 /// One memory entry as the cores yield it: the durable record fields, with `value` already
 /// preview-truncated for `List` results (never truncated for `Get`).
@@ -132,6 +132,12 @@ pub(crate) enum MemoryOpError {
     /// Serializing a [`MemoryRecord`] to msgpack failed.
     #[error("serialize memory record: {0}")]
     Serialize(rmp_serde::encode::Error),
+    /// A stored note an export must carry cannot be read back, so the export would omit it.
+    #[error("memory export: a stored note is unreadable ({problem}); the export would omit it")]
+    Unreadable {
+        /// What could not be read.
+        problem: String,
+    },
 }
 
 /// A note too long to save is the caller's to fix; every other failure is internal.
@@ -385,6 +391,137 @@ pub(crate) fn clear_core(idx: &IndexDb) -> Result<usize, MemoryOpError> {
         .map_err(|source| MemoryOpError::Fjall { op: "clear", source })?;
     sync_memory(idx)?;
     Ok(count)
+}
+
+/// How [`merge_core`] settled one imported note.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Merged {
+    /// No note had the key: the imported one was written.
+    Added,
+    /// The imported note replaced the existing one.
+    Replaced,
+    /// The existing note stayed.
+    Kept,
+    /// The existing note is the imported one.
+    Unchanged,
+}
+
+/// Whether a note updated at `incoming` replaces an existing one updated at `existing` under `policy`.
+pub(crate) fn replaces(policy: ImportPolicy, existing: i64, incoming: i64) -> bool {
+    match policy {
+        ImportPolicy::Newer => incoming > existing,
+        ImportPolicy::Overwrite => true,
+        ImportPolicy::Skip => false,
+    }
+}
+
+/// Merge one imported note into `(scope, vis_byte, owner)` by `policy`, keeping the file's stamps
+/// and recording `source` as the provenance of a note it writes. No lock: the caller serializes
+/// same-key writes, as for [`put_core`].
+pub(crate) fn merge_core(
+    idx: &IndexDb,
+    scope: &str,
+    vis_byte: u8,
+    owner: &str,
+    incoming: &WireMemoryEntry,
+    policy: ImportPolicy,
+    source: &str,
+) -> Result<Merged, MemoryOpError> {
+    check_note(&incoming.key, &incoming.value, &incoming.tags)?;
+    require_memory(idx)?;
+    let existing = read_record(idx, scope, vis_byte, owner, &incoming.key)?;
+    if let Some(existing) = &existing {
+        let same = existing.value == incoming.value
+            && existing.tags == incoming.tags
+            && existing.updated_at == incoming.updated_at;
+        if same {
+            return Ok(Merged::Unchanged);
+        }
+        if !replaces(policy, existing.updated_at, incoming.updated_at) {
+            return Ok(Merged::Kept);
+        }
+    }
+    let created_at = existing
+        .as_ref()
+        .map_or(incoming.created_at, |e| e.created_at.min(incoming.created_at));
+    let record = MemoryRecord {
+        value: incoming.value.clone(),
+        tags: incoming.tags.clone(),
+        created_at,
+        updated_at: incoming.updated_at,
+        provenance: Provenance {
+            commands: vec![format!("memory import {source}")],
+            ..Provenance::default()
+        },
+        verified: VerifyState::Unverified,
+        last_verified: 0,
+        importance: 0.0,
+    };
+    write_record(idx, scope, vis_byte, owner, &incoming.key, &record)?;
+    Ok(if existing.is_some() {
+        Merged::Replaced
+    } else {
+        Merged::Added
+    })
+}
+
+/// Every note of one namespace whose key starts with `key_prefix` and that carries any of `tags`
+/// (none: every note), whole and ordered by key, for an export. A namespace whose notes take more
+/// than `max_bytes` of key, text and tags is refused rather than cut, and so is one holding a record
+/// or key that cannot be read, which an export would otherwise drop without a word.
+pub(crate) fn scan_core(
+    idx: &IndexDb,
+    scope: &str,
+    vis_byte: u8,
+    owner: &str,
+    key_prefix: &str,
+    tags: &[String],
+    max_bytes: usize,
+) -> Result<Vec<WireMemoryEntry>, MemoryOpError> {
+    use crate::engine::cursor::prefix_upper_bound;
+    use std::ops::Bound;
+
+    require_memory(idx)?;
+    let ns_prefix = crate::index::keys::memory_by_key_ns_prefix(scope, vis_byte, owner);
+    let upper = prefix_upper_bound(&ns_prefix).map_or(Bound::Unbounded, Bound::Excluded);
+    let mut entries = Vec::new();
+    let mut bytes = 0usize;
+    let Some(notes) = notes_for_read(idx)? else {
+        return Ok(entries);
+    };
+    for guard in notes.range::<Vec<u8>, _>((Bound::Included(ns_prefix), upper)) {
+        let (raw_key, raw_val) = guard
+            .into_inner()
+            .map_err(|source| MemoryOpError::Fjall { op: "iter", source })?;
+        let Some(key) = crate::index::keys::parse_memory_key_only(&raw_key) else {
+            return Err(MemoryOpError::Unreadable {
+                problem: format!("a key of {} bytes does not parse", raw_key.len()),
+            });
+        };
+        let record: MemoryRecord = rmp_serde::from_slice(&raw_val).map_err(|error| MemoryOpError::Unreadable {
+            problem: format!("key `{key}`: {error}"),
+        })?;
+        if !key.starts_with(key_prefix) || !carries_any(&record.tags, tags) {
+            continue;
+        }
+        bytes += key.len() + record.value.len() + record.tags.iter().map(String::len).sum::<usize>();
+        if bytes > max_bytes {
+            return Err(MemoryOpError::TooLong {
+                what: "export",
+                bytes,
+                most: max_bytes,
+            });
+        }
+        entries.push(WireMemoryEntry {
+            key: key.to_string(),
+            value: record.value,
+            tags: record.tags,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+        });
+    }
+    entries.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(entries)
 }
 
 /// Truncate a value to [`MEMORY_PREVIEW_CHARS`] characters (never bytes), appending an ellipsis when
