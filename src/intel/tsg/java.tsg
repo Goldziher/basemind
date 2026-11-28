@@ -361,7 +361,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   node @this.lexical_scope
 }
 
-(modifiers (_) @annotation) @this {
+(modifiers [(annotation) (marker_annotation)] @annotation) @this {
   edge @annotation.ref -> @this.lexical_scope
 }
 
@@ -428,7 +428,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
 }
 
 (method_declaration
-  (modifiers "static"?@is_static)?
+  (modifiers (modifier "static"?@is_static)?)?
   type: (_) @type
   name: (identifier) @name
   body: (block) @_block) @method
@@ -539,7 +539,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   edge @stmt.after_scope -> @stmt.before_scope
 }
 
-(assert_statement (expression) @expr) @stmt {
+(assert_statement (_) @expr) @stmt {
   edge @expr.lexical_scope -> @stmt.before_scope
 }
 
@@ -630,7 +630,41 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   edge @body.before_scope -> @this.before_scope
 }
 
-(for_statement init: (expression) @init condition: (_) @condition update: (_) @update body: (_) @body) @stmt {
+(for_statement init: [
+  (array_initializer)
+  (assignment_expression)
+  (binary_expression)
+  (instanceof_expression)
+  (lambda_expression)
+  (ternary_expression)
+  (update_expression)
+  (decimal_integer_literal)
+  (hex_integer_literal)
+  (octal_integer_literal)
+  (binary_integer_literal)
+  (decimal_floating_point_literal)
+  (hex_floating_point_literal)
+  (true)
+  (false)
+  (character_literal)
+  (string_literal)
+  (null_literal)
+  (class_literal)
+  (this)
+  (parenthesized_expression)
+  (object_creation_expression)
+  (field_access)
+  (array_access)
+  (method_invocation)
+  (method_reference)
+  (array_creation_expression)
+  (unary_expression)
+  (cast_expression)
+  (switch_expression)
+  (super)
+  (identifier)
+  (template_expression)
+] @init condition: (_) @condition update: (_) @update body: (_) @body) @stmt {
   edge @init.lexical_scope -> @stmt.before_scope
   edge @condition.lexical_scope -> @stmt.before_scope
   edge @update.lexical_scope -> @stmt.before_scope
@@ -793,7 +827,35 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   node @label.lexical_scope
 }
 
-(switch_label (expression) @expr) @label {
+(switch_label [
+  (binary_expression)
+  (instanceof_expression)
+  (ternary_expression)
+  (decimal_integer_literal)
+  (hex_integer_literal)
+  (octal_integer_literal)
+  (binary_integer_literal)
+  (decimal_floating_point_literal)
+  (hex_floating_point_literal)
+  (true)
+  (false)
+  (character_literal)
+  (string_literal)
+  (null_literal)
+  (class_literal)
+  (this)
+  (parenthesized_expression)
+  (object_creation_expression)
+  (field_access)
+  (array_access)
+  (method_invocation)
+  (method_reference)
+  (array_creation_expression)
+  (unary_expression)
+  (cast_expression)
+  (identifier)
+  (template_expression)
+] @expr) @label {
   edge @expr.lexical_scope -> @label.lexical_scope
 }
 
@@ -938,7 +1000,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
 ;;  Primary Expressions
 ;; =====================
 
-(array_access (primary_expression) @array (expression) @index) @this {
+(array_access (_) @array (_) @index) @this {
   edge @array.lexical_scope -> @this.lexical_scope
   edge @index.lexical_scope -> @this.lexical_scope
 }
@@ -1017,7 +1079,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   node @method_invocation.after_scope
 }
 
-(method_invocation arguments: (argument_list (expression) @expr)) @method_invocation {
+(method_invocation arguments: (argument_list (_) @expr)) @method_invocation {
   edge @expr.lexical_scope -> @method_invocation.lexical_scope
 }
 
@@ -1127,6 +1189,7 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   (cast_expression)
   (switch_expression)
   (super)
+  (template_expression)
 ] @expr
 {
   node @expr.type
@@ -1195,7 +1258,39 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   node @this.params
 }
 
-(lambda_expression body: (expression) @body) @this {
+(lambda_expression body: [
+  (assignment_expression)
+  (binary_expression)
+  (instanceof_expression)
+  (lambda_expression)
+  (ternary_expression)
+  (update_expression)
+  (decimal_integer_literal)
+  (hex_integer_literal)
+  (octal_integer_literal)
+  (binary_integer_literal)
+  (decimal_floating_point_literal)
+  (hex_floating_point_literal)
+  (true)
+  (false)
+  (character_literal)
+  (string_literal)
+  (null_literal)
+  (class_literal)
+  (this)
+  (parenthesized_expression)
+  (object_creation_expression)
+  (field_access)
+  (array_access)
+  (method_invocation)
+  (method_reference)
+  (array_creation_expression)
+  (unary_expression)
+  (cast_expression)
+  (switch_expression)
+  (identifier)
+  (template_expression)
+] @body) @this {
   edge @body.lexical_scope -> @this.lexical_scope
   edge @body.lexical_scope -> @this.params
 }
@@ -1250,7 +1345,30 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
     edge expr_ref__typeof -> expr_ref
 }
 
-(object_creation_expression (primary_expression) @child) @this {
+(object_creation_expression [
+  (decimal_integer_literal)
+  (hex_integer_literal)
+  (octal_integer_literal)
+  (binary_integer_literal)
+  (decimal_floating_point_literal)
+  (hex_floating_point_literal)
+  (true)
+  (false)
+  (character_literal)
+  (string_literal)
+  (null_literal)
+  (class_literal)
+  (this)
+  (parenthesized_expression)
+  (object_creation_expression)
+  (field_access)
+  (array_access)
+  (method_invocation)
+  (method_reference)
+  (array_creation_expression)
+  (identifier)
+  (template_expression)
+] @child) @this {
   edge @child.lexical_scope -> @this.lexical_scope
 }
 
@@ -1262,19 +1380,19 @@ attribute node_symbol = node            => symbol = (source-text node), source_n
   edge @type.lexical_scope -> @this.lexical_scope
 }
 
-(object_creation_expression arguments: (argument_list (expression) @expr)) @this {
+(object_creation_expression arguments: (argument_list (_) @expr)) @this {
   edge @expr.lexical_scope -> @this.lexical_scope
 }
 
-(ternary_expression (expression) @expr) @this {
+(ternary_expression (_) @expr) @this {
   edge @expr.lexical_scope -> @this.lexical_scope
 }
 
-(unary_expression (expression) @expr) @this {
+(unary_expression (_) @expr) @this {
   edge @expr.lexical_scope -> @this.lexical_scope
 }
 
-(update_expression (expression) @expr) @this {
+(update_expression (_) @expr) @this {
   edge @expr.lexical_scope -> @this.lexical_scope
 }
 

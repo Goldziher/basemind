@@ -48,6 +48,13 @@
   name: (identifier) @call.callee
   arguments: (argument_list) @call.range)
 
+;; section: imports
+;;
+;; Plain, static and wildcard imports. `@import.module` is the qualified name without the wildcard
+;; (`java.util` for `import java.util.*;`) and keeps a static import's member (`a.B.m`).
+
+(import_declaration [(scoped_identifier) (identifier)] @import.module) @import.range
+
 ;; section: implementations
 
 (type_list

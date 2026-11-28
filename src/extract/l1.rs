@@ -212,7 +212,7 @@ fn build_symbol(q: &Query, m: &QueryMatch, root: Node, source: &[u8], lang: Lang
                 return None;
             }
             kind = Some(match SymbolKind::from_capture_suffix(suffix) {
-                SymbolKind::Field if is_static_final(node) => SymbolKind::Const,
+                SymbolKind::Field if is_static_final(node, source) => SymbolKind::Const,
                 other => other,
             });
             start_byte = node.start_byte() as u32;
@@ -316,9 +316,9 @@ fn shared_spec_member_signature(keyword: &str, name_node: Node, spec: Node, sour
 }
 
 /// True when a field declaration's `modifiers` child holds both `static` and `final` (a Java
-/// constant), in either order. Read from the grammar's keyword nodes rather than a query: a
-/// separate `const` pattern would tie with the `field` one in [`dedupe_symbols`].
-fn is_static_final(node: Node) -> bool {
+/// constant), in either order. Read from the keyword nodes' text, not a query: a separate `const`
+/// pattern would tie with the `field` one in [`dedupe_symbols`].
+fn is_static_final(node: Node, source: &[u8]) -> bool {
     let mut cursor = node.walk();
     let Some(modifiers) = node.children(&mut cursor).find(|c| c.kind() == "modifiers") else {
         return false;
@@ -326,7 +326,7 @@ fn is_static_final(node: Node) -> bool {
     let mut cursor = modifiers.walk();
     let (mut is_static, mut is_final) = (false, false);
     for keyword in modifiers.children(&mut cursor) {
-        match keyword.kind() {
+        match keyword.utf8_text(source).unwrap_or_default() {
             "static" => is_static = true,
             "final" => is_final = true,
             _ => {}

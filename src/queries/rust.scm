@@ -124,3 +124,7 @@
  (#match? @doc.text "^///"))
 ((block_comment) @doc.text
  (#match? @doc.text "^/\\*\\*"))
+((line_outer_doc_comment) @doc.text
+ (#match? @doc.text "^///"))
+((block_outer_doc_comment) @doc.text
+ (#match? @doc.text "^/\\*\\*"))
