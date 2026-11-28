@@ -431,7 +431,7 @@ fn the_cache_keeps_one_generation_and_never_goes_back() {
     );
     assert_eq!(builds.get(), 3);
 
-    let failed = cache.get_or_build(3, || Err(EngineError::internal("boom")));
+    let failed = cache.get_or_build(3, || Err::<ImportGraph, EngineError>(EngineError::internal("boom")));
     assert!(failed.is_err(), "a failed build is the caller's error");
     assert!(Arc::ptr_eq(&cache.get_or_build(2, || build(&[])).unwrap(), &newer));
     assert!(newer.approx_bytes() > 0);
@@ -469,7 +469,7 @@ fn concurrent_callers_of_one_generation_share_one_build() {
 #[test]
 fn a_failed_shared_build_is_its_callers_error_and_the_next_caller_builds_again() {
     let cache = GraphCache::default();
-    let failed = cache.get_or_build(5, || Err(EngineError::internal("boom")));
+    let failed = cache.get_or_build(5, || Err::<ImportGraph, EngineError>(EngineError::internal("boom")));
     assert!(failed.is_err());
     let built = cache
         .get_or_build(5, || Ok::<_, EngineError>(graph(&[("a", "b")])))

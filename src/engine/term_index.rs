@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use crate::engine::content_pools::TermPool;
 use crate::engine::paged_map::PagedMap;
 use crate::extract::{FileMapL1, SymbolKind};
 use crate::path::RelPath;
@@ -27,7 +28,7 @@ pub(crate) struct FileTerms {
 }
 
 impl FileTerms {
-    fn from_l1(l1: &FileMapL1) -> Self {
+    pub(crate) fn from_l1(l1: &FileMapL1) -> Self {
         let mut names = Vec::new();
         let mut name_ends = Vec::with_capacity(l1.symbols.len());
         let mut kinds = Vec::with_capacity(l1.symbols.len());
@@ -52,6 +53,15 @@ impl FileTerms {
             kinds: kinds.into(),
             imports: imports.into(),
         }
+    }
+
+    /// Bytes this projection holds on the heap.
+    #[cfg(test)]
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.names.len()
+            + self.imports.len()
+            + self.name_ends.len() * size_of::<u32>()
+            + self.kinds.len() * size_of::<SymbolKind>()
     }
 
     /// Indices (into the outline's `symbols`) of names containing the needle, in outline order.
@@ -108,17 +118,53 @@ impl FileTerms {
     }
 }
 
+/// Names the content hash of a path, or none when the path has no stored content.
+type HashOf<'a> = Box<dyn Fn(&RelPath) -> Option<Arc<str>> + 'a>;
+
+/// Where a term index takes its projections from: the host's pool, keyed by the content hash
+/// `hash_of` names for a path and the epoch of the outline being projected, or a fresh projection
+/// for every file.
+pub(crate) struct Interning<'a> {
+    pool: &'a TermPool,
+    hash_of: HashOf<'a>,
+}
+
+impl<'a> Interning<'a> {
+    /// Share projections through `pool`, a file's key being `hash_of(path)` with the outline's own
+    /// language and extract epoch; a path with no hash is projected afresh.
+    pub(crate) fn new(pool: &'a TermPool, hash_of: impl Fn(&RelPath) -> Option<Arc<str>> + 'a) -> Self {
+        Self {
+            pool,
+            hash_of: Box::new(hash_of),
+        }
+    }
+
+    fn terms(&self, path: &RelPath, l1: &FileMapL1) -> Arc<FileTerms> {
+        match (self.hash_of)(path) {
+            Some(hash) => self
+                .pool
+                .intern((hash, l1.language.as_str().into(), l1.extract_epoch), || {
+                    FileTerms::from_l1(l1)
+                }),
+            None => Arc::new(FileTerms::from_l1(l1)),
+        }
+    }
+}
+
 /// Path-ordered terms of every indexed file.
 #[derive(Default)]
 pub(crate) struct TermIndex {
-    files: PagedMap<RelPath, FileTerms>,
+    files: PagedMap<RelPath, Arc<FileTerms>>,
 }
 
 impl TermIndex {
-    /// Project every outline the stream yields.
-    pub(crate) fn build(stream: impl FnOnce(&mut dyn FnMut(&RelPath, &FileMapL1))) -> Self {
+    /// Project every outline the stream yields, sharing every projection `interning` has a key for.
+    pub(crate) fn build_interned(
+        interning: &Interning<'_>,
+        stream: impl FnOnce(&mut dyn FnMut(&RelPath, &FileMapL1)),
+    ) -> Self {
         let mut files = Vec::new();
-        stream(&mut |path, l1| files.push((path.clone(), FileTerms::from_l1(l1))));
+        stream(&mut |path, l1| files.push((path.clone(), interning.terms(path, l1))));
         Self {
             files: PagedMap::from_unsorted(files),
         }
@@ -127,8 +173,20 @@ impl TermIndex {
     /// A copy with `removed` dropped and `updated` re-projected from `load` (dropped where it loads
     /// nothing). Every other file, and every page of files the patch does not touch, shares its
     /// allocation with `self`.
+    #[cfg(test)]
     pub(crate) fn patched(
         &self,
+        updated: &[RelPath],
+        removed: &[RelPath],
+        load: impl Fn(&RelPath) -> Option<Arc<FileMapL1>>,
+    ) -> Self {
+        self.patched_interned(&Interning::new(&TermPool::default(), |_| None), updated, removed, load)
+    }
+
+    /// [`patched`](Self::patched) sharing every projection `interning` has a key for.
+    pub(crate) fn patched_interned(
+        &self,
+        interning: &Interning<'_>,
         updated: &[RelPath],
         removed: &[RelPath],
         load: impl Fn(&RelPath) -> Option<Arc<FileMapL1>>,
@@ -136,14 +194,14 @@ impl TermIndex {
         let removals = removed.iter().map(|path| (path.clone(), None));
         let updates = updated
             .iter()
-            .map(|path| (path.clone(), load(path).map(|l1| FileTerms::from_l1(&l1))));
+            .map(|path| (path.clone(), load(path).map(|l1| interning.terms(path, &l1))));
         Self {
             files: self.files.patched(removals.chain(updates)),
         }
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&RelPath, &FileTerms)> {
-        self.files.iter()
+        self.files.iter().map(|(path, terms)| (path, &**terms))
     }
 
     /// The pages and the entries of this index that it does not share with `base`.

@@ -63,8 +63,8 @@ impl MapCache {
     /// Unlike the whole-corpus map this replaces, `build` decodes NO L1 blobs: it projects the
     /// index into [`l1_cache::FileIndexView`] and leaves the outlines to be faulted in on demand.
     pub(crate) fn build<'a>(store: &Store, outlines: impl Into<Outlines<'a>>) -> Self {
-        let files = l1_cache::FileIndexView::build(store);
         let l1 = outlines.into().cache_for(store);
+        let files = l1_cache::FileIndexView::build(store, &l1.pools().strings);
         Self {
             files,
             l1,
@@ -179,9 +179,18 @@ impl MapCache {
     /// snapshots derived by [`with_delta`](Self::with_delta)) reuse it.
     pub(crate) fn terms(&self) -> &crate::engine::term_index::TermIndex {
         self.terms.get_or_init(|| {
-            Arc::new(crate::engine::term_index::TermIndex::build(|visit| {
-                self.for_each(|path, l1| visit(path, l1));
-            }))
+            Arc::new(crate::engine::term_index::TermIndex::build_interned(
+                &self.interning(&self.files),
+                |visit| self.for_each(|path, l1| visit(path, l1)),
+            ))
+        })
+    }
+
+    /// Where this map's term index shares projections: the outline cache's pool, keyed by the
+    /// content hash `files` records for a path and the epoch of the outline loaded for it.
+    fn interning<'a>(&'a self, files: &'a l1_cache::FileIndexView) -> crate::engine::term_index::Interning<'a> {
+        crate::engine::term_index::Interning::new(&self.l1.pools().terms, move |path| {
+            files.get(path).map(|meta| Arc::clone(&meta.hash_hex))
         })
     }
 
@@ -272,7 +281,7 @@ impl MapCache {
             }
         }
         let next = Self {
-            files: self.files.with_delta(store, updated, removed),
+            files: self.files.with_delta(store, &self.l1.pools().strings, updated, removed),
             l1: Arc::clone(&self.l1),
             terms: Default::default(),
             routes: Default::default(),
@@ -281,9 +290,12 @@ impl MapCache {
         };
         self.l1.forget_superseded(superseded, &next.files);
         if let Some(terms) = self.terms.get() {
-            let _ = next
-                .terms
-                .set(Arc::new(terms.patched(updated, removed, |p| next.get(p))));
+            let _ = next.terms.set(Arc::new(terms.patched_interned(
+                &next.interning(&next.files),
+                updated,
+                removed,
+                |p| next.get(p),
+            )));
         }
         next
     }

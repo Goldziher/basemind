@@ -346,6 +346,51 @@ pub(super) fn walk_step<T, E: std::fmt::Display>(step: Result<T, E>) -> Result<T
 }
 
 impl Repo {
+    /// [`Repo::log_paths`] walking back from `head_sha` instead of the current HEAD, so a cached
+    /// result keyed by that sha describes exactly that history.
+    pub fn log_paths_at(
+        &self,
+        head_sha: &str,
+        max_commits: usize,
+        include_files: bool,
+    ) -> Result<Vec<CommitInfo>, GitError> {
+        let local = self.local();
+        let mut out = Vec::with_capacity(max_commits.min(1024));
+        for info in Self::newest_first(&local, head_sha)?.take(max_commits) {
+            let info = walk_step(info)?;
+            if let Some(ci) = build_commit_info(&local, info.id, include_files) {
+                out.push(ci);
+            }
+        }
+        Ok(out)
+    }
+
+    /// [`Repo::log_for_path`] walking back from `head_sha` instead of the current HEAD.
+    pub fn log_for_path_at(
+        &self,
+        head_sha: &str,
+        rel: impl AsRef<Path>,
+        max_commits: usize,
+    ) -> Result<Vec<CommitInfo>, GitError> {
+        let rel_bytes_buf: bstr::BString = bstr::BString::from(rel.as_ref().as_os_str().as_encoded_bytes());
+        let rel: &[u8] = rel_bytes_buf.as_slice();
+        let local = self.local();
+        let mut out = Vec::new();
+        for info in Self::newest_first(&local, head_sha)? {
+            if out.len() >= max_commits {
+                break;
+            }
+            let info = walk_step(info)?;
+            if !commit_touches_path(&local, info.id, rel) {
+                continue;
+            }
+            if let Some(ci) = build_commit_info(&local, info.id, false) {
+                out.push(ci);
+            }
+        }
+        Ok(out)
+    }
+
     /// Resolve a rev-spec (sha / branch / HEAD) to a detached gix [`ObjectId`].
     fn resolve_oid(local: &gix::Repository, rev: &str) -> Option<gix::ObjectId> {
         local.rev_parse_single(rev).ok().map(|id| id.detach())

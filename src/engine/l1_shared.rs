@@ -17,6 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
+use crate::engine::content_pools::GraphPool;
 use crate::engine::l1_cache::L1Cache;
 use crate::store::Store;
 
@@ -28,6 +29,9 @@ use crate::store::Store;
 #[derive(Default)]
 pub(crate) struct SharedOutlines {
     open: Mutex<Vec<(PathBuf, Weak<L1Cache>)>>,
+    /// The import graphs of the host's workspaces, shared between those that index the same
+    /// content ([`crate::engine::content_pools::GraphPool`]).
+    graphs: GraphPool,
 }
 
 impl SharedOutlines {
@@ -46,6 +50,11 @@ impl SharedOutlines {
         let cache = Arc::new(L1Cache::shared(blobs_dir.to_path_buf(), budget_bytes));
         open.push((blobs_dir.to_path_buf(), Arc::downgrade(&cache)));
         cache
+    }
+
+    /// The pool the host's workspaces take their import graphs from.
+    pub(crate) fn graphs(&self) -> &GraphPool {
+        &self.graphs
     }
 
     /// How many shared caches are live.

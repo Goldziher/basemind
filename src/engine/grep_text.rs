@@ -2,6 +2,8 @@
 //!
 //! Split from `ops/code_grep.rs` (the sweep) for the 1000-line cap.
 
+use std::sync::Arc;
+
 use crate::engine::MapCache;
 use crate::engine::l1_cache::FileMeta;
 use crate::engine::types::grep::GrepHit;
@@ -107,7 +109,7 @@ pub(crate) fn text_documents(
                 .ok()
                 .filter(std::fs::Metadata::is_file)?;
             let meta = FileMeta {
-                hash_hex: Box::default(),
+                hash_hex: Arc::from(""),
                 language: language.into(),
                 size_bytes: stat.len(),
                 mtime_ns: 0,
