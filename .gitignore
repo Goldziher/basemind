@@ -99,3 +99,4 @@ GEMINI.md
 /node_modules/
 
 /opencode.json
+crates/engine-embed/target/
