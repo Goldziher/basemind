@@ -10,9 +10,11 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 - **Token budget.** A list is trimmed to `max_tokens` (default 6000), then sets `budgeted`: raise
   `max_tokens` or follow `next_cursor`. A first result over `max_tokens` is still returned, and
   `budgeted` stays unset when nothing was cut.
-- **Three words for a cut.** A page ended at `limit` returns only `next_cursor`; `budgeted` means
+- **Three words for a cut.** A page ended at `limit` alone returns only `next_cursor`; `budgeted` means
   the token budget trimmed it; `truncated` with `truncated_reason` marks a cut you did not ask for
-  (`omitted` counts what was left out; reasons below).
+  (`omitted` counts what was left out; reasons below). They can co-occur: a first `code_outline`
+  page that stops at `limit` on a file with over 200 imports returns `next_cursor` and
+  `truncated_reason: "imports"`, so check each one.
 - **Limit cap.** `git_log` silently caps `limit` at 100. `code_outline`, `code_symbols`,
   `code_grep`, `code_refs` (paginated relations; `definition` takes no `limit`), `find_files` and a
   `memory_search` listing cap at 1000 rows (`find_files` 5000) and set `limit_clamped: true`. Ask at

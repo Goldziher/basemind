@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:7aff8cc8c7df962f634eff879d5fd0b61e2807432aa1f3654bbe36505462c1e0
-Source-Hash: blake3:778a87ec5ff480d6c8b9b5f3624479b09558bfec885ce15f37f3c4b8ac4708dd
+Content-Hash: blake3:b41bb61efe55ca36ca6ae7a36c64c34045d3e11a8579681e9fe63d6e74350a77
+Source-Hash: blake3:6935d5a318b688c33f270995a726a83c95a2fd4d8ea5902720bd1c4e9e81e7e8
 Schema-Version: v1
 -->
 
@@ -194,9 +194,11 @@ Every list takes `limit` and `cursor` and returns `next_cursor` while more remai
 - **Token budget.** A list is trimmed to `max_tokens` (default 6000), then sets `budgeted`: raise
   `max_tokens` or follow `next_cursor`. A first result over `max_tokens` is still returned, and
   `budgeted` stays unset when nothing was cut.
-- **Three words for a cut.** A page ended at `limit` returns only `next_cursor`; `budgeted` means
+- **Three words for a cut.** A page ended at `limit` alone returns only `next_cursor`; `budgeted` means
   the token budget trimmed it; `truncated` with `truncated_reason` marks a cut you did not ask for
-  (`omitted` counts what was left out; reasons below).
+  (`omitted` counts what was left out; reasons below). They can co-occur: a first `code_outline`
+  page that stops at `limit` on a file with over 200 imports returns `next_cursor` and
+  `truncated_reason: "imports"`, so check each one.
 - **Limit cap.** `git_log` silently caps `limit` at 100. `code_outline`, `code_symbols`,
   `code_grep`, `code_refs` (paginated relations; `definition` takes no `limit`), `find_files` and a
   `memory_search` listing cap at 1000 rows (`find_files` 5000) and set `limit_clamped: true`. Ask at
