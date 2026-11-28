@@ -81,7 +81,7 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
   several definitions share is an error listing each until `line` picks one.
 - **Failures are results.** `BasemindServer::answer` (`src/mcp/tool_contract.rs`) turns an `McpError`
   into an `isError: true` result whose text names the fix and whose `structuredContent` carries its
-  `error` code and `retryable` flag (`src/engine/error_kind.rs`); an overloaded server answers the same
+  `error` code and `retryable` flag (`crates/basemind-engine/src/engine/error_kind.rs`); an overloaded server answers the same
   way (`busy`, with `retry_after_ms`).
 - **Notices.** An empty index is never a plain empty result: a `notice` (`empty_index`,
   `warming_up`, `building_index`, `rescanning`) says why.
@@ -107,12 +107,12 @@ Off the MCP surface and reachable only from the CLI: `git churn`, `git by-path <
   (`basemind://outline/{path}` is TOON, `text/toon`).
 - **Byte ceiling.** The verb tools serialize to at most 20,000 bytes in `tools/list`, the server
   instructions to 4,096 characters (`tests/mcp_schema_wire.rs`); never raise either.
-- **Telemetry keys are the tool names;** `src/engine/savings.rs` maps older keys onto them.
+- **Telemetry keys are the tool names;** `crates/basemind-engine/src/engine/savings.rs` maps older keys onto them.
 
 ## Layout
 
 Params structs and `VERB_TOOLS`: `src/mcp/types_tools.rs`. Shims and `<tool>_call`:
-`src/mcp/tools*.rs`. Bodies: `src/engine/ops/<tool>.rs` and `src/engine/git/`. The CLI (`src/cli/`) calls the same
+`src/mcp/tools*.rs`. Bodies: `crates/basemind-engine/src/engine/ops/<tool>.rs` and `crates/basemind-engine/src/engine/git/`. The CLI (`src/cli/`) calls the same
 `<tool>_call` (`tests/cli_parity/`).
 
 ## Agent tools (`--features comms`)

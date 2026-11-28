@@ -1,6 +1,6 @@
 //! The group sweep from the store's side (ADR-0028 rule 10): which views of the group are gone and
 //! which contents its views still name, read from the file system; the index deletes the rest
-//! ([`crate::index::group_sweep`]).
+//! (`crate::index::group_sweep`).
 //!
 //! It runs at the end of a full pass, never on a read. A view is gone when its view directory is:
 //! the workspace reaper removes the workspace of a deleted worktree, and the cache budget a cold

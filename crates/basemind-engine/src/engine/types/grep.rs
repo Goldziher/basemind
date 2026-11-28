@@ -63,7 +63,7 @@ pub struct WorkspaceGrepParams {
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Lines of context before and after each hit, at most [`GREP_CONTEXT_MAX`]; 0 for none.
+    /// Lines of context before and after each hit, at most `GREP_CONTEXT_MAX`; 0 for none.
     #[serde(default)]
     pub context: u32,
     /// Match `pattern` as literal text instead of compiling it as a regex.
@@ -75,7 +75,7 @@ pub struct WorkspaceGrepParams {
     pub cursor: Option<Cursor>,
 }
 
-/// One `code_grep` hit. Written under its file and the symbol enclosing it ([`serialize_rows`]), as
+/// One `code_grep` hit. Written under its file and the symbol enclosing it (`serialize_rows`), as
 /// the line `git grep -n` prints: `"<line>: <text>"`.
 #[derive(Debug, schemars::JsonSchema)]
 pub struct GrepHit {
@@ -127,7 +127,7 @@ impl crate::engine::by_path::Located for GrepHit {
     }
 
     /// The row as the token budget costs it: its match row and context rows. The symbol key the
-    /// rows of a group share is costed once, by [`crate::engine::budget::apply_budget_by_path`].
+    /// rows of a group share is costed once, by `crate::engine::budget::apply_budget_by_path`.
     fn serialize_row<S: serde::Serializer>(&self, serializer: S, column: bool) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeSeq;
 
@@ -267,7 +267,7 @@ impl Serialize for GroupMap<'_> {
     }
 }
 
-/// The hits of a `code_grep` page, one row per matching line, written by [`serialize_rows`].
+/// The hits of a `code_grep` page, one row per matching line, written by `serialize_rows`.
 #[derive(Debug)]
 pub struct GrepHits(pub(crate) Vec<GrepHit>);
 

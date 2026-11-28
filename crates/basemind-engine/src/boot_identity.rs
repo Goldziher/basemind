@@ -4,7 +4,7 @@
 //! Each platform hands out an id per boot: Linux `boot_id`, macOS `kern.bootsessionuuid`, Windows
 //! the `BootId` counter. Where none can be read the identity falls back to the time of boot, which
 //! moves whenever the clock is stepped, so two readings of it are the same boot when they are within
-//! [`BOOT_TIME_SLACK_SECS`] of each other: far less than a machine takes to restart, far more than a
+//! `BOOT_TIME_SLACK_SECS` of each other: far less than a machine takes to restart, far more than a
 //! clock correction moves it.
 
 use std::time::{Duration, SystemTime};
@@ -215,7 +215,7 @@ impl PidState {
 /// exited process its parent has not waited on) answers `kill` but runs nothing, so it is
 /// [`PidState::Gone`] on Linux and macOS, where its state can be read. Windows: see `win::state`;
 /// it has no zombies, an exited process reads its exit code. A pid no process can have (see
-/// [`valid_pid`]) is gone.
+/// `valid_pid`) is gone.
 #[cfg(any(unix, windows))]
 pub fn pid_state(pid: u32) -> PidState {
     let Some(pid) = valid_pid(pid) else {

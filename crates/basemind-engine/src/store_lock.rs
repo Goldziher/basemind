@@ -183,7 +183,7 @@ pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<LockGuard, StoreError>
 /// Acquire the store lock, recording `holder` in the `.lock.meta` sidecar on success and
 /// reading the *existing* holder's sidecar on contention so the error names the live holder. A
 /// lock the background embedding worker holds is asked back and waited for
-/// ([`embed_yield::wait_for_worker`]), up to [`embed_yield::YIELD_WAIT`].
+/// (`embed_yield::wait_for_worker`), up to `embed_yield::YIELD_WAIT`.
 pub fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<LockGuard, StoreError> {
     const LOCK_ATTEMPTS: u32 = 25;
     match acquire_lock_within(basemind_dir, holder, LOCK_ATTEMPTS) {

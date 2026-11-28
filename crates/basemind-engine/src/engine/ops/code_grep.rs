@@ -48,7 +48,7 @@ impl Workspace {
         self.code_grep_until(p, &|| false)
     }
 
-    /// [`code_grep_until`](Self::code_grep_until) with the wall-clock budget [`GREP_TIME_BUDGET`].
+    /// [`code_grep_until`](Self::code_grep_until) with the wall-clock budget `GREP_TIME_BUDGET`.
     pub fn code_grep_until(
         &self,
         p: CodeGrepParams,

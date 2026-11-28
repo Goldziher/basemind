@@ -10,11 +10,11 @@
 //! - Files keep the order of their first hit, so a ranked hit list keeps its ranking; hits within
 //!   a file may arrive in any order.
 //! - A hit on line 0 or past the file's known length is not covered by any span and is counted in
-//!   [`MergedRanges::out_of_file`] (an index older than the file), never dropped silently.
+//!   `MergedRanges::out_of_file` (an index older than the file), never dropped silently.
 //! - A line budget keeps whole spans in order until the next one does not fit; that one is cut to
 //!   the lines left when the cut still covers one of its hits, and every later span is left out.
-//!   A cut sets [`MergedRanges::truncated`] and counts what it left out in
-//!   [`MergedRanges::omitted_hits`]. A span list carries no bytes.
+//!   A cut sets `MergedRanges::truncated` and counts what it left out in
+//!   `MergedRanges::omitted_hits`. A span list carries no bytes.
 
 #![cfg_attr(
     not(test),

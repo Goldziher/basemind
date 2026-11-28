@@ -3,7 +3,7 @@ name = "basemind-engine-embed"
 version = "0.0.0"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
-rust-version.workspace = true
+rust-version = "1.100.0"
 description = "CI check that a program can embed basemind-engine alone; never published"
 license = "MIT"
 repository = "https://github.com/Goldziher/basemind"
@@ -19,6 +19,3 @@ basemind-engine = { path = "../basemind-engine" }
 [dev-dependencies]
 serde_json = "1"
 tempfile = "3"
-
-[lints]
-workspace = true

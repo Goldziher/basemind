@@ -6,18 +6,18 @@
 //! after the upgrade kept it for good. Once the group index of a workspace's repository exists, the
 //! group has adopted every view of the workspace, and this sweep deletes their old databases. Memory
 //! notes a release before 0.30 kept in one are moved to the group's notes store first
-//! ([`crate::store_gc_live::rescue_legacy_memory`]); a workspace whose notes cannot be moved keeps
+//! (`crate::store_gc_live::rescue_legacy_memory`); a workspace whose notes cannot be moved keeps
 //! its databases.
 //!
 //! When the cache is over its size budget, budget enforcement deletes every per-view index left,
-//! adopted or not, before it evicts any workspace ([`evict_legacy_indexes_in`]): this release reads
+//! adopted or not, before it evicts any workspace (`evict_legacy_indexes_in`): this release reads
 //! none of them, and a release up to 0.33 that opens a view whose database is gone rebuilds it.
-//! `cache stats` counts the ones left on the machine ([`legacy_indexes_in`]).
+//! `cache stats` counts the ones left on the machine (`legacy_indexes_in`).
 //!
 //! An older basemind that is still running may serve a worktree from its old database. Every
-//! release that reads one reads the un-namespaced blobs, so while [`Holds::live`] names
+//! release that reads one reads the un-namespaced blobs, so while `Holds::live` names
 //! [`BlobNamespace::Unnamespaced`], or a live basemind's namespace cannot be told
-//! ([`Holds::unidentified`]), nothing is deleted. A workspace whose lock another process holds is
+//! (`Holds::unidentified`), nothing is deleted. A workspace whose lock another process holds is
 //! skipped, and so is one holding a view a newer basemind wrote.
 
 use std::path::{Path, PathBuf};

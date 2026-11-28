@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:b0950be911f013ca357e4427590c291b08d620ffc3e80c32ffd0a834df433b7c
-Source-Hash: blake3:cf68dd6a7bcb43dbc498ffd77b1e7a2e6861845c0e4dcf8a45d049aa36788716
+Content-Hash: blake3:597d106840581b4c46250bde69ed6c6e5dd67df61cc48fbb44fc5059323617d4
+Source-Hash: blake3:cf13e28e976928ad07e04ec34e718a93ce3397449e6a6c38629c58faea0f9c4e
 Schema-Version: v1
 -->
 
@@ -30,19 +30,19 @@ the question (staging, rebasing, anything that mutates history).
 | Question | MCP call | CLI |
 |---|---|---|
 | "What changed recently?" | `git_log {}` | `basemind git log` |
-| "Which commits touched file F?" | `git_log {"path":"src/store.rs","limit":5}` | `basemind git log --path src/store.rs --limit 5` |
+| "Which commits touched file F?" | `git_log {"path":"crates/basemind-engine/src/store.rs","limit":5}` | `basemind git log --path crates/basemind-engine/src/store.rs --limit 5` |
 | "Which commits touched a directory?" | `git_log {"path":"src/mcp/"}` | `basemind git log --path src/mcp/` |
 | "Which commit mentions X?" | `git_log {"query":"fix race"}` | `basemind git log --query "fix race"` |
 | "What did this author commit?" | `git_log {"author":"ada"}` | `basemind git log --author ada` |
-| "When did symbol X change?" | `git_log {"path":"src/store.rs","symbol":"open"}` | `basemind git log --path src/store.rs --symbol open` |
+| "When did symbol X change?" | `git_log {"path":"crates/basemind-engine/src/store.rs","symbol":"open"}` | `basemind git log --path crates/basemind-engine/src/store.rs --symbol open` |
 | "Show one commit in full" | `git_log {"rev":"HEAD~1"}` | `basemind git log --rev HEAD~1` |
-| "Who wrote this file's lines?" | `git_blame {"path":"src/store.rs"}` | `basemind git blame src/store.rs` |
-| "Who wrote these lines?" | `git_blame {"path":"src/store.rs","line":120,"end_line":160}` | `basemind git blame src/store.rs --line 120 --end-line 160` |
-| "Who wrote this symbol?" | `git_blame {"path":"src/store.rs","symbol":"open"}` | `basemind git blame src/store.rs --symbol open` |
+| "Who wrote this file's lines?" | `git_blame {"path":"crates/basemind-engine/src/store.rs"}` | `basemind git blame crates/basemind-engine/src/store.rs` |
+| "Who wrote these lines?" | `git_blame {"path":"crates/basemind-engine/src/store.rs","line":120,"end_line":160}` | `basemind git blame crates/basemind-engine/src/store.rs --line 120 --end-line 160` |
+| "Who wrote this symbol?" | `git_blame {"path":"crates/basemind-engine/src/store.rs","symbol":"open"}` | `basemind git blame crates/basemind-engine/src/store.rs --symbol open` |
 | "What's dirty in the working tree?" | `git_diff {}` | `basemind git diff` |
-| "What did I change in file F?" | `git_diff {"path":"src/store.rs"}` | `basemind git diff src/store.rs` |
-| "Diff a file between revisions?" | `git_diff {"path":"src/store.rs","from":"HEAD~1","to":"HEAD"}` | `basemind git diff src/store.rs --from HEAD~1 --to HEAD` |
-| "What symbols were added or removed?" | `git_diff {"path":"src/store.rs","from":"HEAD~5","structural":true}` | `basemind git diff src/store.rs --from HEAD~5 --structural` |
+| "What did I change in file F?" | `git_diff {"path":"crates/basemind-engine/src/store.rs"}` | `basemind git diff crates/basemind-engine/src/store.rs` |
+| "Diff a file between revisions?" | `git_diff {"path":"crates/basemind-engine/src/store.rs","from":"HEAD~1","to":"HEAD"}` | `basemind git diff crates/basemind-engine/src/store.rs --from HEAD~1 --to HEAD` |
+| "What symbols were added or removed?" | `git_diff {"path":"crates/basemind-engine/src/store.rs","from":"HEAD~5","structural":true}` | `basemind git diff crates/basemind-engine/src/store.rs --from HEAD~5 --structural` |
 | "What's HEAD / branch?" | `index_status {}` | `basemind status` |
 | "Where's the churn?" | CLI only | `basemind git churn` |
 | "Commits whose changed paths match a regex?" | CLI only | `basemind git by-path <regex>` |
@@ -59,7 +59,7 @@ git_log {"limit":5}
               "1779b9902d5e fix(git-history,serve): address code-review findings", …],
    "files":{"612df7e3a1c4":{"Cargo.toml":"modified",…},…}, …}
 
-git_blame {"path":"src/scanner.rs","symbol":"process_file"}
+git_blame {"path":"crates/basemind-engine/src/scanner.rs","symbol":"process_file"}
 → per-line authorship of that function's span
 
 git_diff {"path":"src/mcp/tools.rs","from":"HEAD~5","structural":true}

@@ -129,9 +129,9 @@ impl StagedByteLedger {
 pub(crate) static SCAN_STAGED_BYTES: StagedByteLedger = StagedByteLedger::new(INDEX_STAGED_BYTES_CEILING);
 
 /// Per-rayon-worker accumulator: buffers each file's index upsert into a shared Fjall write
-/// batch and commits once `INDEX_COMMIT_BATCH` files *or* [`INDEX_COMMIT_BATCH_BYTES`] have been
+/// batch and commits once `INDEX_COMMIT_BATCH` files *or* `INDEX_COMMIT_BATCH_BYTES` have been
 /// staged — or once the process-wide [`StagedByteLedger`] is over its ceiling and this worker holds
-/// at least [`CEILING_MIN_COMMIT_BYTES`] of its own — and once more at the end of the worker's
+/// at least `CEILING_MIN_COMMIT_BYTES` of its own — and once more at the end of the worker's
 /// slice. Also carries the worker's `FileResult`s so the parallel fold produces both the scan
 /// outcomes and the committed index in one pass.
 ///

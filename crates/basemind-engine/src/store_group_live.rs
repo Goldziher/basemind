@@ -9,7 +9,7 @@
 //! and is not provably of another schema makes the liveness unknowable, and the sweep is skipped.
 //!
 //! Symbol and call rows are keyed by content too, but read rather than swept here: a view reads them
-//! through the live keys its file map names ([`live_keys_of`], [`Store::publish_live_keys`]).
+//! through the live keys its file map names (`live_keys_of`, `Store::publish_live_keys`).
 //!
 //! The document rows of the retrieval store (ADR-0029) are keyed the same way, by [`doc_key`]:
 //! [`Store::group_live_doc_keys`] lists the keys every view of the group names.

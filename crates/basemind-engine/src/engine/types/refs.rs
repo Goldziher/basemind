@@ -236,17 +236,17 @@ pub struct ReferenceHit {
     /// [`shared_line`](Self::shared_line) is set.
     pub column: u32,
     /// The name called. Written only when it is not the name asked for (a `substring` match, or an
-    /// alias the definition is called by); [`ReferenceHit::named`] clears it otherwise.
+    /// alias the definition is called by); `ReferenceHit::named` clears it otherwise.
     pub callee: String,
     /// How the site was resolved ([`Resolution`]).
     pub resolution: Resolution,
     /// `resolution` is the page's `resolution_default`, so the row leaves it out. Set by
-    /// [`crate::engine::refs::resolution::finish_page`].
+    /// `crate::engine::refs::resolution::finish_page`.
     #[schemars(skip)]
     pub elide_resolution: bool,
     /// Another call site of the same callee is on this line of this file, in the whole result and
     /// not only this page, so the line alone does not tell them apart and `column` is written. Set
-    /// by [`crate::engine::refs::calls_scan::mark_shared_lines`].
+    /// by `crate::engine::refs::calls_scan::mark_shared_lines`.
     #[schemars(skip)]
     pub shared_line: bool,
     /// The file changed since it was indexed, so `line` is where the call was when it was scanned.
@@ -590,7 +590,7 @@ pub struct ImplementationHit {
     /// The file the implementation is in: the key it is listed under.
     pub path: RelPath,
     /// The trait implemented. Written only when it is not the name asked for (a `substring`
-    /// match); [`ImplementationHit::named`] clears it otherwise.
+    /// match); `ImplementationHit::named` clears it otherwise.
     pub trait_name: String,
     pub impl_type: String,
     /// 1-based row of the `impl`/`class`/`extends` declaration, written as `line`; `0` when the

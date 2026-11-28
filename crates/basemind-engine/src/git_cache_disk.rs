@@ -10,7 +10,7 @@
 //! directory again before it ends, so a directory it had already visited is not left over budget.
 //!
 //! A sweep is an mtime-LRU pass: stat every file, sum the sizes, and when the sum is over budget
-//! delete the oldest payloads until it is at most [`low_water`] of the budget. Stopping below the
+//! delete the oldest payloads until it is at most `low_water` of the budget. Stopping below the
 //! budget leaves room for the writes that follow, so a directory at its budget does not sweep again
 //! on the next write. The sweep then resets the running total to the bytes it kept. None of the
 //! directories holds immortal entries: `log/` keys on HEAD, `blame/` on the HEAD a blame was asked

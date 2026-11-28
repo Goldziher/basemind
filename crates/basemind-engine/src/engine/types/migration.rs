@@ -74,10 +74,10 @@ pub struct RuleReport {
     pub migrated_share: Option<f64>,
     /// The rule declares `expect` and none of it was found.
     pub failed: bool,
-    /// Files holding both an old and a new form, sorted (at most [`MIXED_FILES_MAX`]).
+    /// Files holding both an old and a new form, sorted (at most `MIXED_FILES_MAX`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mixed_files: Vec<RelPath>,
-    /// Files with remaining uses, most uses first (at most [`FILES_MAX`]).
+    /// Files with remaining uses, most uses first (at most `FILES_MAX`).
     pub files: Vec<FileUses>,
     /// Files with remaining uses left out of `files` by its cap.
     #[serde(skip_serializing_if = "is_zero")]
@@ -90,7 +90,7 @@ pub struct FileUses {
     pub path: RelPath,
     /// Lines holding an old form.
     pub count: u32,
-    /// The first [`LINES_MAX`] of those lines, 1-based and ascending.
+    /// The first `LINES_MAX` of those lines, 1-based and ascending.
     pub lines: Vec<u32>,
     /// With `ranges`: every one of those lines widened by 5 lines of context and merged
     /// (`"12-20,31-40"`), each span one `code_read` of `line` to `end_line`.
@@ -109,7 +109,7 @@ pub struct Progress {
     /// The run recorded just before this one; absent when this is the first.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous: Option<RunPoint>,
-    /// The latest runs, oldest first, this one last (at most [`RECENT_RUNS`]).
+    /// The latest runs, oldest first, this one last (at most `RECENT_RUNS`).
     pub recent: Vec<RunPoint>,
     /// Where the history is kept; absent when it could not be written.
     #[serde(skip_serializing_if = "Option::is_none")]

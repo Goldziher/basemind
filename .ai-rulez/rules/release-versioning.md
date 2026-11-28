@@ -24,7 +24,7 @@ publish workflow both run it, and it fails on any surface that is missing or dis
 | Surface | Format | Notes |
 |---|---|---|
 | `Cargo.toml` `[package] version` | `X.Y.Z` or `X.Y.Z-rc.N` | Source of truth. |
-| `crates/basemind-engine/Cargo.toml` `[package] version`, and the root's `basemind-engine` requirement | `X.Y.Z` or `X.Y.Z-rc.N` | Published to crates.io before `basemind` (ADR-0039), after the vendored forks it depends on. |
+| `crates/basemind-engine/Cargo.toml` `[package] version`, and the root's `basemind-engine` requirement | `X.Y.Z` or `X.Y.Z-rc.N` | Published before `basemind`. |
 | `crates/basemind-agents/Cargo.toml` `[package] version`, and the root's `basemind-agents` requirement | `X.Y.Z` or `X.Y.Z-rc.N` | Published to crates.io before `basemind` (ADR-0040). |
 | `npm-package/package.json` `"version"` | `X.Y.Z` or `X.Y.Z-rc.N` | Same shape as Cargo. |
 | `pip-package/pyproject.toml` `version` | `X.Y.Z` or `X.Y.ZrcN` | PyPI canonical form (`basemind`, binary wrapper). |

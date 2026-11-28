@@ -10,7 +10,7 @@
 //!
 //! The depth is a hard bound on how far a ranking can be paged. One hit more than the depth is
 //! retrieved to learn whether the ranking goes on past it, and a ranking that does is flagged
-//! `truncated` once a page reads up to it, so a list of exactly [`RANKED_DEPTH`] hits is told from
+//! `truncated` once a page reads up to it, so a list of exactly `RANKED_DEPTH` hits is told from
 //! one cut there. A page that stops short of the depth is paging, not truncation.
 
 #![cfg_attr(
@@ -97,7 +97,7 @@ pub struct RankedPage<T> {
     pub hits: Vec<T>,
     /// The token budget dropped trailing hits of the page.
     pub budgeted: bool,
-    /// The page ends at [`RANKED_DEPTH`] and the ranking goes on past it.
+    /// The page ends at `RANKED_DEPTH` and the ranking goes on past it.
     pub depth_cut: bool,
     pub next_cursor: Option<Cursor>,
 }

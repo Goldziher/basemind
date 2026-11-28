@@ -64,7 +64,7 @@ impl LifecycleNotice {
         }
     }
 
-    /// [`index_rebuilding`](Self::index_rebuilding) when `status` records a degraded scan, else `None`
+    /// `index_rebuilding` when `status` records a degraded scan, else `None`
     /// (healthy, or no sidecar yet: the never-scanned case belongs to the building-index lifecycle).
     pub fn for_scan_status(status: Option<&crate::store::StatusSidecar>) -> Option<Self> {
         status

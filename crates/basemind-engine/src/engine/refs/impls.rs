@@ -26,7 +26,7 @@ pub struct ImplScanPage {
     /// Whether matches remain past this page; the cursor is the last hit's key.
     pub has_more: bool,
     /// The last key examined, when the scan stopped at
-    /// [`SCAN_KEYS_EXAMINED_MAX`](super::calls_scan::SCAN_KEYS_EXAMINED_MAX) with room left
+    /// `SCAN_KEYS_EXAMINED_MAX` with room left
     /// on the page; the cursor is then this key. Never set together with `has_more`.
     pub stopped_after: Option<Vec<u8>>,
 }

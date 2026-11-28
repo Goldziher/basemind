@@ -6,8 +6,8 @@ name: bm
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:c39c72885e994b746e48b6bfc262b54f5509c7f6bb68be5960d7b7ce447996ed
-Source-Hash: blake3:cf68dd6a7bcb43dbc498ffd77b1e7a2e6861845c0e4dcf8a45d049aa36788716
+Content-Hash: blake3:f896f15673139bff84e6ac752c51a3dd793a3af5eed3a7e2510cbf9fdd269f94
+Source-Hash: blake3:cf13e28e976928ad07e04ec34e718a93ce3397449e6a6c38629c58faea0f9c4e
 Schema-Version: v1
 -->
 
@@ -26,7 +26,7 @@ Invoke with a natural-language question about this repo's code, history, or docu
 ```text
 /bm where is MapCache defined?
 /bm what calls process_file?
-/bm who last touched src/scanner.rs?
+/bm who last touched crates/basemind-engine/src/scanner.rs?
 ```
 
 Route the question to the tool that answers it directly:
@@ -35,18 +35,18 @@ Route the question to the tool that answers it directly:
 |---|---|
 | "Where is X defined?" | `code_symbols {"name":"MapCache"}` |
 | "What calls X?" | `code_refs {"name":"process_file"}`; add `"path"` to pin one definition |
-| "What's the shape of this file?" | `code_outline {"path":"src/scanner.rs"}` |
-| "Show me that function" | `code_read {"path":"src/scanner.rs","symbol":"process_file"}` |
+| "What's the shape of this file?" | `code_outline {"path":"crates/basemind-engine/src/scanner.rs"}` |
+| "Show me that function" | `code_read {"path":"crates/basemind-engine/src/scanner.rs","symbol":"process_file"}` |
 | "Where does this string appear?" | `code_grep {"pattern":"cache_root("}` (add `"regex":true` for a regex) |
 | "Which file is named like X?" | `find_files {"query":"readme"}` |
-| "What changed recently?" | `git_log {}`; `{"path":"src/scanner.rs"}` for one file; add `"symbol"` for one symbol |
-| "Who last touched this?" | `git_blame {"path":"src/scanner.rs"}`; add `"symbol"` or `"line"` + `"end_line"` |
-| "What's dirty, or what changed between revisions?" | `git_diff {}` / `git_diff {"path":"src/scanner.rs","from":"HEAD~1","to":"HEAD"}` |
+| "What changed recently?" | `git_log {}`; `{"path":"crates/basemind-engine/src/scanner.rs"}` for one file; add `"symbol"` for one symbol |
+| "Who last touched this?" | `git_blame {"path":"crates/basemind-engine/src/scanner.rs"}`; add `"symbol"` or `"line"` + `"end_line"` |
+| "What's dirty, or what changed between revisions?" | `git_diff {}` / `git_diff {"path":"crates/basemind-engine/src/scanner.rs","from":"HEAD~1","to":"HEAD"}` |
 | "Where's the churn?" | CLI only: `basemind git churn` |
 | "Search PDFs/docs in the repo by meaning?" | `docs_search {"query":"how releases are versioned"}` |
 | "Recall something remembered earlier?" | `memory_search {"query":"token rotation"}`, or `{"key":"…"}` / `{"prefix":"…"}` |
 | "Remember this for later sessions?" | `memory_save {"key":"decision/x","value":"…"}` (delete: `basemind memory delete <key>`) |
-| "A result says stale, or a new file is missing?" | `index_rescan {"paths":["src/scanner.rs"]}` |
+| "A result says stale, or a new file is missing?" | `index_rescan {"paths":["crates/basemind-engine/src/scanner.rs"]}` |
 
 ## Notes
 

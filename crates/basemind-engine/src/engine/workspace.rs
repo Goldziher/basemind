@@ -470,7 +470,7 @@ impl Workspace {
         self.warm_gate.open();
     }
 
-    /// Wait for the deferred preload, at most [`CACHE_WARM_WAIT_CAP`]. Returns at once when no
+    /// Wait for the deferred preload, at most `CACHE_WARM_WAIT_CAP`. Returns at once when no
     /// preload is running. Never call it holding a store guard: the preload reads the store.
     pub fn wait_for_warm(&self) {
         self.warm_gate
@@ -670,7 +670,7 @@ pub enum Lifecycle {
 impl Lifecycle {
     /// Pure precedence classifier over the three lifecycle flags. Highest first: `building`
     /// (from-scratch index scan), then `warming` (blobs loading into RAM), then `rescanning`
-    /// (watcher refresh), then `Ready`. Split out from [`ServerState::lifecycle`] so the precedence
+    /// (watcher refresh), then `Ready`. Split out from `ServerState::lifecycle` so the precedence
     /// is unit-testable without constructing a server.
     pub fn from_flags(building: bool, warming: bool, rescanning: bool) -> Self {
         if building {

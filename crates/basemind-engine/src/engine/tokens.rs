@@ -39,7 +39,7 @@ pub(crate) const O200K_PROBE: &str = "Hello, world!";
 pub(crate) const O200K_PROBE_TOKENS: u64 = 4;
 
 /// `true` when [`count_tokens`] really counts o200k: the `tokenizer` feature is on and the
-/// tokenizer loaded, which [`O200K_PROBE`] proves because the word-estimate fallback (an offline
+/// tokenizer loaded, which `O200K_PROBE` proves because the word-estimate fallback (an offline
 /// first use) counts it differently. Probed once.
 pub fn o200k_counted() -> bool {
     #[cfg(feature = "tokenizer")]

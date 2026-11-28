@@ -41,7 +41,7 @@ pub(crate) const NODE_CAP: usize = 5_000;
 /// A graph larger than this is built for its caller but not kept on the workspace.
 const CACHE_BYTES_MAX: usize = 128 * 1024 * 1024;
 
-/// Which edges a graph answer follows. The default, [`Tiers::RUNTIME`], follows runtime imports
+/// Which edges a graph answer follows. The default, `Tiers::RUNTIME`, follows runtime imports
 /// only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tiers {
@@ -165,7 +165,7 @@ impl Coverage {
 pub enum Truncation {
     /// Files lie beyond the deepest level walked.
     Depth,
-    /// The walk reported [`WalkLimits::node_cap`] files and more were reachable.
+    /// The walk reported `WalkLimits::node_cap` files and more were reachable.
     ScanCap,
 }
 

@@ -127,7 +127,7 @@ impl Workspace {
     }
 
     /// Resume an embedding pass a killed process left unfinished. The documents the store records as
-    /// owing vectors are embedded by scoped scans of [`RESUME_BATCH_DOCUMENTS`] each, every one
+    /// owing vectors are embedded by scoped scans of `RESUME_BATCH_DOCUMENTS` each, every one
     /// holding the store write lock only while it runs, so a read (a `docs_search` answering from the
     /// keyword lane) waits for one batch rather than for the whole pass. A whole working-tree pass
     /// then pays whatever the batches could not reach (a dependency's documentation, an extra root,

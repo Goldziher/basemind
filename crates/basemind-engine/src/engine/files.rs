@@ -25,7 +25,7 @@ pub struct IndexedFiles<'a> {
     pub max_file_bytes: u64,
 }
 
-/// Why [`IndexedFiles::file`] did not name a file to read.
+/// Why `IndexedFiles::file` did not name a file to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unreadable {
     /// The index holds no such path, so nothing on disk is consulted for it.
@@ -83,7 +83,7 @@ impl<'a> IndexedFiles<'a> {
     }
 }
 
-/// [`IndexedFiles::indexed_path`] for a sweep over the whole corpus.
+/// `IndexedFiles::indexed_path` for a sweep over the whole corpus.
 ///
 /// Resolving every path would cost a `realpath` per file. A file leaves the repository through a
 /// link in one of two places: one of its directories, or the file itself. Each distinct directory

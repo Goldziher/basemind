@@ -2,7 +2,7 @@
 //! `<workspace cache dir>/migrations/<name>.ndjson`. It lives in the cache, never in the
 //! repository, so a check writes nothing a commit could pick up.
 //!
-//! Only the first line and the last [`TAIL_BYTES`] are parsed; the run count is a `memchr` newline
+//! Only the first line and the last `TAIL_BYTES` are parsed; the run count is a `memchr` newline
 //! count (a run is about 70 bytes). A line that does not parse (a torn write, a hand edit) is
 //! skipped, not fatal.
 

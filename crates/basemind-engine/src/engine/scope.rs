@@ -19,7 +19,7 @@
 //!   not check.
 //! - Paths are repository-relative, as the index keys them. Deleted files and both sides of a
 //!   rename are in the scope, so the caller filters to what the index holds.
-//! - [`ChangeScope::len`] is the `scope_files` count. An empty scope is an answer, not an error:
+//! - `ChangeScope::len` is the `scope_files` count. An empty scope is an answer, not an error:
 //!   the caller reports `scope_files: 0`, which tells "nothing changed" from "no hit in the change".
 //! - An unknown revision is [`EngineError::InvalidArgument`] naming it and the accepted forms, and so
 //!   are two revisions whose histories share no commit, which have no merge base.

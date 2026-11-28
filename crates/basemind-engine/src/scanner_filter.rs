@@ -607,9 +607,9 @@ impl Filters {
     /// to forward for expansion (every host). Matching against `dir_exclude` rather than `exclude`
     /// is what makes it drop `node_modules` itself and not merely `node_modules/react` — before
     /// this the watcher watched every excluded tree's root. The scan walk shares the rule through
-    /// [`DirPruner`], which needs an owned `'static` gate and therefore calls [`dir_allowed`]
+    /// [`DirPruner`], which needs an owned `'static` gate and therefore calls `dir_allowed`
     /// directly.
-    pub(crate) fn allows_dir(&self, rel: &str) -> bool {
+    pub fn allows_dir(&self, rel: &str) -> bool {
         dir_allowed(rel, &self.dir_exclude, &self.submodule_prefixes)
     }
 
@@ -648,7 +648,7 @@ pub struct ExclusionGate {
 
 impl ExclusionGate {
     /// The gate sees no file kind, so a path is dropped only when it is excluded as a file and as a
-    /// directory (see [`Filters::excluded_as_any_kind`]).
+    /// directory (see `Filters::excluded_as_any_kind`).
     pub fn excludes(&self, rel: &str) -> bool {
         under_submodule(rel, &self.submodule_prefixes) || (self.exclude.is_match(rel) && self.dir_exclude.is_match(rel))
     }
@@ -702,7 +702,7 @@ fn dir_exclude_patterns(patterns: &[String]) -> Vec<String> {
 
 /// Owned, `'static` directory gate for `WalkBuilder::filter_entry` (which demands
 /// `Fn(&DirEntry) -> bool + Send + Sync + 'static` and so cannot borrow [`Filters`]). Cloned out of
-/// a `Filters` by [`Filters::dir_pruner`]; every field is a refcount bump.
+/// a `Filters` by `Filters::dir_pruner`; every field is a refcount bump.
 pub struct DirPruner {
     dir_exclude: Arc<globset::GlobSet>,
     submodule_prefixes: Arc<[String]>,
@@ -852,7 +852,7 @@ impl IndexFilter {
     }
 
     /// Would a full scan index `abs`? Applies the glob gate, then (when `respect_gitignore`) the
-    /// nested-gitignore walk. Assumes `abs` exists; callers handle deletions via [`allows_glob`].
+    /// nested-gitignore walk. Assumes `abs` exists; callers handle deletions via `allows_glob`.
     pub fn is_indexable(&self, abs: &Path) -> bool {
         let Some(rel) = self.rel_of(abs) else {
             return false;

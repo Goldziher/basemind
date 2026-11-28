@@ -8,7 +8,7 @@
 //! An entry answers only the query it was built for, at the index generation it was built at: a
 //! rescan bumps the generation and every older entry is dropped. A ranking also depends on state
 //! the generation does not count (chunks still being embedded after a scan, a page scraped into
-//! the document store), so an entry is served for [`MAX_AGE`] at most.
+//! the document store), so an entry is served for `MAX_AGE` at most.
 
 #![cfg_attr(
     not(any(feature = "code-search", feature = "documents")),
@@ -40,7 +40,7 @@ struct Entry {
     body: Value,
 }
 
-/// Ranked lists by query, least recently used first. Bounded by [`ENTRIES_MAX`] and [`BYTES_MAX`].
+/// Ranked lists by query, least recently used first. Bounded by `ENTRIES_MAX` and `BYTES_MAX`.
 #[derive(Default)]
 pub struct RankedCache {
     entries: Mutex<VecDeque<Entry>>,

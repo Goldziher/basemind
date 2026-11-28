@@ -12,7 +12,7 @@ use crate::engine::types::refs::{ImplementationHit, ReferenceHit};
 use crate::engine::workspace::Workspace;
 use crate::path::RelPath;
 
-/// A hit listed from the index at its indexed position, which [`flag_listed`] can mark `stale`.
+/// A hit listed from the index at its indexed position, which `flag_listed` can mark `stale`.
 pub trait Listed {
     fn path(&self) -> &RelPath;
     fn set_stale(&mut self, stale: bool);

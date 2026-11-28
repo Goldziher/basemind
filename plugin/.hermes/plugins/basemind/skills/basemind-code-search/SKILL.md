@@ -9,8 +9,8 @@ metadata:
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:13e25596958c945a26d3a9b69ba83e36fa38efa7137b86285a17056d39b4951c
-Source-Hash: blake3:cf68dd6a7bcb43dbc498ffd77b1e7a2e6861845c0e4dcf8a45d049aa36788716
+Content-Hash: blake3:e14fa95f1089369d4a83d7185880fe07ccf90484189ea12c67b7425084cf91eb
+Source-Hash: blake3:cf13e28e976928ad07e04ec34e718a93ce3397449e6a6c38629c58faea0f9c4e
 Schema-Version: v1
 -->
 
@@ -41,7 +41,7 @@ The tools are always loaded: call them directly. Drop to raw shell only when no 
 - **Do not re-read a mapped file** once the outline answered the question.
 - **The index follows your edits** while a server, daemon or `basemind watch` runs: no rescan and
   no server reconnect after each one. If a result says `stale` or a new file is missing, run
-  `index_rescan {"paths":["src/store.rs"]}` for that file; run `index_rescan {}` only when
+  `index_rescan {"paths":["crates/basemind-engine/src/store.rs"]}` for that file; run `index_rescan {}` only when
   `index_status` reports an empty index, `degraded` or `rescan_needed`. Files under
   `scan.extra_roots` are not watched and `paths` skips them: refresh a changed one with a full pass
   (`index_rescan {}`, or `basemind scan` with no server). With only a standalone `basemind watch`
@@ -54,24 +54,24 @@ The tools are always loaded: call them directly. Drop to raw shell only when no 
 
 | Question | MCP call | CLI |
 |---|---|---|
-| "What's the shape of file F?" | `code_outline {"path":"src/store.rs"}` | `basemind code outline src/store.rs` |
+| "What's the shape of file F?" | `code_outline {"path":"crates/basemind-engine/src/store.rs"}` | `basemind code outline crates/basemind-engine/src/store.rs` |
 | "Where is X defined?" | `code_symbols {"name":"parse_config","kind":"function"}` | `basemind code symbols parse_config --kind function` |
 | "Where is X defined in this directory?" | `code_symbols {"name":"Config","path":"src/mcp/"}` | `basemind code symbols Config --path src/mcp/` |
 | "I only half remember the name" | `code_symbols {"name":"prsconf","fuzzy":true}` | `basemind code symbols prsconf --fuzzy` |
-| "Show one symbol's body" | `code_read {"path":"src/store.rs","symbol":"open"}` | `basemind code read src/store.rs --symbol open` |
-| "Show these lines" | `code_read {"path":"src/store.rs","line":120,"end_line":160}` | `basemind code read src/store.rs --line 120 --end-line 160` |
+| "Show one symbol's body" | `code_read {"path":"crates/basemind-engine/src/store.rs","symbol":"open"}` | `basemind code read crates/basemind-engine/src/store.rs --symbol open` |
+| "Show these lines" | `code_read {"path":"crates/basemind-engine/src/store.rs","line":120,"end_line":160}` | `basemind code read crates/basemind-engine/src/store.rs --line 120 --end-line 160` |
 | "Where does this text appear?" | `code_grep {"pattern":"cache_root(","path":"src/"}` | `basemind code grep 'cache_root(' --path src/` |
 | "Regex over code?" | `code_grep {"pattern":"fn \\w+_call","regex":true}` | `basemind code grep 'fn \w+_call' --regex` |
 | "Find code by meaning?" | `code_search {"query":"retry a failed upload with backoff"}` | `basemind code search "retry a failed upload with backoff"` |
 | "What calls X?" (any definition of the name) | `code_refs {"name":"open_store"}` | `basemind code refs open_store` |
 | "What calls anything named like X?" | `code_refs {"name":"open_","match":"substring"}` | `basemind code refs open_ --match substring` |
-| "What calls this specific definition?" | `code_refs {"name":"open_store","path":"src/store.rs"}` | `basemind code callers src/store.rs open_store` |
+| "What calls this specific definition?" | `code_refs {"name":"open_store","path":"crates/basemind-engine/src/store.rs"}` | `basemind code callers crates/basemind-engine/src/store.rs open_store` |
 | "What implements / extends / inherits X?" | `code_refs {"name":"Drawable","relation":"implementations"}` | `basemind code implementations Drawable` |
 | "What imports module M?" | `code_refs {"name":"tokio::sync","relation":"importers"}` | `basemind code dependents tokio::sync` |
 | "Which definition does this reference bind to?" | `code_refs {"name":"open_store","relation":"definition","path":"src/main.rs","line":42}` | `basemind code definition src/main.rs 42 open_store` |
 | "Which file is named like X?" | `find_files {"query":"readme"}` | `basemind code find readme` |
 | "What files are indexed under a directory?" | `find_files {"path":"src/mcp/"}` | `basemind code files --path src/mcp/` |
-| "A result says stale, or a new file is missing?" | `index_rescan {"paths":["src/store.rs"]}` | `basemind rescan src/store.rs` |
+| "A result says stale, or a new file is missing?" | `index_rescan {"paths":["crates/basemind-engine/src/store.rs"]}` | `basemind rescan crates/basemind-engine/src/store.rs` |
 
 ## Notes
 

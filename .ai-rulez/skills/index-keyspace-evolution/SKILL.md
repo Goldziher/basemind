@@ -29,22 +29,22 @@ Do **not** bump when:
 
 ## Steps
 
-1. **Encoder + decoder + tests in `src/index/keys.rs`**
+1. **Encoder + decoder + tests in `crates/basemind-engine/src/index/keys.rs`**
    - Add `<partition>_key(...) -> Vec<u8>` and `<partition>_prefix(...) -> Vec<u8>`.
    - Add `parse_<partition>_key(&[u8]) -> Result<(...), …>`.
    - Add unit tests for round-trip + prefix isolation: insert two keys with a shared prefix that differ only in the suffix, scan the prefix, confirm the wrong sibling is excluded.
 
-2. **Open the partition in `src/index/mod.rs`**
+2. **Open the partition in `crates/basemind-engine/src/index/mod.rs`**
    - Add the field to `IndexDb`.
    - Open via `db.keyspace("<name>", PartitionCreateOptions::default())` next to the others.
    - If used only for reads, mark `#[allow(dead_code)]` until a writer / reader exists.
 
-3. **Writer in `src/index/writer.rs`**
+3. **Writer in `crates/basemind-engine/src/index/writer.rs`**
    - Extend `upsert_file` to derive secondary keys from the L1/L2 input and stage inserts.
    - Extend the read-before-write deletion to enumerate the partition under the file's primary key and stage deletes for those secondary keys.
    - Add integration tests covering upsert-then-remove leaves the partition empty.
 
-4. **Reader in `src/engine/` (and/or `query.rs`)**
+4. **Reader in `crates/basemind-engine/src/engine/` (and/or `query.rs`)**
    - Add a `scan_<partition>_by_<key>` helper that range-scans the prefix and decodes values.
    - Apply `scan_cap = limit * 8`.
 
@@ -54,6 +54,6 @@ Do **not** bump when:
 
 ## Verification
 
-- Unit tests in `src/index/keys.rs` and `src/index/writer.rs` cover round-trip + prefix isolation + upsert/remove symmetry.
+- Unit tests in `crates/basemind-engine/src/index/keys.rs` and `crates/basemind-engine/src/index/writer.rs` cover round-trip + prefix isolation + upsert/remove symmetry.
 - `tests/schema_bump.rs` covers the wipe-on-mismatch path; extend it if the bump is non-trivial.
 - Harden harness still 8/8 green.

@@ -29,7 +29,7 @@ pub(crate) fn preflight(store: &mut Store) -> Result<UnlistedRows, ScanError> {
 }
 
 /// Whether an earlier pass may have left rows of paths no file map lists, for a full pass to remove
-/// once its drive has listed every path it saw ([`UnlistedRows::purge`]).
+/// once its drive has listed every path it saw (`UnlistedRows::purge`).
 #[must_use = "a full pass must purge what an interrupted pass left"]
 pub struct UnlistedRows(bool);
 

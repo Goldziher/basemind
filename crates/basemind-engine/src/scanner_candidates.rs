@@ -2,7 +2,7 @@
 //! `scan.extra_roots` walk, and the budgets that bound **both** of them.
 //!
 //! Split out of `scanner.rs` (module size cap) once the accounting stopped being a single counter.
-//! One [`Budget`] now carries the `[scan] max_candidates` ceiling, the walk-entry ceiling derived
+//! One `Budget` now carries the `[scan] max_candidates` ceiling, the walk-entry ceiling derived
 //! from it, and the contributor tallies that turn a breach into an actionable message — and it is
 //! threaded through the extra-root walk as well. Before that, the ceiling covered only the primary
 //! walk, so `scan.extra_roots` was an unbounded hole straight through the bound it advertises.

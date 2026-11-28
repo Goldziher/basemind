@@ -1,8 +1,8 @@
 //! The route table `code_refs` links HTTP calls against (ADR-0048): every indexed route, built once
-//! per map snapshot ([`crate::engine::MapCache::routes`]) and bucketed so a request is scored only
+//! per map snapshot (`crate::engine::MapCache::routes`) and bucketed so a request is scored only
 //! against the routes that can match it.
 //!
-//! The buckets follow from how [`super::routes::score`] aligns two paths. A route without a tail
+//! The buckets follow from how `super::routes::score` aligns two paths. A route without a tail
 //! wildcard matches segment for segment (same length) or by a suffix that holds a literal segment,
 //! so both sides line up at their ends and the route's last literal segment meets the request
 //! segment at the same distance from the end: those routes are keyed by that literal and distance.

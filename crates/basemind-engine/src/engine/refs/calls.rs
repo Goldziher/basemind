@@ -321,7 +321,7 @@ fn refuse_stale(stamped: Option<[u8; GENERATION_LEN]>, generation: u64) -> Resul
 /// The scope/import-resolved callers of a definition — the refinement layer over the name scan.
 ///
 /// Deliberately NOT a complete caller set: it is everything resolution can *prove*, which is a
-/// subset of the truth whose gap resolution cannot measure. See [`run_find_callers`].
+/// subset of the truth whose gap resolution cannot measure. See `run_find_callers`.
 #[derive(Default)]
 pub struct ResolvedCallers {
     /// `path` → proven call-site start bytes. Probed per name-scan hit to set its `resolution`.

@@ -1,6 +1,6 @@
 //! `code_refs` over the file-level import graph ([`crate::engine::import_graph`]): `importers` with
 //! `path` (the files that reach one file within `depth` hops, #121) and `cycles` (the import cycles,
-//! or the one holding a file, #135). Both follow the default edge tier, [`Tiers::RUNTIME`]: no MCP
+//! or the one holding a file, #135). Both follow the default edge tier, `Tiers::RUNTIME`: no MCP
 //! argument selects another (ADR-0047 decision 4).
 
 use std::collections::{BTreeMap, VecDeque};

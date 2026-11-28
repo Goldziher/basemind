@@ -10,7 +10,7 @@ x-ai-rulez:
 
 # Crate Layout
 
-basemind is two Rust crates (ADR-0039): `crates/basemind-engine` (stores, scan pipeline, retrieval stack and the synchronous `Workspace` engine in `src/engine/`; never rmcp or clap) and the root `basemind` crate (CLI, MCP adapter, daemon, agent launch, watcher, `eval/`, the binary), which re-exports the engine's modules at their old paths. Modules named under `src/` below that are not `cli/`, `comms/`, `mcp/`, `lead/`, `eval/`, `sessions/`, `dispatch/`, `render.rs`, `watcher.rs` or `config/overrides.rs` live in `crates/basemind-engine/src/`. It builds a CLI binary (`basemind`) and exposes its internals as a library. Two binaries-in-one: `basemind scan` indexes a workspace into the machine-global cache (`~/.local/share/basemind/`, override `BASEMIND_DATA_HOME`); `basemind serve` runs the MCP stdio server.
+basemind is two Rust crates (ADR-0039): `crates/basemind-engine` (stores, scan, retrieval, `Workspace`; never rmcp or clap) and the root `basemind` crate (CLI, MCP adapter, daemon, agents, watcher, `eval/`), which re-exports the engine at its old module paths. `basemind scan` indexes a workspace into the machine-global cache (`~/.local/share/basemind/`, override `BASEMIND_DATA_HOME`); `basemind serve` runs the MCP stdio server.
 
 ## `src/`
 
@@ -63,7 +63,7 @@ basemind is two Rust crates (ADR-0039): `crates/basemind-engine` (stores, scan p
 #### Other
 
 - `crates/basemind-engine/schema/` — JSON Schemas (e.g. `basemind-config-v1.schema.json`), regenerated from the Rust types via `schemars` and asserted byte-equal by `tests/config_schema.rs`. Never hand-edit.
-- `build.rs` — links the macOS compiler runtime for the binary and its tests; `crates/basemind-engine/build.rs` does the same for the engine crate's tests and watches `schema/` and `src/queries/`.
+- `build.rs` — links the macOS compiler runtime (the engine crate has its own).
 - `poly.toml` — poly checks: typos, markdown, cargo fmt/clippy/sort/machete/deny, rustdoc-lint. The 1000-line cap is `tests/max_lines.rs`.
 - `deny.toml` — cargo-deny license / source allow-list.
-- `Cargo.toml` — the `basemind` crate (the binary and the library facade); it depends on `basemind-engine` and carries `rmcp`, `clap`, `tokio` and the daemon dependencies. The engine's `Cargo.toml` carries `fjall`, `gix`, `ahash`, `memchr`, `rayon`, `rmp-serde`, `tree-sitter*`. Every root feature forwards to the engine feature of the same name.
+- `Cargo.toml` — the `basemind` crate depends on `basemind-engine`; carries `rmcp`, `clap`, `tokio`, daemon deps.

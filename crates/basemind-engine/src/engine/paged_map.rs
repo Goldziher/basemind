@@ -3,8 +3,8 @@
 //! A watcher batch derives the next [`MapCache`](crate::engine::MapCache) from the current one: its
 //! file view, its term index and its document paths. Copying a `BTreeMap` for that costs one
 //! allocation per entry, so at 100k files one saved file paid several whole copies of the map.
-//! [`PagedMap`] holds reference-counted entries in sorted pages of about [`PAGE`] entries;
-//! [`PagedMap::patched`] copies the page pointers, rebuilds only the pages its edits land on and
+//! [`PagedMap`] holds reference-counted entries in sorted pages of about `PAGE` entries;
+//! `PagedMap::patched` copies the page pointers, rebuilds only the pages its edits land on and
 //! allocates nothing for an entry it leaves alone.
 
 use std::sync::Arc;

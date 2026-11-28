@@ -1,17 +1,17 @@
 //! One index database per repository group (ADR-0028), shared by every view of every worktree of
 //! the group.
 //!
-//! A process holds at most one handle per group directory: [`GroupDb::shared`] hands out the live
+//! A process holds at most one handle per group directory: `GroupDb::shared` hands out the live
 //! one, and only opens the database when no handle is alive. Concurrent opens of one group open it
 //! once and share the handle; opens of different groups run concurrently. Each view of the group
 //! reads and writes its own rows under a 4-byte view id ([`super::scoped`]); the rows the group
 //! shares by content (symbols, calls, BM25 postings, the grep bloom) carry no prefix. The group's
-//! own rows live in `meta` under [`GROUP_META`], which no view prefix can start with: view ids are
+//! own rows live in `meta` under `GROUP_META`, which no view prefix can start with: view ids are
 //! allocated upward from 1 and never reach `0xFF000000`.
 //!
 //! Durability per view: the view's seal generation is a row under its prefix, so a lost journal
 //! tail is detected per view and never discards the group. A database that was wiped or replaced
-//! gets a new [`GroupDb::incarnation`]; a file map naming another one describes rows that are gone.
+//! gets a new `GroupDb::incarnation`; a file map naming another one describes rows that are gone.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
@@ -98,7 +98,7 @@ pub struct GroupView {
     pub(crate) view_id: u32,
 }
 
-/// A view id held for an open; see [`GroupDb::claim_view`].
+/// A view id held for an open; see `GroupDb::claim_view`.
 pub struct ViewClaim {
     id: u32,
     live: Arc<LiveKeysCell>,

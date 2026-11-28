@@ -5,14 +5,14 @@
 //! (`<namespace>/ab/<hash>.fm.msgpack`), 256 buckets, so that many worktrees and repositories
 //! sharing the cache do not put hundreds of thousands of entries in one directory.
 //!
-//! Which layout a namespace uses follows its blob schema ([`layout_of`]). Every release of a minor
+//! Which layout a namespace uses follows its blob schema (`layout_of`). Every release of a minor
 //! shares that minor's namespace (`v<SCHEMA_VER>`), and the releases of 0.34 before the sharded
 //! layout read and write flat names only: a blob a later 0.34 patch moved into a bucket would be gone
 //! for them, and a daemon of theirs still running would leave the file out of its map. So the
-//! namespaces up to [`LAST_FLAT_BLOB_SCHEMA`] stay flat, and the sharded layout starts with the next
+//! namespaces up to `LAST_FLAT_BLOB_SCHEMA` stay flat, and the sharded layout starts with the next
 //! namespace, which no flat-only release reads. A reader that finds a blob in the other layout of its
 //! namespace moves it into place by link and unlink, one blob at a time as it is touched
-//! ([`locate_blob`]). Sweeps and counts walk both layouts ([`blob_files`]).
+//! (`locate_blob`). Sweeps and counts walk both layouts ([`blob_files`]).
 
 use std::path::{Path, PathBuf};
 

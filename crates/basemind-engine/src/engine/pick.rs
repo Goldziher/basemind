@@ -18,7 +18,7 @@ const CANDIDATES_MAX: usize = 20;
 pub struct Picked<'a> {
     pub symbol: &'a Symbol,
     /// Position among the same-named definitions of the file with the same nesting, in outline
-    /// order, with [`NESTED_OCCURRENCE`] set for a nested one. `git_log` uses it to follow the same
+    /// order, with `NESTED_OCCURRENCE` set for a nested one. `git_log` uses it to follow the same
     /// definition through revisions where the line numbers differ, so adding a nested function of
     /// the same name does not shift which item-level definition it follows.
     pub occurrence: usize,

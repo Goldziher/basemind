@@ -210,7 +210,7 @@ impl MapCache {
         l1_cache::stream_while(&self.files, &self.l1, f);
     }
 
-    /// [`for_each_while`](Self::for_each_while) for a consumer that always runs to completion.
+    /// `for_each_while` for a consumer that always runs to completion.
     pub fn for_each<F>(&self, mut f: F)
     where
         F: FnMut(&crate::path::RelPath, &FileMapL1),
@@ -240,7 +240,7 @@ impl MapCache {
     ///
     /// The outlines of the content `updated` and `removed` paths named before are dropped from the
     /// shared L1 cache once no path of the new view names them (see
-    /// [`L1Cache::forget_superseded`](l1_cache::L1Cache::forget_superseded)).
+    /// `L1Cache::forget_superseded`).
     pub fn with_delta(
         &self,
         store: &Store,
@@ -345,7 +345,7 @@ impl MapCache {
     /// term-index warm that follows a build then decoded every outline of the repository again,
     /// however few files the scan changed. Instead the paths a [`build`](Self::build) would map
     /// differently are found by comparing the whole index against this map's view
-    /// ([`FileIndexView::diff`](l1_cache::FileIndexView::diff)), and [`with_delta`](Self::with_delta)
+    /// (`FileIndexView::diff`), and [`with_delta`](Self::with_delta)
     /// applies exactly those, so the result is the map `build` would produce, while unchanged
     /// outlines stay decoded. The diff is taken from the store, never from a scan's report of what it
     /// touched, so a path a report missed cannot leave the map stale.

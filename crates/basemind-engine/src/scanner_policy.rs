@@ -6,7 +6,7 @@
 //! no longer eligible (and would never rebuild rows for files that became eligible). The index
 //! records [`crate::config::rules::embed_policy_digest`] of the last complete scan; when it
 //! differs, [`PolicyChange::reflush`] sends unchanged eligible files back through the pipeline
-//! (cached blobs, no re-embedding) and [`reconcile`] deletes the rows of ineligible ones.
+//! (cached blobs, no re-embedding) and `reconcile` deletes the rows of ineligible ones.
 
 use crate::config::{Config, rules};
 use crate::scanner_filter::Filters;

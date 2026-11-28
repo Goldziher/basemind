@@ -6,8 +6,8 @@
 //! and the namespaces of older blob schemas. An older basemind may still be in use, though: the
 //! plugin launcher keeps a version for [`PRUNE_AFTER_DAYS_ENV`] days after its last launch, and its
 //! daemon keeps running through an upgrade. So a superseded namespace is reaped only when
-//! [`may_reap`] says so: no live basemind process reads it ([`Holds::live`]), and nothing was
-//! written into it for the hold ([`Holds::hold`]). Even then a file goes only once it is older than
+//! `may_reap` says so: no live basemind process reads it (`Holds::live`), and nothing was
+//! written into it for the hold (`Holds::hold`). Even then a file goes only once it is older than
 //! the blob grace period, the same age a scan's unreferenced blobs must reach. A namespace of a
 //! NEWER schema belongs to a newer basemind sharing the cache and is never touched.
 

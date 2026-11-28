@@ -4,7 +4,7 @@
 //! the targets the build starts from.
 //!
 //! Manifests are configuration, not code, so the code map does not hold them. They are found next
-//! to the indexed files instead: [`discover`] looks for each manifest name in every directory that
+//! to the indexed files instead: `discover` looks for each manifest name in every directory that
 //! holds an indexed file and in each of its ancestors, so a manifest whose package has no indexed
 //! code is not reported, and nothing is walked that the scan left out (a `node_modules`, a build
 //! directory).
@@ -134,14 +134,14 @@ pub struct Manifest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<String>,
     pub dependencies: DependencyCounts,
-    /// Runtime dependency names, sorted, at most [`DEPENDENCY_NAMES_MAX`].
+    /// Runtime dependency names, sorted, at most `DEPENDENCY_NAMES_MAX`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dependency_names: Vec<String>,
     /// Targets, sorted by kind then name.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<Target>,
     /// Go only: the module's files were not all read for their `package` clause
-    /// ([`GO_FILES_READ_MAX`]), so its binaries may be incomplete.
+    /// (`GO_FILES_READ_MAX`), so its binaries may be incomplete.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub targets_partial: bool,
     /// Why the manifest could not be read; nothing else is reported for it.

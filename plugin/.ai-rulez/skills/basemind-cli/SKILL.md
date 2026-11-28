@@ -216,8 +216,8 @@ Output:
 
 ```text
 results:
-  src/engine/map_cache.rs:10: pub(crate) struct MapCache
-  src/engine/map_cache.rs:39: impl MapCache
+  crates/basemind-engine/src/engine/map_cache.rs:10: pub(crate) struct MapCache
+  crates/basemind-engine/src/engine/map_cache.rs:39: impl MapCache
 ```
 
 ### Show a file's outline before opening it
@@ -235,7 +235,7 @@ basemind code refs "process_file"
 ### Find all callers of a specific definition
 
 ```bash
-basemind code callers src/scanner.rs "process_file" --json
+basemind code callers crates/basemind-engine/src/scanner.rs "process_file" --json
 ```
 
 ### Show recent commits with changed files
@@ -247,7 +247,7 @@ basemind git log --limit 5
 ### Blame a symbol to see when its body last changed
 
 ```bash
-basemind git blame src/scanner.rs --symbol "process_file"
+basemind git blame crates/basemind-engine/src/scanner.rs --symbol "process_file"
 ```
 
 ### Manage cache space

@@ -24,7 +24,7 @@
 //! At the drive loop there *is* an alternative, so waiting out the gate here is not merely
 //! observed, it is acted on: [`DriveGovernor`] halves the chunk size and the effective worker count
 //! on every [`AdmitOutcome::WaitedOut`], and ratchets both back toward their baselines after
-//! [`RECOVERY_CLEAR_ADMITS`] consecutive clear admits. A scan that cannot hold its ceiling therefore
+//! `RECOVERY_CLEAR_ADMITS` consecutive clear admits. A scan that cannot hold its ceiling therefore
 //! converges on a narrower, slower pass instead of a dead one.
 //!
 //! ## Hard ceiling

@@ -4,7 +4,7 @@
 //!
 //! The scope is resolved before an op takes the map cache or the store lock, because the importer
 //! expansion builds the import graph under the store read lock. A `+importers` suffix adds the files
-//! importing a changed file directly (depth 1, runtime imports: [`Tiers::RUNTIME`]); a changed file
+//! importing a changed file directly (depth 1, runtime imports: `Tiers::RUNTIME`); a changed file
 //! in a language no resolver reads gets no importers.
 
 use super::EngineError;

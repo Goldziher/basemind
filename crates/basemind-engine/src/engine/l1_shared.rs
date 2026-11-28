@@ -90,7 +90,7 @@ impl<'a> Outlines<'a> {
     }
 }
 
-/// A bare byte budget is a cache of the map's own: [`Outlines::private`].
+/// A bare byte budget is a cache of the map's own: `Outlines::private`.
 impl From<u64> for Outlines<'_> {
     fn from(budget_bytes: u64) -> Self {
         Self::private(budget_bytes)

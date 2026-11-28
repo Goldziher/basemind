@@ -156,10 +156,10 @@ fn canonical_key(tool: &str) -> &str {
 
 /// Estimate baseline + actual tokens for one tool call from the full response **text**.
 ///
-/// The live telemetry entry point. The `actual` count routes through [`tokens_for_text`] — a
+/// The live telemetry entry point. The `actual` count routes through `tokens_for_text` — a
 /// real o200k tokenizer under the `documents` feature, the `bytes / 4` heuristic otherwise —
 /// so telemetry reports honest counts when a tokenizer is compiled in. The byte-only fallback
-/// ([`super::tokens::bytes_to_tokens`]) remains for paths that hold only a byte length, e.g. the
+/// (`super::tokens::bytes_to_tokens`) remains for paths that hold only a byte length, e.g. the
 /// budget loop.
 ///
 /// `corpus_bytes` is the total byte count of every indexed file (held on `ServerState` and

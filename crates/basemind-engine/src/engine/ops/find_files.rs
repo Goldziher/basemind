@@ -1,7 +1,7 @@
 //! `find_files`: `run_list_files` without a query, `run_find_files` with one. Both enumerate the
 //! workspace's files (the code map, the document tier, and the files git tracks that neither holds)
 //! and share the same limit/cursor/token-budget pagination shape; `run_find_files` additionally
-//! scores each candidate with `nucleo-matcher`, and with [`within_one_edit`] for a query that names
+//! scores each candidate with `nucleo-matcher`, and with `within_one_edit` for a query that names
 //! nothing as typed, before paginating.
 
 use std::sync::Arc;
