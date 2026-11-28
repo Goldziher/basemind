@@ -857,4 +857,20 @@ mod tests {
         let def_t = src.find("int t = 0").unwrap() as u32 + "int ".len() as u32;
         assert_eq!(edge_for_use(&refs, use_t).def_start, def_t);
     }
+
+    #[test]
+    fn java_static_method_is_reached_through_its_class() {
+        if grammar_unavailable("java") {
+            return;
+        }
+        let src = "class C {\n  public static int s() { return 1; }\n  int i() { return 2; }\n  int u() { return C.s() + C.s(); }\n  int w(Object o) {\n    switch (o) { case String t -> { return 1; } default -> { return 0; } }\n  }\n}\n";
+        let refs = resolved("java", src);
+        let def_s = src.find("s() {").unwrap() as u32;
+        let use_s = src.find("C.s()").unwrap() as u32 + "C.".len() as u32;
+        assert_eq!(
+            edge_for_use(&refs, use_s).def_start,
+            def_s,
+            "C.s() reaches the static method"
+        );
+    }
 }
