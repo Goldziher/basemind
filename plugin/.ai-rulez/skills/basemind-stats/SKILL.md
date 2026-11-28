@@ -22,8 +22,8 @@ x-ai-rulez:
 Run `basemind admin telemetry --json` and render the result as a markdown report. The usage summary
 is a CLI command, not an MCP tool; it reads the same telemetry log the server writes, with or
 without a running server. Launch it through the plugin's version-matched binary,
-`${CLAUDE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-$HOME/.cursor/plugins/local/basemind}}/scripts/mcp-launch.sh admin telemetry --json` (bare `basemind` from `PATH`
-when no plugin launcher exists).
+`${CLAUDE_PLUGIN_ROOT:-$CURSOR_PLUGIN_ROOT}/scripts/mcp-launch.sh admin telemetry --json` (bare `basemind` from `PATH`
+when neither plugin root variable is set).
 
 ## When to use
 
