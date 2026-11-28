@@ -6,8 +6,8 @@ description: Show the basemind dashboard — resource footprint (disk + RAM) and
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:3acc22b78badbe9b6c12afb0344374e37bd2b78a1ab140198fac7b16d481c5b6
-Source-Hash: blake3:28b6945a1c1aec38445415d07ec31c0a282eb6999b281a2d408a58b233dd4fd2
+Content-Hash: blake3:56c86d295734e89d7aff37ec50e54f167a4041466c3b483f044a401f4d21a7a0
+Source-Hash: blake3:d118b1c7470f237f43e9e210d0386613ff4ce9eac9f642c99c769b049869702d
 Schema-Version: v1
 -->
 
@@ -38,7 +38,7 @@ Invoke `/bm-stats` (default window `today`) or `/bm-stats <today|1h|24h|all>`. W
 ## Notes
 
 - Both are CLI commands with no MCP tool; they read the same data with or without a running
-  server. Run them through the plugin launcher, `${CLAUDE_PLUGIN_ROOT:-$CURSOR_PLUGIN_ROOT}/scripts/mcp-launch.sh <args>`
+  server. Run them through the plugin launcher, `"${CLAUDE_PLUGIN_ROOT:-$CURSOR_PLUGIN_ROOT}/scripts/mcp-launch.sh" <args>`
   (bare `basemind` from `PATH` when neither plugin root variable is set).
 - If the CLI is not reachable, say so plainly and point at `/bm-doctor`.
 - Always end with a one-sentence disclosure that the savings number is heuristic: tools without a
