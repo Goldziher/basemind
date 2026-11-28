@@ -16,7 +16,7 @@ fn session(root: &std::path::Path, store: Store, read_only: bool) -> super::Serv
         root.to_path_buf(),
         Arc::new(Config::with_defaults()),
         None,
-        Arc::new(crate::git_cache::GitCache::open(root, 1, false).unwrap()),
+        Arc::new(crate::git_cache::GitCache::open(root, 1, false).expect("open the git cache")),
         None,
         super::ServerOptions {
             read_only,

@@ -6,6 +6,8 @@
 //! deterministic and network-free. `LangId` is resolved via the public
 //! `basemind::lang::detect` from a synthetic path with the right extension.
 
+#![allow(clippy::unwrap_used, reason = "a benchmark aborts on any failure")]
+
 use std::path::Path;
 
 use basemind::extract::extract_l1_l2;

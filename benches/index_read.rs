@@ -17,6 +17,8 @@
 //! `cargo bench --bench index_read -- [--quick] [--out <file.json>]`; see
 //! `benchmarks/index/README.md`.
 
+#![allow(clippy::unwrap_used, reason = "a benchmark aborts on any failure")]
+
 #[path = "index_read/corpus.rs"]
 mod corpus;
 #[path = "index_read/ops.rs"]

@@ -6,6 +6,8 @@
 //! and `dependents_of`. The store is built once in `setup` so the bench measures
 //! the query path, not the scan.
 
+#![allow(clippy::unwrap_used, reason = "a benchmark aborts on any failure")]
+
 use basemind::config::ConfigV1;
 use basemind::query::{dependents_of, file_outline, search_symbols};
 use basemind::scanner::{EmbedMode, ScanSource, scan};

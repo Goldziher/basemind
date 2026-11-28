@@ -42,7 +42,7 @@ use super::workspace::Workspace;
 /// mutex and the two no longer serialize — a window only reachable when more
 /// than [`MEMORY_PUT_LOCK_CAP`] distinct keys are written between two racing
 /// puts on the same key.
-const MEMORY_PUT_LOCK_CAP: std::num::NonZeroUsize = std::num::NonZeroUsize::new(4096).unwrap();
+const MEMORY_PUT_LOCK_CAP: std::num::NonZeroUsize = std::num::NonZeroUsize::new(4096).expect("4096 is non-zero");
 
 type MemoryPutLockKey = (String, u8, String, String);
 

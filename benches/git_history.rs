@@ -9,6 +9,8 @@
 //! profile against real history; the synthetic repo is used otherwise so the bench is
 //! self-contained and CI-safe.
 
+#![allow(clippy::unwrap_used, reason = "a benchmark aborts on any failure")]
+
 use std::path::Path;
 use std::process::Command;
 
