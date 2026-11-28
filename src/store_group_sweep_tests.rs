@@ -35,6 +35,11 @@ fn key(hash: &str) -> ContentKey {
 
 /// Commit a content no file map names, then publish the store's file map (which does not name it).
 fn write_dead_content(store: &Store, hash: &str) {
+    write_content_under(store, hash, &key(hash));
+}
+
+/// [`write_dead_content`] under an explicit content key, as a build of another extract epoch writes.
+fn write_content_under(store: &Store, hash: &str, content: &ContentKey) {
     let db = store.index_db.as_ref().expect("a writer holds its index");
     let l1 = FileMapL1 {
         schema_ver: crate::extract::SCHEMA_VER,
@@ -59,15 +64,31 @@ fn write_dead_content(store: &Store, hash: &str) {
     };
     let mut writer = db.writer();
     writer
-        .upsert_file(&RelPath::from("dropped.rs"), &key(hash), &l1, None)
+        .upsert_file(&RelPath::from("dropped.rs"), content, &l1, None)
         .expect("upsert");
     writer.commit().expect("commit");
     store.publish_live_keys();
 }
 
 fn holds_content(store: &Store, hash: &str) -> bool {
+    holds_key(store, &key(hash))
+}
+
+fn holds_key(store: &Store, content: &ContentKey) -> bool {
     let db = store.index_db.as_ref().expect("index");
-    db.holds_content_rows_for_test(&key(hash))
+    db.holds_content_rows_for_test(content)
+}
+
+fn file_entry(hash: &str, epoch: u16) -> crate::store::FileEntry {
+    crate::store::FileEntry {
+        hash_hex: hash.to_string(),
+        language: "rust".to_string(),
+        size_bytes: 1,
+        mtime: 0,
+        extract_epoch: epoch,
+        content_key: Some(keys::content_key(hash, "rust", epoch)),
+        lines: 1,
+    }
 }
 
 fn view_id(store: &Store, view: &str) -> Option<u32> {
@@ -127,4 +148,79 @@ fn a_view_is_retired_only_once_its_directory_is_known_to_be_gone() {
     assert_eq!(report.views_retired, 1);
     assert_eq!(view_id(&store, VIEW_STAGED), None);
     assert!(view_id(&store, VIEW_WORKING).is_some(), "the sweeping view stays");
+}
+
+#[test]
+fn rows_of_another_extract_epoch_survive_while_a_file_map_holds_the_content() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (mut store, _staged) = group_of_two(tmp.path());
+    let epoch = crate::extract::EXTRACT_EPOCH;
+    // This build's view holds `kept` under the current epoch; a build of the same release minor that
+    // extracts under another epoch wrote rows for the same content, and for a content nothing holds.
+    store
+        .index
+        .files
+        .insert(RelPath::from("kept.rs"), file_entry("kept", epoch));
+    let older = keys::content_key("kept", "rust", epoch - 1);
+    let newer = keys::content_key("kept", "rust", epoch + 1);
+    write_content_under(&store, "kept", &older);
+    write_content_under(&store, "kept", &newer);
+    write_dead_content(&store, "unheld");
+    let beyond = keys::content_key(
+        "kept",
+        "rust",
+        epoch + crate::store_group_live::RETAINED_EPOCHS_AHEAD + 1,
+    );
+    write_content_under(&store, "kept", &beyond);
+
+    let report = store.sweep_group().expect("sweep").expect("a group sweep");
+
+    assert_eq!(
+        report.contents_removed, 2,
+        "the unheld content and the epoch out of range go"
+    );
+    assert!(holds_key(&store, &older), "the older build's rows are kept");
+    assert!(holds_key(&store, &newer), "the newer build's rows are kept");
+    assert!(!holds_content(&store, "unheld"));
+    assert!(!holds_key(&store, &beyond));
+
+    store.index.files.clear();
+    let report = store.sweep_group().expect("sweep").expect("a group sweep");
+    assert_eq!(
+        report.contents_removed, 0,
+        "nothing owes a sweep until a path is written"
+    );
+    write_dead_content(&store, "poke");
+    let report = store.sweep_group().expect("sweep").expect("a group sweep");
+    assert_eq!(
+        report.contents_removed, 3,
+        "once no file map holds the content, every epoch's rows go"
+    );
+    assert!(!holds_key(&store, &older) && !holds_key(&store, &newer));
+}
+
+#[test]
+fn a_failed_retention_lookup_keeps_every_dead_content_and_the_debt() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (store, _staged) = group_of_two(tmp.path());
+    write_dead_content(&store, "dead");
+    let unreadable = |_: &[ContentKey]| {
+        Err(crate::store_group_live::LivenessUnknown::NoGroup {
+            view_dir: PathBuf::from("gone"),
+        })
+    };
+
+    let report = store
+        .sweep_group_retaining(unreadable)
+        .expect("sweep")
+        .expect("a group sweep");
+
+    assert_eq!(report.contents_removed, 0, "what other builds retain is unknown");
+    assert!(holds_content(&store, "dead"));
+    let db = store.index_db.as_ref().expect("index");
+    assert!(db.content_sweep_owed_for_test(), "the debt waits for a readable lookup");
+
+    let report = store.sweep_group().expect("sweep").expect("a group sweep");
+    assert_eq!(report.contents_removed, 1, "the next full pass pays the debt");
+    assert!(!holds_content(&store, "dead"));
 }
